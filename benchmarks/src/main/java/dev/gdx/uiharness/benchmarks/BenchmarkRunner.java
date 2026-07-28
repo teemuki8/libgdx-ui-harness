@@ -3,7 +3,7 @@ package dev.gdx.uiharness.benchmarks;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import dev.gdx.uiharness.fixtures.ReferenceUiApplication;
+import dev.gdx.uiharness.fixtures.ReferenceJvmCommand;
 import dev.gdx.uiharness.protocol.ProtocolJson;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -976,14 +976,13 @@ public final class BenchmarkRunner {
             Path root = Files.createTempDirectory(configuration.output().resolve("work"),
                     "reference-");
             String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-            Process process = new ProcessBuilder(
+            Process process = new ProcessBuilder(ReferenceJvmCommand.build(
                     java,
-                    "--enable-native-access=ALL-UNNAMED",
-                    "-cp", classpath,
-                    ReferenceUiApplication.class.getName(),
+                    classpath,
+                    System.getProperty("os.name"),
                     root.toString(),
                     scenario.id(),
-                    Integer.toString(scenario.logicalDelayMillis()))
+                    Integer.toString(scenario.logicalDelayMillis())))
                     .start();
             HarnessProcess reference = new HarnessProcess(root, process);
             try {

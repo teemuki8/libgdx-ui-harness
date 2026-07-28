@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Fail closed when release workflow security invariants drift."""
+
+from pathlib import Path
+import re
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+errors: list[str] = []
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        errors.append(message)
+
+
+require("\n    env:\n" not in release, "release job must not have job-scoped secrets")
+for marker in (
+    "TRUSTED_RELEASE_PUBLIC_KEY: ${{ secrets.RELEASE_SIGNING_PUBLIC_KEY }}",
+    "TRUSTED_RELEASE_FINGERPRINT: ${{ vars.RELEASE_SIGNING_FINGERPRINT }}",
+    'export GNUPGHOME="$(mktemp -d)"',
+    'trap \'rm -rf "$GNUPGHOME"\' EXIT',
+    'if [[ "$actual" != "$expected" ]]',
+    'git tag --verify "$tag"',
+):
+    require(marker in release, f"trusted tag verification marker missing: {marker}")
+
+require('--header "Authorization:' not in release,
+        "Central authorization header must never be a curl argv value")
+require(release.count('trap \'rm -f "$curl_config"\' EXIT') == 3,
+        "every Central step must delete its curl config")
+require(release.count('chmod 600 "$curl_config"') == 3,
+        "every Central curl config must be mode 0600")
+require(release.count('curl --config "$curl_config"') == 4,
+        "every Central request must use the protected curl config")
+require(release.count("MAVEN_SIGNING_KEY: ${{ secrets.MAVEN_SIGNING_KEY }}") == 1,
+        "private signing key must be scoped to exactly one run step")
+
+lock_gate = "git diff --exit-code -- settings-gradle.lockfile gradle.lockfile " \
+    "'**/gradle.lockfile' gradle/verification-metadata.xml"
+require(lock_gate in ci, "lock drift gate must include settings, root, subprojects, metadata")
+
+for path, text in (("ci.yml", ci), ("release.yml", release)):
+    for action in re.findall(r"uses:\s+[^@\s]+@([^\s#]+)", text):
+        require(bool(re.fullmatch(r"[0-9a-f]{40}", action)),
+                f"{path} action is not pinned to a full commit SHA: {action}")
+
+if errors:
+    print("workflow validation failed:", file=sys.stderr)
+    for error in errors:
+        print(f"- {error}", file=sys.stderr)
+    raise SystemExit(1)
+print("workflow security invariants: PASS")

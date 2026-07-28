@@ -119,12 +119,14 @@ jobs:
           java-version: '25'
       - name: Configure Gradle without dependency submission
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+      - name: Validate workflow security contracts
+        run: python3 scripts/validate-workflows.py
       - name: Install virtual display
         run: sudo apt-get update && sudo apt-get install --yes xvfb
       - name: Prove locks are complete and unchanged
         run: |
           xvfb-run -a ./gradlew clean check --write-locks --warning-mode=fail
-          git diff --exit-code -- '**/gradle.lockfile' gradle/verification-metadata.xml
+          git diff --exit-code -- settings-gradle.lockfile gradle.lockfile '**/gradle.lockfile' gradle/verification-metadata.xml
       - name: Prove the locked cache builds offline
         run: xvfb-run -a ./gradlew --offline clean check --warning-mode=fail
 

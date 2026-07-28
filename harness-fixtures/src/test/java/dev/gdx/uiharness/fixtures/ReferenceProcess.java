@@ -45,12 +45,11 @@ final class ReferenceProcess implements AutoCloseable {
         }
         Path root = Files.createTempDirectory("gdx-ui-reference-");
         String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-        ProcessBuilder builder = new ProcessBuilder(
+        ProcessBuilder builder = new ProcessBuilder(ReferenceJvmCommand.build(
                 java,
-                "--enable-native-access=ALL-UNNAMED",
-                "-cp", classpath,
-                ReferenceUiApplication.class.getName(),
-                root.toString());
+                classpath,
+                System.getProperty("os.name"),
+                root.toString()));
         Process process = builder.start();
         ReferenceProcess reference = new ReferenceProcess(root, process);
         try {
