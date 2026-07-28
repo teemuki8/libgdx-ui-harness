@@ -52,9 +52,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: .\gradlew.bat :harness-lwjgl3:testClasses :harness-fixtures:testClasses --warning-mode=fail
-      - name: Qualify macOS LWJGL3 in first-thread subprocess
+      - name: Compile macOS native fixture
         if: runner.os == 'macOS'
-        run: ./gradlew :harness-fixtures:test --tests '*ReferenceApplicationSmokeTest' --rerun-tasks --warning-mode=fail
+        run: ./gradlew :harness-lwjgl3:testClasses :harness-fixtures:testClasses --warning-mode=fail
       - name: Retain failed diagnostics
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

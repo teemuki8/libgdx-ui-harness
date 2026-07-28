@@ -1,5 +1,6 @@
 .worktress/
 .superpowers/
+docs/superpowers/
 .gradle/
 **/build/
 .idea/

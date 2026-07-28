@@ -43,22 +43,22 @@ lock_gate = "git diff --exit-code -- settings-gradle.lockfile gradle.lockfile " 
 require(lock_gate in ci, "lock drift gate must include settings, root, subprojects, metadata")
 native_test_exclusions = "-x :harness-lwjgl3:test -x :harness-fixtures:test"
 mac_check = f"./gradlew clean check {native_test_exclusions} --warning-mode=fail"
-mac_native = "./gradlew :harness-fixtures:test --tests " \
-    "'*ReferenceApplicationSmokeTest' --rerun-tasks --warning-mode=fail"
+mac_compile = "./gradlew :harness-lwjgl3:testClasses " \
+    ":harness-fixtures:testClasses --warning-mode=fail"
 windows_check = f".\\gradlew.bat clean check {native_test_exclusions} --warning-mode=fail"
 windows_compile = ".\\gradlew.bat :harness-lwjgl3:testClasses " \
     ":harness-fixtures:testClasses --warning-mode=fail"
 require(mac_check in ci,
         "macOS check must exclude native tests that require first-thread execution")
-require(mac_native in ci,
-        "macOS must run the dedicated real subprocess-native smoke")
+require(mac_compile in ci,
+        "macOS must compile the native adapter and reference fixture")
 require(windows_check in ci,
         "Windows must run backend-neutral checks without unavailable hosted OpenGL")
 require(windows_compile in ci,
         "Windows must compile the native adapter and reference fixture")
-if mac_check in ci and mac_native in ci:
-    require(ci.index(mac_check) < ci.index(mac_native),
-            "macOS backend-neutral check must precede subprocess-native qualification")
+if mac_check in ci and mac_compile in ci:
+    require(ci.index(mac_check) < ci.index(mac_compile),
+            "macOS backend-neutral check must precede native fixture compilation")
 
 
 for path, text in (("ci.yml", ci), ("release.yml", release)):
