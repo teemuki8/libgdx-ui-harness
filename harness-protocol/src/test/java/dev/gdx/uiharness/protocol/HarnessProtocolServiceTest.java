@@ -218,6 +218,52 @@ final class HarnessProtocolServiceTest {
         assertFalse(write(failure).contains("internal-error"));
     }
 
+    @Test void cancellingExecuteResponseCancelsRoutedActionAndCaptureStages() {
+        RecordingHarness harness = new RecordingHarness();
+        harness.actionResult = new CompletableFuture<>();
+        RecordingCapture capture = new RecordingCapture();
+        capture.result = new CompletableFuture<>();
+        HarnessProtocolService service = service(harness, capture,
+                HarnessProtocolService.TraceController.unsupported());
+
+        CompletableFuture<HarnessResponse> actionResponse = service.execute(request(
+                new Command.Action(roleLocator(),
+                        new Command.ActionSpec.Click(0, 0, false)))).toCompletableFuture();
+        CompletableFuture<HarnessResponse> captureResponse = service.execute(request(
+                new Command.Screenshot(null, 10, 10, 100, 1024))).toCompletableFuture();
+
+        assertTrue(actionResponse.cancel(false));
+        assertTrue(captureResponse.cancel(false));
+        assertTrue(harness.actionResult.isCancelled());
+        assertTrue(capture.result.isCancelled());
+    }
+
+    @Test void cancellingExecuteResponsePreventsQueuedWaitTaskFromStarting() {
+        AtomicInteger snapshotReads = new AtomicInteger();
+        AtomicReference<Runnable> queuedTask = new AtomicReference<>();
+        LocatorEngine locators = new StrictResolution();
+        FrameSignal frames = listener -> () -> {};
+        WaitEngine waits = new WaitEngine(() -> {
+            snapshotReads.incrementAndGet();
+            return SNAPSHOT;
+        }, locators, CLOCK, frames);
+        CapabilitySet capabilities = new CapabilitySet(List.of("wait"));
+        HarnessProtocolService service = new HarnessProtocolService(Map.of("game",
+                new HarnessProtocolService.Session(new RecordingHarness(), locators, waits,
+                        new RecordingCapture(), capabilities,
+                        HarnessProtocolService.TraceController.unsupported())),
+                CLOCK, task -> assertTrue(queuedTask.compareAndSet(null, task)));
+
+        CompletableFuture<HarnessResponse> response = service.execute(request(
+                new Command.Wait(roleLocator(), Command.WaitCondition.PRESENT)))
+                .toCompletableFuture();
+        assertNotNull(queuedTask.get());
+
+        assertTrue(response.cancel(false));
+        queuedTask.get().run();
+        assertEquals(0, snapshotReads.get());
+    }
+
     private static HarnessProtocolService service(RecordingHarness harness,
             RecordingCapture capture, HarnessProtocolService.TraceController traces) {
         LocatorEngine locators = new StrictResolution();
@@ -276,11 +322,15 @@ final class HarnessProtocolServiceTest {
         private final AtomicInteger actionCalls = new AtomicInteger();
         private final AtomicReference<Deadline> lastDeadline = new AtomicReference<>();
         private RuntimeException snapshotFailure;
+        private CompletableFuture<ActionResult> actionResult;
 
         @Override public CompletionStage<ActionResult> perform(Locator locator,
                 dev.gdx.uiharness.core.action.Action action, Deadline deadline) {
             actionCalls.incrementAndGet();
             lastDeadline.set(deadline);
+            if (actionResult != null) {
+                return actionResult;
+            }
             return CompletableFuture.completedFuture(
                     new ActionResult(1, 2, "clicked", Map.of("target", "root")));
         }
@@ -299,11 +349,12 @@ final class HarnessProtocolServiceTest {
         private final AtomicInteger calls = new AtomicInteger();
         private CapturedImage image = new CapturedImage(new byte[] {1, 2, 3},
                 "0".repeat(64), 1, 1, 1, 1, new CapturedImage.Scale(1, 1));
+        private CompletableFuture<CapturedImage> result;
 
         @Override public CompletionStage<CapturedImage> capture(CaptureRequest request,
                 Deadline deadline) {
             calls.incrementAndGet();
-            return CompletableFuture.completedFuture(image);
+            return result == null ? CompletableFuture.completedFuture(image) : result;
         }
 
         @Override public void close() {}

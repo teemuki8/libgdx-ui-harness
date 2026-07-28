@@ -272,7 +272,7 @@ final class HarnessMcpServerContractTest {
             assertEquals(4, read(reader).path("id").asInt());
             closeStdin(clientOutput);
             server.awaitTermination();
-            assertFalse(pendingAction.isDone());
+            assertTrue(pendingAction.isCancelled());
         }
     }
 

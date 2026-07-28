@@ -49,6 +49,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -373,6 +374,18 @@ public final class FixtureControl implements AutoCloseable {
                     span.sequence(), Map.of("operation", operation)));
         }
 
+        synchronized void commandFailed(String operation, SemanticSnapshot before,
+                Deadline deadline, TraceSpan span) {
+            if (!active || span == null) {
+                return;
+            }
+            record(new TraceEvent(-1, TraceEvent.Kind.COMMAND_FAILED, SESSION_ID,
+                    span.requestId(),
+                    Math.max(logicalTime(before), deadline.clock().nanoTime()),
+                    before.frame(), before.revision(), span.sequence(),
+                    Map.of("operation", operation)));
+        }
+
         synchronized void snapshot(SemanticSnapshot snapshot, String operation) {
             if (!active) {
                 return;
@@ -434,16 +447,154 @@ public final class FixtureControl implements AutoCloseable {
 
         @Override public CompletionStage<ActionResult> perform(
                 Locator locator, Action action, Deadline deadline) {
-            String operation = action.getClass().getSimpleName();
-            return delegate.snapshot(deadline).thenCompose(before -> {
-                ReferenceTraceController.TraceSpan span =
-                        traces.commandStarted(operation, before);
-                return delegate.perform(locator, action, deadline).thenCompose(result ->
-                        delegate.snapshot(deadline).thenApply(after -> {
-                            traces.commandCompleted(operation, after, span);
-                            return result;
-                        }));
-            });
+            return new TracedAction(locator, action, deadline);
+        }
+
+        private final class TracedAction extends CompletableFuture<ActionResult> {
+            private final Object lifecycle = new Object();
+            private final Locator locator;
+            private final Action action;
+            private final Deadline deadline;
+            private final String operation;
+            private CompletableFuture<?> current;
+            private SemanticSnapshot before;
+            private ReferenceTraceController.TraceSpan span;
+            private ActionResult actionResult;
+            private boolean cancelling;
+
+            TracedAction(Locator locator, Action action, Deadline deadline) {
+                this.locator = locator;
+                this.action = action;
+                this.deadline = deadline;
+                operation = action.getClass().getSimpleName();
+                start();
+            }
+
+            private void start() {
+                CompletionStage<SemanticSnapshot> snapshot;
+                try {
+                    snapshot = delegate.snapshot(deadline);
+                } catch (Throwable failure) {
+                    super.completeExceptionally(failure);
+                    return;
+                }
+                CompletableFuture<SemanticSnapshot> source = snapshot.toCompletableFuture();
+                synchronized (lifecycle) {
+                    current = source;
+                }
+                source.whenComplete(this::beforeCompleted);
+            }
+
+            private void beforeCompleted(
+                    SemanticSnapshot snapshot, Throwable snapshotFailure) {
+                CompletableFuture<ActionResult> source;
+                synchronized (lifecycle) {
+                    if (isDone() || cancelling) {
+                        return;
+                    }
+                    if (snapshotFailure != null) {
+                        super.completeExceptionally(unwrap(snapshotFailure));
+                        return;
+                    }
+                    before = snapshot;
+                    try {
+                        span = traces.commandStarted(operation, before);
+                        source = delegate.perform(locator, action, deadline)
+                                .toCompletableFuture();
+                    } catch (Throwable actionFailure) {
+                        failAction(unwrap(actionFailure));
+                        return;
+                    }
+                    current = source;
+                }
+                source.whenComplete(this::actionCompleted);
+            }
+
+            private void actionCompleted(ActionResult result, Throwable actionFailure) {
+                CompletableFuture<SemanticSnapshot> source;
+                synchronized (lifecycle) {
+                    if (isDone() || cancelling) {
+                        return;
+                    }
+                    if (actionFailure != null) {
+                        failAction(unwrap(actionFailure));
+                        return;
+                    }
+                    actionResult = result;
+                    try {
+                        source = delegate.snapshot(deadline).toCompletableFuture();
+                    } catch (Throwable snapshotFailure) {
+                        failAction(unwrap(snapshotFailure));
+                        return;
+                    }
+                    current = source;
+                }
+                source.whenComplete(this::afterCompleted);
+            }
+
+            private void afterCompleted(
+                    SemanticSnapshot after, Throwable snapshotFailure) {
+                synchronized (lifecycle) {
+                    if (isDone() || cancelling) {
+                        return;
+                    }
+                    if (snapshotFailure != null) {
+                        failAction(unwrap(snapshotFailure));
+                        return;
+                    }
+                    try {
+                        traces.commandCompleted(operation, after, span);
+                    } catch (Throwable recorderFailure) {
+                        super.completeExceptionally(recorderFailure);
+                        return;
+                    }
+                    super.complete(actionResult);
+                }
+            }
+
+            private void failAction(Throwable actionFailure) {
+                try {
+                    traces.commandFailed(operation, before, deadline, span);
+                } catch (Throwable recorderFailure) {
+                    if (recorderFailure != actionFailure) {
+                        actionFailure.addSuppressed(recorderFailure);
+                    }
+                }
+                super.completeExceptionally(actionFailure);
+            }
+
+            @Override public boolean cancel(boolean mayInterruptIfRunning) {
+                synchronized (lifecycle) {
+                    if (isDone()) {
+                        return false;
+                    }
+                    cancelling = true;
+                    try {
+                        if (current == null || !current.cancel(mayInterruptIfRunning)) {
+                            return false;
+                        }
+                        return super.cancel(false);
+                    } finally {
+                        cancelling = false;
+                    }
+                }
+            }
+
+            @Override public boolean complete(ActionResult result) {
+                return false;
+            }
+
+            @Override public boolean completeExceptionally(Throwable failure) {
+                return false;
+            }
+        }
+
+        private static Throwable unwrap(Throwable failure) {
+            Throwable current = failure;
+            while (current instanceof CompletionException && current.getCause() != null) {
+                current = current.getCause();
+            }
+            return current;
         }
 
         @Override public CompletionStage<SemanticSnapshot> snapshot(Deadline deadline) {

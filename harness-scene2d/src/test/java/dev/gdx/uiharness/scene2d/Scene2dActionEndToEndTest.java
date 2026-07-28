@@ -22,19 +22,36 @@ import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton.TextButtonStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.TextField;
 import com.badlogic.gdx.scenes.scene2d.utils.BaseDrawable;
+import dev.gdx.uiharness.core.action.Harness;
+import dev.gdx.uiharness.core.capture.CaptureRequest;
+import dev.gdx.uiharness.core.capture.CapturedImage;
+import dev.gdx.uiharness.core.capture.ScreenCapture;
 import dev.gdx.uiharness.core.action.Action;
 import dev.gdx.uiharness.core.action.ActionResult;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.locator.Locator;
+import dev.gdx.uiharness.core.locator.StrictResolution;
+import dev.gdx.uiharness.core.model.SemanticSnapshot;
+import dev.gdx.uiharness.core.wait.WaitEngine;
+import dev.gdx.uiharness.mcp.ArtifactReference;
+import dev.gdx.uiharness.mcp.HarnessToolHandler;
+import dev.gdx.uiharness.protocol.CapabilitySet;
+import dev.gdx.uiharness.protocol.HarnessProtocolService;
+import io.modelcontextprotocol.spec.McpSchema;
 import dev.gdx.uiharness.core.time.Deadline;
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 final class Scene2dActionEndToEndTest {
@@ -107,6 +124,80 @@ final class Scene2dActionEndToEndTest {
                 assertTrue(cancelled.join());
                 assertTrue(click.toCompletableFuture().isCancelled());
                 assertFalse(button.isChecked());
+            }
+        }
+    }
+
+    @Test void mcpCancellationOfQueuedActionPreventsLaterInputDispatch() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            TextButton button = fixture.button("mcp-cancel", "Cancel", 100, 100);
+            CountDownLatch routed = new CountDownLatch(1);
+            AtomicReference<CompletionStage<ActionResult>> actionStage = new AtomicReference<>();
+            Harness routedHarness = new Harness() {
+                @Override public CompletionStage<ActionResult> perform(
+                        Locator locator, Action action, Deadline deadline) {
+                    CompletionStage<ActionResult> stage =
+                            fixture.harness.perform(locator, action, deadline);
+                    actionStage.set(stage);
+                    routed.countDown();
+                    return stage;
+                }
+
+                @Override public CompletionStage<SemanticSnapshot> snapshot(Deadline deadline) {
+                    return fixture.harness.snapshot(deadline);
+                }
+            };
+            StrictResolution locators = new StrictResolution();
+            WaitEngine waits = new WaitEngine(
+                    () -> fixture.session.snapshot(
+                            fixture.clock.revision(), fixture.clock.frame()),
+                    locators, fixture.clock, fixture.clock);
+            ScreenCapture capture = new ScreenCapture() {
+                @Override public CompletionStage<CapturedImage> capture(
+                        CaptureRequest request, Deadline deadline) {
+                    return CompletableFuture.failedFuture(
+                            new AssertionError("capture was not expected"));
+                }
+
+                @Override public void close() {}
+            };
+            HarnessProtocolService protocol = new HarnessProtocolService(Map.of("game",
+                    new HarnessProtocolService.Session(routedHarness, locators, waits, capture,
+                            new CapabilitySet(List.of("action")),
+                            HarnessProtocolService.TraceController.unsupported())),
+                    fixture.clock, Runnable::run);
+            AtomicInteger responses = new AtomicInteger();
+            AtomicInteger errors = new AtomicInteger();
+            try (HarnessToolHandler handler = new HarnessToolHandler(
+                    protocol, ArtifactReference.Publisher.unavailable())) {
+                var subscription = handler.handle(McpSchema.CallToolRequest.builder("ui_action")
+                                .arguments(Map.of(
+                                        "sessionId", "game",
+                                        "locator", Map.of(
+                                                "kind", "test-id", "testId", "mcp-cancel"),
+                                        "action", Map.of(
+                                                "kind", "click", "pointer", 0,
+                                                "button", 0, "force", false)))
+                                .build())
+                        .subscribe(ignored -> responses.incrementAndGet(),
+                                ignored -> errors.incrementAndGet());
+                assertTrue(routed.await(2, TimeUnit.SECONDS));
+
+                subscription.dispose();
+                for (int attempt = 0; attempt < 100
+                        && !actionStage.get().toCompletableFuture().isCancelled(); attempt++) {
+                    Thread.sleep(5);
+                }
+                fixture.nextFrame();
+                fixture.nextFrame();
+                fixture.nextFrame();
+
+                assertTrue(actionStage.get().toCompletableFuture().isCancelled());
+                assertFalse(button.isChecked());
+                assertEquals(0, responses.get());
+                assertEquals(0, errors.get());
+            } finally {
+                waits.close();
             }
         }
     }

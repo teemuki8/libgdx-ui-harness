@@ -1,6 +1,7 @@
 dependencies {
     api(project(":harness-core"))
     api(libs.gdx)
+    testImplementation(project(":harness-mcp"))
     testRuntimeOnly("com.badlogicgames.gdx:gdx-platform:${libs.versions.gdx.get()}:natives-desktop")
 }
 

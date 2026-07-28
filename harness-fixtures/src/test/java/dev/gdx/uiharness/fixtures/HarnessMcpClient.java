@@ -142,6 +142,15 @@ final class HarnessMcpClient implements Closeable {
                         "force", false)));
     }
 
+    void clickMissing(String sessionId, String testId, long deadlineMillis) throws Exception {
+        call("ui_action", Map.of(
+                "sessionId", sessionId,
+                "deadlineMillis", deadlineMillis,
+                "locator", testIdLocator(testId),
+                "action", Map.of("kind", "click", "pointer", 0, "button", 0,
+                        "force", false)));
+    }
+
     void scrollByTestId(
             String sessionId, String testId, float amountX, float amountY) throws Exception {
         call("ui_action", Map.of(
@@ -340,6 +349,40 @@ final class HarnessMcpClient implements Closeable {
                 }
             }
             return completed;
+        }
+
+        int failedCausalChains(String operation) {
+            Map<String, TraceEventData> starts = new HashMap<>();
+            for (TraceEventData event : events) {
+                if ("COMMAND_STARTED".equals(event.kind())
+                        && operation.equals(event.operation())) {
+                    starts.put(event.requestId(), event);
+                }
+            }
+            int failed = 0;
+            for (TraceEventData event : events) {
+                TraceEventData start = starts.get(event.requestId());
+                if ("COMMAND_FAILED".equals(event.kind())
+                        && operation.equals(event.operation())
+                        && start != null
+                        && Objects.equals(event.parentSequence(), start.sequence())) {
+                    failed++;
+                }
+            }
+            return failed;
+        }
+
+        List<String> lifecycle(String operation) {
+            List<String> requestIds = requestIds(operation);
+            if (requestIds.size() != 1) {
+                throw new IllegalStateException(
+                        "Expected one started " + operation + " request: " + requestIds);
+            }
+            String requestId = requestIds.getFirst();
+            return events.stream()
+                    .filter(event -> Objects.equals(requestId, event.requestId()))
+                    .map(TraceEventData::kind)
+                    .toList();
         }
 
         List<String> requestIds(String operation) {

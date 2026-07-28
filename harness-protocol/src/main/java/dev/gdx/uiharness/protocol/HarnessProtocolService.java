@@ -23,6 +23,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /** Routes validated V1 requests to transport-neutral core session operations. */
@@ -67,21 +69,24 @@ public final class HarnessProtocolService {
         }
 
         Deadline deadline = Deadline.after(clock, Duration.ofMillis(request.deadlineMillis()));
-        CompletionStage<HarnessResponse.Result> operation;
+        RoutedOperation<?> operation;
         try {
             operation = route(request, deadline);
-        } catch (Throwable failure) {
+        } catch (Throwable routeFailure) {
             return CompletableFuture.completedFuture(failure(request,
-                    translate(request, failure)));
+                    translate(request, routeFailure)));
         }
-        return operation.handle((result, thrown) -> thrown == null
-                ? new HarnessResponse.Success(ProtocolVersion.V1, request.requestId(),
-                        request.sessionId(), result)
-                : failure(request, translate(request, thrown)));
+        return response(request, operation);
     }
 
-    private CompletionStage<HarnessResponse.Result> route(
-            HarnessRequest request, Deadline deadline) {
+    @SuppressWarnings("unchecked")
+    private static <T> CompletionStage<HarnessResponse> response(
+            HarnessRequest request, RoutedOperation<?> operation) {
+        return new ResponseFuture<>(
+                request, (RoutedOperation<T>) operation);
+    }
+
+    private RoutedOperation<?> route(HarnessRequest request, Deadline deadline) {
         Command command = request.command();
         if (command instanceof Command.Sessions) {
             List<HarnessResponse.SessionInfo> catalog = sessions.entrySet().stream()
@@ -89,8 +94,7 @@ public final class HarnessProtocolService {
                     .map(entry -> new HarnessResponse.SessionInfo(entry.getKey(),
                             entry.getValue().capabilities().capabilities()))
                     .toList();
-            return CompletableFuture.completedFuture(
-                    new HarnessResponse.Result.Sessions(catalog));
+            return RoutedOperation.completed(new HarnessResponse.Result.Sessions(catalog));
         }
 
         Session session = sessions.get(request.sessionId());
@@ -99,44 +103,50 @@ public final class HarnessProtocolService {
                     "Session not found: " + request.sessionId(), ErrorEvidence.empty());
         }
         if (command instanceof Command.Capabilities) {
-            return CompletableFuture.completedFuture(new HarnessResponse.Result.Capabilities(
+            return RoutedOperation.completed(new HarnessResponse.Result.Capabilities(
                     session.capabilities().capabilities()));
         }
 
         requireCapability(session, capability(command));
         if (command instanceof Command.Snapshot) {
-            return session.harness().snapshot(deadline)
-                    .thenApply(snapshot -> new HarnessResponse.Result.Snapshot(
+            return RoutedOperation.map(session.harness().snapshot(deadline),
+                    snapshot -> new HarnessResponse.Result.Snapshot(
                             HarnessResponse.SnapshotData.fromCore(snapshot)));
         }
         if (command instanceof Command.Query query) {
-            return session.harness().snapshot(deadline)
-                    .thenApply(snapshot -> HarnessResponse.Result.Query.fromCore(
+            return RoutedOperation.map(session.harness().snapshot(deadline),
+                    snapshot -> HarnessResponse.Result.Query.fromCore(
                             session.locators().query(snapshot, query.locator().toCore())));
         }
         if (command instanceof Command.Action action) {
-            return session.harness().perform(action.locator().toCore(),
-                            action.action().toCore(), deadline)
-                    .thenApply(HarnessResponse.Result.Action::fromCore);
+            return RoutedOperation.map(session.harness().perform(action.locator().toCore(),
+                            action.action().toCore(), deadline),
+                    HarnessResponse.Result.Action::fromCore);
         }
         if (command instanceof Command.Wait wait) {
-            return CompletableFuture.supplyAsync(() -> HarnessResponse.Result.Wait.fromCore(
-                    session.waits().await(wait.locator().toCore(),
-                            wait.condition().toCore(), deadline)), blockingExecutor);
+            return RoutedOperation.map(submitInterruptibly(() ->
+                            session.waits().await(wait.locator().toCore(),
+                                    wait.condition().toCore(), deadline)),
+                    HarnessResponse.Result.Wait::fromCore);
         }
         if (command instanceof Command.Screenshot screenshot) {
-            return session.capture().capture(screenshot.toCore(), deadline)
-                    .thenApply(HarnessResponse.Result.Screenshot::fromCore);
+            return RoutedOperation.map(session.capture().capture(screenshot.toCore(), deadline),
+                    HarnessResponse.Result.Screenshot::fromCore);
         }
         if (command instanceof Command.TraceStart traceStart) {
-            return session.traces().start(traceStart, deadline)
-                    .thenApply(result -> result);
+            return RoutedOperation.map(session.traces().start(traceStart, deadline),
+                    Function.identity());
         }
         if (command instanceof Command.TraceStop) {
-            return session.traces().stop(deadline)
-                    .thenApply(result -> result);
+            return RoutedOperation.map(session.traces().stop(deadline), Function.identity());
         }
         throw new AssertionError("unhandled sealed command " + command.getClass().getName());
+    }
+
+    private <T> CompletableFuture<T> submitInterruptibly(Supplier<T> operation) {
+        InterruptibleOperationFuture<T> future = new InterruptibleOperationFuture<>(operation);
+        blockingExecutor.execute(future);
+        return future;
     }
 
     private static String capability(Command command) {
@@ -241,6 +251,135 @@ public final class HarnessProtocolService {
             return "internal-" + HexFormat.of().formatHex(digest.digest(), 0, 8);
         } catch (NoSuchAlgorithmException impossible) {
             throw new AssertionError("SHA-256 unavailable", impossible);
+        }
+    }
+
+    private record RoutedOperation<T>(
+            CompletableFuture<T> source,
+            Function<? super T, ? extends HarnessResponse.Result> mapper) {
+        RoutedOperation {
+            source = Objects.requireNonNull(source, "source");
+            mapper = Objects.requireNonNull(mapper, "mapper");
+        }
+
+        static <T> RoutedOperation<T> map(CompletionStage<T> source,
+                Function<? super T, ? extends HarnessResponse.Result> mapper) {
+            return new RoutedOperation<>(
+                    Objects.requireNonNull(source, "source").toCompletableFuture(), mapper);
+        }
+
+        static <T extends HarnessResponse.Result> RoutedOperation<T> completed(T result) {
+            return map(CompletableFuture.completedFuture(result), Function.identity());
+        }
+    }
+
+    private static final class ResponseFuture<T> extends CompletableFuture<HarnessResponse> {
+        private final Object lifecycle = new Object();
+        private final HarnessRequest request;
+        private final RoutedOperation<T> operation;
+        private boolean cancelling;
+        private Completion<T> deferred;
+
+        ResponseFuture(HarnessRequest request, RoutedOperation<T> operation) {
+            this.request = Objects.requireNonNull(request, "request");
+            this.operation = Objects.requireNonNull(operation, "operation");
+            operation.source().whenComplete(this::sourceCompleted);
+        }
+
+        @Override public boolean cancel(boolean mayInterruptIfRunning) {
+            synchronized (lifecycle) {
+                if (isDone()) {
+                    return false;
+                }
+                cancelling = true;
+                boolean sourceCancelled;
+                try {
+                    sourceCancelled = operation.source().cancel(mayInterruptIfRunning);
+                } finally {
+                    cancelling = false;
+                }
+                if (sourceCancelled) {
+                    deferred = null;
+                    return super.cancel(false);
+                }
+                if (deferred != null) {
+                    Completion<T> completion = deferred;
+                    deferred = null;
+                    completeResponse(completion.value(), completion.failure());
+                }
+                return false;
+            }
+        }
+
+        private void sourceCompleted(T value, Throwable sourceFailure) {
+            synchronized (lifecycle) {
+                if (isDone()) {
+                    return;
+                }
+                if (cancelling) {
+                    deferred = new Completion<>(value, sourceFailure);
+                    return;
+                }
+                completeResponse(value, sourceFailure);
+            }
+        }
+
+        private void completeResponse(T value, Throwable sourceFailure) {
+            HarnessResponse response;
+            try {
+                response = sourceFailure == null
+                        ? new HarnessResponse.Success(
+                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                operation.mapper().apply(value))
+                        : failure(request, translate(request, sourceFailure));
+            } catch (Throwable mappingFailure) {
+                response = failure(request, translate(request, mappingFailure));
+            }
+            super.complete(response);
+        }
+
+        private record Completion<T>(T value, Throwable failure) {}
+    }
+
+    private static final class InterruptibleOperationFuture<T>
+            extends CompletableFuture<T> implements Runnable {
+        private final Supplier<T> operation;
+        private Thread runner;
+
+        InterruptibleOperationFuture(Supplier<T> operation) {
+            this.operation = Objects.requireNonNull(operation, "operation");
+        }
+
+        @Override public void run() {
+            synchronized (this) {
+                if (isDone()) {
+                    return;
+                }
+                runner = Thread.currentThread();
+            }
+            try {
+                super.complete(operation.get());
+            } catch (Throwable failure) {
+                super.completeExceptionally(failure);
+            } finally {
+                synchronized (this) {
+                    runner = null;
+                }
+            }
+        }
+
+        @Override public boolean cancel(boolean mayInterruptIfRunning) {
+            Thread running;
+            synchronized (this) {
+                if (!super.cancel(false)) {
+                    return false;
+                }
+                running = mayInterruptIfRunning ? runner : null;
+            }
+            if (running != null) {
+                running.interrupt();
+            }
+            return true;
         }
     }
 

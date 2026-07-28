@@ -107,6 +107,47 @@ final class ReferenceApplicationSmokeTest {
         }
     }
 
+    @Test
+    @Timeout(120)
+    void failedTracedActionRetainsOriginalFailureAndProducesReplayableCausalChain()
+            throws Exception {
+        Path processRoot;
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+            processRoot = app.root();
+            try (HarnessMcpClient agent = HarnessMcpClient.connect(app)) {
+                agent.startTrace(SESSION_ID);
+
+                IllegalStateException actionFailure = assertThrows(IllegalStateException.class,
+                        () -> agent.clickMissing(SESSION_ID, "missing-target", 64));
+                assertTrue(actionFailure.getMessage().contains("\"code\":\"timeout\""),
+                        actionFailure::getMessage);
+
+                HarnessMcpClient.Trace trace = agent.stopTrace(SESSION_ID);
+                byte[] traceBytes = app.readArtifact(trace.reference(), "application/zip");
+                HarnessMcpClient.TraceEvidence evidence =
+                        HarnessMcpClient.traceEvidence(traceBytes);
+                assertEquals(List.of("COMMAND_STARTED", "COMMAND_FAILED"),
+                        evidence.lifecycle("Click"));
+                assertEquals(1, evidence.failedCausalChains("Click"));
+
+                Path replayArchive = Files.createTempFile("failed-reference-trace-", ".zip");
+                try {
+                    Files.write(replayArchive, traceBytes);
+                    TraceReplay replay = new TraceReplayer().load(replayArchive);
+                    assertTrue(replay.manifest().complete());
+                    assertTrue(replay.causality().isValid(),
+                            () -> replay.causality().errors().toString());
+                    assertFalse(replay.partial());
+                } finally {
+                    Files.deleteIfExists(replayArchive);
+                }
+            }
+            app.awaitCleanExit();
+            assertTrue(app.lifecycleClosed());
+        }
+        assertFalse(Files.exists(processRoot), "process resources must leave no temp directory");
+    }
+
     private static byte[] resourceBytes(String name) throws Exception {
         try (var input = ReferenceApplicationSmokeTest.class.getClassLoader()
                 .getResourceAsStream(name)) {
