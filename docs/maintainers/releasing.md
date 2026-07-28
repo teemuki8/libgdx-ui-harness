@@ -8,8 +8,11 @@ Before preparing a tag:
 
 1. Verify the Maven Central namespace is already registered and approved.
 2. Verify the protected GitHub environment `maven-central` is configured.
-3. Verify the latest `main` CI run is green.
-4. Confirm the release notes describe the exact version being published.
+3. Verify the Maven artifact-signing public key is retrievable from a
+   [Central-supported keyserver](https://central.sonatype.org/publish/requirements/gpg/#distributing-your-public-key)
+   by both its full fingerprint and 16-hex long key ID.
+4. Verify the latest `main` CI run is green.
+5. Confirm the release notes describe the exact version being published.
 
 Account enrollment, namespace ownership challenges, and recovery credentials are private administrative records. Do not commit them to this repository.
 
