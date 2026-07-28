@@ -23,6 +23,7 @@ for marker in (
     'export GNUPGHOME="$(mktemp -d)"',
     'trap \'rm -rf "$GNUPGHOME"\' EXIT',
     'if [[ "$actual" != "$expected" ]]',
+    'git fetch --force --no-tags origin "refs/tags/$tag:refs/tags/$tag"',
     'git tag --verify "$tag"',
 ):
     require(marker in release, f"trusted tag verification marker missing: {marker}")

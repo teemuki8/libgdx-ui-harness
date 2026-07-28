@@ -62,6 +62,7 @@ jobs:
             echo "Release tag is not semantic: $tag" >&2
             exit 1
           fi
+          git fetch --force --no-tags origin "refs/tags/$tag:refs/tags/$tag"
           if [[ "$(git cat-file -t "refs/tags/$tag")" != tag ]]; then
             echo 'Release ref must be an annotated tag' >&2
             exit 1
