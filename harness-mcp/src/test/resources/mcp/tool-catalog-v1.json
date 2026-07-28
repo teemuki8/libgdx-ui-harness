@@ -1,0 +1,1685 @@
+[ {
+  "inputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      }
+    },
+    "type" : "object"
+  },
+  "name" : "ui_sessions",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "artifact" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "byteLength" : {
+            "maximum" : 16777216,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "mediaType" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "reference" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "sha256" : {
+            "maxLength" : 64,
+            "minLength" : 64,
+            "type" : "string"
+          }
+        },
+        "required" : [ "reference", "mediaType", "byteLength", "sha256" ],
+        "type" : "object"
+      },
+      "kind" : {
+        "const" : "sessions-result",
+        "type" : "string"
+      },
+      "sessions" : {
+        "items" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "capabilities" : {
+              "items" : {
+                "maxLength" : 256,
+                "minLength" : 1,
+                "type" : "string"
+              },
+              "maxItems" : 256,
+              "type" : "array"
+            },
+            "sessionId" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            }
+          },
+          "required" : [ "sessionId", "capabilities" ],
+          "type" : "object"
+        },
+        "maxItems" : 65536,
+        "type" : "array"
+      }
+    },
+    "required" : [ "kind" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId" ],
+    "type" : "object"
+  },
+  "name" : "ui_snapshot",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "artifact" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "byteLength" : {
+            "maximum" : 16777216,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "mediaType" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "reference" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "sha256" : {
+            "maxLength" : 64,
+            "minLength" : 64,
+            "type" : "string"
+          }
+        },
+        "required" : [ "reference", "mediaType", "byteLength", "sha256" ],
+        "type" : "object"
+      },
+      "frame" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "kind" : {
+        "const" : "snapshot-summary",
+        "type" : "string"
+      },
+      "nodeCount" : {
+        "maximum" : 2147483647,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "revision" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "rootId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "kind", "revision", "frame", "rootId", "nodeCount" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "$defs" : {
+      "filter" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "name",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "has",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "has-text",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "expected" : {
+              "type" : "boolean"
+            },
+            "kind" : {
+              "const" : "state",
+              "type" : "string"
+            },
+            "state" : {
+              "enum" : [ "visible", "touchable", "enabled", "checked", "selected", "expanded", "editable", "focused", "focusable", "clipped", "viewport-intersecting", "hit-target" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "state", "expected" ],
+          "type" : "object"
+        } ]
+      },
+      "locator" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "role",
+              "type" : "string"
+            },
+            "role" : {
+              "enum" : [ "generic", "group", "button", "checkbox", "radio-button", "text-field", "text-area", "label", "image", "list", "list-item", "select", "slider", "progress-bar", "scroll-pane", "window", "dialog", "menu", "menu-item", "tooltip" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "role" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "field" : {
+              "enum" : [ "text", "label" ],
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "text",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "field", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "test-id",
+              "type" : "string"
+            },
+            "testId" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "testId" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "field" : {
+              "enum" : [ "name", "type" ],
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "actor",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "field", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "anchor" : {
+              "$ref" : "#/$defs/locator"
+            },
+            "kind" : {
+              "const" : "relation",
+              "type" : "string"
+            },
+            "relation" : {
+              "enum" : [ "child", "descendant", "parent", "sibling" ],
+              "type" : "string"
+            },
+            "target" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "anchor", "target", "relation" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "filter" : {
+              "$ref" : "#/$defs/filter"
+            },
+            "kind" : {
+              "const" : "filter",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator", "filter" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "index" : {
+              "maximum" : 2147483647,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "kind" : {
+              "const" : "index",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator", "index" ],
+          "type" : "object"
+        } ]
+      },
+      "textMatch" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "mode" : {
+            "enum" : [ "exact", "case-insensitive-exact", "substring", "regex" ],
+            "type" : "string"
+          },
+          "source" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          }
+        },
+        "required" : [ "mode", "source" ],
+        "type" : "object"
+      }
+    },
+    "additionalProperties" : false,
+    "properties" : {
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "locator" : {
+        "$ref" : "#/$defs/locator"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId", "locator" ],
+    "type" : "object"
+  },
+  "name" : "ui_query",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "artifact" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "byteLength" : {
+            "maximum" : 16777216,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "mediaType" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "reference" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "sha256" : {
+            "maxLength" : 64,
+            "minLength" : 64,
+            "type" : "string"
+          }
+        },
+        "required" : [ "reference", "mediaType", "byteLength", "sha256" ],
+        "type" : "object"
+      },
+      "evidence" : {
+        "items" : {
+          "additionalProperties" : {
+            "maxLength" : 16384,
+            "minLength" : 0,
+            "type" : "string"
+          },
+          "maxProperties" : 256,
+          "type" : "object"
+        },
+        "maxItems" : 65536,
+        "type" : "array"
+      },
+      "kind" : {
+        "const" : "query-result",
+        "type" : "string"
+      },
+      "matchCount" : {
+        "maximum" : 2147483647,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "matches" : {
+        "items" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "accessibleName" : {
+              "maxLength" : 16384,
+              "type" : [ "string", "null" ]
+            },
+            "id" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "role" : {
+              "enum" : [ "generic", "group", "button", "checkbox", "radio-button", "text-field", "text-area", "label", "image", "list", "list-item", "select", "slider", "progress-bar", "scroll-pane", "window", "dialog", "menu", "menu-item", "tooltip" ],
+              "type" : "string"
+            },
+            "testId" : {
+              "maxLength" : 16384,
+              "type" : [ "string", "null" ]
+            },
+            "text" : {
+              "maxLength" : 16384,
+              "type" : [ "string", "null" ]
+            }
+          },
+          "required" : [ "id", "role" ],
+          "type" : "object"
+        },
+        "maxItems" : 65536,
+        "type" : "array"
+      }
+    },
+    "required" : [ "kind", "matchCount" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "$defs" : {
+      "filter" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "name",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "has",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "has-text",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "expected" : {
+              "type" : "boolean"
+            },
+            "kind" : {
+              "const" : "state",
+              "type" : "string"
+            },
+            "state" : {
+              "enum" : [ "visible", "touchable", "enabled", "checked", "selected", "expanded", "editable", "focused", "focusable", "clipped", "viewport-intersecting", "hit-target" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "state", "expected" ],
+          "type" : "object"
+        } ]
+      },
+      "locator" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "role",
+              "type" : "string"
+            },
+            "role" : {
+              "enum" : [ "generic", "group", "button", "checkbox", "radio-button", "text-field", "text-area", "label", "image", "list", "list-item", "select", "slider", "progress-bar", "scroll-pane", "window", "dialog", "menu", "menu-item", "tooltip" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "role" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "field" : {
+              "enum" : [ "text", "label" ],
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "text",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "field", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "test-id",
+              "type" : "string"
+            },
+            "testId" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "testId" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "field" : {
+              "enum" : [ "name", "type" ],
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "actor",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "field", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "anchor" : {
+              "$ref" : "#/$defs/locator"
+            },
+            "kind" : {
+              "const" : "relation",
+              "type" : "string"
+            },
+            "relation" : {
+              "enum" : [ "child", "descendant", "parent", "sibling" ],
+              "type" : "string"
+            },
+            "target" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "anchor", "target", "relation" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "filter" : {
+              "$ref" : "#/$defs/filter"
+            },
+            "kind" : {
+              "const" : "filter",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator", "filter" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "index" : {
+              "maximum" : 2147483647,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "kind" : {
+              "const" : "index",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator", "index" ],
+          "type" : "object"
+        } ]
+      },
+      "textMatch" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "mode" : {
+            "enum" : [ "exact", "case-insensitive-exact", "substring", "regex" ],
+            "type" : "string"
+          },
+          "source" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          }
+        },
+        "required" : [ "mode", "source" ],
+        "type" : "object"
+      }
+    },
+    "additionalProperties" : false,
+    "properties" : {
+      "action" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "button" : {
+              "maximum" : 2147483647,
+              "minimum" : -2147483648,
+              "type" : "integer"
+            },
+            "force" : {
+              "type" : "boolean"
+            },
+            "kind" : {
+              "const" : "click",
+              "type" : "string"
+            },
+            "pointer" : {
+              "maximum" : 2147483647,
+              "minimum" : 0,
+              "type" : "integer"
+            }
+          },
+          "required" : [ "kind", "pointer", "button", "force" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "force" : {
+              "type" : "boolean"
+            },
+            "kind" : {
+              "const" : "hover",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "force" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "force" : {
+              "type" : "boolean"
+            },
+            "kind" : {
+              "const" : "focus",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "force" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "force" : {
+              "type" : "boolean"
+            },
+            "kind" : {
+              "const" : "fill",
+              "type" : "string"
+            },
+            "value" : {
+              "maxLength" : 16384,
+              "minLength" : 0,
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "value", "force" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "force" : {
+              "type" : "boolean"
+            },
+            "keycode" : {
+              "maximum" : 2147483647,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "kind" : {
+              "const" : "press",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "keycode", "force" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "amountX" : {
+              "maximum" : 3.4028234663852886E38,
+              "minimum" : -3.4028234663852886E38,
+              "type" : "number"
+            },
+            "amountY" : {
+              "maximum" : 3.4028234663852886E38,
+              "minimum" : -3.4028234663852886E38,
+              "type" : "number"
+            },
+            "force" : {
+              "type" : "boolean"
+            },
+            "kind" : {
+              "const" : "scroll",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "amountX", "amountY", "force" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "button" : {
+              "maximum" : 2147483647,
+              "minimum" : -2147483648,
+              "type" : "integer"
+            },
+            "deltaX" : {
+              "maximum" : 3.4028234663852886E38,
+              "minimum" : -3.4028234663852886E38,
+              "type" : "number"
+            },
+            "deltaY" : {
+              "maximum" : 3.4028234663852886E38,
+              "minimum" : -3.4028234663852886E38,
+              "type" : "number"
+            },
+            "force" : {
+              "type" : "boolean"
+            },
+            "kind" : {
+              "const" : "drag",
+              "type" : "string"
+            },
+            "pointer" : {
+              "maximum" : 2147483647,
+              "minimum" : 0,
+              "type" : "integer"
+            }
+          },
+          "required" : [ "kind", "deltaX", "deltaY", "pointer", "button", "force" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "button" : {
+              "maximum" : 2147483647,
+              "minimum" : -2147483648,
+              "type" : "integer"
+            },
+            "force" : {
+              "type" : "boolean"
+            },
+            "kind" : {
+              "const" : "pointer",
+              "type" : "string"
+            },
+            "offsetX" : {
+              "maximum" : 3.4028234663852886E38,
+              "minimum" : -3.4028234663852886E38,
+              "type" : "number"
+            },
+            "offsetY" : {
+              "maximum" : 3.4028234663852886E38,
+              "minimum" : -3.4028234663852886E38,
+              "type" : "number"
+            },
+            "phase" : {
+              "enum" : [ "down", "move", "up" ],
+              "type" : "string"
+            },
+            "pointer" : {
+              "maximum" : 2147483647,
+              "minimum" : 0,
+              "type" : "integer"
+            }
+          },
+          "required" : [ "kind", "phase", "offsetX", "offsetY", "pointer", "button", "force" ],
+          "type" : "object"
+        } ]
+      },
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "locator" : {
+        "$ref" : "#/$defs/locator"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId", "action", "locator" ],
+    "type" : "object"
+  },
+  "name" : "ui_action",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "afterRevision" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "artifact" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "byteLength" : {
+            "maximum" : 16777216,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "mediaType" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "reference" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "sha256" : {
+            "maxLength" : 64,
+            "minLength" : 64,
+            "type" : "string"
+          }
+        },
+        "required" : [ "reference", "mediaType", "byteLength", "sha256" ],
+        "type" : "object"
+      },
+      "beforeRevision" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "evidence" : {
+        "additionalProperties" : {
+          "maxLength" : 16384,
+          "minLength" : 0,
+          "type" : "string"
+        },
+        "maxProperties" : 256,
+        "type" : "object"
+      },
+      "kind" : {
+        "const" : "action-result",
+        "type" : "string"
+      },
+      "observedState" : {
+        "maxLength" : 16384,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "kind", "beforeRevision", "afterRevision", "observedState" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "$defs" : {
+      "filter" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "name",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "has",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "has-text",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "expected" : {
+              "type" : "boolean"
+            },
+            "kind" : {
+              "const" : "state",
+              "type" : "string"
+            },
+            "state" : {
+              "enum" : [ "visible", "touchable", "enabled", "checked", "selected", "expanded", "editable", "focused", "focusable", "clipped", "viewport-intersecting", "hit-target" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "state", "expected" ],
+          "type" : "object"
+        } ]
+      },
+      "locator" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "role",
+              "type" : "string"
+            },
+            "role" : {
+              "enum" : [ "generic", "group", "button", "checkbox", "radio-button", "text-field", "text-area", "label", "image", "list", "list-item", "select", "slider", "progress-bar", "scroll-pane", "window", "dialog", "menu", "menu-item", "tooltip" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "role" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "field" : {
+              "enum" : [ "text", "label" ],
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "text",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "field", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "test-id",
+              "type" : "string"
+            },
+            "testId" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "testId" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "field" : {
+              "enum" : [ "name", "type" ],
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "actor",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "field", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "anchor" : {
+              "$ref" : "#/$defs/locator"
+            },
+            "kind" : {
+              "const" : "relation",
+              "type" : "string"
+            },
+            "relation" : {
+              "enum" : [ "child", "descendant", "parent", "sibling" ],
+              "type" : "string"
+            },
+            "target" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "anchor", "target", "relation" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "filter" : {
+              "$ref" : "#/$defs/filter"
+            },
+            "kind" : {
+              "const" : "filter",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator", "filter" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "index" : {
+              "maximum" : 2147483647,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "kind" : {
+              "const" : "index",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator", "index" ],
+          "type" : "object"
+        } ]
+      },
+      "textMatch" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "mode" : {
+            "enum" : [ "exact", "case-insensitive-exact", "substring", "regex" ],
+            "type" : "string"
+          },
+          "source" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          }
+        },
+        "required" : [ "mode", "source" ],
+        "type" : "object"
+      }
+    },
+    "additionalProperties" : false,
+    "properties" : {
+      "condition" : {
+        "enum" : [ "present", "visible" ],
+        "type" : "string"
+      },
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "locator" : {
+        "$ref" : "#/$defs/locator"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId", "condition", "locator" ],
+    "type" : "object"
+  },
+  "name" : "ui_wait",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "artifact" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "byteLength" : {
+            "maximum" : 16777216,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "mediaType" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "reference" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "sha256" : {
+            "maxLength" : 64,
+            "minLength" : 64,
+            "type" : "string"
+          }
+        },
+        "required" : [ "reference", "mediaType", "byteLength", "sha256" ],
+        "type" : "object"
+      },
+      "evidence" : {
+        "items" : {
+          "additionalProperties" : {
+            "maxLength" : 16384,
+            "minLength" : 0,
+            "type" : "string"
+          },
+          "maxProperties" : 256,
+          "type" : "object"
+        },
+        "maxItems" : 65536,
+        "type" : "array"
+      },
+      "frame" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "kind" : {
+        "const" : "wait-result",
+        "type" : "string"
+      },
+      "matchCount" : {
+        "maximum" : 2147483647,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "matches" : {
+        "items" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "accessibleName" : {
+              "maxLength" : 16384,
+              "type" : [ "string", "null" ]
+            },
+            "id" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "role" : {
+              "enum" : [ "generic", "group", "button", "checkbox", "radio-button", "text-field", "text-area", "label", "image", "list", "list-item", "select", "slider", "progress-bar", "scroll-pane", "window", "dialog", "menu", "menu-item", "tooltip" ],
+              "type" : "string"
+            },
+            "testId" : {
+              "maxLength" : 16384,
+              "type" : [ "string", "null" ]
+            },
+            "text" : {
+              "maxLength" : 16384,
+              "type" : [ "string", "null" ]
+            }
+          },
+          "required" : [ "id", "role" ],
+          "type" : "object"
+        },
+        "maxItems" : 65536,
+        "type" : "array"
+      },
+      "revision" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      }
+    },
+    "required" : [ "kind", "revision", "frame", "matchCount" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "$defs" : {
+      "filter" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "name",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "has",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "has-text",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "expected" : {
+              "type" : "boolean"
+            },
+            "kind" : {
+              "const" : "state",
+              "type" : "string"
+            },
+            "state" : {
+              "enum" : [ "visible", "touchable", "enabled", "checked", "selected", "expanded", "editable", "focused", "focusable", "clipped", "viewport-intersecting", "hit-target" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "state", "expected" ],
+          "type" : "object"
+        } ]
+      },
+      "locator" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "role",
+              "type" : "string"
+            },
+            "role" : {
+              "enum" : [ "generic", "group", "button", "checkbox", "radio-button", "text-field", "text-area", "label", "image", "list", "list-item", "select", "slider", "progress-bar", "scroll-pane", "window", "dialog", "menu", "menu-item", "tooltip" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "role" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "field" : {
+              "enum" : [ "text", "label" ],
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "text",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "field", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "test-id",
+              "type" : "string"
+            },
+            "testId" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "testId" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "field" : {
+              "enum" : [ "name", "type" ],
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "actor",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "field", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "anchor" : {
+              "$ref" : "#/$defs/locator"
+            },
+            "kind" : {
+              "const" : "relation",
+              "type" : "string"
+            },
+            "relation" : {
+              "enum" : [ "child", "descendant", "parent", "sibling" ],
+              "type" : "string"
+            },
+            "target" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "anchor", "target", "relation" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "filter" : {
+              "$ref" : "#/$defs/filter"
+            },
+            "kind" : {
+              "const" : "filter",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator", "filter" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "index" : {
+              "maximum" : 2147483647,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "kind" : {
+              "const" : "index",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator", "index" ],
+          "type" : "object"
+        } ]
+      },
+      "textMatch" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "mode" : {
+            "enum" : [ "exact", "case-insensitive-exact", "substring", "regex" ],
+            "type" : "string"
+          },
+          "source" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          }
+        },
+        "required" : [ "mode", "source" ],
+        "type" : "object"
+      }
+    },
+    "additionalProperties" : false,
+    "properties" : {
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "locator" : {
+        "$ref" : "#/$defs/locator"
+      },
+      "maxHeight" : {
+        "maximum" : 8192,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxPixels" : {
+        "maximum" : 33554432,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxPngBytes" : {
+        "maximum" : 12579840,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxWidth" : {
+        "maximum" : 8192,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId", "maxWidth", "maxHeight", "maxPixels", "maxPngBytes" ],
+    "type" : "object"
+  },
+  "name" : "ui_screenshot",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "artifact" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "byteLength" : {
+            "maximum" : 16777216,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "mediaType" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "reference" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "sha256" : {
+            "maxLength" : 64,
+            "minLength" : 64,
+            "type" : "string"
+          }
+        },
+        "required" : [ "reference", "mediaType", "byteLength", "sha256" ],
+        "type" : "object"
+      },
+      "frame" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "height" : {
+        "maximum" : 8192,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "kind" : {
+        "const" : "screenshot-result",
+        "type" : "string"
+      },
+      "revision" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "scaleX" : {
+        "exclusiveMinimum" : 0,
+        "maximum" : 1.7976931348623157E308,
+        "type" : "number"
+      },
+      "scaleY" : {
+        "exclusiveMinimum" : 0,
+        "maximum" : 1.7976931348623157E308,
+        "type" : "number"
+      },
+      "width" : {
+        "maximum" : 8192,
+        "minimum" : 1,
+        "type" : "integer"
+      }
+    },
+    "required" : [ "kind", "artifact", "frame", "revision", "width", "height", "scaleX", "scaleY" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxBytes" : {
+        "maximum" : 67108864,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxDurationMillis" : {
+        "maximum" : 3600000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId", "maxDurationMillis", "maxBytes" ],
+    "type" : "object"
+  },
+  "name" : "ui_trace_start",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "kind" : {
+        "const" : "trace-started",
+        "type" : "string"
+      },
+      "traceId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "kind", "traceId" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId" ],
+    "type" : "object"
+  },
+  "name" : "ui_trace_stop",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "bytes" : {
+        "maximum" : 67108864,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "eventCount" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "kind" : {
+        "const" : "trace-stopped",
+        "type" : "string"
+      },
+      "traceId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "traceReference" : {
+        "maxLength" : 16384,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "kind", "traceId", "traceReference", "eventCount", "bytes" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId" ],
+    "type" : "object"
+  },
+  "name" : "ui_capabilities",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "capabilities" : {
+        "items" : {
+          "maxLength" : 256,
+          "minLength" : 1,
+          "type" : "string"
+        },
+        "maxItems" : 256,
+        "type" : "array"
+      },
+      "kind" : {
+        "const" : "capabilities-result",
+        "type" : "string"
+      }
+    },
+    "required" : [ "kind", "capabilities" ],
+    "type" : "object"
+  }
+} ]

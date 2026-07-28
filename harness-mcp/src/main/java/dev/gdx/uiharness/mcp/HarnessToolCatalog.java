@@ -1,0 +1,353 @@
+package dev.gdx.uiharness.mcp;
+
+import dev.gdx.uiharness.protocol.HarnessRequest;
+import dev.gdx.uiharness.protocol.HarnessResponse;
+import dev.gdx.uiharness.protocol.ProtocolJson;
+import io.modelcontextprotocol.spec.McpSchema;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Consumer;
+
+/** Immutable catalog of the nine allowlisted MCP tools and their bounded JSON schemas. */
+public final class HarnessToolCatalog {
+    private static final int MAX_IDENTIFIER = 256;
+    private static final Map<String, Object> ARTIFACT_SCHEMA = object(Map.of(
+            "reference", string(1, ProtocolJson.MAX_STRING_LENGTH),
+            "mediaType", string(1, 256),
+            "byteLength", integer(0, ProtocolJson.MAX_RESPONSE_BYTES),
+            "sha256", string(64, 64)),
+            List.of("reference", "mediaType", "byteLength", "sha256"));
+
+    private final List<McpSchema.Tool> tools;
+    private final Map<String, McpSchema.Tool> byName;
+
+    /** Builds the fixed V1 catalog. */
+    public HarnessToolCatalog() {
+        List<McpSchema.Tool> definitions = List.of(
+                tool("ui_sessions", "List active harness sessions", sessionsInput(),
+                        output("sessions-result", Map.of(
+                                "sessions", array(sessionSchema(), 65_536),
+                                "artifact", ARTIFACT_SCHEMA), List.of())),
+                tool("ui_snapshot", "Capture a compact semantic snapshot summary",
+                        sessionInput(Map.of(), List.of()),
+                        output("snapshot-summary", Map.of(
+                                "revision", integer(0, Long.MAX_VALUE),
+                                "frame", integer(0, Long.MAX_VALUE),
+                                "rootId", string(1, MAX_IDENTIFIER),
+                                "nodeCount", integer(0, Integer.MAX_VALUE),
+                                "artifact", ARTIFACT_SCHEMA),
+                                List.of("revision", "frame", "rootId", "nodeCount"))),
+                tool("ui_query", "Query a semantic locator", locatorInput(Map.of(), List.of()),
+                        output("query-result", Map.of(
+                                "matchCount", integer(0, Integer.MAX_VALUE),
+                                "matches", array(nodeSummarySchema(), 65_536),
+                                "evidence", array(evidenceSchema(), 65_536),
+                                "artifact", ARTIFACT_SCHEMA), List.of("matchCount"))),
+                tool("ui_action", "Perform one allowlisted UI action",
+                        locatorInput(Map.of("action", actionSchema()), List.of("action")),
+                        output("action-result", Map.of(
+                                "beforeRevision", integer(0, Long.MAX_VALUE),
+                                "afterRevision", integer(1, Long.MAX_VALUE),
+                                "observedState", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                                "evidence", evidenceSchema(),
+                                "artifact", ARTIFACT_SCHEMA),
+                                List.of("beforeRevision", "afterRevision", "observedState"))),
+                tool("ui_wait", "Wait for a bounded semantic condition",
+                        locatorInput(Map.of("condition", enumString("present", "visible")),
+                                List.of("condition")),
+                        output("wait-result", Map.of(
+                                "revision", integer(0, Long.MAX_VALUE),
+                                "frame", integer(0, Long.MAX_VALUE),
+                                "matchCount", integer(0, Integer.MAX_VALUE),
+                                "matches", array(nodeSummarySchema(), 65_536),
+                                "evidence", array(evidenceSchema(), 65_536),
+                                "artifact", ARTIFACT_SCHEMA),
+                                List.of("revision", "frame", "matchCount"))),
+                tool("ui_screenshot", "Capture a bounded screenshot as an opaque artifact",
+                        locatorInput(Map.of(
+                                "maxWidth", integer(1, 8_192),
+                                "maxHeight", integer(1, 8_192),
+                                "maxPixels", integer(1, 33_554_432L),
+                                "maxPngBytes", integer(1,
+                                        HarnessResponse.Result.Screenshot.MAX_PNG_BYTES)),
+                                List.of("maxWidth", "maxHeight", "maxPixels", "maxPngBytes"),
+                                false),
+                        output("screenshot-result", Map.of(
+                                "artifact", ARTIFACT_SCHEMA,
+                                "frame", integer(0, Long.MAX_VALUE),
+                                "revision", integer(0, Long.MAX_VALUE),
+                                "width", integer(1, 8_192),
+                                "height", integer(1, 8_192),
+                                "scaleX", positiveNumber(Double.MAX_VALUE),
+                                "scaleY", positiveNumber(Double.MAX_VALUE)),
+                                List.of("artifact", "frame", "revision", "width", "height",
+                                        "scaleX", "scaleY"))),
+                tool("ui_trace_start", "Start bounded trace collection",
+                        sessionInput(Map.of(
+                                "maxDurationMillis", integer(1, 3_600_000),
+                                "maxBytes", integer(1, 64L * 1_024 * 1_024)),
+                                List.of("maxDurationMillis", "maxBytes")),
+                        output("trace-started", Map.of(
+                                "traceId", string(1, MAX_IDENTIFIER)), List.of("traceId"))),
+                tool("ui_trace_stop", "Stop trace collection and return its opaque reference",
+                        sessionInput(Map.of(), List.of()),
+                        output("trace-stopped", Map.of(
+                                "traceId", string(1, MAX_IDENTIFIER),
+                                "traceReference", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                                "eventCount", integer(0, Long.MAX_VALUE),
+                                "bytes", integer(0, 64L * 1_024 * 1_024)),
+                                List.of("traceId", "traceReference", "eventCount", "bytes"))),
+                tool("ui_capabilities", "Discover capabilities for one harness session",
+                        sessionInput(Map.of(), List.of()),
+                        output("capabilities-result", Map.of(
+                                "capabilities", array(string(1, MAX_IDENTIFIER), 256)),
+                                List.of("capabilities"))));
+        LinkedHashMap<String, McpSchema.Tool> index = new LinkedHashMap<>();
+        definitions.forEach(tool -> index.put(tool.name(), tool));
+        tools = List.copyOf(definitions);
+        byName = Map.copyOf(index);
+    }
+
+    /** Returns catalog order used by MCP tools/list. */
+    public List<McpSchema.Tool> tools() {
+        return tools;
+    }
+
+    /** Returns the exact approved tool-name set. */
+    public Set<String> toolNames() {
+        return byName.keySet();
+    }
+
+    /** Finds one approved tool or throws for an unknown name. */
+    public McpSchema.Tool tool(String name) {
+        McpSchema.Tool tool = byName.get(name);
+        if (tool == null) {
+            throw new IllegalArgumentException("Unknown tool: " + name);
+        }
+        return tool;
+    }
+
+    private static McpSchema.Tool tool(String name, String description,
+            Map<String, Object> input, Map<String, Object> output) {
+        return McpSchema.Tool.builder(name, input)
+                .description(description)
+                .outputSchema(output)
+                .build();
+    }
+
+    private static Map<String, Object> sessionsInput() {
+        return envelope(Map.of(), List.of(), false, ignored -> {});
+    }
+
+    private static Map<String, Object> sessionInput(
+            Map<String, Object> additions, List<String> required) {
+        return envelope(additions, required, true, ignored -> {});
+    }
+
+    private static Map<String, Object> locatorInput(
+            Map<String, Object> additions, List<String> required) {
+        return locatorInput(additions, required, true);
+    }
+
+    private static Map<String, Object> locatorInput(
+            Map<String, Object> additions, List<String> required, boolean locatorRequired) {
+        List<String> allRequired = new ArrayList<>(required);
+        if (locatorRequired) {
+            allRequired.add("locator");
+        }
+        LinkedHashMap<String, Object> properties = new LinkedHashMap<>(additions);
+        properties.put("locator", Map.of("$ref", "#/$defs/locator"));
+        return envelope(properties, allRequired, true,
+                schema -> schema.put("$defs", locatorDefinitions()));
+    }
+
+    private static Map<String, Object> envelope(Map<String, Object> additions,
+            List<String> required, boolean sessionRequired,
+            Consumer<LinkedHashMap<String, Object>> customizer) {
+        LinkedHashMap<String, Object> properties = new LinkedHashMap<>();
+        if (sessionRequired) {
+            properties.put("sessionId", string(1, MAX_IDENTIFIER));
+        }
+        properties.put("deadlineMillis", integer(1, HarnessRequest.MAX_DEADLINE_MILLIS));
+        properties.putAll(additions);
+        List<String> allRequired = new ArrayList<>();
+        if (sessionRequired) {
+            allRequired.add("sessionId");
+        }
+        allRequired.addAll(required);
+        LinkedHashMap<String, Object> schema = new LinkedHashMap<>(object(properties, allRequired));
+        customizer.accept(schema);
+        return Map.copyOf(schema);
+    }
+
+    private static Map<String, Object> locatorDefinitions() {
+        Map<String, Object> locatorRef = Map.of("$ref", "#/$defs/locator");
+        Map<String, Object> matchRef = Map.of("$ref", "#/$defs/textMatch");
+        Map<String, Object> filterRef = Map.of("$ref", "#/$defs/filter");
+        LinkedHashMap<String, Object> definitions = new LinkedHashMap<>();
+        definitions.put("textMatch", object(Map.of(
+                "mode", enumString("exact", "case-insensitive-exact", "substring", "regex"),
+                "source", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                List.of("mode", "source")));
+        definitions.put("filter", Map.of("oneOf", List.of(
+                tagged("name", Map.of("match", matchRef), List.of("match")),
+                tagged("has", Map.of("locator", locatorRef), List.of("locator")),
+                tagged("has-text", Map.of("match", matchRef), List.of("match")),
+                tagged("state", Map.of(
+                        "state", enumString("visible", "touchable", "enabled", "checked",
+                                "selected", "expanded", "editable", "focused", "focusable",
+                                "clipped", "viewport-intersecting", "hit-target"),
+                        "expected", Map.of("type", "boolean")),
+                        List.of("state", "expected")))));
+        definitions.put("locator", Map.of("oneOf", List.of(
+                tagged("role", Map.of("role", semanticRoleSchema()), List.of("role")),
+                tagged("text", Map.of(
+                        "field", enumString("text", "label"), "match", matchRef),
+                        List.of("field", "match")),
+                tagged("test-id", Map.of(
+                        "testId", string(1, ProtocolJson.MAX_STRING_LENGTH)), List.of("testId")),
+                tagged("actor", Map.of(
+                        "field", enumString("name", "type"), "match", matchRef),
+                        List.of("field", "match")),
+                tagged("relation", Map.of(
+                        "anchor", locatorRef, "target", locatorRef,
+                        "relation", enumString("child", "descendant", "parent", "sibling")),
+                        List.of("anchor", "target", "relation")),
+                tagged("filter", Map.of("locator", locatorRef, "filter", filterRef),
+                        List.of("locator", "filter")),
+                tagged("index", Map.of("locator", locatorRef,
+                        "index", integer(0, Integer.MAX_VALUE)), List.of("locator", "index")))));
+        return Map.copyOf(definitions);
+    }
+
+    private static Map<String, Object> actionSchema() {
+        return Map.of("oneOf", List.of(
+                tagged("click", Map.of(
+                        "pointer", integer(0, Integer.MAX_VALUE),
+                        "button", integer(Integer.MIN_VALUE, Integer.MAX_VALUE),
+                        "force", Map.of("type", "boolean")),
+                        List.of("pointer", "button", "force")),
+                tagged("hover", Map.of("force", Map.of("type", "boolean")), List.of("force")),
+                tagged("focus", Map.of("force", Map.of("type", "boolean")), List.of("force")),
+                tagged("fill", Map.of(
+                        "value", string(0, ProtocolJson.MAX_STRING_LENGTH),
+                        "force", Map.of("type", "boolean")), List.of("value", "force")),
+                tagged("press", Map.of(
+                        "keycode", integer(0, Integer.MAX_VALUE),
+                        "force", Map.of("type", "boolean")), List.of("keycode", "force")),
+                tagged("scroll", Map.of(
+                        "amountX", number(-Float.MAX_VALUE, Float.MAX_VALUE),
+                        "amountY", number(-Float.MAX_VALUE, Float.MAX_VALUE),
+                        "force", Map.of("type", "boolean")),
+                        List.of("amountX", "amountY", "force")),
+                tagged("drag", Map.of(
+                        "deltaX", number(-Float.MAX_VALUE, Float.MAX_VALUE),
+                        "deltaY", number(-Float.MAX_VALUE, Float.MAX_VALUE),
+                        "pointer", integer(0, Integer.MAX_VALUE),
+                        "button", integer(Integer.MIN_VALUE, Integer.MAX_VALUE),
+                        "force", Map.of("type", "boolean")),
+                        List.of("deltaX", "deltaY", "pointer", "button", "force")),
+                tagged("pointer", Map.of(
+                        "phase", enumString("down", "move", "up"),
+                        "offsetX", number(-Float.MAX_VALUE, Float.MAX_VALUE),
+                        "offsetY", number(-Float.MAX_VALUE, Float.MAX_VALUE),
+                        "pointer", integer(0, Integer.MAX_VALUE),
+                        "button", integer(Integer.MIN_VALUE, Integer.MAX_VALUE),
+                        "force", Map.of("type", "boolean")),
+                        List.of("phase", "offsetX", "offsetY", "pointer", "button", "force"))));
+    }
+
+    private static Map<String, Object> output(String kind, Map<String, Object> additions,
+            List<String> required) {
+        LinkedHashMap<String, Object> properties = new LinkedHashMap<>();
+        properties.put("kind", Map.of("const", kind, "type", "string"));
+        properties.putAll(additions);
+        ArrayList<String> allRequired = new ArrayList<>();
+        allRequired.add("kind");
+        allRequired.addAll(required);
+        return object(properties, allRequired);
+    }
+
+    private static Map<String, Object> sessionSchema() {
+        return object(Map.of(
+                "sessionId", string(1, MAX_IDENTIFIER),
+                "capabilities", array(string(1, MAX_IDENTIFIER), 256)),
+                List.of("sessionId", "capabilities"));
+    }
+
+    private static Map<String, Object> nodeSummarySchema() {
+        return object(Map.of(
+                "id", string(1, MAX_IDENTIFIER),
+                "role", semanticRoleSchema(),
+                "accessibleName", nullableString(),
+                "text", nullableString(),
+                "testId", nullableString()), List.of("id", "role"));
+    }
+
+    private static Map<String, Object> evidenceSchema() {
+        return Map.of("type", "object", "additionalProperties",
+                string(0, ProtocolJson.MAX_STRING_LENGTH), "maxProperties", 256);
+    }
+
+    private static Map<String, Object> nullableString() {
+        return Map.of("type", List.of("string", "null"),
+                "maxLength", ProtocolJson.MAX_STRING_LENGTH);
+    }
+
+    private static Map<String, Object> tagged(String tag, Map<String, Object> additions,
+            List<String> required) {
+        LinkedHashMap<String, Object> properties = new LinkedHashMap<>();
+        properties.put("kind", Map.of("const", tag, "type", "string"));
+        properties.putAll(additions);
+        ArrayList<String> allRequired = new ArrayList<>();
+        allRequired.add("kind");
+        allRequired.addAll(required);
+        return object(properties, allRequired);
+    }
+
+    private static Map<String, Object> object(
+            Map<String, Object> properties, List<String> required) {
+        LinkedHashMap<String, Object> schema = new LinkedHashMap<>();
+        schema.put("type", "object");
+        schema.put("properties", Map.copyOf(properties));
+        if (!required.isEmpty()) {
+            schema.put("required", List.copyOf(required));
+        }
+        schema.put("additionalProperties", false);
+        return Map.copyOf(schema);
+    }
+
+    private static Map<String, Object> array(Map<String, Object> items, int maximum) {
+        return Map.of("type", "array", "items", items, "maxItems", maximum);
+    }
+
+    private static Map<String, Object> string(int minimum, int maximum) {
+        return Map.of("type", "string", "minLength", minimum, "maxLength", maximum);
+    }
+
+    private static Map<String, Object> enumString(String... values) {
+        return Map.of("type", "string", "enum", List.of(values));
+    }
+
+    private static Map<String, Object> integer(long minimum, long maximum) {
+        return Map.of("type", "integer", "minimum", minimum, "maximum", maximum);
+    }
+
+    private static Map<String, Object> semanticRoleSchema() {
+        return enumString("generic", "group", "button", "checkbox", "radio-button",
+                "text-field", "text-area", "label", "image", "list", "list-item",
+                "select", "slider", "progress-bar", "scroll-pane", "window", "dialog",
+                "menu", "menu-item", "tooltip");
+    }
+
+    private static Map<String, Object> positiveNumber(double maximum) {
+        return Map.of("type", "number", "exclusiveMinimum", 0, "maximum", maximum);
+    }
+
+    private static Map<String, Object> number(double minimum, double maximum) {
+        return Map.of("type", "number", "minimum", minimum, "maximum", maximum);
+    }
+}
