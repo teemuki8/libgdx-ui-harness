@@ -340,7 +340,7 @@ public final class BenchmarkRunner {
     private static Aggregate aggregate(
             Configuration configuration, List<BenchmarkScenario> scenarios) throws Exception {
         List<RunRecord> records = readAndValidateRaw(configuration, scenarios);
-        BenchmarkArtifactValidator.validate(configuration.output(), records);
+        BenchmarkArtifactValidator.validate(configuration.output(), records, scenarios);
         List<RunRecord> harnessRecords = records.stream()
                 .filter(record -> "harness".equals(record.system())).toList();
         List<RunRecord> playwrightRecords = records.stream()

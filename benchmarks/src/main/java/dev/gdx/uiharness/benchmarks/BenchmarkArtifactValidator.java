@@ -6,6 +6,7 @@ import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.zip.ZipInputStream;
 
@@ -17,12 +18,22 @@ final class BenchmarkArtifactValidator {
 
     private BenchmarkArtifactValidator() {}
 
-    static void validate(Path output, List<BenchmarkRunner.RunRecord> records)
-            throws IOException {
+    static void validate(
+            Path output,
+            List<BenchmarkRunner.RunRecord> records,
+            List<BenchmarkScenario> scenarios) throws IOException {
+        Map<String, BenchmarkScenario> scenariosById = scenarios.stream()
+                .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                        BenchmarkScenario::id, scenario -> scenario));
         Set<Path> claimed = new HashSet<>();
         Set<String> systems = new HashSet<>();
         for (BenchmarkRunner.RunRecord record : records) {
             systems.add(record.system());
+            BenchmarkScenario scenario = scenariosById.get(record.scenarioId());
+            if (scenario == null) {
+                throw new IllegalStateException(
+                        "Raw artifact identity is absent from corpus: " + identity(record));
+            }
             String stem = record.scenarioId() + '-'
                     + String.format(Locale.ROOT, "%02d", record.run());
             Path trace = output.resolve("traces").resolve(record.system())
@@ -33,7 +44,10 @@ final class BenchmarkArtifactValidator {
             Path normal = evidence.resolve(stem + ".png").toAbsolutePath().normalize();
             Path failure = evidence.resolve(stem + "-failure.png")
                     .toAbsolutePath().normalize();
-            validateScreenshotClaims(record, List.of(normal, failure), claimed);
+            boolean screenshotRequired = scenario.steps().stream()
+                    .anyMatch(step -> "screenshot".equals(step.action()));
+            validateScreenshotClaims(
+                    record, normal, List.of(normal, failure), claimed, screenshotRequired);
         }
         for (String system : systems) {
             rejectUnclaimed(output.resolve("traces").resolve(system), claimed);
@@ -44,15 +58,9 @@ final class BenchmarkArtifactValidator {
     private static void validateTraceClaim(
             BenchmarkRunner.RunRecord record, Path trace, Set<Path> claimed)
             throws IOException {
-        if (record.traceBytes() == 0) {
-            if (Files.exists(trace)) {
-                throw new IllegalStateException("Unclaimed trace exists: " + trace);
-            }
-            if (record.actionableEvidence()) {
-                throw new IllegalStateException(
-                        "Actionable record omitted its trace: " + identity(record));
-            }
-            return;
+        if (record.traceBytes() <= 0) {
+            throw new IllegalStateException(
+                    "Every observation requires a positive trace claim: " + identity(record));
         }
         requireRegular(trace, "claimed trace");
         requireUnique(trace, claimed);
@@ -67,8 +75,18 @@ final class BenchmarkArtifactValidator {
     }
 
     private static void validateScreenshotClaims(
-            BenchmarkRunner.RunRecord record, List<Path> candidates, Set<Path> claimed)
-            throws IOException {
+            BenchmarkRunner.RunRecord record,
+            Path normal,
+            List<Path> candidates,
+            Set<Path> claimed,
+            boolean screenshotRequired) throws IOException {
+        if (screenshotRequired) {
+            if (record.screenshotBytes() <= 0) {
+                throw new IllegalStateException(
+                        "Corpus requires a positive screenshot claim: " + identity(record));
+            }
+            requireRegular(normal, "corpus-required screenshot");
+        }
         long bytes = 0;
         int count = 0;
         for (Path candidate : candidates) {
