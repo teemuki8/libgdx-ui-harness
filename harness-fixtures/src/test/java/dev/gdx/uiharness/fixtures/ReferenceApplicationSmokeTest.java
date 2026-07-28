@@ -10,6 +10,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.gdx.uiharness.core.trace.TraceReplay;
 import dev.gdx.uiharness.core.trace.TraceReplayer;
 
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -64,8 +66,7 @@ final class ReferenceApplicationSmokeTest {
                     assertTrue(screenshot.artifact().byteLength() > 100);
                     assertFalse(screenshot.artifact().reference().contains("/"));
                     byte[] actualScreenshot = app.readArtifact(screenshot.artifact());
-                    assertArrayEquals(expectedScreenshot, actualScreenshot,
-                            "the fixed-step hidden LWJGL3 framebuffer must be deterministic");
+                    assertPngPixelsEqual(expectedScreenshot, actualScreenshot);
 
                     HarnessMcpClient.Trace trace = agent.stopTrace(SESSION_ID);
                     assertTrue(trace.events() >= 6);
@@ -146,6 +147,22 @@ final class ReferenceApplicationSmokeTest {
             assertTrue(app.lifecycleClosed());
         }
         assertFalse(Files.exists(processRoot), "process resources must leave no temp directory");
+    }
+
+    private static void assertPngPixelsEqual(byte[] expected, byte[] actual) throws Exception {
+        BufferedImage expectedImage =
+                javax.imageio.ImageIO.read(new ByteArrayInputStream(expected));
+        BufferedImage actualImage =
+                javax.imageio.ImageIO.read(new ByteArrayInputStream(actual));
+        assertTrue(expectedImage != null, "golden screenshot must be a valid PNG");
+        assertTrue(actualImage != null, "captured screenshot must be a valid PNG");
+        assertEquals(expectedImage.getWidth(), actualImage.getWidth());
+        assertEquals(expectedImage.getHeight(), actualImage.getHeight());
+        int width = expectedImage.getWidth();
+        int height = expectedImage.getHeight();
+        assertArrayEquals(expectedImage.getRGB(0, 0, width, height, null, 0, width),
+                actualImage.getRGB(0, 0, width, height, null, 0, width),
+                "the fixed-step hidden LWJGL3 framebuffer pixels must be deterministic");
     }
 
     private static byte[] resourceBytes(String name) throws Exception {

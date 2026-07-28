@@ -185,24 +185,23 @@ final class TraceRecorderTest {
                     .findFirst()
                     .orElseThrow();
         }
-        Path moved = temporaryDirectory.resolve("moved-staging");
+        Path artifactDirectory = staging.resolve("artifacts");
+        Path moved = temporaryDirectory.resolve("moved-artifacts");
         Path outside = temporaryDirectory.resolveSibling(
                 temporaryDirectory.getFileName() + "-outside");
-        Files.move(staging, moved);
+        Files.move(artifactDirectory, moved);
         Files.createDirectory(outside);
-        Path outsideEvent = outside.resolve("events.ndjson");
-        Files.writeString(outsideEvent, "outside", StandardCharsets.UTF_8);
-        Files.createSymbolicLink(staging, outside);
+        Path outsideArtifact = outside.resolve("evidence.bin");
+        Files.writeString(outsideArtifact, "outside", StandardCharsets.UTF_8);
+        Files.createSymbolicLink(artifactDirectory, outside);
         try {
             HarnessException failure = assertThrows(HarnessException.class, recorder::close);
             assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
-            assertEquals("outside", Files.readString(outsideEvent, StandardCharsets.UTF_8));
+            assertEquals("outside", Files.readString(outsideArtifact, StandardCharsets.UTF_8));
         } finally {
-            Files.deleteIfExists(staging);
-            Files.deleteIfExists(moved.resolve("events.ndjson"));
-            Files.deleteIfExists(moved.resolve("artifacts"));
+            Files.deleteIfExists(artifactDirectory);
             Files.deleteIfExists(moved);
-            Files.deleteIfExists(outsideEvent);
+            Files.deleteIfExists(outsideArtifact);
             Files.deleteIfExists(outside);
         }
     }

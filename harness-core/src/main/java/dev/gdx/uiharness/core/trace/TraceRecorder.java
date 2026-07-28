@@ -65,7 +65,7 @@ public final class TraceRecorder implements AutoCloseable {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.root = initializeRoot(root);
         try {
-            realRoot = this.root.toRealPath(LinkOption.NOFOLLOW_LINKS);
+            realRoot = this.root.toRealPath();
         } catch (IOException exception) {
             throw new IllegalArgumentException("trace root cannot be resolved", exception);
         }
@@ -90,11 +90,9 @@ public final class TraceRecorder implements AutoCloseable {
         try {
             stagingDirectory = Files.createDirectory(
                     root.resolve(".trace-" + randomHex(16) + ".tmp"));
-            realStagingDirectory =
-                    stagingDirectory.toRealPath(LinkOption.NOFOLLOW_LINKS);
+            realStagingDirectory = stagingDirectory.toRealPath();
             artifactDirectory = Files.createDirectory(stagingDirectory.resolve("artifacts"));
-            realArtifactDirectory =
-                    artifactDirectory.toRealPath(LinkOption.NOFOLLOW_LINKS);
+            realArtifactDirectory = artifactDirectory.toRealPath();
             eventFile = stagingDirectory.resolve("events.ndjson");
             eventOutput = new BufferedOutputStream(Files.newOutputStream(eventFile,
                     StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE));
@@ -450,7 +448,7 @@ public final class TraceRecorder implements AutoCloseable {
             return false;
         }
         try {
-            return normalized.toRealPath(LinkOption.NOFOLLOW_LINKS).equals(expectedRealPath)
+            return normalized.toRealPath().equals(expectedRealPath)
                     && expectedRealPath.startsWith(realRoot);
         } catch (IOException exception) {
             return false;
