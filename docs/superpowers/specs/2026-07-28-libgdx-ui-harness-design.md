@@ -1,7 +1,7 @@
 # libGDX UI Harness Design
 
 **Date:** 2026-07-28  
-**Status:** Approved design, pending written-spec review
+**Status:** Approved
 
 ## 1. Purpose
 
@@ -195,6 +195,7 @@ The public error taxonomy is:
 - `timeout`
 - `render-thread-failure`
 - `capture-failure`
+- `limit-exceeded`
 - `protocol-version-mismatch`
 - `internal-error`
 
