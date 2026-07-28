@@ -168,6 +168,108 @@ final class HarnessMcpServerContractTest {
                 "../capture.png", "image/png", 1, "0".repeat(64)));
     }
 
+    @Test void traceStopRejectsFilesystemLookingProtocolReferences() {
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.TraceStopped(
+                                "trace-1", "/tmp/trace.zip", 1, 32)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> response, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_trace_stop", Map.of("sessionId", "game")))
+                    .block(Duration.ofSeconds(2));
+            assertTrue(result.isError());
+            assertEquals("invalid-artifact-reference", structured(result).get("code"));
+        }
+    }
+
+    @Test void deeplyNestedAndOversizedLocatorGraphsAreRejectedBeforeProtocolDispatch() {
+        AtomicInteger calls = new AtomicInteger();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    calls.incrementAndGet();
+                    return CompletableFuture.failedFuture(new AssertionError());
+                }, new RecordingArtifacts(), executor, 1024)) {
+            assertInvalidLocator(handler, deepLocator(HarnessToolHandler.MAX_LOCATOR_DEPTH + 1));
+            assertInvalidLocator(handler, wideLocator(12));
+            assertEquals(0, calls.get());
+        }
+    }
+
+    @Test
+    @Timeout(10)
+    void stdioContinuesReadingAndDrainsInFlightCallsAfterEof() throws Exception {
+        RecordingHarness harness = new RecordingHarness();
+        CompletableFuture<ActionResult> pendingAction = new CompletableFuture<>();
+        harness.actionResult = pendingAction;
+        try (PipedInputStream serverInput = new PipedInputStream();
+                PipedOutputStream clientOutput = new PipedOutputStream(serverInput);
+                PipedInputStream clientInput = new PipedInputStream();
+                PipedOutputStream serverOutput = new PipedOutputStream(clientInput);
+                HarnessMcpServer server = HarnessMcpServer.open(
+                        service(harness), new RecordingArtifacts(), serverInput, serverOutput);
+                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+                        clientOutput, StandardCharsets.UTF_8));
+                BufferedReader reader = new BufferedReader(new InputStreamReader(
+                        clientInput, StandardCharsets.UTF_8));
+                ExecutorService waiter = Executors.newVirtualThreadPerTaskExecutor()) {
+            initialize(writer, reader);
+            send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
+            send(writer, actionCallJson(3));
+            send(writer, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"ping\",\"params\":{}}");
+            assertEquals(4, read(reader).path("id").asInt());
+
+            closeStdin(clientOutput);
+            CompletableFuture<Void> termination = CompletableFuture.runAsync(
+                    server::awaitTermination, waiter);
+            Thread.sleep(50);
+            assertFalse(termination.isDone());
+
+            pendingAction.complete(new ActionResult(
+                    1, 2, "clicked", Map.of("target", "root")));
+            JsonNode action = read(reader);
+            assertEquals(3, action.path("id").asInt());
+            assertEquals("action-result",
+                    action.at("/result/structuredContent/kind").asText());
+            termination.get(2, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    @Timeout(10)
+    void stdioCancellationReachesAnInFlightProtocolCall() throws Exception {
+        RecordingHarness harness = new RecordingHarness();
+        CompletableFuture<ActionResult> pendingAction = new CompletableFuture<>();
+        harness.actionResult = pendingAction;
+        try (PipedInputStream serverInput = new PipedInputStream();
+                PipedOutputStream clientOutput = new PipedOutputStream(serverInput);
+                PipedInputStream clientInput = new PipedInputStream();
+                PipedOutputStream serverOutput = new PipedOutputStream(clientInput);
+                HarnessMcpServer server = HarnessMcpServer.open(
+                        service(harness), new RecordingArtifacts(), serverInput, serverOutput);
+                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+                        clientOutput, StandardCharsets.UTF_8));
+                BufferedReader reader = new BufferedReader(new InputStreamReader(
+                        clientInput, StandardCharsets.UTF_8))) {
+            initialize(writer, reader);
+            send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
+            send(writer, actionCallJson(3));
+            for (int attempt = 0; attempt < 100 && harness.actionCalls.get() == 0; attempt++) {
+                Thread.sleep(5);
+            }
+            assertEquals(1, harness.actionCalls.get());
+
+            send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\","
+                    + "\"params\":{\"requestId\":3,\"reason\":\"contract cancellation\"}}");
+            send(writer, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"ping\",\"params\":{}}");
+            assertEquals(4, read(reader).path("id").asInt());
+            closeStdin(clientOutput);
+            server.awaitTermination();
+            assertFalse(pendingAction.isDone());
+        }
+    }
+
     @Test
     @Timeout(10)
     void stdioInitializeListAndCallRoundTripThenCleanlyCloses() throws Exception {
@@ -206,6 +308,46 @@ final class HarnessMcpServerContractTest {
             assertEquals(1, harness.actionCalls.get());
             closeStdin(clientOutput);
         }
+    }
+
+    private static void assertInvalidLocator(
+            HarnessToolHandler handler, Map<String, Object> locator) {
+        McpSchema.CallToolResult result = handler.handle(call(
+                "ui_query", Map.of("sessionId", "game", "locator", locator)))
+                .block(Duration.ofSeconds(2));
+        assertTrue(result.isError());
+        assertEquals("invalid-arguments", structured(result).get("code"));
+    }
+
+    private static Map<String, Object> deepLocator(int depth) {
+        Map<String, Object> locator = Map.of("kind", "role", "role", "button");
+        for (int index = 0; index < depth; index++) {
+            locator = Map.of("kind", "index", "index", 0, "locator", locator);
+        }
+        return locator;
+    }
+
+    private static Map<String, Object> wideLocator(int depth) {
+        if (depth == 0) {
+            return Map.of("kind", "role", "role", "button");
+        }
+        return Map.of("kind", "relation", "relation", "sibling",
+                "anchor", wideLocator(depth - 1), "target", wideLocator(depth - 1));
+    }
+
+    private static void initialize(BufferedWriter writer, BufferedReader reader)
+            throws Exception {
+        send(writer, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\","
+                + "\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},"
+                + "\"clientInfo\":{\"name\":\"contract\",\"version\":\"1.0\"}}}");
+        assertEquals(1, read(reader).path("id").asInt());
+    }
+
+    private static String actionCallJson(int id) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"method\":\"tools/call\","
+                + "\"params\":{\"name\":\"ui_action\",\"arguments\":{"
+                + "\"sessionId\":\"game\",\"locator\":{\"kind\":\"role\",\"role\":\"button\"},"
+                + "\"action\":{\"kind\":\"click\",\"pointer\":0,\"button\":0,\"force\":false}}}}";
     }
 
     private static McpSchema.CallToolRequest call(String name, Map<String, Object> arguments) {
@@ -298,13 +440,14 @@ final class HarnessMcpServerContractTest {
     private static final class RecordingHarness implements Harness {
         private final AtomicInteger actionCalls = new AtomicInteger();
         private volatile boolean actionThreadWasVirtual;
+        private CompletionStage<ActionResult> actionResult = CompletableFuture.completedFuture(
+                new ActionResult(1, 2, "clicked", Map.of("target", "root")));
 
         @Override public CompletionStage<ActionResult> perform(Locator locator,
                 dev.gdx.uiharness.core.action.Action action, Deadline deadline) {
             actionCalls.incrementAndGet();
             actionThreadWasVirtual = Thread.currentThread().isVirtual();
-            return CompletableFuture.completedFuture(
-                    new ActionResult(1, 2, "clicked", Map.of("target", "root")));
+            return actionResult;
         }
 
         @Override public CompletionStage<SemanticSnapshot> snapshot(Deadline deadline) {

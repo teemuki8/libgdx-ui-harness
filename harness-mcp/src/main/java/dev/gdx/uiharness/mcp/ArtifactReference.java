@@ -7,20 +7,9 @@ public record ArtifactReference(
         String reference, String mediaType, long byteLength, String sha256) {
     /** Validates transport-safe artifact metadata without interpreting the reference as a path. */
     public ArtifactReference {
-        Objects.requireNonNull(reference, "reference");
+        requireOpaque(reference);
         Objects.requireNonNull(mediaType, "mediaType");
         Objects.requireNonNull(sha256, "sha256");
-        boolean drivePath = reference.length() >= 3 && Character.isLetter(reference.charAt(0))
-                && reference.charAt(1) == ':'
-                && (reference.charAt(2) == '/' || reference.charAt(2) == '\\');
-        boolean relativePath = reference.startsWith("./") || reference.startsWith("../")
-                || reference.startsWith(".\\") || reference.startsWith("..\\")
-                || reference.startsWith("~/") || reference.startsWith("~\\");
-        if (reference.isBlank() || reference.startsWith("/")
-                || reference.regionMatches(true, 0, "file:", 0, 5)
-                || reference.indexOf('\\') >= 0 || drivePath || relativePath) {
-            throw new IllegalArgumentException("reference must be opaque and must not be a file path");
-        }
         if (mediaType.isBlank() || mediaType.length() > 256) {
             throw new IllegalArgumentException("mediaType must be between 1 and 256 characters");
         }
@@ -30,6 +19,24 @@ public record ArtifactReference(
         if (!sha256.matches("[0-9a-fA-F]{64}")) {
             throw new IllegalArgumentException("sha256 must be a 64-character hexadecimal digest");
         }
+    }
+
+    /** Validates an opaque transport reference, including references produced by protocols. */
+    public static String requireOpaque(String reference) {
+        Objects.requireNonNull(reference, "reference");
+        boolean drivePath = reference.length() >= 3 && Character.isLetter(reference.charAt(0))
+                && reference.charAt(1) == ':'
+                && (reference.charAt(2) == '/' || reference.charAt(2) == '\\');
+        boolean relativePath = reference.startsWith("./") || reference.startsWith("../")
+                || reference.startsWith(".\\") || reference.startsWith("..\\")
+                || reference.startsWith("~/") || reference.startsWith("~\\");
+        if (reference.isBlank() || reference.startsWith("/")
+                || reference.regionMatches(true, 0, "file:", 0, 5)
+                || reference.indexOf('\\') >= 0 || drivePath || relativePath) {
+            throw new InvalidArtifactReferenceException(
+                    "reference must be opaque and must not be a file path");
+        }
+        return reference;
     }
 
     /** Stores bytes outside the MCP adapter and returns an opaque reference to them. */
@@ -44,6 +51,15 @@ public record ArtifactReference(
                 throw new ArtifactUnavailableException(
                         "Artifact persistence is not configured for this server");
             };
+        }
+    }
+
+    /** Stable local failure for a path-like or otherwise invalid artifact reference. */
+    @SuppressWarnings("serial")
+    public static final class InvalidArtifactReferenceException extends IllegalArgumentException {
+        /** Creates an invalid-reference failure. */
+        public InvalidArtifactReferenceException(String message) {
+            super(message);
         }
     }
 

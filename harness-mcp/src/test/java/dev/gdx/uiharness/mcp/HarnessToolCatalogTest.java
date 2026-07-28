@@ -64,6 +64,13 @@ final class HarnessToolCatalogTest {
                         "force", false)));
     }
 
+    @Test void recursiveLocatorCeilingsFitInsideProtocolLimits() {
+        assertTrue(HarnessToolHandler.MAX_LOCATOR_DEPTH
+                < ProtocolJson.MAX_NESTING_DEPTH);
+        assertTrue(HarnessToolHandler.MAX_LOCATOR_NODES
+                <= ProtocolJson.MAX_REQUEST_BYTES / 256);
+    }
+
     @Test void catalogContainsNoPathExecutionReflectionOrCodeParameters() throws Exception {
         String json = ProtocolJson.mapper().writeValueAsString(catalog.tools());
         for (String forbidden : List.of("\"path\"", "\"command\"", "\"method\"",

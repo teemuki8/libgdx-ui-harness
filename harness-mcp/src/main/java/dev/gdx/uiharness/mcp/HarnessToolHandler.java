@@ -10,10 +10,14 @@ import dev.gdx.uiharness.protocol.ProtocolJson;
 import dev.gdx.uiharness.protocol.ProtocolVersion;
 import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.spec.McpSchema;
+import java.util.ArrayDeque;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -27,6 +31,8 @@ import reactor.core.scheduler.Schedulers;
 public final class HarnessToolHandler implements AutoCloseable {
     private static final long DEFAULT_DEADLINE_MILLIS = 30_000;
     private static final int DEFAULT_ARTIFACT_THRESHOLD_BYTES = 64 * 1_024;
+    static final int MAX_LOCATOR_DEPTH = ProtocolJson.MAX_NESTING_DEPTH / 2;
+    static final int MAX_LOCATOR_NODES = ProtocolJson.MAX_REQUEST_BYTES / 256;
     private static final ObjectMapper COMMAND_MAPPER = ProtocolJson.mapper().copy();
 
     private final Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol;
@@ -67,6 +73,10 @@ public final class HarnessToolHandler implements AutoCloseable {
                 tool = catalog.tool(call.name());
             } catch (IllegalArgumentException failure) {
                 return Mono.just(localError("unknown-tool", failure.getMessage()));
+            }
+            if (!locatorShapeWithinLimits(arguments)) {
+                return Mono.just(localError(
+                        "invalid-arguments", "Locator exceeds adapter complexity limits"));
             }
             var validation = McpJsonDefaults.getSchemaValidator()
                     .validate(tool.inputSchema(), arguments);
@@ -135,6 +145,8 @@ public final class HarnessToolHandler implements AutoCloseable {
                     .addTextContent(compactText(content))
                     .isError(false)
                     .build();
+        } catch (ArtifactReference.InvalidArtifactReferenceException failure) {
+            return localError("invalid-artifact-reference", failure.getMessage());
         } catch (ArtifactReference.ArtifactUnavailableException failure) {
             return localError("artifact-unavailable", failure.getMessage());
         } catch (RuntimeException failure) {
@@ -217,13 +229,76 @@ public final class HarnessToolHandler implements AutoCloseable {
         if (result instanceof HarnessResponse.Result.TraceStopped stopped) {
             LinkedHashMap<String, Object> content = content("trace-stopped");
             content.put("traceId", stopped.traceId());
-            content.put("traceReference", stopped.traceReference());
+            content.put("traceReference", ArtifactReference.requireOpaque(
+                    stopped.traceReference()));
             content.put("eventCount", stopped.eventCount());
             content.put("bytes", stopped.bytes());
             return Map.copyOf(content);
         }
         throw new AssertionError("Unhandled protocol result " + result.getClass().getName());
     }
+
+    private static boolean locatorShapeWithinLimits(Map<String, Object> arguments) {
+        Object root = arguments.get("locator");
+        if (root == null) {
+            return true;
+        }
+        ArrayDeque<LocatorFrame> pending = new ArrayDeque<>();
+        pending.push(new LocatorFrame(root, 1));
+        Set<Object> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        int nodeCount = 0;
+        while (!pending.isEmpty()) {
+            LocatorFrame frame = pending.pop();
+            if (frame.depth() > MAX_LOCATOR_DEPTH
+                    || !(frame.value() instanceof Map<?, ?> locator)
+                    || !seen.add(frame.value())
+                    || ++nodeCount > MAX_LOCATOR_NODES) {
+                return false;
+            }
+            Object kindValue = locator.get("kind");
+            if (!(kindValue instanceof String kind)) {
+                return false;
+            }
+            switch (kind) {
+                case "relation" -> {
+                    if (!push(pending, locator.get("anchor"), frame.depth() + 1)
+                            || !push(pending, locator.get("target"), frame.depth() + 1)) {
+                        return false;
+                    }
+                }
+                case "filter" -> {
+                    if (!push(pending, locator.get("locator"), frame.depth() + 1)
+                            || !(locator.get("filter") instanceof Map<?, ?> filter)) {
+                        return false;
+                    }
+                    if ("has".equals(filter.get("kind"))
+                            && !push(pending, filter.get("locator"), frame.depth() + 2)) {
+                        return false;
+                    }
+                }
+                case "index" -> {
+                    if (!push(pending, locator.get("locator"), frame.depth() + 1)) {
+                        return false;
+                    }
+                }
+                default -> {
+                    // Non-composite and unknown variants are handled by the JSON schema.
+                }
+            }
+        }
+        return true;
+    }
+
+    private static boolean push(
+            ArrayDeque<LocatorFrame> pending, Object locator, int depth) {
+        if (locator == null) {
+            return false;
+        }
+        pending.push(new LocatorFrame(locator, depth));
+        return true;
+    }
+
+    private record LocatorFrame(Object value, int depth) {}
 
     private void offloadLarge(LinkedHashMap<String, Object> content, byte[] encoded,
             String mediaType, String... bulkyFields) {

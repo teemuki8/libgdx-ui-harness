@@ -18,10 +18,15 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.atomic.AtomicBoolean;
 import reactor.core.publisher.Mono;
 
@@ -40,6 +45,7 @@ public final class HarnessMcpServer implements AutoCloseable {
         McpServer.AsyncSpecification<?> specification = McpServer.async(transport)
                 .serverInfo("libgdx-ui-harness", "1.0.0")
                 .capabilities(McpSchema.ServerCapabilities.builder().tools(false).build())
+                .validateToolInputs(false)
                 .requestTimeout(Duration.ofMillis(HarnessRequest.MAX_DEADLINE_MILLIS));
         for (McpSchema.Tool tool : catalog.tools()) {
             specification.toolCall(tool, (exchange, request) -> handler.handle(request));
@@ -73,13 +79,18 @@ public final class HarnessMcpServer implements AutoCloseable {
 
     /** Minimal SDK transport whose single stdio connection runs on a Java virtual thread. */
     private static final class VirtualStdioProvider implements McpServerTransportProvider {
+        private static final String CANCELLED_NOTIFICATION = "notifications/cancelled";
         private final McpJsonMapper mapper = McpJsonDefaults.getMapper();
         private final InputStream input;
         private final OutputStream output;
         private final ExecutorService connectionExecutor =
                 Executors.newVirtualThreadPerTaskExecutor();
+        private final ExecutorService outputExecutor = Executors.newSingleThreadExecutor(
+                Thread.ofVirtual().name("mcp-stdio-output").factory());
         private final AtomicBoolean closing = new AtomicBoolean();
         private final CompletableFuture<Void> terminated = new CompletableFuture<>();
+        private final Set<MessageTask> inFlight = ConcurrentHashMap.newKeySet();
+        private final Map<Object, MessageTask> requests = new ConcurrentHashMap<>();
         private volatile McpServerSession session;
 
         private VirtualStdioProvider(InputStream input, OutputStream output) {
@@ -113,11 +124,13 @@ public final class HarnessMcpServer implements AutoCloseable {
 
         @Override public void close() {
             if (closing.compareAndSet(false, true)) {
+                inFlight.forEach(task -> task.cancel(true));
                 McpServerSession current = session;
                 if (current != null) {
                     current.close();
                 }
                 connectionExecutor.shutdownNow();
+                outputExecutor.shutdownNow();
                 terminated.complete(null);
             }
         }
@@ -134,30 +147,118 @@ public final class HarnessMcpServer implements AutoCloseable {
                 while (!closing.get() && (line = reader.readLine()) != null) {
                     McpSchema.JSONRPCMessage message =
                             McpSchema.deserializeJsonRpcMessage(mapper, line);
+                    if (!cancelRequest(message)) {
+                        dispatch(message);
+                    }
+                }
+                drainInFlight();
+                finishNaturally();
+            } catch (IOException | RuntimeException failure) {
+                if (!closing.get()) {
+                    terminated.completeExceptionally(failure);
+                    close();
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                close();
+            }
+        }
+
+        private void dispatch(McpSchema.JSONRPCMessage message) {
+            MessageTask task = new MessageTask(message);
+            inFlight.add(task);
+            if (task.requestId != null) {
+                requests.put(task.requestId, task);
+            }
+            connectionExecutor.execute(task);
+        }
+
+        private boolean cancelRequest(McpSchema.JSONRPCMessage message) {
+            if (!(message instanceof McpSchema.JSONRPCNotification notification)
+                    || !CANCELLED_NOTIFICATION.equals(notification.method())
+                    || !(notification.params() instanceof Map<?, ?> params)) {
+                return false;
+            }
+            MessageTask task = requests.remove(params.get("requestId"));
+            if (task != null) {
+                task.cancel(true);
+            }
+            return true;
+        }
+
+        private void drainInFlight() throws InterruptedException {
+            while (!inFlight.isEmpty()) {
+                MessageTask[] tasks = inFlight.toArray(MessageTask[]::new);
+                for (MessageTask task : tasks) {
+                    task.awaitFinished();
+                }
+            }
+        }
+
+        private void finishNaturally() {
+            if (closing.compareAndSet(false, true)) {
+                McpServerSession current = session;
+                if (current != null) {
+                    current.close();
+                }
+                connectionExecutor.shutdown();
+                outputExecutor.shutdown();
+                terminated.complete(null);
+            }
+        }
+
+        private final class MessageTask extends FutureTask<Void> {
+            private final Object requestId;
+            private final AtomicBoolean started = new AtomicBoolean();
+            private final AtomicBoolean finished = new AtomicBoolean();
+            private final CountDownLatch finishedSignal = new CountDownLatch(1);
+
+            private MessageTask(McpSchema.JSONRPCMessage message) {
+                super(() -> {
                     McpServerSession current = session;
                     if (current == null) {
                         throw new IllegalStateException("Stdio session was not initialized");
                     }
                     current.handle(message).block();
+                    return null;
+                });
+                requestId = message instanceof McpSchema.JSONRPCRequest request
+                        ? request.id() : null;
+            }
+
+            @Override public void run() {
+                started.set(true);
+                try {
+                    super.run();
+                } finally {
+                    finish();
                 }
-            } catch (IOException | RuntimeException failure) {
-                if (!closing.get()) {
-                    terminated.completeExceptionally(failure);
+            }
+
+            @Override protected void done() {
+                if (!started.get()) {
+                    finish();
                 }
-            } finally {
-                closing.set(true);
-                McpServerSession current = session;
-                if (current != null) {
-                    current.close();
+            }
+
+            private void finish() {
+                if (finished.compareAndSet(false, true)) {
+                    inFlight.remove(this);
+                    if (requestId != null) {
+                        requests.remove(requestId, this);
+                    }
+                    finishedSignal.countDown();
                 }
-                terminated.complete(null);
-                connectionExecutor.shutdown();
+            }
+
+            private void awaitFinished() throws InterruptedException {
+                finishedSignal.await();
             }
         }
 
         private final class VirtualStdioTransport implements McpServerTransport {
             @Override public Mono<Void> sendMessage(McpSchema.JSONRPCMessage message) {
-                return Mono.fromRunnable(() -> {
+                return Mono.fromFuture(CompletableFuture.runAsync(() -> {
                     if (closing.get()) {
                         return;
                     }
@@ -166,15 +267,14 @@ public final class HarnessMcpServer implements AutoCloseable {
                                 .replace("\r\n", "\\n")
                                 .replace("\n", "\\n")
                                 .replace("\r", "\\n");
-                        synchronized (output) {
-                            output.write(json.getBytes(StandardCharsets.UTF_8));
-                            output.write('\n');
-                            output.flush();
-                        }
+                        output.write(json.getBytes(StandardCharsets.UTF_8));
+                        output.write('\n');
+                        output.flush();
                     } catch (IOException failure) {
-                        throw new IllegalStateException("Failed to write stdio MCP message", failure);
+                        throw new IllegalStateException(
+                                "Failed to write stdio MCP message", failure);
                     }
-                });
+                }, outputExecutor));
             }
 
             @Override public <T> T unmarshalFrom(Object data, TypeRef<T> typeRef) {
