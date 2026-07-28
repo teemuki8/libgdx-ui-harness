@@ -76,11 +76,11 @@ Compared tool enums and limits against `Command`, `HarnessRequest`, `HarnessResp
 
 ### Security
 
-The server creates only a stdio transport. There is no HTTP/socket listener, path parameter, arbitrary method/script/code/command parameter, reflection, process execution, or dynamic class loading. `ArtifactReference` rejects file URIs and Unix, Windows, home-relative, and dot-relative filesystem paths. Large data crosses the adapter only as cloned bytes passed to the injected publisher and an opaque returned reference.
+The server creates only a stdio transport. There is no HTTP/socket listener, path parameter, arbitrary method/script/code/command parameter, reflection, process execution, or dynamic class loading. `ArtifactReference` rejects file URIs and Unix, Windows, home-relative, and dot-relative filesystem paths; trace-stop references returned by the protocol pass through the same validator before exposure. Large data crosses the adapter only as cloned bytes passed to the injected publisher and an opaque returned reference.
 
 ### Lifecycle
 
-The custom SDK transport processes its single stdio connection on a virtual thread, serializes writes, flushes each JSON-RPC message, processes each input line before accepting EOF, and completes termination on stdin close. Server close is idempotent and closes the SDK server, handler scheduler/executor, and transport executor. Handler cancellation is verified against a pending protocol future.
+The custom SDK transport reads continuously on a virtual thread and dispatches each message to an independently cancellable virtual-thread task, while a persistent virtual output executor serializes and flushes JSON-RPC writes. `notifications/cancelled` cancels the matching request task, which cancels the handler subscription and protocol stage. Natural stdin EOF drains all in-flight tasks before closing so responses are not dropped; explicit close cancels them. Server close remains idempotent and closes the SDK server, handler scheduler/executor, and transport executors.
 
 ### Protocol JSON mapper note
 
@@ -89,3 +89,37 @@ The adapter does not mutate the shared `ProtocolJson.mapper()`; it creates one p
 ### Scope
 
 No trace persistence or artifact storage implementation was added; Task 10 supplies the artifact publisher/storage. No production network exposure was added.
+
+## Review round 1
+
+Fix commit: `077ec54` — `fix(mcp): bound locators and concurrent stdio`
+
+Three Important review findings were addressed:
+
+1. `TraceStopped.traceReference` now passes through `ArtifactReference.requireOpaque` before structured output. Filesystem-looking protocol references return the stable structured error `invalid-artifact-reference`.
+2. Stdio no longer blocks its reader on `session.handle(...).block()`. Each message has an independently tracked virtual-thread task, request IDs are indexed for `notifications/cancelled`, writes run serially on a persistent virtual output thread, natural EOF drains in-flight calls, and explicit close cancels them.
+3. Raw locator arguments now pass an iterative, identity-aware shape check before SDK schema validation or Jackson DTO conversion. Maximum locator depth is half the protocol JSON nesting ceiling (32); maximum locator nodes derive from the request-byte ceiling (4,096). Cycles, excessive depth, excessive node count, and missing composite children are rejected before protocol dispatch.
+
+Round-1 RED:
+
+```text
+./gradlew :harness-mcp:test --tests '*HarnessToolCatalogTest' --tests '*HarnessMcpServerContractTest'
+```
+
+Result: expected compilation failure because the new locator ceiling contracts did not yet exist (`artifact://506`).
+
+Round-1 GREEN:
+
+```text
+./gradlew :harness-mcp:test --tests '*HarnessToolCatalogTest' --tests '*HarnessMcpServerContractTest'
+```
+
+Result: PASS (`artifact://514`): 16 tests total, 5 catalog and 11 server contracts, 0 failures.
+
+```text
+./gradlew :harness-mcp:test :harness-mcp:installDist
+```
+
+Result: PASS (`artifact://516`).
+
+The exact protocol `2025-11-25` initialize fixture returned JSON-RPC id `1` with the expected server/tool capabilities and exited on closed stdin in 0.78 seconds.
