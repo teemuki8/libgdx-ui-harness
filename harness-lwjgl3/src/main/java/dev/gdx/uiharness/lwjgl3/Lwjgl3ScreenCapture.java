@@ -18,11 +18,13 @@ import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.wait.FrameSignal;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
+import java.util.ArrayList;
+import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /** LWJGL3 framebuffer readback captured on its graphics thread after render completion. */
 public final class Lwjgl3ScreenCapture implements ScreenCapture {
@@ -30,7 +32,10 @@ public final class Lwjgl3ScreenCapture implements ScreenCapture {
     private final SnapshotSource snapshots;
     private final LocatorEngine locators;
     private final PngEncoder encoder;
-    private final AtomicBoolean open = new AtomicBoolean(true);
+    private final Object lifecycle = new Object();
+    private final Map<CompletableFuture<CapturedImage>, CompletableFuture<CapturedImage>>
+            pending = new IdentityHashMap<>();
+    private boolean open = true;
 
     /** Creates a capture adapter with the default strict locator engine and PNG encoder. */
     public Lwjgl3ScreenCapture(Lwjgl3FrameFence fence, SnapshotSource snapshots) {
@@ -54,22 +59,73 @@ public final class Lwjgl3ScreenCapture implements ScreenCapture {
             CaptureRequest request, Deadline deadline) {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(deadline, "deadline");
-        if (!open.get()) {
-            return CompletableFuture.failedFuture(closedFailure());
+        CompletableFuture<CapturedImage> result = new CompletableFuture<>();
+        CompletableFuture<CapturedImage> frameWork;
+        synchronized (lifecycle) {
+            if (!open) {
+                return CompletableFuture.failedFuture(closedFailure());
+            }
+            frameWork = fence.afterNextFrame(
+                    frame -> captureCompletedFrame(request, frame), deadline)
+                    .toCompletableFuture();
+            pending.put(result, frameWork);
         }
-        return fence.afterNextFrame(frame -> captureCompletedFrame(request, frame), deadline);
+        frameWork.whenComplete((image, failure) ->
+                completePending(result, frameWork, image, failure));
+        result.whenComplete((image, failure) -> {
+            if (result.isCancelled()) {
+                frameWork.cancel(false);
+                removePending(result, frameWork);
+            }
+        });
+        return result;
     }
 
-    /** Stops accepting work without closing the independently owned frame fence. */
+    /** Immediately fails owned pending work without closing the independently owned frame fence. */
     @Override public void close() {
-        open.set(false);
+        List<PendingCapture> claimed;
+        synchronized (lifecycle) {
+            if (!open) {
+                return;
+            }
+            open = false;
+            claimed = new ArrayList<>(pending.size());
+            pending.forEach((result, frameWork) ->
+                    claimed.add(new PendingCapture(result, frameWork)));
+            pending.clear();
+        }
+        HarnessException failure = closedFailure();
+        for (PendingCapture capture : claimed) {
+            capture.frameWork().cancel(false);
+            capture.result().completeExceptionally(failure);
+        }
+    }
+
+    private void completePending(
+            CompletableFuture<CapturedImage> result,
+            CompletableFuture<CapturedImage> frameWork,
+            CapturedImage image,
+            Throwable failure) {
+        if (!removePending(result, frameWork)) {
+            return;
+        }
+        if (failure == null) {
+            result.complete(image);
+        } else {
+            result.completeExceptionally(failure);
+        }
+    }
+
+    private boolean removePending(
+            CompletableFuture<CapturedImage> result,
+            CompletableFuture<CapturedImage> frameWork) {
+        synchronized (lifecycle) {
+            return pending.remove(result, frameWork);
+        }
     }
 
     private CapturedImage captureCompletedFrame(
             CaptureRequest request, FrameSignal.Frame frame) {
-        if (!open.get()) {
-            throw closedFailure();
-        }
         try {
             return readFramebuffer(request, frame);
         } catch (HarnessException failure) {
@@ -274,6 +330,10 @@ public final class Lwjgl3ScreenCapture implements ScreenCapture {
         /** Captures semantic state on the graphics thread at the supplied revision and frame. */
         SemanticSnapshot snapshot(long revision, long frame);
     }
+
+    private record PendingCapture(
+            CompletableFuture<CapturedImage> result,
+            CompletableFuture<CapturedImage> frameWork) {}
 
     private record PixelRegion(int x, int y, int width, int height) {
         long pixels() {

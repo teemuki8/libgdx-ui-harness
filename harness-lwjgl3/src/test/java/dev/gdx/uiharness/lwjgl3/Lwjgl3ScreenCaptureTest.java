@@ -29,6 +29,10 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -122,6 +126,90 @@ final class Lwjgl3ScreenCaptureTest {
                 () -> await(pending));
 
         assertEquals(ErrorCode.SESSION_CLOSED, failure.code());
+    }
+
+    @Test void closingScreenCaptureImmediatelyFailsItsQueuedRequest() {
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(1);
+        Lwjgl3ScreenCapture localCapture = new Lwjgl3ScreenCapture(
+                localFence, (revision, frame) -> {
+                    throw new AssertionError("full-window capture must not resolve semantics");
+                });
+        CompletionStage<CapturedImage> pending = localCapture.capture(
+                CaptureRequest.fullWindow(), fixture.deadline());
+
+        localCapture.close();
+        ExecutionException completion = assertThrows(ExecutionException.class,
+                () -> pending.toCompletableFuture().get(1, TimeUnit.SECONDS));
+        CompletionStage<String> independentWork = localFence.afterNextFrame(
+                frame -> "fence-open", fixture.deadline());
+        localFence.completedFrame(1, 1);
+        localFence.close();
+
+        HarnessException failure = (HarnessException) completion.getCause();
+        assertEquals(ErrorCode.SESSION_CLOSED, failure.code());
+        assertEquals("fence-open", await(independentWork));
+    }
+
+    @Test void cancellingQueuedFenceWorkImmediatelyReleasesCapacity() {
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(1);
+        AtomicBoolean cancelledWorkRan = new AtomicBoolean();
+        CompletionStage<String> cancelled = localFence.afterNextFrame(frame -> {
+            cancelledWorkRan.set(true);
+            return "cancelled";
+        }, fixture.deadline());
+
+        assertTrue(cancelled.toCompletableFuture().cancel(false));
+        CompletionStage<String> replacement = localFence.afterNextFrame(
+                frame -> "replacement", fixture.deadline());
+        localFence.completedFrame(1, 1);
+        localFence.close();
+
+        assertEquals("replacement", await(replacement));
+        assertFalse(cancelledWorkRan.get());
+    }
+
+    @Test void cancellationLosesOnceFrameWorkIsAtomicallyClaimed() throws Exception {
+        CompletableFuture<Lwjgl3FrameFence> ready = new CompletableFuture<>();
+        CountDownLatch completeFrame = new CountDownLatch(1);
+        CountDownLatch taskEntered = new CountDownLatch(1);
+        CountDownLatch releaseTask = new CountDownLatch(1);
+        Thread owner = new Thread(() -> {
+            Lwjgl3FrameFence ownedFence = new Lwjgl3FrameFence(1);
+            ready.complete(ownedFence);
+            try {
+                if (!completeFrame.await(1, TimeUnit.SECONDS)) {
+                    throw new AssertionError("frame completion was not requested");
+                }
+                ownedFence.completedFrame(1, 1);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("fence owner interrupted", exception);
+            }
+        }, "claimed-frame-fence-owner");
+        owner.start();
+        Lwjgl3FrameFence ownedFence = await(ready);
+        CompletionStage<String> claimed = ownedFence.afterNextFrame(frame -> {
+            taskEntered.countDown();
+            if (!releaseTask.await(1, TimeUnit.SECONDS)) {
+                throw new AssertionError("claimed task was not released");
+            }
+            return "completed";
+        }, fixture.deadline());
+
+        completeFrame.countDown();
+        assertTrue(taskEntered.await(1, TimeUnit.SECONDS));
+        boolean cancellationAccepted;
+        try {
+            cancellationAccepted = claimed.toCompletableFuture().cancel(false);
+        } finally {
+            releaseTask.countDown();
+        }
+        owner.join(1_000);
+        ownedFence.close();
+
+        assertFalse(cancellationAccepted);
+        assertEquals("completed", await(claimed));
+        assertFalse(owner.isAlive());
     }
 
     @Test void captureSubmittedOffThreadRunsOnOwningGraphicsThread() {

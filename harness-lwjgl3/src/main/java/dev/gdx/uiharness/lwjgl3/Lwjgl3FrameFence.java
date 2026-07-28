@@ -54,6 +54,7 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
             } else if (queued.size() >= capacity) {
                 rejection = limitFailure(capacity);
             } else {
+                command.markQueued();
                 queued.addLast(command);
             }
         }
@@ -76,6 +77,9 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
                 throw new IllegalStateException("frame fence is closed");
             }
             batch = new ArrayList<>(queued);
+            for (Command<?> command : batch) {
+                command.markClaimed();
+            }
             queued.clear();
         }
         for (Command<?> command : batch) {
@@ -89,12 +93,16 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
     /** Registers a completed-frame listener until the returned subscription is closed. */
     @Override public Subscription subscribe(FrameListener listener) {
         Objects.requireNonNull(listener, "listener");
+        boolean closed;
         synchronized (lifecycle) {
-            if (!open) {
-                listener.onClosed();
-                return () -> {};
+            closed = !open;
+            if (!closed) {
+                listeners.add(listener);
             }
-            listeners.add(listener);
+        }
+        if (closed) {
+            listener.onClosed();
+            return () -> {};
         }
         return () -> listeners.remove(listener);
     }
@@ -108,6 +116,9 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
             }
             open = false;
             pending = new ArrayList<>(queued);
+            for (Command<?> command : pending) {
+                command.markClaimed();
+            }
             queued.clear();
         }
         HarnessException failure = closedFailure();
@@ -158,19 +169,38 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
         T execute(Frame frame) throws Exception;
     }
 
-    private static final class Command<T> extends CompletableFuture<T> {
+    private final class Command<T> extends CompletableFuture<T> {
         private final FrameTask<T> task;
         private final Deadline deadline;
+        private CommandState state = CommandState.NEW;
 
         Command(FrameTask<T> task, Deadline deadline) {
             this.task = task;
             this.deadline = deadline;
         }
 
-        void execute(Frame frame) {
-            if (isDone()) {
-                return;
+        void markQueued() {
+            state = CommandState.QUEUED;
+        }
+
+        void markClaimed() {
+            if (state != CommandState.QUEUED) {
+                throw new IllegalStateException("only queued frame work can be claimed");
             }
+            state = CommandState.CLAIMED;
+        }
+
+        @Override public boolean cancel(boolean mayInterruptIfRunning) {
+            synchronized (lifecycle) {
+                if (state != CommandState.QUEUED || !queued.remove(this)) {
+                    return false;
+                }
+                state = CommandState.TERMINAL;
+            }
+            return super.cancel(mayInterruptIfRunning);
+        }
+
+        void execute(Frame frame) {
             if (deadline.isExpired()) {
                 completeExceptionally(timeoutFailure(deadline));
                 return;
@@ -187,5 +217,12 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
                         failure));
             }
         }
+    }
+
+    private enum CommandState {
+        NEW,
+        QUEUED,
+        CLAIMED,
+        TERMINAL
     }
 }
