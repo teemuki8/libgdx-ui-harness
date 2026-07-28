@@ -141,3 +141,63 @@ RED/GREEN and validation:
   (`artifact://1015`), including five complete workflows.
 - No macOS runner was available locally; actual Cocoa first-thread execution is
   the explicit macOS CI qualification rather than an unverified local claim.
+
+## Final Branch Review Fix
+
+Commit: `9eea47f` — `fix: propagate cancellation and close failed traces`
+
+The two final whole-branch integration blockers were closed without changing the
+V1 schema, typed failure translation, response limits, tool catalog, or fixture
+workflow:
+
+1. `HarnessProtocolService.execute` now returns a cancellation-owning response
+   future over the actual routed Harness, wait task, capture, or trace stage.
+   Routing no longer hides those stages behind `thenApply`/`handle` dependents.
+   Cancellation is serialized against source completion; an accepted source
+   cancellation cancels the response, while a completion that already won is
+   translated normally. Wait work uses an interruptible future and queued work
+   does not start after cancellation.
+2. Reactor disposal in `HarnessToolHandler` was confirmed to cancel that
+   response future. The stdio cancellation contract now requires the routed
+   action future to be cancelled, and the subsequent ping remains the next
+   response, proving cancellation notifications write no tool response.
+3. A real Scene2D Stage integration routes `ui_action` through the MCP handler,
+   disposes it before render dispatch, drains later frames, and proves both that
+   the exact Scene2D action stage is cancelled and that no input side effect or
+   subscriber response occurs.
+4. The fixture tracing harness now records a same-request, directly parented
+   `COMMAND_FAILED` before rethrowing an action or post-action snapshot failure.
+   Recorder failure is attached as suppressed evidence and cannot replace the
+   original action failure. Its tracing future also forwards cancellation to
+   the currently active delegate stage.
+
+Focused RED evidence:
+
+- Protocol action/capture forwarding and queued-wait prevention both failed at
+  their intended assertions (`artifact://1033`).
+- The real MCP-to-Scene2D queued action later remained live before the fix
+  (`artifact://1039`).
+- The failed reference action archive contained only `COMMAND_STARTED`, not the
+  required failed child (`artifact://1041`).
+
+GREEN and regression evidence:
+
+- Full protocol service contract: PASS (`artifact://1043`).
+- Real MCP-to-Scene2D cancellation/side-effect contract: PASS
+  (`artifact://1045`).
+- Failed action trace stop/replay, exact
+  `COMMAND_STARTED`→`COMMAND_FAILED`, complete manifest, original timeout:
+  PASS (`artifact://1049`).
+- MCP handler and stdio cancellation contracts: PASS (`artifact://1051`).
+- Five successful reference workflows and successful causal traces: PASS
+  (`artifact://1053`).
+- All affected protocol, MCP, Scene2D, and fixture module tests: PASS
+  (`artifact://1055`, 23 tasks).
+
+Race self-review covered cancellation before queue execution, cancellation
+against already-completing sources, synchronous cancellation callbacks,
+render-dispatch ownership, wait interruption, and trace recorder failure.
+Source cancellation is attempted before response cancellation so a queued action
+cannot observe a cancelled wrapper while remaining dispatchable; callbacks
+arising synchronously from cancellation are deferred or ignored under the same
+lifecycle lock.
