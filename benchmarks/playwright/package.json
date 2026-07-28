@@ -1,0 +1,16 @@
+{
+  "name": "libgdx-ui-harness-parity-reference",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.18.0",
+    "npm": "12.0.1"
+  },
+  "scripts": {
+    "benchmark": "node reference.spec.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1"
+  }
+}

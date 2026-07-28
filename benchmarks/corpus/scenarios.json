@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "scenarios": [
+    {
+      "id": "sign-in",
+      "description": "Fill labeled credentials and activate the exact named button",
+      "logicalDelayMillis": 96,
+      "steps": [
+        {"action": "fill", "locator": {"kind": "label", "value": "Username"}, "value": "Ada"},
+        {"action": "fill", "locator": {"kind": "label", "value": "Password"}, "value": "correct horse"},
+        {"action": "click", "locator": {"kind": "role", "value": "button", "name": "Sign in"}}
+      ],
+      "expected": "text:Welcome, Ada"
+    },
+    {
+      "id": "ambiguous-locator-recovery",
+      "description": "Preserve the strict ambiguity diagnostic before recovering with role and name",
+      "logicalDelayMillis": 96,
+      "steps": [
+        {"action": "expect-click-failure", "locator": {"kind": "text", "value": "Sign in"}},
+        {"action": "click", "locator": {"kind": "role", "value": "button", "name": "Sign in"}}
+      ],
+      "expected": "text:Welcome, guest"
+    },
+    {
+      "id": "delayed-enablement",
+      "description": "Wait through a fixed six-frame disabled interval before clicking",
+      "logicalDelayMillis": 96,
+      "steps": [
+        {"action": "click", "locator": {"kind": "test-id", "value": "delay-start"}},
+        {"action": "click", "locator": {"kind": "test-id", "value": "delayed-target"}}
+      ],
+      "expected": "text:Delayed ready"
+    },
+    {
+      "id": "moving-target",
+      "description": "Wait through fixed-frame motion before clicking the stable target",
+      "logicalDelayMillis": 96,
+      "steps": [
+        {"action": "click", "locator": {"kind": "test-id", "value": "movement-start"}},
+        {"action": "click", "locator": {"kind": "test-id", "value": "moving-target"}}
+      ],
+      "expected": "text:Moving clicked"
+    },
+    {
+      "id": "obscured-target",
+      "description": "Wait until a fixed-duration intercepting overlay is removed",
+      "logicalDelayMillis": 96,
+      "steps": [
+        {"action": "click", "locator": {"kind": "test-id", "value": "obscure-start"}},
+        {"action": "click", "locator": {"kind": "test-id", "value": "obscured-target"}}
+      ],
+      "expected": "text:Obscured clicked"
+    },
+    {
+      "id": "scroll-and-select",
+      "description": "Scroll the semantic list and select the requested named option",
+      "logicalDelayMillis": 96,
+      "steps": [
+        {"action": "scroll", "locator": {"kind": "test-id", "value": "selection-scroll"}, "amountY": 20.0},
+        {"action": "click", "locator": {"kind": "role", "value": "button", "name": "Select Lambda"}}
+      ],
+      "expected": "text:Selected Lambda"
+    },
+    {
+      "id": "modal-dialog",
+      "description": "Open a modal by accessible role and observe its text",
+      "logicalDelayMillis": 96,
+      "steps": [
+        {"action": "click", "locator": {"kind": "role", "value": "button", "name": "Open dialog"}},
+        {"action": "wait-visible", "locator": {"kind": "text", "value": "All interactions arrived through MCP."}}
+      ],
+      "expected": "text:All interactions arrived through MCP."
+    },
+    {
+      "id": "actor-replacement",
+      "description": "Resolve newly introduced semantics after the sign-in actor subtree is replaced",
+      "logicalDelayMillis": 96,
+      "steps": [
+        {"action": "fill", "locator": {"kind": "label", "value": "Username"}, "value": "Ada"},
+        {"action": "click", "locator": {"kind": "role", "value": "button", "name": "Sign in"}},
+        {"action": "wait-visible", "locator": {"kind": "test-id", "value": "welcome-message"}}
+      ],
+      "expected": "text:Welcome, Ada"
+    },
+    {
+      "id": "screenshot-diagnosis",
+      "description": "Capture the real fixed framebuffer for diagnosis",
+      "logicalDelayMillis": 96,
+      "steps": [
+        {"action": "screenshot"}
+      ],
+      "expected": "screenshot:1280x720"
+    },
+    {
+      "id": "intentional-failure-trace",
+      "description": "Retain strict-locator failure, screenshot, and causal trace evidence",
+      "logicalDelayMillis": 96,
+      "steps": [
+        {"action": "expect-click-failure", "locator": {"kind": "test-id", "value": "does-not-exist"}},
+        {"action": "screenshot"}
+      ],
+      "expected": "failure:strict-locator"
+    }
+  ]
+}

@@ -7,6 +7,7 @@ import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.graphics.g2d.TextureRegion;
 import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Stage;
+import com.badlogic.gdx.scenes.scene2d.actions.Actions;
 import com.badlogic.gdx.scenes.scene2d.Touchable;
 import com.badlogic.gdx.scenes.scene2d.ui.CheckBox;
 import com.badlogic.gdx.scenes.scene2d.ui.Dialog;
@@ -25,6 +26,8 @@ import com.badlogic.gdx.utils.Array;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
 import dev.gdx.uiharness.scene2d.Semantics;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 /** Fixed-layout Scene2D screen used by the real LWJGL3 process fixture. */
 public final class ReferenceScreen implements AutoCloseable {
     private static final Color BACKGROUND = Color.valueOf("172033ff");
@@ -39,19 +42,32 @@ public final class ReferenceScreen implements AutoCloseable {
     private final Skin skin = createSkin();
     private final TextureRegionDrawable pixel = new TextureRegionDrawable(
             new TextureRegion(skin.get("pixel", Texture.class)));
+    private final String benchmarkScenario;
+    private final float benchmarkDelaySeconds;
+    private final Map<Actor, SemanticTag> benchmarkTags = new LinkedHashMap<>();
     private Table signInPanel;
     private TextField username;
     private TextField password;
     private Semantics semantics;
 
-    /** Creates all fixed actors; semantic tags are attached separately once a session exists. */
+    /** Creates the stable reference workflow without benchmark-only actors. */
     public ReferenceScreen() {
+        this(null, 0);
+    }
+
+    /** Creates the stable workflow plus actors for one named parity scenario. */
+    public ReferenceScreen(String newBenchmarkScenario, int benchmarkDelayMillis) {
+        benchmarkScenario = newBenchmarkScenario;
+        benchmarkDelaySeconds = benchmarkDelayMillis / 1_000f;
         stage.getRoot().setName("reference-stage");
         stage.getViewport().update(1280, 720, true);
         buildBackground();
         buildSignIn();
         buildSettings();
         buildTransformedOverlap();
+        if (benchmarkScenario != null) {
+            buildBenchmarkScenario();
+        }
     }
 
     /** Returns the application-owned Stage. */
@@ -75,6 +91,8 @@ public final class ReferenceScreen implements AutoCloseable {
                 "rotated-card", "Rotated card");
         tag(stage.getRoot().findActor("overlap-card"),
                 "overlap-card", "Overlap card");
+        benchmarkTags.forEach((actor, metadata) ->
+                tag(actor, metadata.testId(), metadata.accessibleName()));
     }
 
     /** Draws the current stage after the harness has advanced its fixed clock. */
@@ -207,6 +225,148 @@ public final class ReferenceScreen implements AutoCloseable {
         stage.addActor(caption);
     }
 
+    private void buildBenchmarkScenario() {
+        switch (benchmarkScenario) {
+            case "delayed-enablement" -> buildDelayedEnablement();
+            case "moving-target" -> buildMovingTarget();
+            case "obscured-target" -> buildObscuredTarget();
+            case "scroll-and-select" -> buildScrollSelection();
+            case "sign-in", "ambiguous-locator-recovery", "modal-dialog",
+                    "actor-replacement", "screenshot-diagnosis",
+                    "intentional-failure-trace" -> {
+                // The stable reference workflow already contains this scenario's actors.
+            }
+            default -> throw new IllegalArgumentException(
+                    "Unknown benchmark scenario: " + benchmarkScenario);
+        }
+    }
+
+    private void buildDelayedEnablement() {
+        Label status = benchmarkStatus();
+        TextButton target = benchmarkButton(
+                "Delayed target", "delayed-target", "Delayed target", 740);
+        target.addListener(new ChangeListener() {
+            @Override public void changed(ChangeEvent event, Actor actor) {
+                status.setText("Delayed ready");
+            }
+        });
+        TextButton trigger = benchmarkButton(
+                "Start delay", "delay-start", "Start delay", 580);
+        trigger.addListener(new ChangeListener() {
+            @Override public void changed(ChangeEvent event, Actor actor) {
+                target.clearActions();
+                target.setDisabled(true);
+                target.addAction(Actions.sequence(
+                        Actions.delay(benchmarkDelaySeconds),
+                        Actions.run(() -> target.setDisabled(false))));
+            }
+        });
+    }
+
+    private void buildMovingTarget() {
+        Label status = benchmarkStatus();
+        TextButton target = benchmarkButton(
+                "Moving target", "moving-target", "Moving target", 740);
+        target.addListener(new ChangeListener() {
+            @Override public void changed(ChangeEvent event, Actor actor) {
+                status.setText("Moving clicked");
+            }
+        });
+        TextButton trigger = benchmarkButton(
+                "Start movement", "movement-start", "Start movement", 580);
+        trigger.addListener(new ChangeListener() {
+            @Override public void changed(ChangeEvent event, Actor actor) {
+                target.clearActions();
+                target.setPosition(740, 72);
+                target.addAction(Actions.moveBy(120, 0, benchmarkDelaySeconds));
+            }
+        });
+    }
+
+    private void buildObscuredTarget() {
+        Label status = benchmarkStatus();
+        TextButton target = benchmarkButton(
+                "Obscured target", "obscured-target", "Obscured target", 740);
+        target.addListener(new ChangeListener() {
+            @Override public void changed(ChangeEvent event, Actor actor) {
+                status.setText("Obscured clicked");
+            }
+        });
+        Image cover = new Image(pixel.tint(Color.valueOf("7d70b8ff")));
+        cover.setName("benchmark-cover");
+        cover.setBounds(740, 72, 150, 44);
+        cover.setVisible(false);
+        stage.addActor(cover);
+        TextButton trigger = benchmarkButton(
+                "Start cover", "obscure-start", "Start cover", 580);
+        trigger.addListener(new ChangeListener() {
+            @Override public void changed(ChangeEvent event, Actor actor) {
+                cover.clearActions();
+                cover.setVisible(true);
+                cover.addAction(Actions.sequence(
+                        Actions.delay(benchmarkDelaySeconds),
+                        Actions.visible(false)));
+            }
+        });
+    }
+
+    private void buildScrollSelection() {
+        Label status = benchmarkStatus();
+        Table content = new Table(skin);
+        content.defaults().width(190).height(38);
+        for (String name : java.util.List.of(
+                "Alpha", "Beta", "Gamma", "Delta", "Epsilon",
+                "Zeta", "Eta", "Theta", "Iota", "Kappa")) {
+            Label item = new Label(name, skin);
+            item.setTouchable(Touchable.disabled);
+            content.add(item).row();
+        }
+        TextButton select = new TextButton("Select Lambda", skin);
+        select.setName("select-lambda");
+        select.addListener(new ChangeListener() {
+            @Override public void changed(ChangeEvent event, Actor actor) {
+                status.setText("Selected Lambda");
+            }
+        });
+        tagBenchmark(select, "select-lambda", "Select Lambda");
+        content.add(select).row();
+        content.pack();
+
+        ScrollPane pane = new ScrollPane(content, skin);
+        pane.setName("selection-scroll");
+        pane.setBounds(580, 22, 230, 120);
+        pane.setFadeScrollBars(false);
+        pane.setSmoothScrolling(false);
+        pane.setFlickScroll(false);
+        pane.setScrollingDisabled(true, false);
+        tagBenchmark(pane, "selection-scroll", "Selection list");
+        stage.addActor(pane);
+    }
+
+    private Label benchmarkStatus() {
+        Label status = new Label("", skin);
+        status.setName("benchmark-status");
+        status.setBounds(920, 72, 280, 44);
+        status.setTouchable(Touchable.disabled);
+        tagBenchmark(status, "benchmark-status", "Benchmark status");
+        stage.addActor(status);
+        return status;
+    }
+
+    private TextButton benchmarkButton(
+            String text, String testId, String accessibleName, float x) {
+        TextButton button = new TextButton(text, skin);
+        button.setName(testId);
+        button.setBounds(x, 72, 150, 44);
+        tagBenchmark(button, testId, accessibleName);
+        stage.addActor(button);
+        return button;
+    }
+
+    private void tagBenchmark(Actor actor, String testId, String accessibleName) {
+        benchmarkTags.put(actor, new SemanticTag(testId, accessibleName));
+    }
+
     private void replaceSignInWithWelcome() {
         if (signInPanel.getStage() == null) {
             return;
@@ -256,6 +416,8 @@ public final class ReferenceScreen implements AutoCloseable {
         semantics.setAccessibleName(actor, accessibleName);
         semantics.setLabel(actor, accessibleName);
     }
+
+    private record SemanticTag(String testId, String accessibleName) {}
 
     private static Skin createSkin() {
         Skin skin = new Skin();

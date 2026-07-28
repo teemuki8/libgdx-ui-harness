@@ -17,21 +17,36 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
     public static final int HEIGHT = 720;
 
     private final Path processRoot;
+    private final String benchmarkScenario;
+    private final int benchmarkDelayMillis;
     private ReferenceScreen screen;
     private FixtureControl control;
 
-    private ReferenceUiApplication(Path processRoot) {
+    private ReferenceUiApplication(
+            Path processRoot, String benchmarkScenario, int benchmarkDelayMillis) {
         this.processRoot = processRoot;
+        this.benchmarkScenario = benchmarkScenario;
+        this.benchmarkDelayMillis = benchmarkDelayMillis;
     }
 
     /** Launches one hidden, non-networked fixture process. */
     public static void main(String[] args) {
-        if (args.length != 1) {
-            throw new IllegalArgumentException("Expected one server-owned process root");
+        if (args.length != 1 && args.length != 3) {
+            throw new IllegalArgumentException(
+                    "Expected a process root and optional benchmark scenario/delay");
         }
         Path root = Path.of(args[0]).toAbsolutePath().normalize();
         if (!Files.isDirectory(root)) {
             throw new IllegalArgumentException("Process root must already exist");
+        }
+        String benchmarkScenario = args.length == 3 ? args[1] : null;
+        int benchmarkDelayMillis = args.length == 3
+                ? Integer.parseInt(args[2]) : 0;
+        if (args.length == 3
+                && (benchmarkScenario.isBlank() || benchmarkDelayMillis <= 0
+                        || benchmarkDelayMillis % 16 != 0)) {
+            throw new IllegalArgumentException(
+                    "Benchmark delay must be a positive fixed-step multiple");
         }
 
         Lwjgl3ApplicationConfiguration configuration = new Lwjgl3ApplicationConfiguration();
@@ -45,11 +60,12 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
         configuration.setForegroundFPS(60);
         configuration.setIdleFPS(60);
         configuration.disableAudio(true);
-        new Lwjgl3Application(new ReferenceUiApplication(root), configuration);
+        new Lwjgl3Application(new ReferenceUiApplication(
+                root, benchmarkScenario, benchmarkDelayMillis), configuration);
     }
 
     @Override public void create() {
-        screen = new ReferenceScreen();
+        screen = new ReferenceScreen(benchmarkScenario, benchmarkDelayMillis);
         control = new FixtureControl(screen.stage(), processRoot);
         screen.attachSemantics(control.semantics());
         Gdx.input.setInputProcessor(screen.stage());
