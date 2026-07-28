@@ -10,6 +10,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -226,6 +227,24 @@ final class ProtocolJsonContractTest {
                 ProtocolJson.ProtocolJsonException.class, () -> ProtocolJson.encode(response));
 
         assertEquals("limit-exceeded", failure.code());
+    }
+
+    @Test void screenshotPayloadAboveGenericStringLimitRoundTrips() throws Exception {
+        String pngBase64 = Base64.getEncoder().encodeToString(new byte[32 * 1_024]);
+        HarnessResponse source = new HarnessResponse.Success(ProtocolVersion.V1, "r", "s",
+                new HarnessResponse.Result.Screenshot(pngBase64, "0".repeat(64),
+                        1, 1, 100, 100, 1, 1));
+
+        byte[] encoded = ProtocolJson.encode(source);
+        HarnessResponse decoded = ProtocolJson.mapper().readValue(
+                encoded, HarnessResponse.class);
+        HarnessResponse.Success success = assertInstanceOf(
+                HarnessResponse.Success.class, decoded);
+        HarnessResponse.Result.Screenshot screenshot = assertInstanceOf(
+                HarnessResponse.Result.Screenshot.class, success.result());
+
+        assertTrue(pngBase64.length() > ProtocolJson.MAX_STRING_LENGTH);
+        assertEquals(pngBase64, screenshot.pngBase64());
     }
 
     @Test void enforcesNestingStringAndNumberConstraints() {

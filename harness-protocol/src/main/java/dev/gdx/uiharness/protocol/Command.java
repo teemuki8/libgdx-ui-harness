@@ -78,8 +78,10 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
             if (maxPixels <= 0 || maxPixels > 33_554_432L) {
                 throw new IllegalArgumentException("maxPixels exceeds protocol limit");
             }
-            if (maxPngBytes <= 0 || maxPngBytes > 64 * 1_024 * 1_024) {
-                throw new IllegalArgumentException("maxPngBytes exceeds protocol limit");
+            if (maxPngBytes <= 0
+                    || maxPngBytes > HarnessResponse.Result.Screenshot.MAX_PNG_BYTES) {
+                throw new IllegalArgumentException(
+                        "maxPngBytes exceeds protocol response limit");
             }
         }
 

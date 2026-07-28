@@ -4,6 +4,9 @@ import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import dev.gdx.uiharness.core.action.ActionResult;
 import dev.gdx.uiharness.core.capture.CapturedImage;
+import dev.gdx.uiharness.core.error.ErrorCode;
+import dev.gdx.uiharness.core.error.ErrorEvidence;
+import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.locator.QueryResult;
 import dev.gdx.uiharness.core.model.Bounds;
 import dev.gdx.uiharness.core.model.SemanticNode;
@@ -168,9 +171,21 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                 int height,
                 double scaleX,
                 double scaleY) implements Result {
+            /**
+             * Maximum PNG bytes whose base64 form leaves room for the response envelope within
+             * {@link ProtocolJson#MAX_RESPONSE_BYTES}.
+             */
+            public static final int MAX_PNG_BYTES =
+                    ((ProtocolJson.MAX_RESPONSE_BYTES - 4_096) / 4) * 3;
+            private static final int MAX_BASE64_LENGTH = (MAX_PNG_BYTES / 3) * 4;
+
             /** Validates encoded screenshot metadata. */
             public Screenshot {
-                ProtocolJson.requireText(pngBase64, "pngBase64");
+                Objects.requireNonNull(pngBase64, "pngBase64");
+                if (pngBase64.isBlank() || pngBase64.length() > MAX_BASE64_LENGTH) {
+                    throw new IllegalArgumentException(
+                            "pngBase64 exceeds protocol screenshot limit");
+                }
                 ProtocolJson.requireText(sha256, "sha256");
                 if (frame < 0 || revision < 0 || width <= 0 || height <= 0) {
                     throw new IllegalArgumentException("invalid screenshot metadata");
@@ -182,7 +197,16 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             }
 
             static Screenshot fromCore(CapturedImage image) {
-                return new Screenshot(Base64.getEncoder().encodeToString(image.pngBytes()),
+                byte[] pngBytes = image.pngBytes();
+                if (pngBytes.length > MAX_PNG_BYTES) {
+                    throw new HarnessException(ErrorCode.LIMIT_EXCEEDED,
+                            "Captured PNG exceeds protocol response byte limit",
+                            ErrorEvidence.ofDetails(Map.of(
+                                    "limit", "response-byte-limit",
+                                    "maximumBytes", Integer.toString(MAX_PNG_BYTES),
+                                    "actualBytes", Integer.toString(pngBytes.length))));
+                }
+                return new Screenshot(Base64.getEncoder().encodeToString(pngBytes),
                         image.sha256(), image.frame(), image.revision(), image.width(),
                         image.height(), image.scale().x(), image.scale().y());
             }

@@ -29,6 +29,8 @@ import java.util.regex.Pattern;
 public final class HarnessProtocolService {
     private static final Pattern STACK_FRAME = Pattern.compile(
             "\\bat\\s+[A-Za-z_$][\\w.$]*(?:\\([^\\r\\n)]*\\))?");
+    private static final Pattern FILE_URI = Pattern.compile(
+            "(?i)\\bfile:(?:/{1,3}|\\\\{1,3})[^\\s,;\\\"'{}\\[\\]]+");
     private static final Pattern FILE_PATH = Pattern.compile(
             "(?:[A-Za-z]:\\\\|(?<![A-Za-z0-9:/])/(?!/))[^\\s,;\\\"'{}\\[\\]]+");
     private final Map<String, Session> sessions;
@@ -222,8 +224,9 @@ public final class HarnessProtocolService {
     }
 
     private static String redact(String value) {
-        String withoutFrames = STACK_FRAME.matcher(Objects.requireNonNull(value, "value"))
+        String withoutFileUris = FILE_URI.matcher(Objects.requireNonNull(value, "value"))
                 .replaceAll("[redacted]");
+        String withoutFrames = STACK_FRAME.matcher(withoutFileUris).replaceAll("[redacted]");
         return FILE_PATH.matcher(withoutFrames).replaceAll("[redacted]");
     }
 

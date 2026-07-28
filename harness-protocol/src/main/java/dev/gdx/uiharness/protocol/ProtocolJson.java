@@ -18,14 +18,16 @@ public final class ProtocolJson {
     public static final int MAX_REQUEST_BYTES = 1_048_576;
     /** Maximum encoded response size. */
     public static final int MAX_RESPONSE_BYTES = 16_777_216;
-    /** Maximum JSON string length enforced by Jackson and DTO constructors. */
+    /** Maximum ordinary request/evidence string length enforced by DTO constructors. */
     public static final int MAX_STRING_LENGTH = 16_384;
     /** Maximum JSON number token length. */
     public static final int MAX_NUMBER_LENGTH = 128;
     /** Maximum JSON nesting depth. */
     public static final int MAX_NESTING_DEPTH = 64;
     private static final int MAX_IDENTIFIER_LENGTH = 256;
-    private static final ObjectMapper MAPPER = createMapper();
+    private static final ObjectMapper MAPPER =
+            createMapper(HarnessResponse.Result.Screenshot.MAX_PNG_BYTES / 3 * 4);
+    private static final ObjectMapper REQUEST_MAPPER = createMapper(MAX_STRING_LENGTH);
 
     private ProtocolJson() {}
 
@@ -42,7 +44,7 @@ public final class ProtocolJson {
                     "request exceeds " + MAX_REQUEST_BYTES + " bytes", null);
         }
         try {
-            return MAPPER.readValue(json, HarnessRequest.class);
+            return REQUEST_MAPPER.readValue(json, HarnessRequest.class);
         } catch (IOException failure) {
             throw new ProtocolJsonException("invalid-request", "malformed protocol JSON", failure);
         }
@@ -73,10 +75,10 @@ public final class ProtocolJson {
         }
     }
 
-    private static ObjectMapper createMapper() {
+    private static ObjectMapper createMapper(int maxStringLength) {
         StreamReadConstraints constraints = StreamReadConstraints.builder()
                 .maxNestingDepth(MAX_NESTING_DEPTH)
-                .maxStringLength(MAX_STRING_LENGTH)
+                .maxStringLength(maxStringLength)
                 .maxNumberLength(MAX_NUMBER_LENGTH)
                 .build();
         JsonFactory factory = JsonFactory.builder()

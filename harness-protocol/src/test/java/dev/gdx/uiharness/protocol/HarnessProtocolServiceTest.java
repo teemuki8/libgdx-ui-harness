@@ -125,15 +125,21 @@ final class HarnessProtocolServiceTest {
 
     @Test void translatesTypedEvidenceWhileRedactingPathsAndStackFragments() {
         ErrorEvidence evidence = new ErrorEvidence(Optional.of("core-request"),
-                Optional.of("core-session"), Optional.of("role(button)"),
+                Optional.of("core-session"), Optional.of("file:///home/private/locator.txt"),
                 Duration.ofMillis(12), OptionalLong.of(7),
-                Optional.of("/home/private/traces/t.json"),
-                List.of(Map.of("path", "/secret/game/screen.java:12")),
-                Map.of("failure", "at game.Actor.run(Actor.java:42) /tmp/crash.log",
-                        "artifact", "trace://safe-reference"));
+                Optional.of("artifact://safe-trace-reference"),
+                List.of(Map.of(
+                        "unix", "file:///home/private/screen.java:12",
+                        "windows", "file:///C:/Users/private/screen.java:12")),
+                Map.of(
+                        "failure", "at game.Actor.run(Actor.java:42) file:///tmp/crash.log",
+                        "windows", "file://C:\\Users\\private\\crash.log",
+                        "trace", "trace://safe-reference",
+                        "artifact", "artifact://safe-reference"));
         RecordingHarness harness = new RecordingHarness();
         harness.snapshotFailure = new HarnessException(ErrorCode.NOT_FOUND,
-                "not found under /home/private/project", evidence);
+                "not found under /home/private/project and file:///home/private/project",
+                evidence);
         HarnessProtocolService service = service(harness, new RecordingCapture(),
                 HarnessProtocolService.TraceController.unsupported());
 
@@ -144,16 +150,19 @@ final class HarnessProtocolServiceTest {
 
         assertEquals(ProtocolError.Code.NOT_FOUND, error.code());
         assertEquals("request-1", error.requestId());
-        assertEquals("game", error.sessionId());
-        assertEquals("role(button)", error.locator());
+        assertEquals("[redacted]", error.locator());
         assertEquals(12, error.elapsedMillis());
         assertEquals(7L, error.lastSnapshotRevision());
+        assertEquals("artifact://safe-trace-reference", error.traceReference());
         assertFalse(json.contains("/home/private"));
-        assertFalse(json.contains("/secret"));
         assertFalse(json.contains("/tmp"));
+        assertFalse(json.contains("C:/Users"));
+        assertFalse(json.contains("C:\\Users"));
+        assertFalse(json.contains("file:"));
         assertFalse(json.contains("Actor.java"));
         assertTrue(json.contains("[redacted]"));
         assertTrue(json.contains("trace://safe-reference"));
+        assertTrue(json.contains("artifact://safe-reference"));
     }
 
     @Test void unexpectedExceptionBecomesStableRedactedInternalError() {
@@ -191,6 +200,23 @@ final class HarnessProtocolServiceTest {
         assertEquals("Request was cancelled", failure.error().message());
         assertEquals("cancelled", failure.error().details().get("reason"));
         assertFalse(write(failure).contains("secret"));
+    }
+
+    @Test void oversizedCapturedPngMapsToTypedLimitFailure() {
+        byte[] oversized = new byte[HarnessResponse.Result.Screenshot.MAX_PNG_BYTES + 1];
+        RecordingCapture capture = new RecordingCapture();
+        capture.image = new CapturedImage(oversized, "0".repeat(64),
+                1, 1, 1, 1, new CapturedImage.Scale(1, 1));
+        HarnessProtocolService service = service(new RecordingHarness(), capture,
+                HarnessProtocolService.TraceController.unsupported());
+
+        HarnessResponse.Failure failure = assertInstanceOf(HarnessResponse.Failure.class,
+                await(service.execute(request(new Command.Screenshot(
+                        null, 1, 1, 1, HarnessResponse.Result.Screenshot.MAX_PNG_BYTES)))));
+
+        assertEquals(ProtocolError.Code.LIMIT_EXCEEDED, failure.error().code());
+        assertEquals("response-byte-limit", failure.error().details().get("limit"));
+        assertFalse(write(failure).contains("internal-error"));
     }
 
     private static HarnessProtocolService service(RecordingHarness harness,
@@ -272,12 +298,13 @@ final class HarnessProtocolServiceTest {
 
     private static final class RecordingCapture implements ScreenCapture {
         private final AtomicInteger calls = new AtomicInteger();
+        private CapturedImage image = new CapturedImage(new byte[] {1, 2, 3},
+                "0".repeat(64), 1, 1, 1, 1, new CapturedImage.Scale(1, 1));
 
         @Override public CompletionStage<CapturedImage> capture(CaptureRequest request,
                 Deadline deadline) {
             calls.incrementAndGet();
-            return CompletableFuture.completedFuture(new CapturedImage(new byte[] {1, 2, 3},
-                    "0".repeat(64), 1, 1, 1, 1, new CapturedImage.Scale(1, 1)));
+            return CompletableFuture.completedFuture(image);
         }
 
         @Override public void close() {}
