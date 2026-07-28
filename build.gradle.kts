@@ -23,15 +23,17 @@ val publishableModules = listOf(
     "harness-protocol",
     "harness-mcp",
 )
+val mavenGroup = "io.github.teemuki8"
+val mavenGroupPath = mavenGroup.replace('.', '/')
 val releaseVersion = providers.gradleProperty("releaseVersion").orElse("1.0.0-SNAPSHOT")
 val repositoryUrl = providers.gradleProperty("repositoryUrl")
-    .orElse("https://github.com/tjaaskel/libgdx-ui-harness")
+    .orElse("https://github.com/teemuki8/libgdx-ui-harness")
 val releaseBuild = providers.gradleProperty("release").map(String::toBoolean).orElse(false)
 val junitJupiter = libs.junit.jupiter
 val junitPlatformLauncher = libs.junit.platform.launcher
 
 allprojects {
-    group = "dev.gdx"
+    group = mavenGroup
     version = releaseVersion.get()
 }
 
@@ -117,7 +119,7 @@ subprojects {
                     }
                     scm {
                         connection.set("scm:git:${repositoryUrl.get()}.git")
-                        developerConnection.set("scm:git:ssh://git@github.com/tjaaskel/libgdx-ui-harness.git")
+                        developerConnection.set("scm:git:ssh://git@github.com/teemuki8/libgdx-ui-harness.git")
                         url.set(repositoryUrl)
                     }
                 }
@@ -173,7 +175,7 @@ val apiCompatibilityTasks = publishableModules.map { moduleName ->
             val baselineVersion = providers.gradleProperty("apiBaselineVersion")
                 .orNull ?: throw GradleException("apiBaselineVersion is required")
             val oldJar = file(
-                "$baselineRepository/dev/gdx/$moduleName/$baselineVersion/"
+                "$baselineRepository/$mavenGroupPath/$moduleName/$baselineVersion/"
                     + "$moduleName-$baselineVersion.jar",
             )
             if (!oldJar.isFile) {
@@ -246,7 +248,7 @@ val verifyCentralStaging = tasks.register("verifyCentralStaging") {
         val stagingRoot = layout.buildDirectory.dir("central-staging").get().asFile
         val versionText = releaseVersion.get()
         for (moduleName in publishableModules) {
-            val moduleDirectory = stagingRoot.resolve("dev/gdx/$moduleName/$versionText")
+            val moduleDirectory = stagingRoot.resolve("$mavenGroupPath/$moduleName/$versionText")
             for (suffix in listOf(".jar", "-sources.jar", "-javadoc.jar", ".pom")) {
                 val artifact = moduleDirectory.resolve("$moduleName-$versionText$suffix")
                 if (!artifact.isFile || artifact.length() == 0L) {

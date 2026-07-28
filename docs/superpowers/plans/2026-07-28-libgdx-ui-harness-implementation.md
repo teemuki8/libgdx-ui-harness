@@ -12,7 +12,7 @@
 
 - V1 supports LWJGL3 desktop and Scene2D/Scene2D.UI only.
 - Use JDK 25; published artifacts must not use preview or incubator APIs.
-- Group/package root is `dev.gdx.uiharness`; Gradle group is `dev.gdx`.
+- Java packages use `dev.gdx.uiharness`; the Maven group is `io.github.teemuki8`.
 - No libGDX or backend type may cross into `harness-core` or `harness-protocol` public models.
 - Every Stage/Actor access and framebuffer capture runs on the owning render thread.
 - Locators are lazy, re-resolve for every operation, and are strict by default.
