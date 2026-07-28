@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Base64;
@@ -247,6 +248,39 @@ final class ProtocolJsonContractTest {
         assertEquals(pngBase64, screenshot.pngBase64());
     }
 
+    @Test void rejectsOversizedQueryAndWaitEvidenceKeysAndValues() {
+        String oversized = "x".repeat(ProtocolJson.MAX_STRING_LENGTH + 1);
+        String query = successWithResult(
+                "{\"type\":\"query\",\"matches\":[],\"evidence\":[{\"key\":\""
+                        + oversized + "\"}]}");
+        String wait = successWithResult(
+                "{\"type\":\"wait\",\"revision\":1,\"frame\":1,\"matches\":[],"
+                        + "\"evidence\":[{\"" + oversized + "\":\"value\"}]}");
+
+        assertThrows(JsonProcessingException.class,
+                () -> ProtocolJson.mapper().readValue(query, HarnessResponse.class));
+        assertThrows(JsonProcessingException.class,
+                () -> ProtocolJson.mapper().readValue(wait, HarnessResponse.class));
+    }
+
+    @Test void rejectsOversizedSiblingActionEvidenceAndNodeProperties() throws Exception {
+        String oversized = "x".repeat(ProtocolJson.MAX_STRING_LENGTH + 1);
+        String action = successWithResult(
+                "{\"type\":\"action\",\"beforeRevision\":1,\"afterRevision\":2,"
+                        + "\"observedState\":\"done\",\"evidence\":{\"key\":\""
+                        + oversized + "\"}}");
+        ObjectNode snapshot = (ObjectNode) resource("contracts/v1/results.json")
+                .get(2).get("value").deepCopy();
+        ObjectNode properties = (ObjectNode) snapshot.at(
+                "/result/snapshot/nodes/0/properties");
+        properties.put(oversized, "value");
+
+        assertThrows(JsonProcessingException.class,
+                () -> ProtocolJson.mapper().readValue(action, HarnessResponse.class));
+        assertThrows(JsonProcessingException.class,
+                () -> ProtocolJson.mapper().treeToValue(snapshot, HarnessResponse.class));
+    }
+
     @Test void enforcesNestingStringAndNumberConstraints() {
         String deeplyNested = requestWithCommand("{\"type\":\"query\",\"locator\":"
                 + "{\"kind\":\"index\",\"index\":0,\"locator\":".repeat(70)
@@ -282,6 +316,11 @@ final class ProtocolJsonContractTest {
             }
             return ProtocolJson.mapper().readTree(stream);
         }
+    }
+
+    private static String successWithResult(String result) {
+        return "{\"status\":\"ok\",\"version\":{\"major\":1,\"minor\":0},"
+                + "\"requestId\":\"r\",\"sessionId\":\"s\",\"result\":" + result + "}";
     }
 
     private static String requestWithCommand(String command) {

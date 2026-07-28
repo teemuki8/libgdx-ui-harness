@@ -109,7 +109,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             /** Defensively copies query data. */
             public Query {
                 matches = List.copyOf(Objects.requireNonNull(matches, "matches"));
-                evidence = copyEvidence(evidence);
+                evidence = copyEvidence(evidence, "query evidence");
             }
 
             static Query fromCore(QueryResult result) {
@@ -130,7 +130,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                     throw new IllegalArgumentException("invalid action revisions");
                 }
                 ProtocolJson.requireText(observedState, "observedState");
-                evidence = Map.copyOf(Objects.requireNonNull(evidence, "evidence"));
+                evidence = copyBoundedMap(evidence, "action evidence");
             }
 
             static Action fromCore(ActionResult result) {
@@ -151,7 +151,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                     throw new IllegalArgumentException("wait counters must be non-negative");
                 }
                 matches = List.copyOf(Objects.requireNonNull(matches, "matches"));
-                evidence = copyEvidence(evidence);
+                evidence = copyEvidence(evidence, "wait evidence");
             }
 
             static Wait fromCore(WaitResult result) {
@@ -235,9 +235,11 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         }
 
         private static List<Map<String, String>> copyEvidence(
-                List<Map<String, String>> evidence) {
+                List<Map<String, String>> evidence, String name) {
             Objects.requireNonNull(evidence, "evidence");
-            return evidence.stream().map(Map::copyOf).toList();
+            return evidence.stream()
+                    .map(item -> copyBoundedMap(item, name))
+                    .toList();
         }
     }
 
@@ -307,7 +309,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             localBounds = Objects.requireNonNull(localBounds, "localBounds");
             stageBounds = Objects.requireNonNull(stageBounds, "stageBounds");
             screenBounds = Objects.requireNonNull(screenBounds, "screenBounds");
-            properties = Map.copyOf(Objects.requireNonNull(properties, "properties"));
+            properties = copyBoundedMap(properties, "node properties");
         }
 
         static NodeData fromCore(SemanticNode node) {
@@ -370,5 +372,21 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         static BoundsData fromCore(Bounds bounds) {
             return new BoundsData(bounds.x(), bounds.y(), bounds.width(), bounds.height());
         }
+    }
+
+    private static Map<String, String> copyBoundedMap(
+            Map<String, String> source, String name) {
+        Objects.requireNonNull(source, name);
+        if (source.size() > 256) {
+            throw new IllegalArgumentException(name + " exceeds 256 entries");
+        }
+        for (Map.Entry<String, String> entry : source.entrySet()) {
+            ProtocolJson.requireText(entry.getKey(), name + " key");
+            String value = Objects.requireNonNull(entry.getValue(), name + " value");
+            if (value.length() > ProtocolJson.MAX_STRING_LENGTH) {
+                throw new IllegalArgumentException(name + " value exceeds protocol string limit");
+            }
+        }
+        return Map.copyOf(source);
     }
 }
