@@ -81,7 +81,7 @@ mkdir -p harness-{core,scene2d,lwjgl3,protocol,mcp,fixtures}/src/{main,test}/jav
 
 Expected: `./gradlew --version` reports Gradle 9.6.1 and JVM 25.
 
-- [ ] **Step 2: Write the failing build contract test**
+- [ ] **Step 2: Write the build contract test and verify RED**
 
 ```java
 package dev.gdx.uiharness.core;
@@ -95,6 +95,10 @@ final class BuildContractTest {
     }
 }
 ```
+
+Run: `./gradlew :harness-core:test --tests '*BuildContractTest'`
+
+Expected: FAIL because `harness-core` and its Java/JUnit conventions are not configured.
 
 - [ ] **Step 3: Configure the build**
 
@@ -120,7 +124,7 @@ implementation(project(":harness-protocol"))
 implementation(libs.mcp)
 ```
 
-- [ ] **Step 4: Verify the complete empty-module build**
+- [ ] **Step 4: Verify GREEN for the complete empty-module build**
 
 Run: `./gradlew clean check --warning-mode=fail`
 
@@ -819,7 +823,7 @@ Expected: compilation fails because benchmark result/statistics types do not exi
 
 Pin Playwright and browser versions in `package-lock.json`; use identical text/role/test-ID semantics and fixed logical delays. Persist raw per-run records before aggregation. Define parity as: harness completion rate and actionable-evidence rate are each at least Playwright’s; harness timeout/flaky-failure rate is no greater than Playwright’s plus a two-sided 95% Wilson interval tolerance; median tool calls are reported but do not alone fail V1.
 
-- [ ] **Step 4: Run the 20× corpus and inspect raw evidence**
+- [ ] **Step 4: Verify GREEN with the 20× parity corpus**
 
 Run:
 
@@ -856,7 +860,7 @@ git commit -m "bench: measure Playwright semantic parity"
 - Consumes: all completed modules and parity report.
 - Produces: repeatable Linux/Windows/macOS checks, public API compatibility gate, signed Maven artifacts, and compilable usage documentation.
 
-- [ ] **Step 1: Write a failing compiled public API example**
+- [ ] **Step 1: Write a compiled public API example and verify RED**
 
 ```java
 @Test void documentedJavaFlowCompilesAndRuns() {
@@ -872,6 +876,10 @@ git commit -m "bench: measure Playwright semantic parity"
 
 Copy this exact flow into `getting-started.md`; the test remains the source of truth.
 
+Run: `./gradlew :harness-fixtures:test --tests '*PublicApiExampleTest'`
+
+Expected: FAIL because `FixtureHarness` and the documented release wiring do not exist.
+
 - [ ] **Step 2: Add CI and compatibility gates**
 
 Linux runs `xvfb-run -a ./gradlew clean check` and the parity smoke subset. Windows and macOS run `./gradlew clean check` including native LWJGL3 smoke tests. Add binary/source API comparison against the latest release after the first release tag, dependency locking, dependency verification, CodeQL, and artifact retention for failed traces/screenshots.
@@ -880,7 +888,7 @@ Linux runs `xvfb-run -a ./gradlew clean check` and the parity smoke subset. Wind
 
 Publish `harness-core`, `harness-scene2d`, `harness-lwjgl3`, `harness-protocol`, and `harness-mcp`; do not publish fixtures/benchmarks. Require signed tags, Maven Central credentials, in-memory PGP keys, sources, Javadocs, license metadata, SCM coordinates, and staging verification. Document installation, session lifecycle, semantic metadata, all nine MCP tools, limits, trace artifacts, and explicit V1 non-goals.
 
-- [ ] **Step 4: Run the release candidate gate**
+- [ ] **Step 4: Verify GREEN with the release candidate gate**
 
 Run:
 
