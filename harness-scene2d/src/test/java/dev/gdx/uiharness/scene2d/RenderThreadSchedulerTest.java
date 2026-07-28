@@ -15,6 +15,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -179,6 +180,63 @@ final class RenderThreadSchedulerTest {
                 .toCompletableFuture());
     }
 
+    @Test void closeMarksEntireDetachedBatchBeforeCompletingAnyQueuedFuture() {
+        FakeClock clock = new FakeClock();
+        RenderThreadScheduler scheduler = new RenderThreadScheduler(3);
+        Deadline deadline = Deadline.after(clock, Duration.ofSeconds(1));
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch closeCallbackStarted = new CountDownLatch(1);
+        CountDownLatch releaseCloseCallback = new CountDownLatch(1);
+        AtomicBoolean victimExecuted = new AtomicBoolean();
+        CompletableFuture<String> first = scheduler.submit(
+                () -> {
+                    firstStarted.countDown();
+                    await(releaseFirst);
+                    return "first";
+                },
+                deadline).toCompletableFuture();
+        CompletableFuture<String> blocker = scheduler.submit(
+                () -> "blocker", deadline).toCompletableFuture();
+        blocker.whenComplete((value, error) -> {
+            closeCallbackStarted.countDown();
+            await(releaseCloseCallback);
+        });
+        CompletableFuture<String> victim = scheduler.submit(
+                () -> {
+                    victimExecuted.set(true);
+                    return "victim";
+                },
+                deadline).toCompletableFuture();
+
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            CompletableFuture<Void> closing = CompletableFuture.runAsync(
+                    () -> {
+                        await(firstStarted);
+                        scheduler.close();
+                    },
+                    executor);
+            CompletableFuture<Void> releasingFirst = CompletableFuture.runAsync(
+                    () -> {
+                        await(closeCallbackStarted);
+                        releaseFirst.countDown();
+                    },
+                    executor);
+            try {
+                scheduler.drain();
+            } finally {
+                releaseCloseCallback.countDown();
+            }
+            releasingFirst.join();
+            closing.join();
+        }
+
+        assertEquals("first", first.join());
+        assertSessionClosed(blocker);
+        assertSessionClosed(victim);
+        assertFalse(victimExecuted.get());
+    }
+
     @Test void queueCapacityIsBounded() {
         FakeClock clock = new FakeClock();
         RenderThreadScheduler scheduler = new RenderThreadScheduler(1);
@@ -200,6 +258,15 @@ final class RenderThreadSchedulerTest {
             CompletableFuture<Void> attemptedDrain = CompletableFuture.runAsync(
                     () -> assertThrows(IllegalStateException.class, scheduler::drain), executor);
             attemptedDrain.join();
+        }
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(error);
         }
     }
 

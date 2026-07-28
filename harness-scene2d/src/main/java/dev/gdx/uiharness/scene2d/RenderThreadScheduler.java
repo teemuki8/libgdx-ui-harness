@@ -97,16 +97,22 @@ public final class RenderThreadScheduler implements AutoCloseable {
                 return;
             }
             open = false;
-            queued.addAll(activeBatch);
+            for (ScheduledCommand<?> command : activeBatch) {
+                if (command.markFailedIfQueued()) {
+                    queued.add(command);
+                }
+            }
             activeBatch.clear();
             ScheduledCommand<?> command;
             while ((command = queue.pollFirst()) != null) {
-                queued.add(command);
+                if (command.markFailedIfQueued()) {
+                    queued.add(command);
+                }
             }
         }
         HarnessException failure = sessionClosed();
         for (ScheduledCommand<?> command : queued) {
-            command.failQueued(failure);
+            command.completeQueuedFailure(failure);
         }
     }
 
@@ -201,16 +207,21 @@ public final class RenderThreadScheduler implements AutoCloseable {
         }
 
         void failQueued(HarnessException failure) {
-            boolean shouldComplete;
-            synchronized (this) {
-                shouldComplete = state == CommandState.QUEUED;
-                if (shouldComplete) {
-                    state = CommandState.FINISHED;
-                }
+            if (markFailedIfQueued()) {
+                completeQueuedFailure(failure);
             }
-            if (shouldComplete) {
-                super.completeExceptionally(failure);
+        }
+
+        synchronized boolean markFailedIfQueued() {
+            if (state != CommandState.QUEUED) {
+                return false;
             }
+            state = CommandState.FINISHED;
+            return true;
+        }
+
+        void completeQueuedFailure(HarnessException failure) {
+            super.completeExceptionally(failure);
         }
 
         void execute() {
