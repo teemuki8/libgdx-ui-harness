@@ -36,12 +36,16 @@ import dev.gdx.uiharness.scene2d.Scene2dSession;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -65,6 +69,7 @@ public final class FixtureControl implements AutoCloseable {
     private final Path processRoot;
     private final Path artifactRoot;
     private final Path traceRoot;
+    private final Path proofRoot;
     private final ControlledStageClock clock;
     private final RenderThreadScheduler scheduler;
     private final Scene2dSession sceneSession;
@@ -89,6 +94,7 @@ public final class FixtureControl implements AutoCloseable {
                 .toAbsolutePath().normalize();
         artifactRoot = processRoot.resolve("artifacts");
         traceRoot = processRoot.resolve("traces");
+        proofRoot = processRoot.resolve("proofs");
         createOwnedDirectories();
 
         clock = new ControlledStageClock(stage, FIXED_STEP);
@@ -99,14 +105,12 @@ public final class FixtureControl implements AutoCloseable {
         fence = new Lwjgl3FrameFence(64);
         capture = new Lwjgl3ScreenCapture(fence, sceneSession::snapshot);
         LocatorEngine locators = new StrictResolution();
-        waits = new WaitEngine(
-                () -> sceneSession.snapshot(clock.revision(), clock.frame()),
-                locators, clock, clock);
         artifactStore = new FileArtifactStore(artifactRoot,
                 new ArtifactStore.Limits(32L * 1_024 * 1_024, 64), Clock.systemUTC());
-        publisher = new StorePublisher(artifactStore);
+        publisher = new StorePublisher(artifactStore, proofRoot);
         traces = new ReferenceTraceController(traceRoot, publisher);
         tracingHarness = new TracingHarness(sceneHarness, traces);
+        waits = new WaitEngine(this::snapshotForWait, locators, clock, clock);
         protocolExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-protocol-", 0).factory());
         terminationExecutor = Executors.newThreadPerTaskExecutor(
@@ -164,6 +168,7 @@ public final class FixtureControl implements AutoCloseable {
         failure = closeResource(scheduler, failure);
         failure = closeResource(clock, failure);
         failure = closeResource(traces, failure);
+        failure = closeResource(publisher, failure);
         failure = closeResource(artifactStore, failure);
         failure = closeResource(protocolExecutor, failure);
         failure = closeResource(terminationExecutor, failure);
@@ -186,14 +191,25 @@ public final class FixtureControl implements AutoCloseable {
             Files.createDirectories(processRoot);
             Files.createDirectory(artifactRoot);
             Files.createDirectory(traceRoot);
+            Files.createDirectory(proofRoot);
         } catch (IOException failure) {
             throw new IllegalArgumentException("Unable to create fixture directories", failure);
         }
     }
 
+
+    private SemanticSnapshot snapshotForWait() {
+        SemanticSnapshot snapshot = scheduler.submit(
+                () -> sceneSession.snapshot(clock.revision(), clock.frame()),
+                Deadline.after(clock, Duration.ofSeconds(30)))
+                .toCompletableFuture().join();
+        traces.snapshot(snapshot, "wait");
+        return snapshot;
+    }
     private RuntimeException deleteOwnedDirectories(RuntimeException failure) {
         try {
             Files.deleteIfExists(traceRoot);
+            Files.deleteIfExists(proofRoot);
             Files.deleteIfExists(artifactRoot);
             Files.deleteIfExists(processRoot);
         } catch (IOException deletionFailure) {
@@ -227,20 +243,57 @@ public final class FixtureControl implements AutoCloseable {
         return accumulated;
     }
 
-    private static final class StorePublisher implements ArtifactReference.Publisher {
+    private static final class StorePublisher
+            implements ArtifactReference.Publisher, AutoCloseable {
         private final FileArtifactStore store;
+        private final Path proofRoot;
+        private final List<Path> receipts = new ArrayList<>();
 
-        StorePublisher(FileArtifactStore store) {
+        StorePublisher(FileArtifactStore store, Path proofRoot) {
             this.store = store;
+            this.proofRoot = proofRoot;
         }
 
-        @Override public ArtifactReference publish(String mediaType, byte[] content) {
+        @Override public synchronized ArtifactReference publish(
+                String mediaType, byte[] content) {
             ArtifactMediaType type = ArtifactMediaType.fromValue(mediaType);
             ArtifactId id = store.put(SESSION_ID, type, content,
                     Instant.now().plus(ARTIFACT_LIFETIME));
             ArtifactStore.Metadata metadata = store.metadata(SESSION_ID, id);
-            return new ArtifactReference("artifact:" + id.value(), mediaType,
-                    metadata.size(), metadata.sha256());
+            ArtifactReference reference = new ArtifactReference(
+                    "artifact:" + id.value(), mediaType, metadata.size(), metadata.sha256());
+            Path receipt = proofRoot.resolve(id.value() + ".receipt");
+            String proof = reference.reference() + "\n"
+                    + reference.mediaType() + "\n"
+                    + reference.byteLength() + "\n"
+                    + reference.sha256() + "\n";
+            try {
+                Files.writeString(receipt, proof, StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+            } catch (IOException failure) {
+                throw new IllegalStateException("Unable to publish artifact proof receipt", failure);
+            }
+            receipts.add(receipt);
+            return reference;
+        }
+
+        @Override public synchronized void close() throws IOException {
+            IOException failure = null;
+            for (Path receipt : receipts) {
+                try {
+                    Files.deleteIfExists(receipt);
+                } catch (IOException deletionFailure) {
+                    if (failure == null) {
+                        failure = deletionFailure;
+                    } else {
+                        failure.addSuppressed(deletionFailure);
+                    }
+                }
+            }
+            receipts.clear();
+            if (failure != null) {
+                throw failure;
+            }
         }
     }
 
@@ -302,7 +355,8 @@ public final class FixtureControl implements AutoCloseable {
             if (!active) {
                 return null;
             }
-            String requestId = "fixture-" + operationSequence.incrementAndGet();
+            String requestId = "fixture-" + operation.toLowerCase(Locale.ROOT) + "-"
+                    + operationSequence.incrementAndGet();
             long sequence = recorder.record(TraceEvent.commandStarted(
                     SESSION_ID, requestId, logicalTime(before), before,
                     Map.of("operation", operation)));
@@ -319,21 +373,23 @@ public final class FixtureControl implements AutoCloseable {
                     span.sequence(), Map.of("operation", operation)));
         }
 
-        synchronized void snapshot(SemanticSnapshot snapshot) {
+        synchronized void snapshot(SemanticSnapshot snapshot, String operation) {
             if (!active) {
                 return;
             }
             record(new TraceEvent(-1, TraceEvent.Kind.SNAPSHOT, SESSION_ID,
-                    "fixture-snapshot-" + operationSequence.incrementAndGet(),
+                    "fixture-" + operation + "-" + operationSequence.incrementAndGet(),
                     logicalTime(snapshot), snapshot.frame(), snapshot.revision(), null,
-                    Map.of("nodeCount", Integer.toString(snapshot.nodes().size()))));
+                    Map.of(
+                            "operation", operation,
+                            "nodeCount", Integer.toString(snapshot.nodes().size()))));
         }
 
         synchronized TraceSpan captureStarted(Deadline deadline) {
             if (!active) {
                 return null;
             }
-            String requestId = "fixture-capture-" + operationSequence.incrementAndGet();
+            String requestId = "fixture-screenshot-" + operationSequence.incrementAndGet();
             long sequence = record(new TraceEvent(
                     -1, TraceEvent.Kind.COMMAND_STARTED, SESSION_ID, requestId,
                     deadline.clock().nanoTime(), null, null, null,
@@ -392,7 +448,7 @@ public final class FixtureControl implements AutoCloseable {
 
         @Override public CompletionStage<SemanticSnapshot> snapshot(Deadline deadline) {
             return delegate.snapshot(deadline).thenApply(snapshot -> {
-                traces.snapshot(snapshot);
+                traces.snapshot(snapshot, "snapshot-or-query");
                 return snapshot;
             });
         }

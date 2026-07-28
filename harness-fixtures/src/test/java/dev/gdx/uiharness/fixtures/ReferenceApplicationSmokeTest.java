@@ -3,6 +3,8 @@ package dev.gdx.uiharness.fixtures;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.gdx.uiharness.core.trace.TraceReplay;
@@ -32,11 +34,19 @@ final class ReferenceApplicationSmokeTest {
                     assertEquals(List.of("action", "query", "screenshot", "snapshot", "trace", "wait"),
                             agent.capabilities(SESSION_ID));
                     agent.startTrace(SESSION_ID);
+                    HarnessMcpClient.Snapshot snapshot = agent.snapshot(SESSION_ID);
+                    assertTrue(snapshot.nodeCount() >= 20);
+                    assertTrue(snapshot.revision() > 0);
+                    assertTrue(snapshot.frame() > 0);
 
                     assertEquals(expectedSemantics, agent.semanticFixture(SESSION_ID));
                     agent.fillByLabel(SESSION_ID, "Username", "Ada");
                     agent.fillByLabel(SESSION_ID, "Password", "correct horse");
                     agent.clickByRoleAndName(SESSION_ID, "button", "Sign in");
+                    HarnessMcpClient.Wait welcome =
+                            agent.waitVisible(SESSION_ID, "Welcome, Ada");
+                    assertEquals("Welcome, Ada", welcome.text());
+                    assertTrue(welcome.revision() > snapshot.revision());
 
                     assertEquals("Welcome, Ada", agent.singleText(SESSION_ID, "Welcome, Ada"));
                     assertEquals(0, agent.queryText(SESSION_ID, "Sign in").size(),
@@ -61,9 +71,24 @@ final class ReferenceApplicationSmokeTest {
                     assertTrue(trace.events() >= 6);
                     assertTrue(trace.bytes() > 100);
                     assertFalse(trace.reference().contains("/"));
+                    assertNotEquals(screenshot.artifact().reference(), trace.reference());
+                    assertThrows(IllegalArgumentException.class, () ->
+                            app.readArtifact("artifact:" + "0".repeat(32), "application/zip"));
                     byte[] traceBytes = app.readArtifact(trace.reference(), "application/zip");
                     assertEquals('P', traceBytes[0]);
                     assertEquals('K', traceBytes[1]);
+                    HarnessMcpClient.TraceEvidence evidence =
+                            HarnessMcpClient.traceEvidence(traceBytes);
+                    assertEquals(2, evidence.completedCausalChains("Fill"));
+                    assertEquals(2, evidence.completedCausalChains("Click"));
+                    assertEquals(1, evidence.completedCausalChains("Scroll"));
+                    assertEquals(1, evidence.completedCausalChains("screenshot"));
+                    assertTrue(evidence.requestIds("Fill").stream()
+                            .allMatch(id -> id.startsWith("fixture-fill-")));
+                    assertTrue(evidence.requestIds("screenshot").stream()
+                            .allMatch(id -> id.startsWith("fixture-screenshot-")));
+                    assertTrue(evidence.hasSnapshotOperation("snapshot-or-query"));
+                    assertTrue(evidence.hasSnapshotOperation("wait"));
                     Path replayArchive = Files.createTempFile("reference-trace-", ".zip");
                     try {
                         Files.write(replayArchive, traceBytes);

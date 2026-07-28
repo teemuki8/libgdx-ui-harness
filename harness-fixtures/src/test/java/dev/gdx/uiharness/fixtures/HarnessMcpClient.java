@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.gdx.uiharness.protocol.ProtocolJson;
+import java.io.ByteArrayInputStream;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.Closeable;
@@ -11,10 +12,13 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /** Minimal synchronous MCP client that sends real SDK JSON-RPC messages over process stdio. */
 final class HarnessMcpClient implements Closeable {
@@ -66,6 +70,16 @@ final class HarnessMcpClient implements Closeable {
         return List.copyOf(capabilities);
     }
 
+    Snapshot snapshot(String sessionId) throws Exception {
+        JsonNode content = call("ui_snapshot", Map.of("sessionId", sessionId));
+        requireKind(content, "snapshot-summary");
+        return new Snapshot(
+                content.path("revision").asLong(),
+                content.path("frame").asLong(),
+                content.path("rootId").asText(),
+                content.path("nodeCount").asInt());
+    }
+
     void startTrace(String sessionId) throws Exception {
         JsonNode content = call("ui_trace_start", Map.of(
                 "sessionId", sessionId,
@@ -96,6 +110,17 @@ final class HarnessMcpClient implements Closeable {
         } catch (JsonProcessingException failure) {
             throw new IllegalStateException("Unable to encode semantic fixture", failure);
         }
+    }
+
+    Wait waitVisible(String sessionId, String text) throws Exception {
+        JsonNode content = call("ui_wait", Map.of(
+                "sessionId", sessionId,
+                "locator", textLocator("text", text),
+                "condition", "visible"));
+        requireKind(content, "wait-result");
+        JsonNode match = singleMatch(content);
+        return new Wait(content.path("revision").asLong(), content.path("frame").asLong(),
+                match.path("text").asText());
     }
 
     void fillByLabel(String sessionId, String label, String value) throws Exception {
@@ -170,6 +195,39 @@ final class HarnessMcpClient implements Closeable {
         requireKind(content, "trace-stopped");
         return new Trace(content.path("traceReference").asText(),
                 content.path("eventCount").asLong(), content.path("bytes").asLong());
+    }
+
+    static TraceEvidence traceEvidence(byte[] archive) throws Exception {
+        byte[] events = null;
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(archive))) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                if ("events.ndjson".equals(entry.getName())) {
+                    events = zip.readAllBytes();
+                    break;
+                }
+            }
+        }
+        if (events == null) {
+            throw new IllegalStateException("Trace archive omitted events.ndjson");
+        }
+        ArrayList<TraceEventData> decoded = new ArrayList<>();
+        for (String line : new String(events, StandardCharsets.UTF_8).split("\\n")) {
+            if (line.isEmpty()) {
+                continue;
+            }
+            JsonNode event = JSON.readTree(line);
+            decoded.add(new TraceEventData(
+                    event.path("sequence").asLong(),
+                    event.path("kind").asText(),
+                    event.path("requestId").isNull()
+                            ? null : event.path("requestId").asText(),
+                    event.path("parentSequence").isNull()
+                            ? null : event.path("parentSequence").asLong(),
+                    event.at("/evidence/operation").isMissingNode()
+                            ? null : event.at("/evidence/operation").asText()));
+        }
+        return new TraceEvidence(decoded);
     }
 
     @Override public void close() throws java.io.IOException {
@@ -256,9 +314,62 @@ final class HarnessMcpClient implements Closeable {
         }
     }
 
+    static final class TraceEvidence {
+        private final List<TraceEventData> events;
+
+        TraceEvidence(List<TraceEventData> events) {
+            this.events = List.copyOf(events);
+        }
+
+        int completedCausalChains(String operation) {
+            Map<String, TraceEventData> starts = new HashMap<>();
+            for (TraceEventData event : events) {
+                if ("COMMAND_STARTED".equals(event.kind())
+                        && operation.equals(event.operation())) {
+                    starts.put(event.requestId(), event);
+                }
+            }
+            int completed = 0;
+            for (TraceEventData event : events) {
+                TraceEventData start = starts.get(event.requestId());
+                if ("COMMAND_COMPLETED".equals(event.kind())
+                        && operation.equals(event.operation())
+                        && start != null
+                        && Objects.equals(event.parentSequence(), start.sequence())) {
+                    completed++;
+                }
+            }
+            return completed;
+        }
+
+        List<String> requestIds(String operation) {
+            return events.stream()
+                    .filter(event -> "COMMAND_STARTED".equals(event.kind()))
+                    .filter(event -> operation.equals(event.operation()))
+                    .map(TraceEventData::requestId)
+                    .toList();
+        }
+
+        boolean hasSnapshotOperation(String operation) {
+            return events.stream().anyMatch(event ->
+                    "SNAPSHOT".equals(event.kind()) && operation.equals(event.operation()));
+        }
+    }
+
+    private record TraceEventData(
+            long sequence,
+            String kind,
+            String requestId,
+            Long parentSequence,
+            String operation) {}
+
     record Artifact(String reference, String mediaType, long byteLength, String sha256) {}
 
     record Screenshot(int width, int height, Artifact artifact) {}
+
+    record Snapshot(long revision, long frame, String rootId, int nodeCount) {}
+
+    record Wait(long revision, long frame, String text) {}
 
     record Trace(String reference, long events, long bytes) {}
 }

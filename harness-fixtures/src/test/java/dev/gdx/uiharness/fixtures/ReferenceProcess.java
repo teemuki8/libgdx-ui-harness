@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -75,24 +76,17 @@ final class ReferenceProcess implements AutoCloseable {
     }
 
     byte[] readArtifact(HarnessMcpClient.Artifact artifact) throws Exception {
-        byte[] bytes = findStoredArtifact(artifact.sha256());
-        assertEquals(artifact.byteLength(), bytes.length);
-        return bytes;
+        ArtifactProof proof = proof(artifact.reference());
+        assertEquals(artifact.mediaType(), proof.mediaType());
+        assertEquals(artifact.byteLength(), proof.byteLength());
+        assertEquals(artifact.sha256(), proof.sha256());
+        return findUniqueStoredArtifact(proof);
     }
 
     byte[] readArtifact(String reference, String mediaType) throws Exception {
-        assertTrue(reference.startsWith("artifact:"));
-        if (!"application/zip".equals(mediaType)) {
-            throw new IllegalArgumentException("Unsupported fixture media type " + mediaType);
-        }
-        try (var paths = Files.walk(root.resolve("artifacts"))) {
-            return paths.filter(Files::isRegularFile)
-                    .map(this::readUnchecked)
-                    .filter(bytes -> bytes.length >= 2 && bytes[0] == 'P' && bytes[1] == 'K')
-                    .findFirst()
-                    .orElseThrow(() -> new IllegalStateException(
-                            "No persisted ZIP artifact below the process root"));
-        }
+        ArtifactProof proof = proof(reference);
+        assertEquals(mediaType, proof.mediaType());
+        return findUniqueStoredArtifact(proof);
     }
 
     void awaitCleanExit() throws Exception {
@@ -132,15 +126,44 @@ final class ReferenceProcess implements AutoCloseable {
         }
     }
 
-    private byte[] findStoredArtifact(String expectedSha256) throws Exception {
-        try (var paths = Files.walk(root.resolve("artifacts"))) {
-            return paths.filter(Files::isRegularFile)
-                    .map(this::readUnchecked)
-                    .filter(bytes -> expectedSha256.equals(sha256(bytes)))
-                    .findFirst()
-                    .orElseThrow(() -> new IllegalStateException(
-                            "No persisted artifact with SHA-256 " + expectedSha256));
+    private ArtifactProof proof(String reference) throws IOException {
+        if (reference == null || !reference.matches("artifact:[0-9a-f]{32}")) {
+            throw new IllegalArgumentException("Invalid opaque artifact reference");
         }
+        String id = reference.substring("artifact:".length());
+        Path receipt = root.resolve("proofs").resolve(id + ".receipt");
+        if (!Files.isRegularFile(receipt)) {
+            throw new IllegalArgumentException("Unknown opaque artifact reference");
+        }
+        List<String> fields = Files.readAllLines(receipt, StandardCharsets.UTF_8);
+        if (fields.size() != 4 || !reference.equals(fields.get(0))) {
+            throw new IllegalStateException("Malformed artifact proof receipt");
+        }
+        long byteLength;
+        try {
+            byteLength = Long.parseLong(fields.get(2));
+        } catch (NumberFormatException failure) {
+            throw new IllegalStateException("Malformed artifact proof byte length", failure);
+        }
+        return new ArtifactProof(reference, fields.get(1), byteLength, fields.get(3));
+    }
+
+    private byte[] findUniqueStoredArtifact(ArtifactProof proof) throws Exception {
+        List<byte[]> matches;
+        try (var paths = Files.walk(root.resolve("artifacts"))) {
+            matches = paths.filter(Files::isRegularFile)
+                    .map(this::readUnchecked)
+                    .filter(bytes -> proof.sha256().equals(sha256(bytes)))
+                    .toList();
+        }
+        if (matches.size() != 1) {
+            throw new IllegalStateException(
+                    "Expected one stored blob for " + proof.reference()
+                            + ", found " + matches.size());
+        }
+        byte[] bytes = matches.getFirst();
+        assertEquals(proof.byteLength(), bytes.length);
+        return bytes;
     }
 
     private byte[] readUnchecked(Path path) {
@@ -176,6 +199,9 @@ final class ReferenceProcess implements AutoCloseable {
             return "Reference process stderr:\n" + stderr;
         }
     }
+
+    private record ArtifactProof(
+            String reference, String mediaType, long byteLength, String sha256) {}
 
     private static String sha256(byte[] bytes) {
         try {
