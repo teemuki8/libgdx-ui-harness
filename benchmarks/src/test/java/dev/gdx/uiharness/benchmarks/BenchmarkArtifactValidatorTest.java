@@ -98,6 +98,49 @@ final class BenchmarkArtifactValidatorTest {
                 List.of(scenario("screenshot-diagnosis", true))));
     }
 
+    @Test void rejectsNormalScreenshotSymlinkToOptionalFailureEvidence()
+            throws Exception {
+        Fixture fixture = fixture(
+                "playwright", "screenshot-diagnosis", zip("trace"), PNG);
+        Path failure = fixture.screenshot().resolveSibling(
+                "screenshot-diagnosis-01-failure.png");
+        Files.move(fixture.screenshot(), failure);
+        Files.createSymbolicLink(fixture.screenshot(), failure.getFileName());
+        BenchmarkRunner.RunRecord doubled = claims(
+                fixture.record(), fixture.record().traceBytes(), PNG.length * 2L, true);
+
+        assertThrows(IllegalStateException.class, () -> BenchmarkArtifactValidator.validate(
+                temporary, List.of(doubled),
+                List.of(scenario("screenshot-diagnosis", true))));
+    }
+
+    @Test void rejectsTraceSymlinkAliasAcrossRunIdentities() throws Exception {
+        byte[] trace = zip("same trace");
+        Fixture first = fixture("playwright", "sign-in", trace, null);
+        Fixture second = fixture("playwright", "modal-dialog", trace, null);
+        Files.delete(second.trace());
+        Files.createSymbolicLink(second.trace(), first.trace().getFileName());
+
+        assertThrows(IllegalStateException.class, () -> BenchmarkArtifactValidator.validate(
+                temporary, List.of(first.record(), second.record()),
+                List.of(scenario("sign-in", false),
+                        scenario("modal-dialog", false))));
+    }
+
+    @Test void rejectsHardLinkedPngAcrossScenarioIdentities() throws Exception {
+        Fixture first = fixture(
+                "harness", "screenshot-diagnosis", zip("first"), PNG);
+        Fixture second = fixture(
+                "harness", "intentional-failure-trace", zip("second"), PNG);
+        Files.delete(second.screenshot());
+        Files.createLink(second.screenshot(), first.screenshot());
+
+        assertThrows(IllegalStateException.class, () -> BenchmarkArtifactValidator.validate(
+                temporary, List.of(first.record(), second.record()),
+                List.of(scenario("screenshot-diagnosis", true),
+                        scenario("intentional-failure-trace", true))));
+    }
+
     private Fixture fixture(
             String system, String scenario, byte[] trace, byte[] screenshot) throws Exception {
         Path tracePath = temporary.resolve(
