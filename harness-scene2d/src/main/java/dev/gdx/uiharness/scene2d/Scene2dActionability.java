@@ -12,10 +12,13 @@ import java.util.Objects;
 public final class Scene2dActionability {
     /** Inspects an actor only while executing on its owning render thread. */
     public Observation inspect(
-            Stage stage, Actor actor, SemanticNode node, boolean stable) {
+            Stage stage, Actor actor, SemanticNode node, boolean stable, long actorToken) {
         Objects.requireNonNull(stage, "stage");
         Objects.requireNonNull(actor, "actor");
         Objects.requireNonNull(node, "node");
+        if (actorToken <= 0) {
+            throw new IllegalArgumentException("actorToken must be positive");
+        }
         CoordinateMapper coordinates = new CoordinateMapper(stage);
         Bounds actorBounds = coordinates.stageBounds(actor);
         Bounds visibleBounds = intersection(actorBounds, coordinates.stageViewportBounds());
@@ -53,8 +56,7 @@ public final class Scene2dActionability {
                 stable,
                 viewportIntersecting,
                 hitTarget);
-        return new Observation(
-                state, pointX, pointY, System.identityHashCode(actor), actorBounds);
+        return new Observation(state, pointX, pointY, actorToken, actorBounds);
     }
 
     private static boolean reachesRoot(Actor actor, Stage stage) {
@@ -90,11 +92,14 @@ public final class Scene2dActionability {
             Actionability actionability,
             float stageX,
             float stageY,
-            int actorIdentity,
+            long actorToken,
             Bounds stageBounds) {
         public Observation {
             Objects.requireNonNull(actionability, "actionability");
             Objects.requireNonNull(stageBounds, "stageBounds");
+            if (actorToken <= 0) {
+                throw new IllegalArgumentException("actorToken must be positive");
+            }
         }
     }
 }

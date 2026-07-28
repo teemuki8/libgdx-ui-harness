@@ -114,7 +114,7 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
         }
         HarnessException failure = sessionClosed();
         for (ActionRequest request : pending) {
-            request.fail(failure);
+            request.failBeforeDispatch(failure);
         }
     }
 
@@ -137,11 +137,11 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
         private SemanticSnapshot lastSnapshot;
         private ActionabilityCheck lastCheck;
         private Bounds lastBounds;
-        private int lastActorIdentity;
+        private long lastActorToken;
         private long lastStableFrame = Long.MIN_VALUE;
         private int stableSamples;
         private boolean scheduled;
-        private boolean dispatched;
+        private RequestPhase phase = RequestPhase.PENDING;
         private long beforeRevision;
         private long beforeFrame;
 
@@ -151,28 +151,39 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
             this.deadline = deadline;
         }
 
-        synchronized void attach(FrameSignal.Subscription subscription) {
-            if (isDone()) {
-                subscription.close();
-            } else {
-                this.subscription = subscription;
+        void attach(FrameSignal.Subscription newSubscription) {
+            boolean closeSubscription;
+            synchronized (this) {
+                closeSubscription = phase == RequestPhase.TERMINAL;
+                if (!closeSubscription) {
+                    subscription = newSubscription;
+                }
+            }
+            if (closeSubscription) {
+                newSubscription.close();
             }
         }
 
         @Override public void onFrame(FrameSignal.Frame frame) {
+            HarnessException failure = null;
+            boolean shouldSchedule = false;
             synchronized (this) {
-                if (isDone()) {
+                if (phase == RequestPhase.TERMINAL) {
                     return;
                 }
                 if (deadline.isExpired()) {
-                    fail(timeout());
-                    return;
-                }
-                if (dispatched && frame.frame() <= beforeFrame) {
-                    return;
+                    failure = timeoutLocked();
+                } else if (phase == RequestPhase.PENDING
+                        || (phase == RequestPhase.AWAITING_FRAME
+                                && frame.frame() > beforeFrame)) {
+                    shouldSchedule = true;
                 }
             }
-            schedule();
+            if (failure != null) {
+                fail(failure);
+            } else if (shouldSchedule) {
+                schedule();
+            }
         }
 
         @Override public void onClosed() {
@@ -180,26 +191,31 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
         }
 
         void schedule() {
+            HarnessException failure = null;
             synchronized (this) {
-                if (isDone() || scheduled) {
+                if (phase == RequestPhase.TERMINAL || scheduled) {
                     return;
                 }
                 if (deadline.isExpired()) {
-                    fail(timeout());
-                    return;
+                    failure = timeoutLocked();
+                } else {
+                    scheduled = true;
                 }
-                scheduled = true;
+            }
+            if (failure != null) {
+                fail(failure);
+                return;
             }
             CompletionStage<Void> submitted = scheduler.submit(() -> {
                 runOnRenderThread();
                 return null;
             }, deadline);
-            submitted.whenComplete((ignored, failure) -> {
+            submitted.whenComplete((ignored, submitFailure) -> {
                 synchronized (ActionRequest.this) {
                     scheduled = false;
                 }
-                if (failure != null) {
-                    Throwable cause = unwrap(failure);
+                if (submitFailure != null) {
+                    Throwable cause = unwrap(submitFailure);
                     if (cause instanceof HarnessException harnessFailure
                             && harnessFailure.code() == ErrorCode.TIMEOUT) {
                         fail(timeout());
@@ -211,32 +227,38 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
         }
 
         private void runOnRenderThread() {
+            RequestPhase current;
+            HarnessException failure = null;
             synchronized (this) {
-                if (isDone()) {
+                current = phase;
+                if (current == RequestPhase.TERMINAL
+                        || current == RequestPhase.DISPATCHING) {
                     return;
                 }
                 if (deadline.isExpired()) {
-                    fail(timeout());
-                    return;
+                    failure = timeoutLocked();
                 }
-                if (dispatched) {
-                    completeAfterFrame();
-                } else {
-                    attemptDispatch();
-                }
+            }
+            if (failure != null) {
+                fail(failure);
+            } else if (current == RequestPhase.AWAITING_FRAME) {
+                completeAfterFrame();
+            } else {
+                attemptDispatch();
             }
         }
 
         private void attemptDispatch() {
             SemanticSnapshot snapshot = freshSnapshot();
-            lastSnapshot = snapshot;
+            recordSnapshot(snapshot);
             SemanticNode node;
             try {
                 node = locators.resolveStrict(snapshot, locator);
             } catch (HarnessException failure) {
                 if (failure.code() == ErrorCode.NOT_FOUND) {
-                    lastCheck = new Actionability(
-                            false, false, false, false, false, false, false).check(action.force());
+                    recordCheck(new Actionability(
+                            false, false, false, false, false, false, false)
+                            .check(action.force()));
                     resetStability();
                     return;
                 }
@@ -246,13 +268,15 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
 
             Actor actor = actorFor(node.id());
             if (actor == null) {
-                lastCheck = new Actionability(
-                        false, false, false, false, false, false, false).check(action.force());
+                recordCheck(new Actionability(
+                        false, false, false, false, false, false, false)
+                        .check(action.force()));
                 resetStability();
                 return;
             }
+            long actorToken = session.actorToken(actor);
             Scene2dActionability.Observation observation =
-                    actionability.inspect(stage, actor, node, false);
+                    actionability.inspect(stage, actor, node, false, actorToken);
             boolean stable = observeStability(snapshot.frame(), observation);
             Actionability base = observation.actionability();
             Actionability current = new Actionability(
@@ -263,8 +287,9 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
                     stable,
                     base.viewportIntersecting(),
                     base.hitTarget());
-            lastCheck = current.check(action.force());
-            if (!lastCheck.actionable()) {
+            ActionabilityCheck currentCheck = current.check(action.force());
+            recordCheck(currentCheck);
+            if (!currentCheck.actionable()) {
                 return;
             }
 
@@ -285,24 +310,56 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
                 resetStability();
                 return;
             }
+            long freshActorToken = session.actorToken(freshActor);
             Scene2dActionability.Observation freshObservation =
-                    actionability.inspect(stage, freshActor, freshNode, stable
-                            && freshActorIdentityMatches(freshActor, observation));
-            lastCheck = freshObservation.actionability().check(action.force());
-            if (!lastCheck.actionable()) {
+                    actionability.inspect(
+                            stage,
+                            freshActor,
+                            freshNode,
+                            stable && freshActorToken == observation.actorToken(),
+                            freshActorToken);
+            ActionabilityCheck freshCheck =
+                    freshObservation.actionability().check(action.force());
+            recordEvidence(fresh, freshCheck);
+            if (!freshCheck.actionable()) {
                 return;
             }
-            input.dispatchAt(
-                    freshActor, action, freshObservation.stageX(), freshObservation.stageY());
-            lastSnapshot = fresh;
-            beforeRevision = fresh.revision();
-            beforeFrame = fresh.frame();
-            dispatched = true;
+            if (!beginDispatch(fresh)) {
+                return;
+            }
+            try {
+                input.dispatchAt(
+                        freshActor, action, freshObservation.stageX(), freshObservation.stageY());
+            } catch (RuntimeException failure) {
+                fail(failure);
+                return;
+            }
+            synchronized (this) {
+                if (phase == RequestPhase.DISPATCHING) {
+                    phase = RequestPhase.AWAITING_FRAME;
+                }
+            }
         }
 
-        private boolean freshActorIdentityMatches(
-                Actor freshActor, Scene2dActionability.Observation prior) {
-            return System.identityHashCode(freshActor) == prior.actorIdentity();
+        private boolean beginDispatch(SemanticSnapshot snapshot) {
+            HarnessException failure = null;
+            synchronized (this) {
+                if (phase != RequestPhase.PENDING) {
+                    return false;
+                }
+                if (deadline.isExpired()) {
+                    failure = timeoutLocked();
+                } else {
+                    beforeRevision = snapshot.revision();
+                    beforeFrame = snapshot.frame();
+                    phase = RequestPhase.DISPATCHING;
+                }
+            }
+            if (failure != null) {
+                fail(failure);
+                return false;
+            }
+            return true;
         }
 
         private boolean observeStability(
@@ -310,11 +367,11 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
             if (frame == lastStableFrame) {
                 return stableSamples >= 2;
             }
-            if (observation.actorIdentity() == lastActorIdentity
+            if (observation.actorToken() == lastActorToken
                     && observation.stageBounds().equals(lastBounds)) {
                 stableSamples++;
             } else {
-                lastActorIdentity = observation.actorIdentity();
+                lastActorToken = observation.actorToken();
                 lastBounds = observation.stageBounds();
                 stableSamples = 1;
             }
@@ -324,26 +381,36 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
 
         private void resetStability() {
             lastBounds = null;
-            lastActorIdentity = 0;
+            lastActorToken = 0;
             lastStableFrame = Long.MIN_VALUE;
             stableSamples = 0;
         }
 
         private void completeAfterFrame() {
             SemanticSnapshot after = freshSnapshot();
-            lastSnapshot = after;
-            if (after.frame() <= beforeFrame || after.revision() <= beforeRevision) {
+            recordSnapshot(after);
+            long dispatchedRevision;
+            long dispatchedFrame;
+            synchronized (this) {
+                if (phase != RequestPhase.AWAITING_FRAME) {
+                    return;
+                }
+                dispatchedRevision = beforeRevision;
+                dispatchedFrame = beforeFrame;
+            }
+            if (after.frame() <= dispatchedFrame
+                    || after.revision() <= dispatchedRevision) {
                 return;
             }
             QueryResult result = locators.query(after, locator);
             String observed = observedState(result);
-            complete(new ActionResult(
-                    beforeRevision,
+            finish(new ActionResult(
+                    dispatchedRevision,
                     after.revision(),
                     observed,
                     Map.of(
                             "action", action.getClass().getSimpleName(),
-                            "beforeFrame", Long.toString(beforeFrame),
+                            "beforeFrame", Long.toString(dispatchedFrame),
                             "afterFrame", Long.toString(after.frame()))));
         }
 
@@ -393,7 +460,39 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
             return null;
         }
 
+        private void recordSnapshot(SemanticSnapshot snapshot) {
+            synchronized (this) {
+                if (phase != RequestPhase.TERMINAL) {
+                    lastSnapshot = snapshot;
+                }
+            }
+        }
+
+        private void recordCheck(ActionabilityCheck check) {
+            synchronized (this) {
+                if (phase != RequestPhase.TERMINAL) {
+                    lastCheck = check;
+                }
+            }
+        }
+
+        private void recordEvidence(
+                SemanticSnapshot snapshot, ActionabilityCheck check) {
+            synchronized (this) {
+                if (phase != RequestPhase.TERMINAL) {
+                    lastSnapshot = snapshot;
+                    lastCheck = check;
+                }
+            }
+        }
+
         private HarnessException timeout() {
+            synchronized (this) {
+                return timeoutLocked();
+            }
+        }
+
+        private HarnessException timeoutLocked() {
             OptionalLong revision = lastSnapshot == null
                     ? OptionalLong.empty()
                     : OptionalLong.of(lastSnapshot.revision());
@@ -419,34 +518,71 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
                                     "unmet", unmet)));
         }
 
-        @Override public boolean complete(ActionResult value) {
-            boolean completed = super.complete(value);
-            if (completed) {
-                cleanup();
+        private void finish(ActionResult result) {
+            synchronized (this) {
+                if (phase != RequestPhase.AWAITING_FRAME) {
+                    return;
+                }
+                phase = RequestPhase.TERMINAL;
             }
-            return completed;
+            super.complete(result);
+            cleanup();
         }
 
-        @Override public boolean completeExceptionally(Throwable failure) {
-            boolean completed = super.completeExceptionally(failure);
-            if (completed) {
+        void failBeforeDispatch(Throwable failure) {
+            boolean claimed;
+            synchronized (this) {
+                claimed = phase == RequestPhase.PENDING;
+                if (claimed) {
+                    phase = RequestPhase.TERMINAL;
+                }
+            }
+            if (claimed) {
+                super.completeExceptionally(normalize(failure));
                 cleanup();
             }
-            return completed;
-        }
-
-        @Override public boolean cancel(boolean mayInterruptIfRunning) {
-            boolean cancelled = super.cancel(false);
-            if (cancelled) {
-                cleanup();
-            }
-            return cancelled;
         }
 
         void fail(Throwable failure) {
-            completeExceptionally(failure instanceof CompletionException
-                    ? unwrap(failure)
-                    : failure);
+            boolean claimed;
+            synchronized (this) {
+                claimed = phase != RequestPhase.TERMINAL;
+                if (claimed) {
+                    phase = RequestPhase.TERMINAL;
+                }
+            }
+            if (claimed) {
+                super.completeExceptionally(normalize(failure));
+                cleanup();
+            }
+        }
+
+        @Override public boolean cancel(boolean mayInterruptIfRunning) {
+            boolean claimed;
+            synchronized (this) {
+                claimed = phase == RequestPhase.PENDING;
+                if (claimed) {
+                    phase = RequestPhase.TERMINAL;
+                }
+            }
+            if (!claimed) {
+                return false;
+            }
+            boolean cancelled = super.cancel(false);
+            cleanup();
+            return cancelled;
+        }
+
+        @Override public boolean complete(ActionResult value) {
+            return false;
+        }
+
+        @Override public boolean completeExceptionally(Throwable failure) {
+            return false;
+        }
+
+        private Throwable normalize(Throwable failure) {
+            return failure instanceof CompletionException ? unwrap(failure) : failure;
         }
 
         private void cleanup() {
@@ -460,6 +596,13 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
             }
             finished(this);
         }
+    }
+
+    private enum RequestPhase {
+        PENDING,
+        DISPATCHING,
+        AWAITING_FRAME,
+        TERMINAL
     }
 
     private static Throwable unwrap(Throwable failure) {

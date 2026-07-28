@@ -1,11 +1,16 @@
 package dev.gdx.uiharness.scene2d;
 
+import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.limits.HarnessLimits;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
+import java.lang.ref.ReferenceQueue;
+import java.lang.ref.WeakReference;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 
 /** Non-owning semantic extraction session attached to one Scene2D stage. */
@@ -14,6 +19,7 @@ public final class Scene2dSession implements AutoCloseable {
     private final Semantics semantics;
     private final ActorAdapterRegistry adapters;
     private final Scene2dSnapshotter snapshotter;
+    private final ActorTokens actorTokens = new ActorTokens();
     private volatile boolean open = true;
 
     /** Attaches a session using the default publication limits. */
@@ -46,6 +52,12 @@ public final class Scene2dSession implements AutoCloseable {
         return snapshotter.snapshot(stage, revision, frame);
     }
 
+    /** Returns this session's stable weak-identity token without retaining the Actor. */
+    long actorToken(Actor actor) {
+        requireOpen();
+        return actorTokens.token(Objects.requireNonNull(actor, "actor"));
+    }
+
     /** Returns whether the session still accepts requests. */
     public boolean isOpen() {
         return open;
@@ -56,6 +68,7 @@ public final class Scene2dSession implements AutoCloseable {
         if (open) {
             open = false;
             semantics.close();
+            actorTokens.clear();
         }
     }
 
@@ -65,6 +78,72 @@ public final class Scene2dSession implements AutoCloseable {
                     ErrorCode.SESSION_CLOSED,
                     "Scene2D session is closed",
                     ErrorEvidence.empty());
+        }
+    }
+
+    private static final class ActorTokens {
+        private final ReferenceQueue<Actor> staleActors = new ReferenceQueue<>();
+        private final Map<IdentityWeakReference, Long> tokens = new HashMap<>();
+        private long nextToken = 1;
+
+        synchronized long token(Actor actor) {
+            expungeStaleActors();
+            IdentityWeakReference lookup = IdentityWeakReference.lookup(actor);
+            Long existing = tokens.get(lookup);
+            if (existing != null) {
+                return existing;
+            }
+            long assigned = nextToken;
+            nextToken = Math.incrementExact(nextToken);
+            tokens.put(new IdentityWeakReference(actor, staleActors), assigned);
+            return assigned;
+        }
+
+        synchronized void clear() {
+            tokens.clear();
+            while (staleActors.poll() != null) {
+                // Drain the queue so a closed session retains no stale keys.
+            }
+        }
+
+        private void expungeStaleActors() {
+            IdentityWeakReference stale;
+            while ((stale = (IdentityWeakReference) staleActors.poll()) != null) {
+                tokens.remove(stale);
+            }
+        }
+    }
+
+    private static final class IdentityWeakReference extends WeakReference<Actor> {
+        private final int identityHash;
+
+        IdentityWeakReference(Actor actor, ReferenceQueue<Actor> queue) {
+            super(actor, queue);
+            identityHash = System.identityHashCode(actor);
+        }
+
+        private IdentityWeakReference(Actor actor) {
+            super(actor);
+            identityHash = System.identityHashCode(actor);
+        }
+
+        static IdentityWeakReference lookup(Actor actor) {
+            return new IdentityWeakReference(actor);
+        }
+
+        @Override public int hashCode() {
+            return identityHash;
+        }
+
+        @Override public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            }
+            if (!(other instanceof IdentityWeakReference reference)) {
+                return false;
+            }
+            Actor actor = get();
+            return actor != null && actor == reference.get();
         }
     }
 }

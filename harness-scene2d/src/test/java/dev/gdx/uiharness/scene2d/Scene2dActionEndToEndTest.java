@@ -1,6 +1,7 @@
 package dev.gdx.uiharness.scene2d;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -18,6 +19,7 @@ import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane.ScrollPaneStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.Slider;
 import com.badlogic.gdx.scenes.scene2d.ui.Slider.SliderStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
+import com.badlogic.gdx.scenes.scene2d.ui.TextButton.TextButtonStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.TextField;
 import com.badlogic.gdx.scenes.scene2d.utils.BaseDrawable;
 import dev.gdx.uiharness.core.action.Action;
@@ -27,8 +29,12 @@ import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.time.Deadline;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import org.junit.jupiter.api.Test;
 
 final class Scene2dActionEndToEndTest {
@@ -72,6 +78,100 @@ final class Scene2dActionEndToEndTest {
             click.toCompletableFuture().join();
             assertFalse(original.isChecked());
             assertTrue(replacement.isChecked());
+        }
+    }
+
+    @Test void cancellationThatWinsDuringResolutionPreventsInputDispatch() {
+        try (Fixture fixture = new Fixture()) {
+            BlockingTextButton button =
+                    new BlockingTextButton("Cancel", WidgetStyles.textButton());
+            button.setBounds(100, 100, 180, 50);
+            fixture.tag(button, "cancel-race");
+            fixture.stage.addActor(button);
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("cancel-race"), fixture.deadline());
+            fixture.nextFrame();
+            button.arm();
+
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                CompletableFuture<Boolean> cancelled = CompletableFuture.supplyAsync(() -> {
+                    button.awaitInspection();
+                    try {
+                        return click.toCompletableFuture().cancel(false);
+                    } finally {
+                        button.releaseInspection();
+                    }
+                }, executor);
+                fixture.nextFrame();
+
+                assertTrue(cancelled.join());
+                assertTrue(click.toCompletableFuture().isCancelled());
+                assertFalse(button.isChecked());
+            }
+        }
+    }
+
+    @Test void closeThatWinsDuringResolutionPreventsInputDispatch() {
+        try (Fixture fixture = new Fixture()) {
+            BlockingTextButton button =
+                    new BlockingTextButton("Close", WidgetStyles.textButton());
+            button.setBounds(100, 100, 180, 50);
+            fixture.tag(button, "close-race");
+            fixture.stage.addActor(button);
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("close-race"), fixture.deadline());
+            fixture.nextFrame();
+            button.arm();
+
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                CompletableFuture<Void> closed = CompletableFuture.runAsync(() -> {
+                    button.awaitInspection();
+                    try {
+                        fixture.harness.close();
+                    } finally {
+                        button.releaseInspection();
+                    }
+                }, executor);
+                fixture.nextFrame();
+                closed.join();
+
+                assertEquals(ErrorCode.SESSION_CLOSED, failure(click).code());
+                assertFalse(button.isChecked());
+            }
+        }
+    }
+
+    @Test void dispatchThatWinsCannotBeCancelledOrClosedRetroactively() {
+        try (Fixture fixture = new Fixture()) {
+            TextButton button = fixture.button("dispatch-wins", "Dispatch", 100, 100);
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("dispatch-wins"), fixture.deadline());
+            fixture.nextFrame();
+            fixture.nextFrame();
+
+            assertTrue(button.isChecked());
+            assertFalse(click.toCompletableFuture().isDone());
+            assertFalse(click.toCompletableFuture().cancel(false));
+            fixture.harness.close();
+            assertFalse(click.toCompletableFuture().isDone());
+            fixture.nextFrame();
+
+            ActionResult result = click.toCompletableFuture().join();
+            assertTrue(result.afterRevision() > result.beforeRevision());
+        }
+    }
+
+    @Test void sessionActorTokensAreStableUniqueAndMonotonic() {
+        try (Fixture fixture = new Fixture()) {
+            Actor first = new Actor();
+            Actor second = new Actor();
+
+            long firstToken = fixture.session.actorToken(first);
+            long secondToken = fixture.session.actorToken(second);
+
+            assertEquals(firstToken, fixture.session.actorToken(first));
+            assertNotEquals(firstToken, secondToken);
+            assertTrue(secondToken > firstToken);
         }
     }
 
@@ -295,6 +395,46 @@ final class Scene2dActionEndToEndTest {
         style.knob.setMinWidth(10);
         style.knob.setMinHeight(10);
         return style;
+    }
+
+    private static final class BlockingTextButton extends TextButton {
+        private final CountDownLatch inspectionStarted = new CountDownLatch(1);
+        private final CountDownLatch inspectionReleased = new CountDownLatch(1);
+        private volatile boolean armed;
+
+        BlockingTextButton(String text, TextButtonStyle style) {
+            super(text, style);
+        }
+
+        void arm() {
+            armed = true;
+        }
+
+        void awaitInspection() {
+            await(inspectionStarted);
+        }
+
+        void releaseInspection() {
+            inspectionReleased.countDown();
+        }
+
+        @Override public float getWidth() {
+            if (armed) {
+                armed = false;
+                inspectionStarted.countDown();
+                await(inspectionReleased);
+            }
+            return super.getWidth();
+        }
+
+        private static void await(CountDownLatch latch) {
+            try {
+                latch.await();
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("interrupted while coordinating render-thread race", error);
+            }
+        }
     }
 
     private static final class Fixture implements AutoCloseable {
