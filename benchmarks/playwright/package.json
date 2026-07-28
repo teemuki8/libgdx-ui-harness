@@ -8,7 +8,8 @@
     "npm": "12.0.1"
   },
   "scripts": {
-    "benchmark": "node reference.spec.ts"
+    "benchmark": "node reference.spec.ts",
+    "test": "node --test failure-contract.test.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1"

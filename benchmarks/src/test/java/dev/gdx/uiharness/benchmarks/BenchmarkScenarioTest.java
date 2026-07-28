@@ -62,6 +62,19 @@ final class BenchmarkScenarioTest {
         assertThrows(IllegalArgumentException.class, () -> BenchmarkScenario.parse(corpus));
     }
 
+    @Test void parserRejectsExpectedFailureWithoutExactContract() throws Exception {
+        Path corpus = write("""
+                {"schemaVersion":1,"scenarios":[
+                  {"id":"bad-failure","description":"bad","logicalDelayMillis":16,
+                   "steps":[{"action":"expect-click-failure",
+                             "locator":{"kind":"test-id","value":"missing"}}],
+                   "expected":"failure:strict-locator"}
+                ]}
+                """);
+
+        assertThrows(IllegalArgumentException.class, () -> BenchmarkScenario.parse(corpus));
+    }
+
     private Path write(String content) throws Exception {
         Path file = temporary.resolve("scenarios-" + System.nanoTime() + ".json");
         Files.writeString(file, content);

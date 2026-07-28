@@ -57,13 +57,13 @@ The runner refuses to mix a new execution with existing raw JSON. Choose a fresh
 9. screenshot diagnosis
 10. intentional failure trace
 
-Both interpreters consume the same ordered steps and use the same exact label, text, test-ID, and role-plus-accessible-name locators. Both use a fixed 96 ms logical delay. The Scene2D reference expresses it as six deterministic 16 ms stage steps; the local page uses the same fixed duration for enablement, movement, and interception. Each system uses a 500 ms semantic action deadline, starts a trace before scenario steps, captures diagnostics rather than treating an expected strict-locator failure as success by assertion alone, and preserves a real trace for every run. The intentional-failure scenario is complete only when the expected failure diagnostic, screenshot, and trace all exist.
+Both interpreters consume the same ordered steps and use the same exact label, text, test-ID, and role-plus-accessible-name locators. Both use a fixed 96 ms logical delay. The Scene2D reference expresses it as six deterministic 16 ms stage steps; the local page uses the same fixed duration for enablement, movement, and interception. Each system uses a 500 ms semantic action deadline and starts a trace before scenario steps. Every expected failure declares an explicit shared category: the harness must return the exact `strictness-violation` code and exact `details.matchCount` evidence, while Playwright must throw the declared error class with the `strict mode violation` message category. A timeout or unrelated exception fails the scenario. The intentional-failure scenario is complete only when that exact failure diagnostic, screenshot, and trace all exist.
 
 Median tool calls are descriptive only. The harness number counts production MCP `tools/call` requests. The Playwright number counts equivalent semantic step/assertion calls; setup and browser/context lifecycle are excluded from both.
 
 ## Atomic raw records and derived output
 
-A run is fsynced to a temporary file and atomically renamed under `raw/<system>/` before the next run begins. Aggregation reads those files back strictly and rejects malformed, duplicate, missing, or unexpected identities. For 20 runs, it requires exactly 200 harness records and 200 Playwright records.
+A run is fsynced to a temporary file and atomically renamed under `raw/<system>/` before the next run begins. Aggregation reads those files back strictly and rejects malformed, duplicate, missing, or unexpected identities. It also correlates each claim to the deterministic system/scenario/run artifact path, requires exact byte size plus ZIP/PNG signature, requires every claimed trace and screenshot, and rejects unclaimed extras. For 20 runs, it requires exactly 200 harness records and 200 Playwright records. The Playwright child is supervised with concurrent bounded stdout/stderr drains; on its 20-minute deadline the complete process tree is killed before drain threads are joined, so an open child pipe cannot bypass the timeout.
 
 The output directory contains:
 
@@ -84,7 +84,7 @@ For aggregate harness result $H$ and Playwright result $P$, V1 passes only when 
 - $H_{actionable} \ge P_{actionable}$
 - $H_{timeout/flaky} \le U_{Wilson95}(P_{timeout/flaky})$
 
-`Statistics.wilsonInterval` uses the two-sided 95% Wilson score interval with $z=1.959963984540054$. Thus the allowed addition to Playwright's observed timeout/flaky rate is exactly its Wilson upper bound minus its observed rate. Median calls never change the verdict. Any threshold failure exits 1; malformed corpus, malformed raw data, missing output, process failure, or output publication failure exits 2.
+`Statistics.wilsonInterval` uses the two-sided 95% Wilson score interval with $z=1.959963984540054$. Thus the allowed addition to Playwright's observed timeout/flaky rate is exactly its Wilson upper bound minus its observed rate. Median calls never change the verdict. Any threshold failure exits 1; malformed corpus/raw data, missing/corrupt/mismatched artifacts, child-process failure, or output publication failure exits 2.
 
 To re-aggregate already persisted raw records without executing either system:
 

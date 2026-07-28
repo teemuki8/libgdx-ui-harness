@@ -259,8 +259,15 @@ public final class BenchmarkRunner {
                 try {
                     client.action(step.locator(), Map.of(
                             "kind", "click", "pointer", 0, "button", 0, "force", false));
-                } catch (ToolFailure expected) {
-                    diagnostics.add(expected.getMessage());
+                } catch (ToolFailure failure) {
+                    if (!step.expectedFailure().matchesHarness(failure.error())) {
+                        throw new IllegalStateException(
+                                "Expected " + step.expectedFailure().category()
+                                        + " but harness returned " + failure.error(),
+                                failure);
+                    }
+                    diagnostics.add("expected " + step.expectedFailure().category()
+                            + ": " + failure.getMessage());
                     break;
                 }
                 throw new IllegalStateException("Expected strict click failure but click succeeded");
@@ -308,34 +315,32 @@ public final class BenchmarkRunner {
 
     private static void runPlaywright(Configuration configuration) throws Exception {
         Path playwright = configuration.project().resolve("benchmarks/playwright");
-        ProcessBuilder builder = new ProcessBuilder(
+        List<String> command = List.of(
                 "npm", "run", "benchmark", "--",
                 "--runs", Integer.toString(configuration.runs()),
                 "--corpus", configuration.corpus().toString(),
                 "--raw-dir", configuration.output().resolve("raw/playwright").toString(),
                 "--trace-dir", configuration.output().resolve("traces/playwright").toString(),
                 "--evidence-dir", configuration.output().resolve("evidence/playwright").toString());
-        builder.directory(playwright.toFile());
-        builder.redirectErrorStream(true);
-        Process process = builder.start();
-        String output;
-        try (var input = process.getInputStream()) {
-            output = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        ProcessSupervisor.Result result = ProcessSupervisor.run(
+                command, playwright, Duration.ofMinutes(20), 1024 * 1024);
+        System.out.print(result.output());
+        if (result.outputTruncated()) {
+            System.out.println("\\n[Playwright output truncated at 1048576 bytes]");
         }
-        if (!process.waitFor(20, TimeUnit.MINUTES)) {
-            process.destroyForcibly();
+        if (result.timedOut()) {
             throw new IllegalStateException("Playwright benchmark exceeded 20 minutes");
         }
-        System.out.print(output);
-        if (process.exitValue() != 0) {
+        if (result.exitCode() != 0) {
             throw new IllegalStateException(
-                    "Playwright benchmark exited " + process.exitValue());
+                    "Playwright benchmark exited " + result.exitCode());
         }
     }
 
     private static Aggregate aggregate(
             Configuration configuration, List<BenchmarkScenario> scenarios) throws Exception {
         List<RunRecord> records = readAndValidateRaw(configuration, scenarios);
+        BenchmarkArtifactValidator.validate(configuration.output(), records);
         List<RunRecord> harnessRecords = records.stream()
                 .filter(record -> "harness".equals(record.system())).toList();
         List<RunRecord> playwrightRecords = records.stream()
@@ -753,8 +758,15 @@ public final class BenchmarkRunner {
 
     private static final class ToolFailure extends Exception {
         private static final long serialVersionUID = 1L;
-        private ToolFailure(String message) {
+        private final JsonNode error;
+
+        private ToolFailure(String message, JsonNode error) {
             super(message);
+            this.error = error.deepCopy();
+        }
+
+        private JsonNode error() {
+            return error;
         }
     }
 
@@ -862,7 +874,9 @@ public final class BenchmarkRunner {
                     "name", tool,
                     "arguments", arguments));
             if (result.path("isError").asBoolean()) {
-                throw new ToolFailure("MCP " + tool + " failed: " + result);
+                throw new ToolFailure(
+                        "MCP " + tool + " failed: " + result,
+                        result.path("structuredContent"));
             }
             JsonNode content = result.path("structuredContent");
             if (!content.isObject()) {

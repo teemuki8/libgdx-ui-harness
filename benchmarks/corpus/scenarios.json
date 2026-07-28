@@ -17,7 +17,11 @@
       "description": "Preserve the strict ambiguity diagnostic before recovering with role and name",
       "logicalDelayMillis": 96,
       "steps": [
-        {"action": "expect-click-failure", "locator": {"kind": "text", "value": "Sign in"}},
+        {"action": "expect-click-failure", "locator": {"kind": "text", "value": "Sign in"},
+         "expectedFailure": {"category": "strict-locator", "harnessCode": "strictness-violation",
+           "harnessEvidencePath": "/details/matchCount", "harnessEvidenceValue": "[redacted] 2",
+           "playwrightErrorName": "Error",
+           "playwrightMessage": "strict mode violation"}},
         {"action": "click", "locator": {"kind": "role", "value": "button", "name": "Sign in"}}
       ],
       "expected": "text:Welcome, guest"
@@ -97,7 +101,11 @@
       "description": "Retain strict-locator failure, screenshot, and causal trace evidence",
       "logicalDelayMillis": 96,
       "steps": [
-        {"action": "expect-click-failure", "locator": {"kind": "test-id", "value": "does-not-exist"}},
+        {"action": "expect-click-failure", "locator": {"kind": "text", "value": "Sign in"},
+         "expectedFailure": {"category": "strict-locator", "harnessCode": "strictness-violation",
+           "harnessEvidencePath": "/details/matchCount", "harnessEvidenceValue": "[redacted] 2",
+           "playwrightErrorName": "Error",
+           "playwrightMessage": "strict mode violation"}},
         {"action": "screenshot"}
       ],
       "expected": "failure:strict-locator"

@@ -2,9 +2,19 @@ import { chromium, type AriaRole, type Browser, type Locator, type Page } from '
 import { createHash } from 'node:crypto';
 import { mkdir, open, readFile, rename, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
+import {
+  matchesExpectedFailure,
+  type FailureExpectation,
+} from './failure-contract.ts';
 
 interface PortableLocator { kind: string; value: string; name?: string; exact?: boolean }
-interface Step { action: string; locator?: PortableLocator; value?: string; amountY?: number }
+interface Step {
+  action: string;
+  locator?: PortableLocator;
+  value?: string;
+  amountY?: number;
+  expectedFailure?: FailureExpectation;
+}
 interface Scenario {
   id: string;
   description: string;
@@ -167,7 +177,14 @@ async function executeStep(
       try {
         await target.click({ timeout: 500 });
       } catch (failure) {
-        return { diagnostic: diagnostic(failure), screenshotBytes: 0 };
+        const expected = required(step.expectedFailure, 'expected failure contract');
+        if (!matchesExpectedFailure(failure, expected)) {
+          throw new Error(`Expected ${expected.category}; received ${diagnostic(failure)}`);
+        }
+        return {
+          diagnostic: `expected ${expected.category}: ${diagnostic(failure)}`,
+          screenshotBytes: 0,
+        };
       }
       throw new Error('Expected strict click failure but click succeeded');
     }
@@ -258,6 +275,13 @@ function validateCorpus(value: Corpus): void {
   }
   const ids = new Set(value.scenarios.map(scenario => scenario.id));
   if (ids.size !== value.scenarios.length) throw new Error('Duplicate scenario id');
+  for (const scenario of value.scenarios) {
+    for (const step of scenario.steps) {
+      if ((step.action === 'expect-click-failure') !== Boolean(step.expectedFailure)) {
+        throw new Error('Expected-failure steps require an explicit failure contract');
+      }
+    }
+  }
 }
 
 function parseArguments(args: string[]) {

@@ -1,5 +1,6 @@
 package dev.gdx.uiharness.benchmarks;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.gdx.uiharness.protocol.ProtocolJson;
@@ -66,7 +67,12 @@ public record BenchmarkScenario(
     }
 
     /** A semantic operation interpreted independently by the harness and Playwright runners. */
-    public record Step(String action, Locator locator, String value, Double amountY) {
+    public record Step(
+            String action,
+            Locator locator,
+            String value,
+            Double amountY,
+            FailureExpectation expectedFailure) {
         /** Validates action shape without imposing system-specific locator syntax. */
         public Step {
             action = requireText("action", action);
@@ -84,6 +90,10 @@ public record BenchmarkScenario(
             amountY = amountY == null ? 0.0 : amountY;
             if ("scroll".equals(action) && amountY == 0.0) {
                 throw new IllegalArgumentException("scroll requires non-zero amountY");
+            }
+            if ("expect-click-failure".equals(action) != (expectedFailure != null)) {
+                throw new IllegalArgumentException(
+                        "expectedFailure is required only for expect-click-failure");
             }
         }
     }
@@ -103,6 +113,44 @@ public record BenchmarkScenario(
                 throw new IllegalArgumentException("name is only valid for role locators");
             }
             exact = exact == null ? Boolean.TRUE : exact;
+        }
+    }
+
+    /** Exact cross-system category required for an intentionally failing operation. */
+    public record FailureExpectation(
+            String category,
+            String harnessCode,
+            String harnessEvidencePath,
+            String harnessEvidenceValue,
+            String playwrightErrorName,
+            String playwrightMessage) {
+        /** Validates the explicit failure category and evidence contract. */
+        public FailureExpectation {
+            category = requireText("failure category", category);
+            harnessCode = requireText("harness failure code", harnessCode);
+            harnessEvidencePath = requireText(
+                    "harness evidence path", harnessEvidencePath);
+            if (!harnessEvidencePath.startsWith("/")) {
+                throw new IllegalArgumentException(
+                        "harnessEvidencePath must be a JSON Pointer");
+            }
+            harnessEvidenceValue = requireText(
+                    "harness evidence value", harnessEvidenceValue);
+            playwrightErrorName = requireText(
+                    "Playwright error name", playwrightErrorName);
+            playwrightMessage = requireText(
+                    "Playwright error message category", playwrightMessage);
+        }
+
+        /** Matches only the exact harness code with concrete evidence at the named path. */
+        public boolean matchesHarness(JsonNode error) {
+            if (error == null || !"error".equals(error.path("kind").asText())
+                    || !harnessCode.equals(error.path("code").asText())) {
+                return false;
+            }
+            JsonNode evidence = error.at(harnessEvidencePath);
+            return !evidence.isMissingNode() && !evidence.isNull()
+                    && harnessEvidenceValue.equals(evidence.asText());
         }
     }
 
