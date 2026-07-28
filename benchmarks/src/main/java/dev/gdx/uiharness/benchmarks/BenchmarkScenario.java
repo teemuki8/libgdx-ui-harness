@@ -41,7 +41,7 @@ public record BenchmarkScenario(
     /** Strictly parses a schema-versioned corpus while preserving JSON array order. */
     public static List<BenchmarkScenario> parse(Path path) {
         Objects.requireNonNull(path, "path");
-        ObjectMapper mapper = ProtocolJson.mapper().copy()
+        ObjectMapper mapper = ProtocolJson.mapper()
                 .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
         final Corpus corpus;

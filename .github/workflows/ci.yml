@@ -1,0 +1,220 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cross-platform:
+    name: JDK 25 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install JDK 25
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Configure Gradle
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+      - name: Install Linux virtual display
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes xvfb
+      - name: Clean check on Linux
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ./gradlew clean check --warning-mode=fail
+      - name: Clean check on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\gradlew.bat clean check --warning-mode=fail
+      - name: Clean check on macOS
+        if: runner.os == 'macOS'
+        run: ./gradlew clean check --warning-mode=fail
+      - name: Qualify Linux native fixture
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ./gradlew :harness-fixtures:test --tests '*ReferenceApplicationSmokeTest' --rerun-tasks --warning-mode=fail
+      - name: Qualify Windows native fixture
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\gradlew.bat :harness-fixtures:test --tests '*ReferenceApplicationSmokeTest' --rerun-tasks --warning-mode=fail
+      - name: Qualify macOS native fixture
+        if: runner.os == 'macOS'
+        run: ./gradlew :harness-fixtures:test --tests '*ReferenceApplicationSmokeTest' --rerun-tasks --warning-mode=fail
+      - name: Retain failed diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: failed-diagnostics-${{ matrix.os }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            **/build/reports/**
+            **/build/test-results/**
+            **/build/**/*.png
+            **/build/**/*.zip
+
+  parity-smoke:
+    name: Real parity smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install JDK 25
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Install Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: benchmarks/playwright/package-lock.json
+      - name: Configure Gradle
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+      - name: Install locked Playwright runtime and Chromium
+        run: |
+          npm ci --prefix benchmarks/playwright
+          npx --prefix benchmarks/playwright playwright install --with-deps chromium
+      - name: Execute one real run per scenario and system
+        run: xvfb-run -a ./gradlew :benchmarks:run --args='--runs 1 --output build/reports/parity-ci' --warning-mode=fail
+      - name: Retain failed parity evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: failed-parity-evidence
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            build/reports/parity-ci/**
+            **/build/test-results/**
+
+  dependency-security:
+    name: Locked and verified dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install JDK 25
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Configure Gradle without dependency submission
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+      - name: Install virtual display
+        run: sudo apt-get update && sudo apt-get install --yes xvfb
+      - name: Prove locks are complete and unchanged
+        run: |
+          xvfb-run -a ./gradlew clean check --write-locks --warning-mode=fail
+          git diff --exit-code -- '**/gradle.lockfile' gradle/verification-metadata.xml
+      - name: Prove the locked cache builds offline
+        run: xvfb-run -a ./gradlew --offline clean check --warning-mode=fail
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Reject vulnerable dependency changes
+        uses: actions/dependency-review-action@595b5aeba73380359d98a5e087f648dbb0edce1b # v4.7.3
+        with:
+          fail-on-severity: moderate
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-1.0, AGPL-3.0
+
+  api-compatibility:
+    name: Released API compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out current sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Find the latest release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          if [[ -z "$tag" ]]; then
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Latest release tag is not semantic: $tag" >&2
+            exit 1
+          fi
+          echo 'available=true' >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+      - name: Check out latest release
+        if: steps.latest.outputs.available == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ steps.latest.outputs.tag }}
+          path: .api-baseline
+      - name: Install JDK 25
+        if: steps.latest.outputs.available == 'true'
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Configure Gradle
+        if: steps.latest.outputs.available == 'true'
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+      - name: Build the released Maven baseline
+        if: steps.latest.outputs.available == 'true'
+        shell: bash
+        run: ./.api-baseline/gradlew -p .api-baseline -PreleaseVersion='${{ steps.latest.outputs.version }}' -Dmaven.repo.local="$RUNNER_TEMP/api-baseline" publishToMavenLocal --warning-mode=fail
+      - name: Compare binary and source APIs
+        if: steps.latest.outputs.available == 'true'
+        shell: bash
+        run: ./gradlew -PapiBaselineRepository="$RUNNER_TEMP/api-baseline" -PapiBaselineVersion='${{ steps.latest.outputs.version }}' apiCompatibility --warning-mode=fail
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install JDK 25
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Configure Gradle
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
+        with:
+          languages: java-kotlin
+          build-mode: manual
+      - name: Compile analyzed sources
+        run: ./gradlew clean testClasses --warning-mode=fail
+      - name: Analyze
+        uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4

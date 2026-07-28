@@ -1,7 +1,6 @@
 package dev.gdx.uiharness.core.locator;
 
 import dev.gdx.uiharness.core.model.Role;
-import java.util.Objects;
 
 /**
  * Immutable lazy description of a semantic query. A locator never retains a snapshot node or a
@@ -85,69 +84,3 @@ public sealed interface Locator permits RoleLocator, TextLocator, TestIdLocator,
     }
 }
 
-record RoleLocator(Role role) implements Locator {
-    RoleLocator {
-        Objects.requireNonNull(role, "role");
-    }
-}
-
-enum TextField {
-    TEXT,
-    LABEL
-}
-
-record TextLocator(TextField field, TextMatch text) implements Locator {
-    TextLocator {
-        Objects.requireNonNull(field, "field");
-        Objects.requireNonNull(text, "text");
-    }
-}
-
-record TestIdLocator(String testId) implements Locator {
-    TestIdLocator {
-        TextMatch.requireBounded(testId, "testId");
-    }
-}
-
-enum ActorField {
-    NAME,
-    TYPE
-}
-
-record ActorLocator(ActorField field, TextMatch text) implements Locator {
-    ActorLocator {
-        Objects.requireNonNull(field, "field");
-        Objects.requireNonNull(text, "text");
-    }
-}
-
-enum Relation {
-    CHILD,
-    DESCENDANT,
-    PARENT,
-    SIBLING
-}
-
-record RelationLocator(Locator anchor, Locator target, Relation relation) implements Locator {
-    RelationLocator {
-        Objects.requireNonNull(anchor, "anchor");
-        Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(relation, "relation");
-    }
-}
-
-record FilteredLocator(Locator locator, LocatorFilter filter) implements Locator {
-    FilteredLocator {
-        Objects.requireNonNull(locator, "locator");
-        Objects.requireNonNull(filter, "filter");
-    }
-}
-
-record IndexedLocator(Locator locator, int index) implements Locator {
-    IndexedLocator {
-        Objects.requireNonNull(locator, "locator");
-        if (index < 0) {
-            throw new IllegalArgumentException("index must be non-negative");
-        }
-    }
-}

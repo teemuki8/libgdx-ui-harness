@@ -1,0 +1,20 @@
+# This is a Gradle generated file for dependency locking.
+# Manual edits can break the build and are not advised.
+# This file is expected to be part of source control.
+# To regenerate this file, run: ./gradlew :dependencies --write-locks
+com.github.siom79.japicmp:japicmp:0.23.1=japicmp
+com.google.code.findbugs:jsr305:3.0.2=japicmp
+com.google.errorprone:error_prone_annotations:2.23.0=japicmp
+com.google.guava:failureaccess:1.0.2=japicmp
+com.google.guava:guava:33.0.0-jre=japicmp
+com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava=japicmp
+com.sun.istack:istack-commons-runtime:3.0.8=japicmp
+com.sun.xml.fastinfoset:FastInfoset:1.2.16=japicmp
+jakarta.activation:jakarta.activation-api:1.2.1=japicmp
+jakarta.xml.bind:jakarta.xml.bind-api:2.3.2=japicmp
+org.checkerframework:checker-qual:3.41.0=japicmp
+org.glassfish.jaxb:jaxb-runtime:2.3.2=japicmp
+org.glassfish.jaxb:txw2:2.3.2=japicmp
+org.javassist:javassist:3.30.2-GA=japicmp
+org.jvnet.staxex:stax-ex:1.8.1=japicmp
+empty=

@@ -238,7 +238,8 @@ public final class TraceReplayer {
                         "Trace archive contains too many entries", null);
             }
             if (name.isBlank() || name.startsWith("/") || name.startsWith("\\")
-                    || name.contains("\\") || containsParentSegment(name)) {
+                    || name.contains("\\") || isDriveQualified(name)
+                    || containsParentSegment(name)) {
                 throw failure(ErrorCode.INVALID_REQUEST,
                         "Trace archive contains an unsafe entry", null);
             }
@@ -247,6 +248,13 @@ public final class TraceReplayer {
                         "Trace archive contains duplicate entries", null);
             }
         }
+    }
+
+    private static boolean isDriveQualified(String name) {
+        return name.length() >= 3
+                && Character.isLetter(name.charAt(0))
+                && name.charAt(1) == ':'
+                && name.charAt(2) == '/';
     }
 
     private static boolean containsParentSegment(String name) {

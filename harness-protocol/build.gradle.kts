@@ -1,4 +1,4 @@
 dependencies {
     api(project(":harness-core"))
-    implementation(libs.jackson.databind)
+    api(libs.jackson.databind)
 }

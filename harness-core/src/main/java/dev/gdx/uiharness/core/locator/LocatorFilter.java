@@ -1,6 +1,5 @@
 package dev.gdx.uiharness.core.locator;
 
-import java.util.Objects;
 
 /** Immutable predicate composed with a {@link Locator}. */
 public sealed interface LocatorFilter permits NameFilter, HasFilter, HasTextFilter, StateFilter {
@@ -53,26 +52,3 @@ public sealed interface LocatorFilter permits NameFilter, HasFilter, HasTextFilt
     }
 }
 
-record NameFilter(TextMatch name) implements LocatorFilter {
-    NameFilter {
-        Objects.requireNonNull(name, "name");
-    }
-}
-
-record HasFilter(Locator descendant) implements LocatorFilter {
-    HasFilter {
-        Objects.requireNonNull(descendant, "descendant");
-    }
-}
-
-record HasTextFilter(TextMatch text) implements LocatorFilter {
-    HasTextFilter {
-        Objects.requireNonNull(text, "text");
-    }
-}
-
-record StateFilter(LocatorFilter.State state, boolean expected) implements LocatorFilter {
-    StateFilter {
-        Objects.requireNonNull(state, "state");
-    }
-}

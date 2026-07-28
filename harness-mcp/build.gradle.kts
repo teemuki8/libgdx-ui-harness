@@ -3,9 +3,9 @@ plugins {
 }
 
 dependencies {
-    implementation(project(":harness-protocol"))
+    api(project(":harness-protocol"))
     implementation(libs.jackson.databind)
-    implementation(libs.mcp)
+    api(libs.mcp)
     runtimeOnly("org.slf4j:slf4j-nop:2.0.17")
 }
 

@@ -31,9 +31,13 @@ public final class ProtocolJson {
 
     private ProtocolJson() {}
 
-    /** Returns the shared immutable-configuration mapper. Never enable default typing on it. */
+    /**
+     * Returns an independently mutable copy of the canonical mapper configuration.
+     *
+     * @return mapper copy isolated from the codecs' private canonical configuration
+     */
     public static ObjectMapper mapper() {
-        return MAPPER;
+        return MAPPER.copy();
     }
 
     /** Decodes one raw request after enforcing its byte limit before tokenization. */
@@ -91,7 +95,8 @@ public final class ProtocolJson {
                 .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
                 .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
                 .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
-                .serializationInclusion(JsonInclude.Include.NON_NULL)
+                .defaultPropertyInclusion(JsonInclude.Value.construct(
+                        JsonInclude.Include.NON_NULL, JsonInclude.Include.ALWAYS))
                 .build();
     }
 

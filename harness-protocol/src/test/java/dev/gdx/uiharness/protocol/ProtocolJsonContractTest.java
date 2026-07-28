@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
@@ -192,6 +193,27 @@ final class ProtocolJsonContractTest {
         assertThrows(JsonProcessingException.class,
                 () -> ProtocolJson.mapper().readValue(malformed, HarnessRequest.class));
     }
+    @Test void mapperCallersCannotMutateCanonicalConfiguration() {
+        var callerMapper = ProtocolJson.mapper();
+        callerMapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+
+        assertTrue(ProtocolJson.mapper()
+                .isEnabled(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES));
+    }
+
+    @Test void decodeRejectsMalformedRegularExpressions() {
+        String malformedRegex = requestWithCommand(
+                "{\"type\":\"query\",\"locator\":{\"kind\":\"text\",\"field\":\"text\","
+                        + "\"match\":{\"mode\":\"regex\",\"source\":\"[\"}}}");
+
+        ProtocolJson.ProtocolJsonException failure = assertThrows(
+                ProtocolJson.ProtocolJsonException.class,
+                () -> ProtocolJson.decode(
+                        malformedRegex.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+
+        assertEquals("invalid-request", failure.code());
+    }
+
 
     @Test void rejectsInvalidDeadlineAndIdentifiers() {
         assertThrows(JsonProcessingException.class, () -> ProtocolJson.mapper().readValue(

@@ -3,11 +3,13 @@ gdx = "1.14.2"
 junit = "6.1.2"
 jackson = "2.22.1"
 mcp = "2.0.0"
+japicmp = "0.23.1"
 
 [libraries]
 gdx = { module = "com.badlogicgames.gdx:gdx", version.ref = "gdx" }
 gdx-backend-lwjgl3 = { module = "com.badlogicgames.gdx:gdx-backend-lwjgl3", version.ref = "gdx" }
 jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+japicmp = { module = "com.github.siom79.japicmp:japicmp", version.ref = "japicmp" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
 mcp = { module = "io.modelcontextprotocol.sdk:mcp", version.ref = "mcp" }

@@ -36,7 +36,7 @@ import java.util.zip.ZipInputStream;
 
 /** Reproducible real-system parity runner and fail-closed raw-data aggregator. */
 public final class BenchmarkRunner {
-    private static final ObjectMapper JSON = ProtocolJson.mapper().copy()
+    private static final ObjectMapper JSON = ProtocolJson.mapper()
             .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     private static final String SESSION_ID = "reference-ui";
@@ -758,7 +758,7 @@ public final class BenchmarkRunner {
 
     private static final class ToolFailure extends Exception {
         private static final long serialVersionUID = 1L;
-        private final JsonNode error;
+        private final transient JsonNode error;
 
         private ToolFailure(String message, JsonNode error) {
             super(message);

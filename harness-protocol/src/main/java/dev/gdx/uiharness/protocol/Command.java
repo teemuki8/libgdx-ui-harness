@@ -263,12 +263,20 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
         }
     }
 
-    /** Stable text comparison DTO. */
+    /**
+     * Stable text comparison DTO.
+     *
+     * @param mode exact, case-insensitive-exact, substring, or regex
+     * @param source bounded source text or regular expression
+     */
     record TextMatchSpec(String mode, String source) {
-        /** Validates comparison mode and bounded source text. */
+        /** Validates comparison mode, bounded source text, and regular-expression syntax. */
         public TextMatchSpec {
             requireOneOf(mode, "mode", "exact", "case-insensitive-exact", "substring", "regex");
             ProtocolJson.requireText(source, "source");
+            if ("regex".equals(mode)) {
+                TextMatch.regex(source);
+            }
         }
 
         TextMatch toCore() {

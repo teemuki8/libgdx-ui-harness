@@ -1,5 +1,6 @@
 package dev.gdx.uiharness.core.trace;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -116,6 +117,21 @@ final class TraceReplayerTest {
         HarnessException traversalFailure = assertThrows(HarnessException.class,
                 () -> new TraceReplayer().load(traversal));
         assertTrue(traversalFailure.code() == ErrorCode.INVALID_REQUEST);
+    }
+
+    @Test void rejectsWindowsDriveQualifiedArchiveEntries() throws Exception {
+        Path archive = temporaryDirectory.resolve("drive-qualified.zip");
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
+            zip.putNextEntry(new ZipEntry("C:/manifest.json"));
+            zip.write("{}".getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(archive));
+
+        assertTrue(failure.code() == ErrorCode.INVALID_REQUEST);
+        assertEquals("Trace archive contains an unsafe entry", failure.getMessage());
     }
 
     @Test void malformedManifestTimestampIsTypedInvalidRequest() throws Exception {

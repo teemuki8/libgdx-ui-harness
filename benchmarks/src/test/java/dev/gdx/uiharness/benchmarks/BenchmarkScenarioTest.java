@@ -33,12 +33,18 @@ final class BenchmarkScenarioTest {
     @Test void parserRejectsDuplicateScenarioIds() throws Exception {
         Path corpus = write("""
                 {"schemaVersion":1,"scenarios":[
-                  {"id":"same","description":"one","logicalDelayMillis":16,"steps":[],"expected":"x"},
-                  {"id":"same","description":"two","logicalDelayMillis":16,"steps":[],"expected":"x"}
+                  {"id":"same","description":"one","logicalDelayMillis":16,
+                   "steps":[{"action":"click","locator":{"kind":"test-id","value":"one"}}],
+                   "expected":"x"},
+                  {"id":"same","description":"two","logicalDelayMillis":16,
+                   "steps":[{"action":"click","locator":{"kind":"test-id","value":"two"}}],
+                   "expected":"x"}
                 ]}
                 """);
 
-        assertThrows(IllegalArgumentException.class, () -> BenchmarkScenario.parse(corpus));
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> BenchmarkScenario.parse(corpus));
+        assertEquals("Duplicate scenario id: same", failure.getMessage());
     }
 
     @Test void parserRejectsMalformedOrUnknownCorpusFields() throws Exception {
@@ -55,11 +61,15 @@ final class BenchmarkScenarioTest {
         Path corpus = write("""
                 {"schemaVersion":1,"scenarios":[
                   {"id":"bad-delay","description":"bad","logicalDelayMillis":15,
-                   "steps":[],"expected":"x"}
+                   "steps":[{"action":"click","locator":{"kind":"test-id","value":"target"}}],
+                   "expected":"x"}
                 ]}
                 """);
 
-        assertThrows(IllegalArgumentException.class, () -> BenchmarkScenario.parse(corpus));
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> BenchmarkScenario.parse(corpus));
+        assertEquals("logicalDelayMillis must be a positive multiple of 16",
+                rootCause(failure).getMessage());
     }
 
     @Test void parserRejectsExpectedFailureWithoutExactContract() throws Exception {
@@ -73,6 +83,14 @@ final class BenchmarkScenarioTest {
                 """);
 
         assertThrows(IllegalArgumentException.class, () -> BenchmarkScenario.parse(corpus));
+    }
+
+    private static Throwable rootCause(Throwable failure) {
+        Throwable cause = failure;
+        while (cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause;
     }
 
     private Path write(String content) throws Exception {

@@ -22,7 +22,7 @@ import java.util.zip.ZipInputStream;
 
 /** Minimal synchronous MCP client that sends real SDK JSON-RPC messages over process stdio. */
 final class HarnessMcpClient implements Closeable {
-    private static final ObjectMapper JSON = ProtocolJson.mapper().copy();
+    private static final ObjectMapper JSON = ProtocolJson.mapper();
     private static final String PROTOCOL_VERSION = "2025-11-25";
 
     private final BufferedReader input;

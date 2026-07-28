@@ -16,7 +16,6 @@ import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
-import dev.gdx.uiharness.core.locator.QueryResult;
 import dev.gdx.uiharness.core.locator.StrictResolution;
 import dev.gdx.uiharness.core.model.Bounds;
 import dev.gdx.uiharness.core.model.Role;

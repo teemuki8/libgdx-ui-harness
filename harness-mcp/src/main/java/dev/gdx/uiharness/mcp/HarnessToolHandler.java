@@ -33,7 +33,7 @@ public final class HarnessToolHandler implements AutoCloseable {
     private static final int DEFAULT_ARTIFACT_THRESHOLD_BYTES = 64 * 1_024;
     static final int MAX_LOCATOR_DEPTH = ProtocolJson.MAX_NESTING_DEPTH / 2;
     static final int MAX_LOCATOR_NODES = ProtocolJson.MAX_REQUEST_BYTES / 256;
-    private static final ObjectMapper COMMAND_MAPPER = ProtocolJson.mapper().copy();
+    private static final ObjectMapper COMMAND_MAPPER = ProtocolJson.mapper();
 
     private final Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol;
     private final ArtifactReference.Publisher artifacts;
