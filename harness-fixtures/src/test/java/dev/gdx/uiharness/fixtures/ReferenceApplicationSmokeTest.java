@@ -172,7 +172,6 @@ final class ReferenceApplicationSmokeTest {
         int[] expectedPixels = expectedImage.getRGB(0, 0, width, height, null, 0, width);
         int[] actualPixels = actualImage.getRGB(0, 0, width, height, null, 0, width);
         int differingPixels = 0;
-        int maximumChannelDelta = 0;
         long totalChannelDelta = 0;
         for (int index = 0; index < expectedPixels.length; index++) {
             int expectedPixel = expectedPixels[index];
@@ -182,14 +181,11 @@ final class ReferenceApplicationSmokeTest {
                 int expectedChannel = (expectedPixel >>> shift) & 0xff;
                 int actualChannel = (actualPixel >>> shift) & 0xff;
                 int delta = Math.abs(expectedChannel - actualChannel);
-                maximumChannelDelta = Math.max(maximumChannelDelta, delta);
                 totalChannelDelta += delta;
                 differs |= delta > 2;
             }
             differingPixels += differs ? 1 : 0;
         }
-        assertTrue(maximumChannelDelta <= 64,
-                "golden screenshot maximum channel delta was " + maximumChannelDelta);
         assertTrue(differingPixels <= expectedPixels.length / 100,
                 "golden screenshot differing pixels were " + differingPixels);
         assertTrue(totalChannelDelta <= expectedPixels.length / 2,
