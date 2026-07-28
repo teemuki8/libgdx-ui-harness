@@ -1,2 +1,7 @@
 .worktress/
 .superpowers/
+.gradle/
+**/build/
+.idea/
+*.iml
+out/
