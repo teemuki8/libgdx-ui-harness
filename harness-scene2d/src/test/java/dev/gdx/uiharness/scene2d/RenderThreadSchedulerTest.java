@@ -60,6 +60,30 @@ final class RenderThreadSchedulerTest {
         assertEquals(3, executions.get());
     }
 
+    @Test void cancellingABatchedCommandCannotPullANewSubmissionIntoCurrentHook() {
+        FakeClock clock = new FakeClock();
+        RenderThreadScheduler scheduler = new RenderThreadScheduler(3);
+        Deadline deadline = Deadline.after(clock, Duration.ofSeconds(1));
+        AtomicReference<CompletableFuture<String>> second = new AtomicReference<>();
+        AtomicReference<CompletableFuture<String>> replacement = new AtomicReference<>();
+        scheduler.submit(
+                () -> {
+                    second.get().cancel(false);
+                    replacement.set(scheduler.submit(
+                            () -> "replacement", deadline).toCompletableFuture());
+                    return "first";
+                },
+                deadline);
+        second.set(scheduler.submit(() -> "second", deadline).toCompletableFuture());
+
+        scheduler.drain();
+
+        assertTrue(second.get().isCancelled());
+        assertFalse(replacement.get().isDone());
+        scheduler.drain();
+        assertEquals("replacement", replacement.get().join());
+    }
+
     @Test void queueTimeCountsTowardDeadlineAndExpiredWorkNeverExecutes() {
         FakeClock clock = new FakeClock();
         RenderThreadScheduler scheduler = new RenderThreadScheduler(4);

@@ -18,6 +18,8 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.function.Supplier;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 
 /** Event-driven waits over fresh immutable semantic snapshots. */
 public final class WaitEngine implements AutoCloseable {
@@ -82,10 +84,10 @@ public final class WaitEngine implements AutoCloseable {
             long lastRevision = snapshot.revision();
             long lastFrame = snapshot.frame();
             while (true) {
-                SignaledFrame signaled = state.awaitNext(observedSequence);
-                observedSequence = signaled.sequence();
+                SignaledFrame signaled = state.awaitNext(observedSequence, deadline);
                 requireOpen(state);
                 requireUnexpired(deadline, locator, snapshot);
+                observedSequence = signaled.sequence();
                 FrameSignal.Frame event = signaled.frame();
                 if (event.revision() == lastRevision && event.frame() == lastFrame) {
                     continue;
@@ -191,45 +193,79 @@ public final class WaitEngine implements AutoCloseable {
     }
 
     private static final class WaitState {
+        private final ReentrantLock lock = new ReentrantLock();
+        private final Condition changed = lock.newCondition();
         private long sequence;
         private FrameSignal.Frame latest;
         private boolean open = true;
 
-        synchronized void signal(FrameSignal.Frame frame) {
-            if (!open) {
-                return;
-            }
-            latest = Objects.requireNonNull(frame, "frame");
-            sequence++;
-            notifyAll();
-        }
-
-        synchronized long sequence() {
-            return sequence;
-        }
-
-        synchronized SignaledFrame awaitNext(long observedSequence) {
-            while (open && sequence == observedSequence) {
-                try {
-                    wait();
-                } catch (InterruptedException error) {
-                    throw interrupted(error);
+        void signal(FrameSignal.Frame frame) {
+            lock.lock();
+            try {
+                if (!open) {
+                    return;
                 }
+                latest = Objects.requireNonNull(frame, "frame");
+                sequence++;
+                changed.signalAll();
+            } finally {
+                lock.unlock();
             }
-            if (!open) {
-                throw sessionClosed();
-            }
-            return new SignaledFrame(sequence, latest);
         }
 
-        synchronized boolean isClosed() {
-            return !open;
+        long sequence() {
+            lock.lock();
+            try {
+                return sequence;
+            } finally {
+                lock.unlock();
+            }
         }
 
-        synchronized void close() {
-            if (open) {
-                open = false;
-                notifyAll();
+        SignaledFrame awaitNext(long observedSequence, Deadline deadline) {
+            lock.lock();
+            try {
+                while (open && sequence == observedSequence && !deadline.isExpired()) {
+                    long remainingNanos = deadline.remaining().toNanos();
+                    if (remainingNanos == 0) {
+                        break;
+                    }
+                    try {
+                        changed.awaitNanos(remainingNanos);
+                    } catch (InterruptedException error) {
+                        throw interrupted(error);
+                    }
+                }
+                if (!open) {
+                    throw sessionClosed();
+                }
+                if (sequence == observedSequence) {
+                    return null;
+                }
+                return new SignaledFrame(sequence, latest);
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        boolean isClosed() {
+            lock.lock();
+            try {
+                return !open;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        void close() {
+            lock.lock();
+            try {
+                if (open) {
+                    open = false;
+                    changed.signalAll();
+                }
+            } finally {
+                lock.unlock();
             }
         }
     }

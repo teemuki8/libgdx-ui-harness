@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.HarnessException;
@@ -62,6 +63,33 @@ final class WaitEngineTest {
             assertEquals(Duration.ofMillis(100), error.evidence().elapsed());
             assertEquals(0L, error.evidence().lastSnapshotRevision().orElseThrow());
         }
+    }
+
+    @Test void monotonicDeadlineExpiresWithoutAnotherFrameSignal() {
+        MonotonicClock clock = MonotonicClock.system();
+        TestFrameSignal frames = new TestFrameSignal();
+        AtomicInteger reads = new AtomicInteger();
+        WaitEngine waits = new WaitEngine(
+                () -> {
+                    reads.incrementAndGet();
+                    return snapshot(0, 0, "target", false);
+                },
+                LOCATORS,
+                clock,
+                frames);
+        Duration timeout = Duration.ofMillis(100);
+
+        HarnessException error = assertThrows(
+                HarnessException.class,
+                () -> waits.await(
+                        TARGET,
+                        WaitCondition.visible(),
+                        Deadline.after(clock, timeout)));
+
+        assertEquals(ErrorCode.TIMEOUT, error.code());
+        assertTrue(error.evidence().elapsed().compareTo(timeout) >= 0);
+        assertEquals(0L, error.evidence().lastSnapshotRevision().orElseThrow());
+        assertEquals(1, reads.get());
     }
 
     @Test void reevaluatesOnlyForChangedFrameOrRevisionAndUsesFreshSnapshot() throws Exception {

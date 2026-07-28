@@ -21,6 +21,8 @@ public final class RenderThreadScheduler implements AutoCloseable {
     private final int capacity;
     private final Object lifecycle = new Object();
     private final ArrayDeque<ScheduledCommand<?>> queue = new ArrayDeque<>();
+    private final ArrayDeque<ScheduledCommand<?>> activeBatch = new ArrayDeque<>();
+    private boolean draining;
     private boolean open = true;
 
     /** Creates a scheduler owned by the current render thread. */
@@ -42,7 +44,7 @@ public final class RenderThreadScheduler implements AutoCloseable {
                 rejection = sessionClosed();
             } else if (deadline.isExpired()) {
                 rejection = timeout(deadline);
-            } else if (queue.size() >= capacity) {
+            } else if (queue.size() + activeBatch.size() >= capacity) {
                 rejection = queueFull(capacity);
             } else {
                 queue.addLast(command);
@@ -57,24 +59,32 @@ public final class RenderThreadScheduler implements AutoCloseable {
     /** Drains all currently queued commands from the owning render-loop hook. */
     public void drain() {
         requireOwnerThread();
-        int queuedAtStart;
+        List<ScheduledCommand<?>> batch;
         synchronized (lifecycle) {
-            queuedAtStart = queue.size();
-        }
-        for (int index = 0; index < queuedAtStart; index++) {
-            ScheduledCommand<?> command;
-            Dispatch dispatch;
-            synchronized (lifecycle) {
-                command = queue.pollFirst();
-                if (command == null) {
-                    return;
-                }
-                dispatch = command.tryDispatch();
+            if (draining) {
+                throw new IllegalStateException("scheduler drain is not reentrant");
             }
-            if (dispatch == Dispatch.EXPIRED) {
-                command.completeExpiry();
-            } else if (dispatch == Dispatch.RUN) {
-                command.execute();
+            draining = true;
+            batch = new ArrayList<>(queue);
+            queue.clear();
+            activeBatch.addAll(batch);
+        }
+        try {
+            for (ScheduledCommand<?> command : batch) {
+                Dispatch dispatch;
+                synchronized (lifecycle) {
+                    activeBatch.remove(command);
+                    dispatch = command.tryDispatch();
+                }
+                if (dispatch == Dispatch.EXPIRED) {
+                    command.completeExpiry();
+                } else if (dispatch == Dispatch.RUN) {
+                    command.execute();
+                }
+            }
+        } finally {
+            synchronized (lifecycle) {
+                draining = false;
             }
         }
     }
@@ -87,6 +97,8 @@ public final class RenderThreadScheduler implements AutoCloseable {
                 return;
             }
             open = false;
+            queued.addAll(activeBatch);
+            activeBatch.clear();
             ScheduledCommand<?> command;
             while ((command = queue.pollFirst()) != null) {
                 queued.add(command);
@@ -167,6 +179,7 @@ public final class RenderThreadScheduler implements AutoCloseable {
             }
             synchronized (lifecycle) {
                 queue.remove(this);
+                activeBatch.remove(this);
             }
             return super.cancel(false);
         }
