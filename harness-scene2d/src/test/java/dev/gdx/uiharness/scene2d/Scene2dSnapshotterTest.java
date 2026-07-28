@@ -206,10 +206,12 @@ final class Scene2dSnapshotterTest {
         actor.setBounds(0, 0, 10, 10);
         stage.addActor(actor);
         Scene2dSnapshotter snapshotter = new Scene2dSnapshotter();
+        boolean[] continuedAfterOverflow = {false};
         snapshotter.adapters().register(EqualActor.class, (value, target) -> {
             for (int index = 0; index <= 256; index++) {
                 target.property("property-" + index, "value");
             }
+            continuedAfterOverflow[0] = true;
         });
 
         HarnessException exception = assertThrows(
@@ -217,7 +219,31 @@ final class Scene2dSnapshotterTest {
 
         assertEquals(ErrorCode.LIMIT_EXCEEDED, exception.code());
         assertEquals("properties", exception.evidence().details().get("dimension"));
+        assertFalse(continuedAfterOverflow[0]);
     }
+
+    @Test void permitsReplacingAPropertyAtTheCountBound() {
+        Stage stage = stage();
+        EqualActor actor = new EqualActor();
+        actor.setBounds(0, 0, 10, 10);
+        stage.addActor(actor);
+        Scene2dSnapshotter snapshotter = new Scene2dSnapshotter();
+        snapshotter.adapters().register(EqualActor.class, (value, target) -> {
+            for (int index = 0; index < 256; index++) {
+                target.property("property-" + index, "original");
+            }
+            target.property("property-0", "replacement");
+        });
+
+        SemanticNode node = snapshotter.snapshot(stage, 1, 1).nodes().values().stream()
+                .filter(candidate -> candidate.actorType().equals("EqualActor"))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(256, node.properties().size());
+        assertEquals("replacement", node.properties().get("property-0"));
+    }
+
 
     @Test void closedSessionRejectsSnapshotsAndMetadataChanges() {
         Stage stage = stage();

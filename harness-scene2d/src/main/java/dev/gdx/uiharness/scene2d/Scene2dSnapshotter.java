@@ -26,7 +26,6 @@ import java.util.Optional;
 
 /** Extracts immutable, backend-neutral semantic snapshots from live Scene2D stages. */
 public final class Scene2dSnapshotter {
-    private static final int MAX_PROPERTIES = 256;
 
     private final HarnessLimits limits;
     private final Semantics semantics;
@@ -212,9 +211,9 @@ public final class Scene2dSnapshotter {
         validateOptional(builder.text, "text");
         validateOptional(builder.label, "label");
         validateOptional(builder.testId, "testId");
-        if (builder.properties.size() > MAX_PROPERTIES) {
+        if (builder.properties.size() > SemanticNodeBuilder.MAX_PROPERTIES) {
             String actual = Integer.toString(builder.properties.size());
-            String limit = Integer.toString(MAX_PROPERTIES);
+            String limit = Integer.toString(SemanticNodeBuilder.MAX_PROPERTIES);
             throw new HarnessException(
                     ErrorCode.LIMIT_EXCEEDED,
                     "properties exceeds configured limit " + limit + " (actual " + actual + ")",

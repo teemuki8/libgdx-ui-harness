@@ -1,5 +1,8 @@
 package dev.gdx.uiharness.scene2d;
 
+import dev.gdx.uiharness.core.error.ErrorCode;
+import dev.gdx.uiharness.core.error.ErrorEvidence;
+import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.model.Role;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -7,6 +10,8 @@ import java.util.Objects;
 
 /** Mutable, package-confined collection point whose output is validated before publication. */
 final class SemanticNodeBuilder implements ActorSemanticAdapter.Target {
+    static final int MAX_PROPERTIES = 256;
+
     Role role = Role.GENERIC;
     String accessibleName;
     String text;
@@ -88,7 +93,12 @@ final class SemanticNodeBuilder implements ActorSemanticAdapter.Target {
 
     /** Adds or replaces a custom semantic property. */
     public SemanticNodeBuilder property(String key, String value) {
-        properties.put(Objects.requireNonNull(key, "key"), Objects.requireNonNull(value, "value"));
+        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(value, "value");
+        if (!properties.containsKey(key) && properties.size() >= MAX_PROPERTIES) {
+            throw propertyLimitExceeded(properties.size() + 1);
+        }
+        properties.put(key, value);
         return this;
     }
 
@@ -108,7 +118,23 @@ final class SemanticNodeBuilder implements ActorSemanticAdapter.Target {
         if (metadata.testId() != null) {
             testId = metadata.testId();
         }
-        properties.putAll(metadata.properties());
+        metadata.properties().forEach(this::property);
+    }
+
+    private static HarnessException propertyLimitExceeded(int actual) {
+        String actualValue = Integer.toString(actual);
+        String limitValue = Integer.toString(MAX_PROPERTIES);
+        return new HarnessException(
+                ErrorCode.LIMIT_EXCEEDED,
+                "properties exceeds configured limit "
+                        + limitValue
+                        + " (actual "
+                        + actualValue
+                        + ")",
+                ErrorEvidence.ofDetails(Map.of(
+                        "dimension", "properties",
+                        "actual", actualValue,
+                        "limit", limitValue)));
     }
 
     private static String normalizeVisibleText(String value) {
