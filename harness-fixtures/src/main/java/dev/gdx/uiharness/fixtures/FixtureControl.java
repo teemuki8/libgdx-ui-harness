@@ -298,15 +298,15 @@ public final class FixtureControl implements AutoCloseable {
         }
     }
 
-    private static final class ReferenceTraceController
+    static class ReferenceTraceController
             implements HarnessProtocolService.TraceController, AutoCloseable {
         private final TraceRecorder recorder;
-        private final StorePublisher publisher;
+        private final ArtifactReference.Publisher publisher;
         private final AtomicLong operationSequence = new AtomicLong();
         private String traceId;
         private boolean active;
 
-        ReferenceTraceController(Path root, StorePublisher publisher) {
+        ReferenceTraceController(Path root, ArtifactReference.Publisher publisher) {
             recorder = new TraceRecorder(root, Clock.systemUTC());
             this.publisher = publisher;
         }
@@ -420,6 +420,15 @@ public final class FixtureControl implements AutoCloseable {
                     Map.of("operation", "screenshot", "sha256", image.sha256())));
         }
 
+        synchronized void captureFailed(Deadline deadline, TraceSpan span) {
+            if (!active || span == null) {
+                return;
+            }
+            record(new TraceEvent(-1, TraceEvent.Kind.COMMAND_FAILED, SESSION_ID,
+                    span.requestId(), deadline.clock().nanoTime(), null, null, span.sequence(),
+                    Map.of("operation", "screenshot")));
+        }
+
         private long record(TraceEvent event) {
             return recorder.record(event);
         }
@@ -428,7 +437,7 @@ public final class FixtureControl implements AutoCloseable {
             return Math.multiplyExact(snapshot.frame(), FIXED_STEP.toNanos());
         }
 
-        private record TraceSpan(long sequence, String requestId) {}
+        record TraceSpan(long sequence, String requestId) {}
 
         @Override public synchronized void close() {
             active = false;
@@ -436,7 +445,7 @@ public final class FixtureControl implements AutoCloseable {
         }
     }
 
-    private static final class TracingHarness implements Harness {
+    static final class TracingHarness implements Harness {
         private final Harness delegate;
         private final ReferenceTraceController traces;
 
@@ -460,6 +469,7 @@ public final class FixtureControl implements AutoCloseable {
             private SemanticSnapshot before;
             private ReferenceTraceController.TraceSpan span;
             private ActionResult actionResult;
+            private Phase phase = Phase.BEFORE;
             private boolean cancelling;
 
             TracedAction(Locator locator, Action action, Deadline deadline) {
@@ -475,6 +485,7 @@ public final class FixtureControl implements AutoCloseable {
                 try {
                     snapshot = delegate.snapshot(deadline);
                 } catch (Throwable failure) {
+                    phase = Phase.TERMINAL;
                     super.completeExceptionally(failure);
                     return;
                 }
@@ -489,10 +500,11 @@ public final class FixtureControl implements AutoCloseable {
                     SemanticSnapshot snapshot, Throwable snapshotFailure) {
                 CompletableFuture<ActionResult> source;
                 synchronized (lifecycle) {
-                    if (isDone() || cancelling) {
+                    if (phase != Phase.BEFORE || isDone() || cancelling) {
                         return;
                     }
                     if (snapshotFailure != null) {
+                        phase = Phase.TERMINAL;
                         super.completeExceptionally(unwrap(snapshotFailure));
                         return;
                     }
@@ -505,6 +517,7 @@ public final class FixtureControl implements AutoCloseable {
                         failAction(unwrap(actionFailure));
                         return;
                     }
+                    phase = Phase.ACTION;
                     current = source;
                 }
                 source.whenComplete(this::actionCompleted);
@@ -513,7 +526,7 @@ public final class FixtureControl implements AutoCloseable {
             private void actionCompleted(ActionResult result, Throwable actionFailure) {
                 CompletableFuture<SemanticSnapshot> source;
                 synchronized (lifecycle) {
-                    if (isDone() || cancelling) {
+                    if (phase != Phase.ACTION || isDone() || cancelling) {
                         return;
                     }
                     if (actionFailure != null) {
@@ -527,6 +540,7 @@ public final class FixtureControl implements AutoCloseable {
                         failAction(unwrap(snapshotFailure));
                         return;
                     }
+                    phase = Phase.AFTER;
                     current = source;
                 }
                 source.whenComplete(this::afterCompleted);
@@ -535,7 +549,7 @@ public final class FixtureControl implements AutoCloseable {
             private void afterCompleted(
                     SemanticSnapshot after, Throwable snapshotFailure) {
                 synchronized (lifecycle) {
-                    if (isDone() || cancelling) {
+                    if (phase != Phase.AFTER || isDone()) {
                         return;
                     }
                     if (snapshotFailure != null) {
@@ -545,9 +559,11 @@ public final class FixtureControl implements AutoCloseable {
                     try {
                         traces.commandCompleted(operation, after, span);
                     } catch (Throwable recorderFailure) {
+                        phase = Phase.TERMINAL;
                         super.completeExceptionally(recorderFailure);
                         return;
                     }
+                    phase = Phase.TERMINAL;
                     super.complete(actionResult);
                 }
             }
@@ -560,19 +576,33 @@ public final class FixtureControl implements AutoCloseable {
                         actionFailure.addSuppressed(recorderFailure);
                     }
                 }
+                phase = Phase.TERMINAL;
                 super.completeExceptionally(actionFailure);
             }
 
             @Override public boolean cancel(boolean mayInterruptIfRunning) {
                 synchronized (lifecycle) {
-                    if (isDone()) {
+                    if (phase == Phase.TERMINAL || isDone() || phase == Phase.AFTER) {
                         return false;
                     }
                     cancelling = true;
                     try {
-                        if (current == null || !current.cancel(mayInterruptIfRunning)) {
+                        if (phase == Phase.ACTION
+                                && (current == null
+                                        || !current.cancel(mayInterruptIfRunning))) {
                             return false;
                         }
+                        if (phase == Phase.BEFORE && current != null) {
+                            current.cancel(mayInterruptIfRunning);
+                        }
+                        if (phase == Phase.ACTION) {
+                            try {
+                                traces.commandFailed(operation, before, deadline, span);
+                            } catch (Throwable ignored) {
+                                // Cancellation must still release the routed operation.
+                            }
+                        }
+                        phase = Phase.TERMINAL;
                         return super.cancel(false);
                     } finally {
                         cancelling = false;
@@ -586,6 +616,13 @@ public final class FixtureControl implements AutoCloseable {
 
             @Override public boolean completeExceptionally(Throwable failure) {
                 return false;
+            }
+
+            private enum Phase {
+                BEFORE,
+                ACTION,
+                AFTER,
+                TERMINAL
             }
         }
 
@@ -605,7 +642,7 @@ public final class FixtureControl implements AutoCloseable {
         }
     }
 
-    private static final class TracingCapture implements ScreenCapture {
+    static final class TracingCapture implements ScreenCapture {
         private final ScreenCapture delegate;
         private final ReferenceTraceController traces;
 
@@ -616,15 +653,96 @@ public final class FixtureControl implements AutoCloseable {
 
         @Override public CompletionStage<CapturedImage> capture(
                 CaptureRequest request, Deadline deadline) {
-            ReferenceTraceController.TraceSpan span = traces.captureStarted(deadline);
-            return delegate.capture(request, deadline).thenApply(image -> {
-                traces.captureCompleted(image, span);
-                return image;
-            });
+            return new TracedCapture(request, deadline);
         }
 
         @Override public void close() {
             delegate.close();
+        }
+
+        private final class TracedCapture extends CompletableFuture<CapturedImage> {
+            private final Object lifecycle = new Object();
+            private final Deadline deadline;
+            private final ReferenceTraceController.TraceSpan span;
+            private CompletableFuture<CapturedImage> source;
+            private boolean terminal;
+            private boolean cancelling;
+
+            TracedCapture(CaptureRequest request, Deadline deadline) {
+                this.deadline = deadline;
+                span = traces.captureStarted(deadline);
+                try {
+                    source = delegate.capture(request, deadline).toCompletableFuture();
+                } catch (Throwable captureFailure) {
+                    failCapture(TracingHarness.unwrap(captureFailure));
+                    return;
+                }
+                source.whenComplete(this::captureCompleted);
+            }
+
+            private void captureCompleted(CapturedImage image, Throwable captureFailure) {
+                synchronized (lifecycle) {
+                    if (terminal || cancelling || isDone()) {
+                        return;
+                    }
+                    if (captureFailure != null) {
+                        failCapture(TracingHarness.unwrap(captureFailure));
+                        return;
+                    }
+                    try {
+                        traces.captureCompleted(image, span);
+                    } catch (Throwable recorderFailure) {
+                        terminal = true;
+                        super.completeExceptionally(recorderFailure);
+                        return;
+                    }
+                    terminal = true;
+                    super.complete(image);
+                }
+            }
+
+            private void failCapture(Throwable captureFailure) {
+                try {
+                    traces.captureFailed(deadline, span);
+                } catch (Throwable recorderFailure) {
+                    if (recorderFailure != captureFailure) {
+                        captureFailure.addSuppressed(recorderFailure);
+                    }
+                }
+                terminal = true;
+                super.completeExceptionally(captureFailure);
+            }
+
+            @Override public boolean cancel(boolean mayInterruptIfRunning) {
+                synchronized (lifecycle) {
+                    if (terminal || isDone() || source == null) {
+                        return false;
+                    }
+                    cancelling = true;
+                    try {
+                        if (!source.cancel(mayInterruptIfRunning)) {
+                            return false;
+                        }
+                        try {
+                            traces.captureFailed(deadline, span);
+                        } catch (Throwable ignored) {
+                            // Cancellation must still release the routed operation.
+                        }
+                        terminal = true;
+                        return super.cancel(false);
+                    } finally {
+                        cancelling = false;
+                    }
+                }
+            }
+
+            @Override public boolean complete(CapturedImage image) {
+                return false;
+            }
+
+            @Override public boolean completeExceptionally(Throwable failure) {
+                return false;
+            }
         }
     }
 }
