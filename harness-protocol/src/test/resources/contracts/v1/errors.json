@@ -1,0 +1,15 @@
+[
+  {"name":"invalid-request","value":{"code":"invalid-request","message":"invalid request","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{}}},
+  {"name":"unsupported-capability","value":{"code":"unsupported-capability","message":"unsupported capability","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{}}},
+  {"name":"session-not-found","value":{"code":"session-not-found","message":"session not found","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{}}},
+  {"name":"session-closed","value":{"code":"session-closed","message":"session closed","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{}}},
+  {"name":"not-found","value":{"code":"not-found","message":"not found","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{}}},
+  {"name":"strictness-violation","value":{"code":"strictness-violation","message":"strictness violation","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{}}},
+  {"name":"not-actionable","value":{"code":"not-actionable","message":"not actionable","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{}}},
+  {"name":"timeout","value":{"code":"timeout","message":"timeout","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{}}},
+  {"name":"render-thread-failure","value":{"code":"render-thread-failure","message":"render thread failure","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{}}},
+  {"name":"capture-failure","value":{"code":"capture-failure","message":"capture failure","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{}}},
+  {"name":"limit-exceeded","value":{"code":"limit-exceeded","message":"limit exceeded","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{}}},
+  {"name":"protocol-version-mismatch","value":{"code":"protocol-version-mismatch","message":"protocol version mismatch","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{}}},
+  {"name":"internal-error","value":{"code":"internal-error","message":"Internal harness failure","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{},"traceId":"internal-0123456789abcdef"}}
+]
