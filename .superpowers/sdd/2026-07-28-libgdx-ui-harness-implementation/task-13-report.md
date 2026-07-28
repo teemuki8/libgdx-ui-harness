@@ -68,4 +68,46 @@ The golden catalog contains exactly nine names, in order: `ui_sessions`, `ui_sna
 
 ## Self-review
 
-No secret value is logged, persisted, passed on a command line, or included in failure artifacts. Workflow expressions do not interpolate untrusted values into release commands without semver validation. Module POM scopes match public signatures; fixtures/benchmarks remain unpublished. The release staging task cannot be exercised locally without real PGP/Central secrets and intentionally fails closed; live Central `VALIDATED`/`PUBLISHED` verification remains the signed-tag workflow's responsibility.
+No secret value is logged, passed in curl arguments, inherited by third-party actions, or included in failure artifacts. Central authorization exists only in a mode-0600 temporary curl config removed by an EXIT trap. Workflow expressions do not interpolate untrusted values into release commands without semver validation. Module POM scopes match public signatures; fixtures/benchmarks remain unpublished. The release staging task cannot be exercised locally without real PGP/Central secrets and intentionally fails closed; live Central `VALIDATED`/`PUBLISHED` verification remains the signed-tag workflow's responsibility.
+
+## Review Fix Round 1
+
+Commit: `36e7701` — `fix: harden release trust and native launch`
+
+The five merge-blocking release findings were resolved:
+
+1. Tag verification now requires repository-configured armored public key secret
+   `RELEASE_SIGNING_PUBLIC_KEY` and exact allowed primary fingerprint variable
+   `RELEASE_SIGNING_FINGERPRINT`. The step imports into an isolated temporary
+   `GNUPGHOME`, requires one primary key and an exact normalized 40/64-hex
+   fingerprint, verifies the annotated semver tag and tag-to-commit binding,
+   and deletes the keyring. No maintainer key or fingerprint is embedded.
+2. Central and private signing secrets are no longer job-scoped. The private
+   key exists only in the Gradle signing step; Central credentials exist only
+   in the four trusted run steps that need release configuration or Central
+   access. Checkout/setup/apt/artifact-upload actions inherit none.
+3. Central Bearer headers are supplied through per-step mode-0600 temporary
+   curl config files, never curl argv. EXIT traps remove the files on success,
+   validation failure, curl failure, and timeout; tokens are unset after the
+   config is written.
+4. Both real LWJGL subprocess launchers share `ReferenceJvmCommand`. macOS adds
+   `-XstartOnFirstThread` before the classpath/main class so GLFW construction
+   occurs on the new process's first JVM thread; Linux/Windows commands remain
+   unchanged.
+5. Lock drift now names `settings-gradle.lockfile`, root `gradle.lockfile`, all
+   subproject lockfiles, and verification metadata.
+
+Round-1 RED/GREEN and validation:
+
+- `:harness-fixtures:test --tests '*ReferenceJvmCommandTest'` initially failed
+  compilation because the shared platform command did not exist
+  (`artifact://992`). The focused mac/non-mac command contract and five-run
+  reference smoke then passed together (`artifact://998`).
+- `python3 scripts/validate-workflows.py` enforces trusted key import and exact
+  fingerprint comparison, absence of job-scoped secrets and token-bearing curl
+  argv, exact protected curl config cleanup/count, signing-key scope, complete
+  lock pathspec, and immutable action SHAs. It passes, and Ruby Psych parses
+  both workflow YAML files.
+- `DISPLAY=:0 ./gradlew check --warning-mode=fail` passed all 45 check tasks
+  locally (`artifact://1000`). No live key, Central secret, or macOS runner was
+  available or simulated.
