@@ -141,7 +141,7 @@ See [Benchmark methodology](benchmarks/README.md) for thresholds, evidence, and 
 - [Semantic metadata](docs/guides/semantic-metadata.md)
 - [Layered semantic harness ADR](docs/adr/0001-layered-semantic-harness.md)
 - [Java 25 baseline ADR](docs/adr/0002-java-25-baseline.md)
-- [V1 release notes and Maven Central setup](docs/releases/v1.0.0.md)
+- [V1 release notes](docs/releases/v1.0.0.md)
 
 ## License
 
