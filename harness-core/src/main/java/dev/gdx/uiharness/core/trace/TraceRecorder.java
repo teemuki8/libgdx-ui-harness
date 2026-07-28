@@ -458,7 +458,7 @@ public final class TraceRecorder implements AutoCloseable {
     private void verifyRoot() {
         try {
             if (Files.isSymbolicLink(root)
-                    || !root.toRealPath(LinkOption.NOFOLLOW_LINKS).equals(realRoot)) {
+                    || !root.toRealPath().equals(realRoot)) {
                 throw failure(ErrorCode.INVALID_REQUEST, "Trace root changed unexpectedly", null);
             }
         } catch (IOException exception) {

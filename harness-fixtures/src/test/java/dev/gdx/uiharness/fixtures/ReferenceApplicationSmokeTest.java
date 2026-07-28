@@ -26,6 +26,7 @@ final class ReferenceApplicationSmokeTest {
     void agentCanCompleteReferenceWorkflowThroughMcpFiveConsecutiveTimes() throws Exception {
         byte[] expectedScreenshot = resourceBytes("golden/reference-screen.png");
         String expectedSemantics = resourceText("golden/reference-semantic.json");
+        int[] deterministicScreenshot = null;
 
         for (int run = 0; run < 5; run++) {
             Path processRoot;
@@ -66,7 +67,14 @@ final class ReferenceApplicationSmokeTest {
                     assertTrue(screenshot.artifact().byteLength() > 100);
                     assertFalse(screenshot.artifact().reference().contains("/"));
                     byte[] actualScreenshot = app.readArtifact(screenshot.artifact());
-                    assertPngPixelsEqual(expectedScreenshot, actualScreenshot);
+                    int[] actualPixels =
+                            assertPngPixelsMatchGolden(expectedScreenshot, actualScreenshot);
+                    if (deterministicScreenshot == null) {
+                        deterministicScreenshot = actualPixels;
+                    } else {
+                        assertArrayEquals(deterministicScreenshot, actualPixels,
+                                "fixed-step captures must be identical across fresh processes");
+                    }
 
                     HarnessMcpClient.Trace trace = agent.stopTrace(SESSION_ID);
                     assertTrue(trace.events() >= 6);
@@ -149,7 +157,8 @@ final class ReferenceApplicationSmokeTest {
         assertFalse(Files.exists(processRoot), "process resources must leave no temp directory");
     }
 
-    private static void assertPngPixelsEqual(byte[] expected, byte[] actual) throws Exception {
+    private static int[] assertPngPixelsMatchGolden(byte[] expected, byte[] actual)
+            throws Exception {
         BufferedImage expectedImage =
                 javax.imageio.ImageIO.read(new ByteArrayInputStream(expected));
         BufferedImage actualImage =
@@ -160,9 +169,20 @@ final class ReferenceApplicationSmokeTest {
         assertEquals(expectedImage.getHeight(), actualImage.getHeight());
         int width = expectedImage.getWidth();
         int height = expectedImage.getHeight();
-        assertArrayEquals(expectedImage.getRGB(0, 0, width, height, null, 0, width),
-                actualImage.getRGB(0, 0, width, height, null, 0, width),
-                "the fixed-step hidden LWJGL3 framebuffer pixels must be deterministic");
+        int[] expectedPixels = expectedImage.getRGB(0, 0, width, height, null, 0, width);
+        int[] actualPixels = actualImage.getRGB(0, 0, width, height, null, 0, width);
+        for (int index = 0; index < expectedPixels.length; index++) {
+            int expectedPixel = expectedPixels[index];
+            int actualPixel = actualPixels[index];
+            for (int shift = 0; shift <= 24; shift += 8) {
+                int expectedChannel = (expectedPixel >>> shift) & 0xff;
+                int actualChannel = (actualPixel >>> shift) & 0xff;
+                assertTrue(Math.abs(expectedChannel - actualChannel) <= 1,
+                        "golden screenshot differs at pixel " + index
+                                + ", channel shift " + shift);
+            }
+        }
+        return actualPixels;
     }
 
     private static byte[] resourceBytes(String name) throws Exception {

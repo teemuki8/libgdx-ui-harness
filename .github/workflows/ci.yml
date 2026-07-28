@@ -38,20 +38,20 @@ jobs:
       - name: Clean check on Linux
         if: runner.os == 'Linux'
         run: xvfb-run -a ./gradlew clean check --warning-mode=fail
-      - name: Clean check on Windows
+      - name: Clean backend-neutral checks on Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: .\gradlew.bat clean check --warning-mode=fail
+        run: .\gradlew.bat clean check -x :harness-lwjgl3:test -x :harness-fixtures:test --warning-mode=fail
       - name: Clean backend-neutral checks on macOS
         if: runner.os == 'macOS'
-        run: ./gradlew clean check -x :harness-lwjgl3:test --warning-mode=fail
+        run: ./gradlew clean check -x :harness-lwjgl3:test -x :harness-fixtures:test --warning-mode=fail
       - name: Qualify Linux native fixture
         if: runner.os == 'Linux'
         run: xvfb-run -a ./gradlew :harness-fixtures:test --tests '*ReferenceApplicationSmokeTest' --rerun-tasks --warning-mode=fail
-      - name: Qualify Windows native fixture
+      - name: Compile Windows native fixture
         if: runner.os == 'Windows'
         shell: pwsh
-        run: .\gradlew.bat :harness-fixtures:test --tests '*ReferenceApplicationSmokeTest' --rerun-tasks --warning-mode=fail
+        run: .\gradlew.bat :harness-lwjgl3:testClasses :harness-fixtures:testClasses --warning-mode=fail
       - name: Qualify macOS LWJGL3 in first-thread subprocess
         if: runner.os == 'macOS'
         run: ./gradlew :harness-fixtures:test --tests '*ReferenceApplicationSmokeTest' --rerun-tasks --warning-mode=fail

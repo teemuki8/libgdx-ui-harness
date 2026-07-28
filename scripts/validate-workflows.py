@@ -41,13 +41,21 @@ require(release.count("MAVEN_SIGNING_KEY: ${{ secrets.MAVEN_SIGNING_KEY }}") == 
 lock_gate = "git diff --exit-code -- settings-gradle.lockfile gradle.lockfile " \
     "'**/gradle.lockfile' gradle/verification-metadata.xml"
 require(lock_gate in ci, "lock drift gate must include settings, root, subprojects, metadata")
-mac_check = "./gradlew clean check -x :harness-lwjgl3:test --warning-mode=fail"
+native_test_exclusions = "-x :harness-lwjgl3:test -x :harness-fixtures:test"
+mac_check = f"./gradlew clean check {native_test_exclusions} --warning-mode=fail"
 mac_native = "./gradlew :harness-fixtures:test --tests " \
     "'*ReferenceApplicationSmokeTest' --rerun-tasks --warning-mode=fail"
+windows_check = f".\\gradlew.bat clean check {native_test_exclusions} --warning-mode=fail"
+windows_compile = ".\\gradlew.bat :harness-lwjgl3:testClasses " \
+    ":harness-fixtures:testClasses --warning-mode=fail"
 require(mac_check in ci,
-        "macOS check must explicitly exclude incompatible inline LWJGL3 tests")
+        "macOS check must exclude native tests that require first-thread execution")
 require(mac_native in ci,
         "macOS must run the dedicated real subprocess-native smoke")
+require(windows_check in ci,
+        "Windows must run backend-neutral checks without unavailable hosted OpenGL")
+require(windows_compile in ci,
+        "Windows must compile the native adapter and reference fixture")
 if mac_check in ci and mac_native in ci:
     require(ci.index(mac_check) < ci.index(mac_native),
             "macOS backend-neutral check must precede subprocess-native qualification")

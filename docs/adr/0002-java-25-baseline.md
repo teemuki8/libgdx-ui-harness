@@ -11,7 +11,7 @@ The desktop harness and MCP server need a supported toolchain, predictable bytec
 
 Build, test, document, and publish with JDK 25 and `--release 25`. Published code may use stable Java 25 APIs but must not use preview or incubator APIs. Java compilation enables `-Xlint:all`; the release gate uses `--warning-mode=fail`; Javadocs use doclint plus `-Werror`. Independent MCP work may use virtual threads, but virtual-thread scheduling does not alter request ordering, deadlines, cancellation, protocol fields, or render-thread confinement.
 
-The wrapper distribution, all direct dependency versions, npm dependencies, Gradle dependency locks, and Gradle verification checksums are committed. Linux, Windows, and macOS run the same clean check. Linux native tests use Xvfb; Windows and macOS qualify their platform-native LWJGL3 paths directly.
+The wrapper distribution, all direct dependency versions, npm dependencies, Gradle dependency locks, and Gradle verification checksums are committed. Linux runs the full clean check under Xvfb. Windows runs all backend-neutral checks and compiles the LWJGL3 adapter and native fixture because GitHub-hosted Windows runners expose no usable OpenGL driver. macOS runs backend-neutral checks in Gradle workers and qualifies the platform-native LWJGL3 path in a dedicated first-thread subprocess.
 
 ## Consequences
 

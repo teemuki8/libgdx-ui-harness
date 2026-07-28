@@ -174,6 +174,26 @@ final class TraceRecorderTest {
         assertTrue(noTemporaryFiles(temporaryDirectory));
     }
 
+    @Test void traceRootMayHaveCanonicalizingParentSymlinks() throws Exception {
+        Path physicalParent = temporaryDirectory.resolve("physical");
+        Path aliasParent = temporaryDirectory.resolve("alias");
+        Files.createDirectory(physicalParent);
+        try {
+            Files.createSymbolicLink(aliasParent, physicalParent);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException exception) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "symbolic links are unavailable: " + exception.getMessage());
+        }
+        TraceRecorder recorder =
+                new TraceRecorder(aliasParent.resolve("traces"), Clock.systemUTC());
+
+        recorder.start("session-canonical-parent", TraceRecorder.Limits.defaults());
+        TraceManifest manifest = recorder.stop();
+
+        assertTrue(manifest.complete());
+        assertTrue(Files.isRegularFile(manifest.archive()));
+    }
+
     @Test void replacedStagingDirectoryCannotReachOutsideTraceRoot() throws Exception {
         TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
         recorder.start("session-symlink", TraceRecorder.Limits.defaults());
