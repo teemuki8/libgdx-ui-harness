@@ -111,3 +111,33 @@ Round-1 RED/GREEN and validation:
 - `DISPLAY=:0 ./gradlew check --warning-mode=fail` passed all 45 check tasks
   locally (`artifact://1000`). No live key, Central secret, or macOS runner was
   available or simulated.
+
+## Review Fix Round 2
+
+Commit: `8887091` — `fix: isolate macOS native qualification`
+
+The macOS matrix no longer attempts `:harness-lwjgl3:test` inside the Gradle
+worker used by `clean check`; that worker cannot satisfy Cocoa's first-thread
+rule. It runs
+`./gradlew clean check -x :harness-lwjgl3:test --warning-mode=fail`, retaining
+all other backend-neutral and module checks, then explicitly replaces the one
+excluded test task with the dedicated
+`ReferenceApplicationSmokeTest` subprocess qualification. Its shared
+`ReferenceJvmCommand` puts `-XstartOnFirstThread` before the classpath and main
+class on macOS. Five fresh real LWJGL3 processes perform input, semantic
+query/wait, deterministic framebuffer screenshot capture, trace recording and
+replay, clean exit, and temporary-resource deletion.
+
+RED/GREEN and validation:
+
+- The extended workflow validator initially failed with
+  `macOS check must explicitly exclude incompatible inline LWJGL3 tests`.
+- After the workflow change, the validator passed. It requires the exact
+  exclusion, exact dedicated subprocess smoke command, and check-before-native
+  ordering. Ruby Psych parsed both workflow files.
+- `DISPLAY=:0 ./gradlew :harness-fixtures:test --tests
+  '*ReferenceJvmCommandTest' --tests '*ReferenceApplicationSmokeTest'
+  --rerun-tasks --warning-mode=fail` passed all 15 tasks
+  (`artifact://1015`), including five complete workflows.
+- No macOS runner was available locally; actual Cocoa first-thread execution is
+  the explicit macOS CI qualification rather than an unverified local claim.
