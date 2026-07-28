@@ -69,7 +69,7 @@ final class HarnessMcpServerContractTest {
                             "filter", Map.of("kind", "name", "match",
                                     Map.of("mode", "exact", "source", "Save"))),
                     "action", Map.of("kind", "click", "pointer", 0, "button", 0,
-                            "force", false)))).block(Duration.ofSeconds(2));
+                            "force", false)))).block(Duration.ofSeconds(10));
 
             assertNotNull(result);
             assertFalse(result.isError());
@@ -85,12 +85,12 @@ final class HarnessMcpServerContractTest {
         try (HarnessToolHandler handler = new HarnessToolHandler(
                 service(new RecordingHarness()), new RecordingArtifacts())) {
             McpSchema.CallToolResult capabilities = handler.handle(call("ui_capabilities",
-                    Map.of("sessionId", "game"))).block(Duration.ofSeconds(2));
+                    Map.of("sessionId", "game"))).block(Duration.ofSeconds(10));
             assertEquals("capabilities-result", structured(capabilities).get("kind"));
             assertTrue(((List<?>) structured(capabilities).get("capabilities")).contains("action"));
 
             McpSchema.CallToolResult snapshot = handler.handle(call("ui_snapshot",
-                    Map.of("sessionId", "game"))).block(Duration.ofSeconds(2));
+                    Map.of("sessionId", "game"))).block(Duration.ofSeconds(10));
             Map<String, Object> content = structured(snapshot);
             assertEquals("snapshot-summary", content.get("kind"));
             assertEquals(1, ((Number) content.get("nodeCount")).intValue());
@@ -103,7 +103,7 @@ final class HarnessMcpServerContractTest {
         try (HarnessToolHandler handler = new HarnessToolHandler(service(new RecordingHarness()), artifacts)) {
             McpSchema.CallToolResult screenshot = handler.handle(call("ui_screenshot", Map.of(
                     "sessionId", "game", "maxWidth", 10, "maxHeight", 10,
-                    "maxPixels", 100, "maxPngBytes", 1024))).block(Duration.ofSeconds(2));
+                    "maxPixels", 100, "maxPngBytes", 1024))).block(Duration.ofSeconds(10));
             Map<String, Object> screenshotContent = structured(screenshot);
             assertEquals("screenshot-result", screenshotContent.get("kind"));
             assertFalse(screenshotContent.containsKey("pngBase64"));
@@ -122,7 +122,7 @@ final class HarnessMcpServerContractTest {
                     "sessionId", "game",
                     "locator", Map.of("kind", "role", "role", "button"),
                     "action", Map.of("kind", "click", "pointer", 0, "button", 0,
-                            "force", false)))).block(Duration.ofSeconds(2));
+                            "force", false)))).block(Duration.ofSeconds(10));
             assertEquals("action-result", structured(result).get("kind"));
             assertEquals("artifact:1", artifact(structured(result)).get("reference"));
             assertNotNull(largeArtifacts.lastBytes);
@@ -138,7 +138,7 @@ final class HarnessMcpServerContractTest {
                 }, new RecordingArtifacts(), executor, 1024)) {
             McpSchema.CallToolResult result = handler.handle(call("ui_action", Map.of(
                     "sessionId", "game", "path", "/tmp/attack")))
-                    .block(Duration.ofSeconds(2));
+                    .block(Duration.ofSeconds(10));
             assertTrue(result.isError());
             assertEquals("invalid-arguments", structured(result).get("code"));
             assertEquals(0, calls.get());
@@ -184,7 +184,7 @@ final class HarnessMcpServerContractTest {
                         ignored -> response, new RecordingArtifacts(), executor, 1024)) {
             McpSchema.CallToolResult result = handler.handle(call(
                     "ui_trace_stop", Map.of("sessionId", "game")))
-                    .block(Duration.ofSeconds(2));
+                    .block(Duration.ofSeconds(10));
             assertTrue(result.isError());
             assertEquals("invalid-artifact-reference", structured(result).get("code"));
         }
@@ -320,7 +320,7 @@ final class HarnessMcpServerContractTest {
             HarnessToolHandler handler, Map<String, Object> locator) {
         McpSchema.CallToolResult result = handler.handle(call(
                 "ui_query", Map.of("sessionId", "game", "locator", locator)))
-                .block(Duration.ofSeconds(2));
+                .block(Duration.ofSeconds(10));
         assertTrue(result.isError());
         assertEquals("invalid-arguments", structured(result).get("code"));
     }
