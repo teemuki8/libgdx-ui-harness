@@ -1,8 +1,5 @@
 package dev.gdx.uiharness.core.trace;
 
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.json.JsonMapper;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
@@ -36,9 +33,6 @@ import java.util.zip.ZipOutputStream;
 public final class TraceRecorder implements AutoCloseable {
     private static final int COPY_BUFFER_SIZE = 16 * 1024;
     private static final SecureRandom RANDOM = new SecureRandom();
-    private static final ObjectMapper JSON = JsonMapper.builder()
-            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-            .build();
     private static final Pattern FILE_URI = Pattern.compile("file:(?://)?[^\\s\\\",}]+");
     private static final Pattern WINDOWS_PATH =
             Pattern.compile("(?i)[a-z]:\\\\[^\\s\\\",}]+");
@@ -63,6 +57,7 @@ public final class TraceRecorder implements AutoCloseable {
     private long eventCount;
     private long uncompressedBytes;
     private boolean active;
+    private long generation;
     private TraceManifest lastManifest;
 
     /** Creates a recorder rooted below one non-symbolic-link server-owned directory. */
@@ -91,6 +86,7 @@ public final class TraceRecorder implements AutoCloseable {
         eventCount = 0;
         uncompressedBytes = 0;
         lastManifest = null;
+        generation++;
         try {
             stagingDirectory = Files.createDirectory(
                     root.resolve(".trace-" + randomHex(16) + ".tmp"));
@@ -120,11 +116,9 @@ public final class TraceRecorder implements AutoCloseable {
         long sequence = suppliedEvent.sequence() == -1 ? eventCount : suppliedEvent.sequence();
         TraceEvent event = suppliedEvent.withSequence(sequence)
                 .withEvidence(redact(suppliedEvent.evidence()));
-        byte[] encoded;
-        try {
-            encoded = event.toJson(JSON);
-        } catch (IOException exception) {
-            throw failure(ErrorCode.INTERNAL_ERROR, "Unable to encode trace event", exception);
+        byte[] encoded = event.toJson();
+        if (encoded.length > TraceEvent.MAX_ENCODED_BYTES) {
+            throw failLimit("event line limit exceeded");
         }
         long added = encoded.length + 1L;
         if (added > limits.maxUncompressedBytes()
@@ -144,22 +138,36 @@ public final class TraceRecorder implements AutoCloseable {
         return sequence;
     }
 
-    /** Streams and SHA-256 deduplicates one artifact, returning its content hash. */
-    public synchronized String addArtifact(String mediaType, InputStream source) {
-        requireActive();
-        checkDuration();
-        requireText(mediaType, "mediaType");
+    /** Streams and SHA-256 deduplicates one artifact without invoking its source under a lock. */
+    public String addArtifact(String mediaType, InputStream source) {
         Objects.requireNonNull(source, "source");
-        Path temporary = stagingDirectory.resolve("artifacts")
-                .resolve(".artifact-" + randomHex(16) + ".tmp");
+        ArtifactReservation reservation;
+        try {
+            synchronized (this) {
+                requireActive();
+                checkDuration();
+                requireText(mediaType, "mediaType");
+                Path temporary = artifactDirectory
+                        .resolve(".artifact-" + randomHex(16) + ".tmp");
+                reservation = new ArtifactReservation(
+                        generation, stagingDirectory, artifactDirectory,
+                        realStagingDirectory, realArtifactDirectory, temporary,
+                        mediaType, limits.maxUncompressedBytes());
+            }
+        } catch (RuntimeException exception) {
+            closeSourceAfterValidationFailure(source, exception);
+            throw exception;
+        }
+
         MessageDigest digest = sha256();
         long size = 0;
         byte[] buffer = new byte[COPY_BUFFER_SIZE];
-        try (source; OutputStream output = new BufferedOutputStream(Files.newOutputStream(temporary,
-                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE))) {
+        try (source; OutputStream output = new BufferedOutputStream(Files.newOutputStream(
+                reservation.temporary(), StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.WRITE))) {
             int read;
             while ((read = source.read(buffer)) != -1) {
-                if (size > limits.maxUncompressedBytes() - read) {
+                if (size > reservation.maxUncompressedBytes() - read) {
                     throw new ArtifactLimitException();
                 }
                 output.write(buffer, 0, read);
@@ -167,45 +175,53 @@ public final class TraceRecorder implements AutoCloseable {
                 size += read;
             }
         } catch (ArtifactLimitException exception) {
-            deleteIfExists(temporary);
-            throw failLimit("byte limit exceeded");
+            return failStreamedArtifact(reservation, "byte limit exceeded", exception, true);
         } catch (IOException exception) {
-            deleteIfExists(temporary);
-            interruptAfterFailure("artifact write failed", exception);
-            throw failure(ErrorCode.INTERNAL_ERROR, "Unable to write trace artifact", exception);
+            return failStreamedArtifact(reservation, "artifact write failed", exception, false);
         } catch (RuntimeException exception) {
-            deleteIfExists(temporary);
-            interruptAfterFailure("artifact callback failed", exception);
-            throw failure(ErrorCode.INTERNAL_ERROR,
-                    "Artifact source failed while recording trace evidence", exception);
+            return failStreamedArtifact(reservation, "artifact callback failed", exception, false);
         }
 
         String hash = HexFormat.of().formatHex(digest.digest());
-        ArtifactInfo existing = artifacts.get(hash);
-        if (existing != null) {
-            deleteIfExists(temporary);
+        synchronized (this) {
+            if (!matchesActiveReservation(reservation)) {
+                deleteIfExists(reservation.temporary());
+                cleanupDetachedReservation(reservation);
+                throw failure(ErrorCode.SESSION_CLOSED,
+                        "Trace closed while artifact evidence was streaming", null);
+            }
+            Duration elapsed = Duration.between(startedAt, clock.instant());
+            if (elapsed.isNegative() || elapsed.compareTo(limits.maxDuration()) >= 0) {
+                deleteIfExists(reservation.temporary());
+                throw failLimit("duration limit exceeded");
+            }
+            ArtifactInfo existing = artifacts.get(hash);
+            if (existing != null) {
+                deleteIfExists(reservation.temporary());
+                return hash;
+            }
+            if (uncompressedBytes > limits.maxUncompressedBytes() - size) {
+                deleteIfExists(reservation.temporary());
+                throw failLimit("byte limit exceeded");
+            }
+            Path published = reservation.artifactDirectory().resolve(hash);
+            try {
+                Files.move(reservation.temporary(), published, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException exception) {
+                deleteIfExists(reservation.temporary());
+                interruptAfterFailure("artifact atomic publish unsupported", exception);
+                throw failure(ErrorCode.INTERNAL_ERROR,
+                        "Artifact storage does not support atomic publication", exception);
+            } catch (IOException exception) {
+                deleteIfExists(reservation.temporary());
+                interruptAfterFailure("artifact publish failed", exception);
+                throw failure(ErrorCode.INTERNAL_ERROR,
+                        "Unable to publish trace artifact", exception);
+            }
+            artifacts.put(hash, new ArtifactInfo(published, mediaType, size));
+            uncompressedBytes += size;
             return hash;
         }
-        if (uncompressedBytes > limits.maxUncompressedBytes() - size) {
-            deleteIfExists(temporary);
-            throw failLimit("byte limit exceeded");
-        }
-        Path published = stagingDirectory.resolve("artifacts").resolve(hash);
-        try {
-            Files.move(temporary, published, StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException exception) {
-            deleteIfExists(temporary);
-            interruptAfterFailure("artifact atomic publish unsupported", exception);
-            throw failure(ErrorCode.INTERNAL_ERROR,
-                    "Artifact storage does not support atomic publication", exception);
-        } catch (IOException exception) {
-            deleteIfExists(temporary);
-            interruptAfterFailure("artifact publish failed", exception);
-            throw failure(ErrorCode.INTERNAL_ERROR, "Unable to publish trace artifact", exception);
-        }
-        artifacts.put(hash, new ArtifactInfo(published, mediaType, size));
-        uncompressedBytes += size;
-        return hash;
     }
 
     /** Finalizes and atomically publishes a complete trace. */
@@ -253,7 +269,7 @@ public final class TraceRecorder implements AutoCloseable {
                 copyEntry(zip, "artifacts/" + entry.getKey(), entry.getValue().path());
             }
             zip.putNextEntry(new ZipEntry("manifest.json"));
-            zip.write(manifest.toJson(JSON));
+            zip.write(manifest.toJson());
             zip.closeEntry();
         } catch (IOException exception) {
             deleteIfExists(temporaryArchive);
@@ -284,6 +300,56 @@ public final class TraceRecorder implements AutoCloseable {
             input.transferTo(zip);
         }
         zip.closeEntry();
+    }
+
+    private String failStreamedArtifact(
+            ArtifactReservation reservation,
+            String reason,
+            Exception originalFailure,
+            boolean limitFailure) {
+        deleteIfExists(reservation.temporary());
+        synchronized (this) {
+            if (!matchesActiveReservation(reservation)) {
+                cleanupDetachedReservation(reservation);
+                throw failure(ErrorCode.SESSION_CLOSED,
+                        "Trace closed while artifact evidence was streaming",
+                        originalFailure);
+            }
+            if (limitFailure) {
+                throw failLimit(reason);
+            }
+            interruptAfterFailure(reason, originalFailure);
+            throw failure(ErrorCode.INTERNAL_ERROR,
+                    "Unable to stream trace artifact evidence", originalFailure);
+        }
+    }
+
+    private boolean matchesActiveReservation(ArtifactReservation reservation) {
+        return active
+                && generation == reservation.generation()
+                && reservation.stagingDirectory().equals(stagingDirectory)
+                && reservation.artifactDirectory().equals(artifactDirectory);
+    }
+
+    private void cleanupDetachedReservation(ArtifactReservation reservation) {
+        if (isUntamperedDirectory(
+                reservation.artifactDirectory(), reservation.realArtifactDirectory())) {
+            deleteIfExists(reservation.artifactDirectory());
+        }
+        if (isUntamperedDirectory(
+                reservation.stagingDirectory(), reservation.realStagingDirectory())) {
+            deleteIfExists(reservation.stagingDirectory().resolve("events.ndjson"));
+            deleteIfExists(reservation.stagingDirectory());
+        }
+    }
+
+    private static void closeSourceAfterValidationFailure(
+            InputStream source, RuntimeException originalFailure) {
+        try {
+            source.close();
+        } catch (IOException closeFailure) {
+            originalFailure.addSuppressed(closeFailure);
+        }
     }
 
     private HarnessException failLimit(String reason) {
@@ -524,6 +590,16 @@ public final class TraceRecorder implements AutoCloseable {
             return new Limits(64L * 1024 * 1024, 100_000, Duration.ofMinutes(10));
         }
     }
+
+    private record ArtifactReservation(
+            long generation,
+            Path stagingDirectory,
+            Path artifactDirectory,
+            Path realStagingDirectory,
+            Path realArtifactDirectory,
+            Path temporary,
+            String mediaType,
+            long maxUncompressedBytes) {}
 
     private record ArtifactInfo(Path path, String mediaType, long size) {}
 

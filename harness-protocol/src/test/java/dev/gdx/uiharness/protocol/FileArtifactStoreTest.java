@@ -184,6 +184,62 @@ final class FileArtifactStoreTest {
         store.close();
     }
 
+    @Test void blockingArtifactProducerCannotPreventConcurrentSessionDisposal()
+            throws Exception {
+        MutableClock clock = new MutableClock(Instant.parse("2026-07-28T12:00:00Z"));
+        FileArtifactStore store = store(temporaryDirectory, 1_000, 10, clock);
+        BlockingInputStream source = new BlockingInputStream();
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var put = executor.submit(() -> store.put("session-blocked",
+                    ArtifactMediaType.OCTET_STREAM, source, clock.instant().plusSeconds(30)));
+            assertTrue(source.entered.await(1, TimeUnit.SECONDS));
+            var dispose = executor.submit(() -> store.disposeSession("session-blocked"));
+            try {
+                dispose.get(1, TimeUnit.SECONDS);
+            } finally {
+                source.release.countDown();
+            }
+            java.util.concurrent.ExecutionException failure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> put.get(1, TimeUnit.SECONDS));
+            HarnessException typed = (HarnessException) failure.getCause();
+            assertEquals(ErrorCode.SESSION_CLOSED, typed.code());
+        }
+        assertTrue(source.closed);
+        assertDirectoryEmpty(temporaryDirectory);
+        store.close();
+    }
+
+    @Test void failedExpiryDeleteRetainsEntryAndQuotaForRetry() throws Exception {
+        MutableClock clock = new MutableClock(Instant.parse("2026-07-28T12:00:00Z"));
+        byte[] payload = "payload".getBytes(StandardCharsets.UTF_8);
+        FileArtifactStore store = store(temporaryDirectory, payload.length, 1, clock);
+        store.put("session-delete", ArtifactMediaType.OCTET_STREAM, payload,
+                clock.instant().plusSeconds(1));
+        Path blob = findArtifactFile(temporaryDirectory);
+        Files.delete(blob);
+        Files.createDirectory(blob);
+        Path blocker = blob.resolve("blocker");
+        Files.writeString(blocker, "block", StandardCharsets.UTF_8);
+        clock.advance(Duration.ofSeconds(1));
+
+        HarnessException deleteFailure = assertThrows(HarnessException.class,
+                store::cleanupExpired);
+        assertEquals(ErrorCode.INTERNAL_ERROR, deleteFailure.code());
+        HarnessException quotaFailure = assertThrows(HarnessException.class,
+                () -> store.put("session-delete", ArtifactMediaType.OCTET_STREAM,
+                        payload, clock.instant().plusSeconds(30)));
+        assertEquals(ErrorCode.INTERNAL_ERROR, quotaFailure.code());
+
+        Files.delete(blocker);
+        Files.delete(blob);
+        assertEquals(1, store.cleanupExpired());
+        store.put("session-delete", ArtifactMediaType.OCTET_STREAM, payload,
+                clock.instant().plusSeconds(30));
+        store.close();
+        assertDirectoryEmpty(temporaryDirectory);
+    }
+
     @Test void mediaTypesRejectUnregisteredCallerStrings() {
         assertEquals("image/png", ArtifactMediaType.PNG.value());
         assertEquals(ArtifactMediaType.NDJSON,
@@ -221,6 +277,27 @@ final class FileArtifactStoreTest {
     private static void assertDirectoryEmpty(Path root) throws Exception {
         try (var entries = Files.list(root)) {
             assertTrue(entries.findAny().isEmpty(), () -> "not empty: " + root);
+        }
+    }
+
+    private static final class BlockingInputStream extends InputStream {
+        private final CountDownLatch entered = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+        private volatile boolean closed;
+
+        @Override public int read() throws IOException {
+            entered.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IOException("interrupted", exception);
+            }
+            return -1;
+        }
+
+        @Override public void close() {
+            closed = true;
         }
     }
 

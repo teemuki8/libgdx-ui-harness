@@ -54,29 +54,36 @@ public final class FileArtifactStore implements ArtifactStore {
     }
 
     /** Streams, hashes, deduplicates, and atomically publishes one artifact. */
-    @Override public synchronized ArtifactId put(
+    @Override public ArtifactId put(
             String sessionId,
             ArtifactMediaType mediaType,
             InputStream source,
             Instant expiresAt) {
         Objects.requireNonNull(source, "source");
-        try (source) {
-            requireOpen();
-            verifyRoot();
-            validateSessionId(sessionId);
-            Objects.requireNonNull(mediaType, "mediaType");
-            Objects.requireNonNull(expiresAt, "expiresAt");
-            if (!expiresAt.isAfter(clock.instant())) {
-                throw new IllegalArgumentException("expiresAt must be in the future");
+        PutReservation reservation;
+        try {
+            synchronized (this) {
+                requireOpen();
+                verifyRoot();
+                validateSessionId(sessionId);
+                Objects.requireNonNull(mediaType, "mediaType");
+                Objects.requireNonNull(expiresAt, "expiresAt");
+                if (!expiresAt.isAfter(clock.instant())) {
+                    throw new IllegalArgumentException("expiresAt must be in the future");
+                }
+                Session session = sessionForWrite(sessionId);
+                cleanupSessionExpired(session, clock.instant());
+                Path temporary =
+                        session.path.resolve(".artifact-" + randomHex(16) + ".tmp");
+                session.pending.add(temporary);
+                reservation = new PutReservation(
+                        session, temporary, mediaType, expiresAt, limits.maxBytes());
             }
-            Session session = sessionForWrite(sessionId);
-            cleanupSessionExpired(session, clock.instant());
-            return streamIntoSession(session, mediaType, source, expiresAt);
-        } catch (HarnessException | IllegalArgumentException exception) {
+        } catch (RuntimeException exception) {
+            closeSourceAfterValidationFailure(source, exception);
             throw exception;
-        } catch (IOException exception) {
-            throw failure(ErrorCode.INTERNAL_ERROR, "Unable to close artifact source", exception);
         }
+        return streamReservation(reservation, source);
     }
 
     /** Opens a no-follow tracked read stream for a session-owned unexpired artifact. */
@@ -124,8 +131,7 @@ public final class FileArtifactStore implements ArtifactStore {
         validateSessionId(sessionId);
         disposedSessions.add(sessionId);
         Session session = sessions.get(sessionId);
-        if (session != null) {
-            deleteSession(session);
+        if (session != null && deleteSession(session)) {
             sessions.remove(sessionId, session);
         }
     }
@@ -136,28 +142,24 @@ public final class FileArtifactStore implements ArtifactStore {
             return;
         }
         for (Session session : new ArrayList<>(sessions.values())) {
-            deleteSession(session);
+            disposedSessions.add(session.sessionId);
+            if (deleteSession(session)) {
+                sessions.remove(session.sessionId, session);
+            }
         }
-        sessions.clear();
-        disposedSessions.clear();
         closed = true;
     }
 
-    private ArtifactId streamIntoSession(
-            Session session,
-            ArtifactMediaType mediaType,
-            InputStream source,
-            Instant expiresAt) {
-        verifySession(session);
-        Path temporary = session.path.resolve(".artifact-" + randomHex(16) + ".tmp");
+    private ArtifactId streamReservation(PutReservation reservation, InputStream source) {
         MessageDigest digest = sha256();
         long size = 0;
         byte[] buffer = new byte[COPY_BUFFER_SIZE];
-        try (OutputStream output = new BufferedOutputStream(Files.newOutputStream(temporary,
-                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE))) {
+        try (source; OutputStream output = new BufferedOutputStream(Files.newOutputStream(
+                reservation.temporary(), StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.WRITE))) {
             int read;
             while ((read = source.read(buffer)) != -1) {
-                if (size > limits.maxBytes() - read) {
+                if (size > reservation.maxBytes() - read) {
                     throw new ArtifactLimitException();
                 }
                 output.write(buffer, 0, read);
@@ -165,53 +167,127 @@ public final class FileArtifactStore implements ArtifactStore {
                 size += read;
             }
         } catch (ArtifactLimitException exception) {
-            deleteIfExists(temporary);
-            removeEmptySession(session);
-            throw failure(ErrorCode.LIMIT_EXCEEDED, "Artifact exceeds session byte quota", null);
+            return failReservation(reservation, exception, true);
         } catch (IOException exception) {
-            deleteIfExists(temporary);
-            removeEmptySession(session);
-            throw failure(ErrorCode.INTERNAL_ERROR, "Unable to stream artifact", exception);
+            return failReservation(reservation, exception, false);
         } catch (RuntimeException exception) {
-            deleteIfExists(temporary);
-            removeEmptySession(session);
-            throw exception;
+            return failReservation(reservation, exception, false);
         }
 
         String hash = HexFormat.of().formatHex(digest.digest());
-        DedupKey dedupKey = new DedupKey(hash, mediaType, expiresAt);
-        ArtifactId exactDuplicate = session.deduplicatedEntries.get(dedupKey);
-        if (exactDuplicate != null) {
-            deleteIfExists(temporary);
-            return exactDuplicate;
-        }
-        if (session.entries.size() >= limits.maxArtifacts()) {
-            deleteIfExists(temporary);
-            removeEmptySession(session);
-            throw failure(ErrorCode.LIMIT_EXCEEDED, "Artifact count quota exceeded", null);
-        }
-
-        Blob blob = session.blobs.get(hash);
-        if (blob == null) {
-            if (session.bytes > limits.maxBytes() - size) {
-                deleteIfExists(temporary);
-                removeEmptySession(session);
-                throw failure(ErrorCode.LIMIT_EXCEEDED, "Artifact byte quota exceeded", null);
+        DedupKey dedupKey =
+                new DedupKey(hash, reservation.mediaType(), reservation.expiresAt());
+        synchronized (this) {
+            Session session = reservation.session();
+            if (!isActiveReservation(reservation)) {
+                discardReservation(reservation);
+                completeDisposedSession(session);
+                throw failure(ErrorCode.SESSION_CLOSED,
+                        "Artifact session closed while content was streaming", null);
             }
-            Path published = session.path.resolve("blob-" + randomHex(16));
-            atomicMove(temporary, published);
-            blob = new Blob(published, hash, size);
-            session.blobs.put(hash, blob);
-            session.bytes += size;
-        } else {
-            deleteIfExists(temporary);
-        }
+            verifyRoot();
+            verifySession(session);
+            try {
+                cleanupSessionExpired(session, clock.instant());
+            } catch (RuntimeException exception) {
+                discardReservation(reservation);
+                throw exception;
+            }
+            ArtifactId exactDuplicate = session.deduplicatedEntries.get(dedupKey);
+            if (exactDuplicate != null) {
+                discardReservation(reservation);
+                return exactDuplicate;
+            }
+            if (session.entries.size() >= limits.maxArtifacts()) {
+                discardReservation(reservation);
+                throw failure(ErrorCode.LIMIT_EXCEEDED,
+                        "Artifact count quota exceeded", null);
+            }
 
-        ArtifactId id = newArtifactId(session);
-        blob.references++;
-        session.entries.put(id, new Entry(blob, mediaType, expiresAt, dedupKey));
-        session.deduplicatedEntries.put(dedupKey, id);
-        return id;
+            Blob blob = session.blobs.get(hash);
+            if (blob == null) {
+                if (session.bytes > limits.maxBytes() - size) {
+                    discardReservation(reservation);
+                    throw failure(ErrorCode.LIMIT_EXCEEDED,
+                            "Artifact byte quota exceeded", null);
+                }
+                Path published = session.path.resolve("blob-" + randomHex(16));
+                try {
+                    atomicMove(reservation.temporary(), published);
+                    session.pending.remove(reservation.temporary());
+                } catch (RuntimeException exception) {
+                    discardReservation(reservation);
+                    removeEmptySession(session);
+                    throw exception;
+                }
+                blob = new Blob(published, hash, size);
+                session.blobs.put(hash, blob);
+                session.bytes += size;
+            } else {
+                discardReservation(reservation);
+            }
+
+            ArtifactId id = newArtifactId(session);
+            blob.references++;
+            session.entries.put(id,
+                    new Entry(blob, reservation.mediaType(), reservation.expiresAt(), dedupKey));
+            session.deduplicatedEntries.put(dedupKey, id);
+            return id;
+        }
+    }
+
+    private ArtifactId failReservation(
+            PutReservation reservation, Exception originalFailure, boolean limitFailure) {
+        synchronized (this) {
+            Session session = reservation.session();
+            discardReservation(reservation);
+            if (!isActiveSession(session)) {
+                completeDisposedSession(session);
+                throw failure(ErrorCode.SESSION_CLOSED,
+                        "Artifact session closed while content was streaming",
+                        originalFailure);
+            }
+            removeEmptySession(session);
+            if (limitFailure) {
+                throw failure(ErrorCode.LIMIT_EXCEEDED,
+                        "Artifact exceeds session byte quota", originalFailure);
+            }
+            throw failure(ErrorCode.INTERNAL_ERROR, "Unable to stream artifact", originalFailure);
+        }
+    }
+
+    private boolean isActiveReservation(PutReservation reservation) {
+        return isActiveSession(reservation.session())
+                && reservation.session().pending.contains(reservation.temporary());
+    }
+
+    private boolean isActiveSession(Session session) {
+        return !closed
+                && sessions.get(session.sessionId) == session
+                && !disposedSessions.contains(session.sessionId);
+    }
+
+    private void discardReservation(PutReservation reservation) {
+        if (tryDelete(reservation.temporary())) {
+            reservation.session().pending.remove(reservation.temporary());
+        }
+    }
+
+    private void completeDisposedSession(Session session) {
+        if ((closed || disposedSessions.contains(session.sessionId))
+                && sessions.get(session.sessionId) == session
+                && deleteSession(session)) {
+            sessions.remove(session.sessionId, session);
+        }
+    }
+
+    private static void closeSourceAfterValidationFailure(
+            InputStream source, RuntimeException originalFailure) {
+        try {
+            source.close();
+        } catch (IOException closeFailure) {
+            originalFailure.addSuppressed(closeFailure);
+        }
     }
 
     private EntrySelection select(String sessionId, ArtifactId artifactId) {
@@ -284,20 +360,22 @@ public final class FileArtifactStore implements ArtifactStore {
 
     private void removeEntry(Session session, ArtifactId id, Entry entry) {
         closeReaders(session, id);
+        Blob blob = entry.blob();
+        if (blob.references == 1) {
+            deleteOwnedPath(session, blob.path);
+        }
         session.entries.remove(id);
         session.deduplicatedEntries.remove(entry.dedupKey(), id);
-        Blob blob = entry.blob();
         blob.references--;
         if (blob.references == 0) {
-            verifySession(session);
-            deleteIfExists(blob.path);
             session.blobs.remove(blob.sha256);
             session.bytes -= blob.size;
         }
     }
 
     private void removeEmptySession(Session session) {
-        if (!session.entries.isEmpty() || !session.blobs.isEmpty() || !session.readers.isEmpty()) {
+        if (!session.entries.isEmpty() || !session.blobs.isEmpty()
+                || !session.readers.isEmpty() || !session.pending.isEmpty()) {
             return;
         }
         if (!isUntamperedSession(session)) {
@@ -311,16 +389,24 @@ public final class FileArtifactStore implements ArtifactStore {
         }
     }
 
-    private void deleteSession(Session session) {
+    private boolean deleteSession(Session session) {
         closeReaders(session, null);
         if (!isUntamperedSession(session)) {
             if (Files.isSymbolicLink(session.path)) {
                 deleteIfExists(session.path);
             }
-            return;
+            return true;
         }
         for (Blob blob : session.blobs.values()) {
-            deleteIfExists(blob.path);
+            deleteOwnedPath(session, blob.path);
+        }
+        for (Path pending : new ArrayList<>(session.pending)) {
+            if (tryDelete(pending)) {
+                session.pending.remove(pending);
+            }
+        }
+        if (!session.pending.isEmpty()) {
+            return false;
         }
         try {
             Files.deleteIfExists(session.path);
@@ -332,6 +418,21 @@ public final class FileArtifactStore implements ArtifactStore {
         session.deduplicatedEntries.clear();
         session.blobs.clear();
         session.bytes = 0;
+        return true;
+    }
+
+    private void deleteOwnedPath(Session session, Path path) {
+        verifySession(session);
+        Path normalized = path.toAbsolutePath().normalize();
+        if (!normalized.startsWith(session.path)) {
+            throw failure(ErrorCode.INVALID_REQUEST, "Unsafe artifact deletion path", null);
+        }
+        try {
+            Files.deleteIfExists(normalized);
+        } catch (IOException exception) {
+            throw failure(ErrorCode.INTERNAL_ERROR,
+                    "Unable to delete artifact content", exception);
+        }
     }
 
     private void closeReaders(Session session, ArtifactId selectedId) {
@@ -467,12 +568,17 @@ public final class FileArtifactStore implements ArtifactStore {
         return HexFormat.of().formatHex(bytes);
     }
 
-    private static void deleteIfExists(Path path) {
+    private static boolean tryDelete(Path path) {
         try {
             Files.deleteIfExists(path);
+            return true;
         } catch (IOException ignored) {
-            // A later close/disposal retries owned directory cleanup.
+            return false;
         }
+    }
+
+    private static void deleteIfExists(Path path) {
+        tryDelete(path);
     }
 
     private final class TrackedInputStream extends FilterInputStream {
@@ -509,6 +615,7 @@ public final class FileArtifactStore implements ArtifactStore {
         private final Map<DedupKey, ArtifactId> deduplicatedEntries = new HashMap<>();
         private final Map<String, Blob> blobs = new HashMap<>();
         private final Set<TrackedInputStream> readers = new HashSet<>();
+        private final Set<Path> pending = new HashSet<>();
         private long bytes;
 
         private Session(String sessionId, Path path, Path realPath) {
@@ -530,6 +637,13 @@ public final class FileArtifactStore implements ArtifactStore {
             this.size = size;
         }
     }
+
+    private record PutReservation(
+            Session session,
+            Path temporary,
+            ArtifactMediaType mediaType,
+            Instant expiresAt,
+            long maxBytes) {}
 
     private record DedupKey(String sha256, ArtifactMediaType mediaType, Instant expiresAt) {}
 

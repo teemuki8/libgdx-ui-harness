@@ -1,8 +1,5 @@
 package dev.gdx.uiharness.core.trace;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -35,63 +32,12 @@ public record TraceManifest(
         }
     }
 
-    byte[] toJson(ObjectMapper mapper) throws IOException {
-        ObjectNode object = mapper.createObjectNode();
-        object.put("sessionId", sessionId);
-        object.put("startedAt", startedAt.toString());
-        object.put("endedAt", endedAt.toString());
-        object.put("complete", complete);
-        object.put("terminationReason", terminationReason);
-        object.put("eventCount", eventCount);
-        object.put("artifactCount", artifactCount);
-        object.put("uncompressedBytes", uncompressedBytes);
-        return mapper.writeValueAsBytes(object);
+    byte[] toJson() {
+        return TraceJson.encodeManifest(this);
     }
 
-    static TraceManifest fromJson(Path archive, ObjectMapper mapper, byte[] json)
-            throws IOException {
-        JsonNode object = mapper.readTree(json);
-        if (object == null || !object.isObject()) {
-            throw new IOException("manifest must be a JSON object");
-        }
-        try {
-            return new TraceManifest(
-                    archive,
-                    requiredText(object, "sessionId"),
-                    Instant.parse(requiredText(object, "startedAt")),
-                    Instant.parse(requiredText(object, "endedAt")),
-                    requiredBoolean(object, "complete"),
-                    requiredText(object, "terminationReason"),
-                    requiredLong(object, "eventCount"),
-                    requiredLong(object, "artifactCount"),
-                    requiredLong(object, "uncompressedBytes"));
-        } catch (IllegalArgumentException | java.time.DateTimeException exception) {
-            throw new IOException("invalid manifest fields", exception);
-        }
-    }
-
-    private static String requiredText(JsonNode object, String name) throws IOException {
-        JsonNode value = object.get(name);
-        if (value == null || !value.isTextual()) {
-            throw new IOException("manifest " + name + " must be a string");
-        }
-        return value.textValue();
-    }
-
-    private static boolean requiredBoolean(JsonNode object, String name) throws IOException {
-        JsonNode value = object.get(name);
-        if (value == null || !value.isBoolean()) {
-            throw new IOException("manifest " + name + " must be a boolean");
-        }
-        return value.booleanValue();
-    }
-
-    private static long requiredLong(JsonNode object, String name) throws IOException {
-        JsonNode value = object.get(name);
-        if (value == null || !value.isIntegralNumber()) {
-            throw new IOException("manifest " + name + " must be an integer");
-        }
-        return value.longValue();
+    static TraceManifest fromJson(Path archive, byte[] json) throws IOException {
+        return TraceJson.decodeManifest(archive, json);
     }
 
     private static String requireText(String value, String name) {

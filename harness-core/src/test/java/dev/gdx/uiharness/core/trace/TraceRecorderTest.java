@@ -207,6 +207,59 @@ final class TraceRecorderTest {
         }
     }
 
+    @Test void coreTraceRuntimeRemainsJdkOnly() {
+        String[] classPath = System.getProperty("java.class.path")
+                .split(java.util.regex.Pattern.quote(java.io.File.pathSeparator));
+        assertFalse(java.util.Arrays.stream(classPath)
+                .map(path -> Path.of(path).getFileName().toString())
+                .anyMatch(name -> name.startsWith("jackson-")));
+    }
+
+    @Test void defaultRecorderCannotEmitEventUnreadableByDefaultReplayer() {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-line-limit", TraceRecorder.Limits.defaults());
+        Map<String, String> oversizedEvidence = new java.util.LinkedHashMap<>();
+        String value = "x".repeat(TraceEvent.MAX_TEXT_LENGTH);
+        for (int index = 0; index < TraceEvent.MAX_EVIDENCE_ENTRIES; index++) {
+            oversizedEvidence.put("key-" + index, value);
+        }
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> recorder.record(TraceEvent.commandStarted(
+                        "session-line-limit", "request-line-limit", 1,
+                        snapshot(1, 1), oversizedEvidence)));
+
+        assertEquals(ErrorCode.LIMIT_EXCEEDED, failure.code());
+        TraceManifest manifest = recorder.lastManifest().orElseThrow();
+        assertFalse(manifest.complete());
+        assertTrue(new TraceReplayer().load(manifest.archive()).partial());
+    }
+
+    @Test void blockingArtifactProducerCannotPreventConcurrentClose() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-blocked", TraceRecorder.Limits.defaults());
+        BlockingInputStream source = new BlockingInputStream();
+        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var add = executor.submit(() ->
+                    recorder.addArtifact("application/octet-stream", source));
+            assertTrue(source.entered.await(1, java.util.concurrent.TimeUnit.SECONDS));
+            var close = executor.submit(recorder::close);
+            try {
+                close.get(1, java.util.concurrent.TimeUnit.SECONDS);
+            } finally {
+                source.release.countDown();
+            }
+            java.util.concurrent.ExecutionException failure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> add.get(1, java.util.concurrent.TimeUnit.SECONDS));
+            HarnessException typed = (HarnessException) failure.getCause();
+            assertEquals(ErrorCode.SESSION_CLOSED, typed.code());
+        }
+        assertTrue(source.closed);
+        assertFalse(recorder.lastManifest().orElseThrow().complete());
+        assertTrue(noTemporaryFiles(temporaryDirectory));
+    }
+
     @Test void recorderDoesNotRetainWholeTraceOrArtifactByteArrays() {
         for (Field field : TraceRecorder.class.getDeclaredFields()) {
             assertNotEquals(byte[].class, field.getType(), field.toString());
@@ -249,6 +302,29 @@ final class TraceRecorderTest {
         }
         try (var paths = Files.walk(root)) {
             return paths.noneMatch(path -> path.getFileName().toString().contains(".tmp"));
+        }
+    }
+
+    private static final class BlockingInputStream extends java.io.InputStream {
+        private final java.util.concurrent.CountDownLatch entered =
+                new java.util.concurrent.CountDownLatch(1);
+        private final java.util.concurrent.CountDownLatch release =
+                new java.util.concurrent.CountDownLatch(1);
+        private volatile boolean closed;
+
+        @Override public int read() throws java.io.IOException {
+            entered.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new java.io.IOException("interrupted", exception);
+            }
+            return -1;
+        }
+
+        @Override public void close() {
+            closed = true;
         }
     }
 

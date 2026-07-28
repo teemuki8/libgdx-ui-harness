@@ -1,8 +1,5 @@
 package dev.gdx.uiharness.core.trace;
 
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.json.JsonMapper;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
@@ -24,9 +21,6 @@ import java.util.zip.ZipFile;
 
 /** Streams a bounded trace archive to validate its manifest and causal transitions. */
 public final class TraceReplayer {
-    private static final ObjectMapper JSON = JsonMapper.builder()
-            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-            .build();
     private final Limits limits;
 
     /** Creates a replayer with conservative untrusted-archive limits. */
@@ -93,7 +87,7 @@ public final class TraceReplayer {
                 }
                 TraceEvent event;
                 try {
-                    event = TraceEvent.fromJson(JSON, line);
+                    event = TraceEvent.fromJson(line);
                 } catch (IOException exception) {
                     diagnostics.add("malformed event " + expectedSequence + ": "
                             + exception.getMessage());
@@ -227,7 +221,7 @@ public final class TraceReplayer {
                 throw failure(ErrorCode.LIMIT_EXCEEDED,
                         "Trace manifest exceeds replay byte limit", null);
             }
-            return TraceManifest.fromJson(archive, JSON, json);
+            return TraceManifest.fromJson(archive, json);
         }
     }
 
@@ -303,7 +297,8 @@ public final class TraceReplayer {
 
         /** Conservative defaults for local replay. */
         public static Limits defaults() {
-            return new Limits(128L * 1024 * 1024, 100_000, 1_048_576);
+            return new Limits(
+                    128L * 1024 * 1024, 100_000, TraceEvent.MAX_ENCODED_BYTES);
         }
     }
 
