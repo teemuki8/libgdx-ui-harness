@@ -201,3 +201,39 @@ Source cancellation is attempted before response cancellation so a queued action
 cannot observe a cancelled wrapper while remaining dispatchable; callbacks
 arising synchronously from cancellation are deferred or ignored under the same
 lifecycle lock.
+
+## Final Branch Review Fix Round 2
+
+Commit: `11704c3` — `fix: linearize traced operation cancellation`
+
+The two tracing cancellation seams found by re-review are closed:
+
+1. Fixture screenshot tracing now returns a cancellation-owning future rather
+   than a `thenApply` dependent. Cancellation that wins before delegate
+   completion cancels the exact capture/fence stage and records one same-request,
+   directly parented `COMMAND_FAILED`. Delegate completion that wins owns
+   terminal trace recording; cancellation waits for that critical section and
+   returns false rather than interrupting it.
+2. Traced actions use explicit before/action/after/terminal phases. Cancellation
+   may claim and cancel the delegate only through the action phase. Once the
+   delegate action completes, its input side effect has won; the post-action
+   snapshot is never cancelled, and it records exactly one completed or failed
+   terminal event even though the MCP subscriber may independently discard the
+   eventual response.
+3. Delegate action/capture failures retain their original throwable. A recorder
+   failure is suppressed on that throwable and never replaces it. Accepted
+   cancellation remains accepted if failed-event recording itself fails.
+
+Focused evidence:
+
+- RED: direct lifecycle regressions observed a live delegate capture, a cancelled
+  post-action snapshot after the side effect had won, and an action trace missing
+  its failed child (`artifact://1082`).
+- GREEN: accepted action/capture cancellation, action/capture completion-wins,
+  concurrent capture completion versus cancellation, recorder failure
+  suppression, exact single terminal lifecycle, and complete replay all pass
+  (`artifact://1086`).
+- Both failed-action replay and five successful real MCP workflows pass
+  (`artifact://1088`).
+- Affected protocol, MCP, Scene2D, and fixture module tests pass
+  (`artifact://1090`, 23 tasks).
