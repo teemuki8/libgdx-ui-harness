@@ -63,7 +63,11 @@ final class HarnessMcpServerContractTest {
         try (HarnessToolHandler handler = new HarnessToolHandler(service(harness), artifacts)) {
             McpSchema.CallToolResult result = handler.handle(call("ui_action", Map.of(
                     "sessionId", "game",
-                    "locator", Map.of("kind", "role", "role", "button"),
+                    "locator", Map.of(
+                            "kind", "filter",
+                            "locator", Map.of("kind", "role", "role", "button"),
+                            "filter", Map.of("kind", "name", "match",
+                                    Map.of("mode", "exact", "source", "Save"))),
                     "action", Map.of("kind", "click", "pointer", 0, "button", 0,
                             "force", false)))).block(Duration.ofSeconds(2));
 
@@ -72,6 +76,8 @@ final class HarnessMcpServerContractTest {
             assertEquals("action-result", structured(result).get("kind"));
             assertEquals(1, harness.actionCalls.get());
             assertTrue(harness.actionThreadWasVirtual);
+            assertEquals("Save", new StrictResolution()
+                    .resolveStrict(SNAPSHOT, harness.lastLocator).accessibleName());
         }
     }
 
@@ -440,6 +446,7 @@ final class HarnessMcpServerContractTest {
     private static final class RecordingHarness implements Harness {
         private final AtomicInteger actionCalls = new AtomicInteger();
         private volatile boolean actionThreadWasVirtual;
+        private volatile Locator lastLocator;
         private CompletionStage<ActionResult> actionResult = CompletableFuture.completedFuture(
                 new ActionResult(1, 2, "clicked", Map.of("target", "root")));
 
@@ -447,6 +454,7 @@ final class HarnessMcpServerContractTest {
                 dev.gdx.uiharness.core.action.Action action, Deadline deadline) {
             actionCalls.incrementAndGet();
             actionThreadWasVirtual = Thread.currentThread().isVirtual();
+            lastLocator = locator;
             return actionResult;
         }
 

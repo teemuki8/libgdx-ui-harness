@@ -1,0 +1,50 @@
+{
+  "actors" : {
+    "open-dialog" : {
+      "accessibleName" : "Open dialog",
+      "role" : "button",
+      "testId" : "open-dialog",
+      "text" : "Open dialog"
+    },
+    "overlap-card" : {
+      "accessibleName" : "Overlap card",
+      "role" : "image",
+      "testId" : "overlap-card"
+    },
+    "password" : {
+      "accessibleName" : "Password",
+      "role" : "text-field",
+      "testId" : "password",
+      "text" : ""
+    },
+    "rotated-card" : {
+      "accessibleName" : "Rotated card",
+      "role" : "image",
+      "testId" : "rotated-card"
+    },
+    "settings-list" : {
+      "accessibleName" : "Settings choices",
+      "role" : "list",
+      "testId" : "settings-list",
+      "text" : "Gamma"
+    },
+    "settings-scroll" : {
+      "accessibleName" : "Settings list",
+      "role" : "scroll-pane",
+      "testId" : "settings-scroll"
+    },
+    "sign-in" : {
+      "accessibleName" : "Sign in",
+      "role" : "button",
+      "testId" : "sign-in",
+      "text" : "Sign in"
+    },
+    "username" : {
+      "accessibleName" : "Username",
+      "role" : "text-field",
+      "testId" : "username",
+      "text" : ""
+    }
+  },
+  "sessionId" : "reference-ui"
+}
