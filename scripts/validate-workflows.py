@@ -41,6 +41,17 @@ require(release.count("MAVEN_SIGNING_KEY: ${{ secrets.MAVEN_SIGNING_KEY }}") == 
 lock_gate = "git diff --exit-code -- settings-gradle.lockfile gradle.lockfile " \
     "'**/gradle.lockfile' gradle/verification-metadata.xml"
 require(lock_gate in ci, "lock drift gate must include settings, root, subprojects, metadata")
+mac_check = "./gradlew clean check -x :harness-lwjgl3:test --warning-mode=fail"
+mac_native = "./gradlew :harness-fixtures:test --tests " \
+    "'*ReferenceApplicationSmokeTest' --rerun-tasks --warning-mode=fail"
+require(mac_check in ci,
+        "macOS check must explicitly exclude incompatible inline LWJGL3 tests")
+require(mac_native in ci,
+        "macOS must run the dedicated real subprocess-native smoke")
+if mac_check in ci and mac_native in ci:
+    require(ci.index(mac_check) < ci.index(mac_native),
+            "macOS backend-neutral check must precede subprocess-native qualification")
+
 
 for path, text in (("ci.yml", ci), ("release.yml", release)):
     for action in re.findall(r"uses:\s+[^@\s]+@([^\s#]+)", text):

@@ -42,9 +42,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: .\gradlew.bat clean check --warning-mode=fail
-      - name: Clean check on macOS
+      - name: Clean backend-neutral checks on macOS
         if: runner.os == 'macOS'
-        run: ./gradlew clean check --warning-mode=fail
+        run: ./gradlew clean check -x :harness-lwjgl3:test --warning-mode=fail
       - name: Qualify Linux native fixture
         if: runner.os == 'Linux'
         run: xvfb-run -a ./gradlew :harness-fixtures:test --tests '*ReferenceApplicationSmokeTest' --rerun-tasks --warning-mode=fail
@@ -52,7 +52,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: .\gradlew.bat :harness-fixtures:test --tests '*ReferenceApplicationSmokeTest' --rerun-tasks --warning-mode=fail
-      - name: Qualify macOS native fixture
+      - name: Qualify macOS LWJGL3 in first-thread subprocess
         if: runner.os == 'macOS'
         run: ./gradlew :harness-fixtures:test --tests '*ReferenceApplicationSmokeTest' --rerun-tasks --warning-mode=fail
       - name: Retain failed diagnostics
