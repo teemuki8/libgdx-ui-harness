@@ -138,18 +138,51 @@ OK
 The post-fix six-record failure fixture validated against the Draft 2020-12
 run-record schema with format checking: 6 records validated.
 
+### Fix round 2: exact gate identity and bounded supervisor shutdown
+
+The reviewer-supplied `python3 -c ... \"$BENCHMARK_ROUND_GATE\" 3`
+regression was red: the prior substring/suffix check accepted it and changed
+the forged run from `round_protocol_failure` to `success`. The supervisor now
+requires the peer executable to be the runner's Python interpreter and the
+complete argv to be exactly interpreter, immutable gate path, and round.
+Requests and responses also bind a unique request ID and the SHA-256 digest of
+the gate bytes. The forged interpreter invocation is rejected, while actual
+gate invocations 1, 2, and 3 are accepted in order with the bound digest.
+
+A fake OMP parent then completed after leaving a child connected without
+sending a request. Before the fix the supervisor spent its full two-second
+join bound on the unbounded `recv`, and the outcome remained
+`round_protocol_failure` rather than identifying supervisor quiescence. Each
+accepted connection now has a 250 ms read deadline. Stop closes the listener
+and every active connection before joining; a remaining process group is
+terminated and retained as a supervisor failure. Start, accept/serve, active
+connection, read timeout, stop, and descendant-quiescence failures can no
+longer produce `success`. The connected child was absent or a zombie within
+the regression deadline, and the record classified
+`round_supervisor_failure`.
+
+```text
+python3 -m unittest scripts/test-telemetry.py scripts/test-runner.py scripts/test-treatment-symmetry.py
+....................
+Ran 20 tests in 1.037s
+OK
+```
+
+The round-2 generated fixture again validated all 6 records against the Draft
+2020-12 schema with format checking.
+
 ### Dry-run proof
 
 No agent was invoked:
 
 ```text
 python3 scripts/run-benchmark.py \
-  --output /tmp/agentic-palisade-task5-dry-run-gate \
+  --output /tmp/agentic-palisade-task5-dry-run-r2 \
   --model openai-codex/gpt-5.6-sol:medium \
   --max-time 45m \
   --pairs 3 \
   --dry-run
-{"status": "prepared", "runs": 6, "output": "/tmp/agentic-palisade-task5-dry-run-gate"}
+{"status": "prepared", "runs": 6, "output": "/tmp/agentic-palisade-task5-dry-run-r2"}
 ```
 
 The dry-run test proves three matched pairs, six UUIDs, six distinct workspace/profile/cache/session/artifact/display coordinates, identical candidate hashes, an identical instruction prefix, and byte-identical shared repository inventories. The only inventory differences are `template/INSTRUCTIONS.md` after `## Treatment appendix` and the source-identical `treatments/harness/` overlay tree. Top-level and per-run input manifests have mode `0444`; mutating a candidate changes its recorded candidate hash.
@@ -162,9 +195,9 @@ A generated six-record failure-retention run was also validated with Python `jso
 - Each run contains a fresh minimal repository skeleton and candidate template at `runs/<uuid>/repository/benchmarks/agentic-palisade/template`, plus unique `profile-home`, cache, Gradle cache, session, temporary, log, artifact, gate, and display coordinates. Generated template `.gradle`, `build`, Python caches, and symlinks are not copied.
 - Each OMP invocation fixes model/reasoning, cwd, JSON print mode, profile, session directory, config overlay, 45-minute internal limit, tool allowlist, auto approval/yolo, and disabled extensions/skills/rules/LSP/title generation. The supervisor adds the same external deadline and starts a new process session for whole-group termination.
 - The child environment is allowlisted and replaces `HOME`, all XDG roots, Gradle cache, temporary directory, display, OMP artifact root, and benchmark paths. API keys, SSH agents/askpass, cloud credential paths, Docker/Kubernetes config, PI tool-bridge state, and proxy/config leakage are not inherited.
-- `prompts/task.md` requires an initial candidate followed by `benchmark-feedback 1`, `2`, and `3` exactly once and in order. The fixed gate exchanges a schema-bound request/result with the runner-owned per-run supervisor; only the runner records accepted/rejected attempts, candidate hashes, request IDs, and ordered evidence after process termination. Missing, duplicate, reordered, overflow, malformed, or forged-file rounds fail closed.
+- `prompts/task.md` requires an initial candidate followed by `benchmark-feedback 1`, `2`, and `3` exactly once and in order. The fixed gate exchanges a schema-bound request/result with the runner-owned per-run supervisor; peer interpreter, exact argv, request ID, gate digest, round, and response identity are bound. Only the runner records accepted/rejected attempts, candidate hashes, request IDs, and ordered evidence after process termination. Missing, duplicate, reordered, overflow, malformed, forged-file, or forged-process rounds fail closed.
 - `scripts/parse-omp-session.py` accepts exactly one newline-terminated OMP v3 session JSONL export. It reads only stable assistant `usage`, `toolCall`, and `toolResult` fields; it never reads or interprets `thinking`. It aggregates input/output/cache-read/cache-write/reasoning categories only when every provider usage row supplies that category; otherwise the category is explicitly `unavailable` rather than undercounted.
-- `run-record.json` conforms to `agentic-palisade/run-record-v1` and records hashes, timestamps/wall time, exit code/signal/classification, provider tokens, tools by name, edit/build/launch/screenshot counts, tool and runner failures, and up to three gate-bound round markers. After process termination it atomically replaces any collision, is protected with mode `0444`, and is bound by an immutable SHA-256 sidecar. Timed-out, crashed, nonzero, malformed-telemetry, round-protocol, protected-input, and final-hash failures retain raw stdout/stderr, session bytes, artifacts, runner-owned round evidence, and either the final candidate hash or explicit `null` when hashing itself failed.
+- `run-record.json` conforms to `agentic-palisade/run-record-v1` and records hashes, timestamps/wall time, exit code/signal/classification, provider tokens, tools by name, edit/build/launch/screenshot counts, tool and runner failures, and up to three gate-bound round markers. After process termination it atomically replaces any collision, is protected with mode `0444`, and is bound by an immutable SHA-256 sidecar. Timed-out, crashed, nonzero, malformed-telemetry, round-protocol, round-supervisor, protected-input, and final-hash failures retain raw stdout/stderr, session bytes, artifacts, runner-owned round evidence, and either the final candidate hash or explicit `null` when hashing itself failed.
 
 ## Self-review
 
@@ -180,6 +213,7 @@ A generated six-record failure-retention run was also validated with Python `jso
 Implementation: `c33675e` (`feat(benchmark): isolate OMP runs and telemetry`).
 Review fixes, prerequisite coordinate repair, and evidence report: `956630c` (`fix(benchmark): fail closed on run integrity`).
 Runner-owned round/outcome evidence fix round: `89fddde` (`fix(benchmark): own round and outcome evidence`).
+Exact gate identity and bounded supervisor fix round: `d91177b` (`fix(benchmark): authenticate and bound round gate`).
 
 ## Concerns
 
