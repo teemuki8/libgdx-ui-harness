@@ -142,6 +142,7 @@ A generated six-record failure-retention run was also validated with Python `jso
 ## Commit
 
 Implementation: `c33675e` (`feat(benchmark): isolate OMP runs and telemetry`).
+Review fixes, prerequisite coordinate repair, and evidence report: `956630c` (`fix(benchmark): fail closed on run integrity`).
 
 ## Concerns
 
