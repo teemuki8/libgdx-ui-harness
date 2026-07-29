@@ -59,13 +59,23 @@ final class HarnessBridgeTest {
         assertEquals(1, application.clicks.get(), "the semantic click action must reach Stage input");
         assertFalse(application.candidateDisposed,
                 "HarnessBridge must not dispose the application-owned CandidateUi");
-        assertFalse(Files.exists(ownedArtifacts),
-                "closing the bridge must remove its bounded artifact tree");
+        assertTrue(Files.isDirectory(ownedArtifacts),
+                "clean close must retain bounded benchmark artifacts for inspection");
+        Path published = ownedArtifacts.resolve("published");
+        try (var artifacts = Files.walk(ownedArtifacts)) {
+            List<Path> retained = artifacts.filter(Files::isRegularFile).toList();
+            assertTrue(retained.size() >= 2,
+                    "screenshot and trace evidence must survive clean close");
+            assertTrue(retained.stream().allMatch(path -> path.startsWith(published)),
+                    "only published evidence may survive clean close");
+        }
+        assertFalse(Files.exists(ownedArtifacts.resolve("artifacts")));
+        assertFalse(Files.exists(ownedArtifacts.resolve("traces")));
         assertTrue(Files.isRegularFile(applicationFile),
                 "closing the bridge must leave application-owned files alone");
 
         List<Map<String, Object>> responses = parseLines(application.output.get());
-        assertEquals(12, responses.size());
+        assertEquals(15, responses.size());
         assertSuccessKind(responses.get(0), "sessions-result");
         Map<String, Object> sessions = result(responses.get(0));
         List<?> catalog = (List<?>) sessions.get("sessions");
@@ -94,9 +104,12 @@ final class HarnessBridgeTest {
         assertSuccessKind(responses.get(7), "trace-stopped");
         assertTrue(((Number) result(responses.get(7)).get("eventCount")).longValue() >= 2);
         assertSuccessKind(responses.get(8), "capabilities-result");
-        assertRejected(responses.get(9), "unknown-operation");
-        assertRejected(responses.get(10), "invalid-request");
-        assertRejected(responses.get(11), "limit-exceeded");
+        assertRejected(responses.get(9), "limit-exceeded");
+        assertSuccessKind(responses.get(10), "trace-started");
+        assertSuccessKind(responses.get(11), "trace-stopped");
+        assertRejected(responses.get(12), "unknown-operation");
+        assertRejected(responses.get(13), "invalid-request");
+        assertRejected(responses.get(14), "limit-exceeded");
         assertTrue(application.artifactsObservedBeforeClose,
                 "screenshot and trace artifacts must be stored below the bridge-owned root");
     }
@@ -164,6 +177,11 @@ final class HarnessBridgeTest {
                         + "\"maxPngBytes\":1048576}}",
                 "{\"operation\":\"ui_trace_stop\",\"arguments\":{" + session + "}}",
                 "{\"operation\":\"ui_capabilities\",\"arguments\":{" + session + "}}",
+                "{\"operation\":\"ui_trace_start\",\"arguments\":{" + session
+                        + ",\"maxDurationMillis\":30000,\"maxBytes\":1}}",
+                "{\"operation\":\"ui_trace_start\",\"arguments\":{" + session
+                        + ",\"maxDurationMillis\":30000,\"maxBytes\":1048576}}",
+                "{\"operation\":\"ui_trace_stop\",\"arguments\":{" + session + "}}",
                 "{\"operation\":\"exec\",\"arguments\":{\"command\":\"sh\"}}",
                 "{\"operation\":\"ui_snapshot\",\"arguments\":{" + session
                         + "},\"path\":\"/tmp/escape\"}") + "\n";

@@ -32,6 +32,8 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -57,6 +59,9 @@ public final class HarnessBridge implements AutoCloseable {
     private static final int FENCE_CAPACITY = 64;
 
     private final Path ownedRoot;
+    private final Path traceRoot;
+    private final Path artifactRoot;
+    private final Path publishedRoot;
     private final MonotonicClock clock = System::nanoTime;
     private final AtomicLong revision = new AtomicLong();
     private final AtomicLong frame = new AtomicLong();
@@ -77,8 +82,9 @@ public final class HarnessBridge implements AutoCloseable {
         Objects.requireNonNull(candidate, "candidate");
         Stage stage = Objects.requireNonNull(candidate.stage(), "candidate.stage()");
         ownedRoot = prepareOwnedRoot(artifactRoot);
-        Path artifactRootPath = ownedRoot.resolve("artifacts");
-        Path traceRoot = ownedRoot.resolve("traces");
+        this.artifactRoot = ownedRoot.resolve("artifacts");
+        traceRoot = ownedRoot.resolve("traces");
+        publishedRoot = createOwnedDirectory(ownedRoot.resolve("published"));
 
         scheduler = new RenderThreadScheduler(SCHEDULER_CAPACITY);
         sceneSession = new Scene2dSession(stage);
@@ -87,9 +93,9 @@ public final class HarnessBridge implements AutoCloseable {
                 revision::get, frame::get);
         capture = new Lwjgl3ScreenCapture(fence, sceneSession::snapshot);
         LocatorEngine locators = new StrictResolution();
-        artifactStore = new FileArtifactStore(artifactRootPath,
+        artifactStore = new FileArtifactStore(this.artifactRoot,
                 new ArtifactStore.Limits(32L * 1024 * 1024, 64), Clock.systemUTC());
-        publisher = new StorePublisher(artifactStore);
+        publisher = new StorePublisher(artifactStore, publishedRoot);
         traces = new TraceController(traceRoot, publisher, clock);
         waits = new WaitEngine(this::snapshotForWait, locators, clock, fence);
         protocolExecutor = Executors.newThreadPerTaskExecutor(
@@ -136,7 +142,7 @@ public final class HarnessBridge implements AutoCloseable {
                 .build()).toFuture();
     }
 
-    /** Closes harness resources and deletes only the artifact tree created by this bridge. */
+    /** Closes harness resources while retaining only bounded published benchmark evidence. */
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) return;
         RuntimeException failure = null;
@@ -151,10 +157,11 @@ public final class HarnessBridge implements AutoCloseable {
         failure = closeResource(artifactStore, failure);
         failure = closeResource(protocolExecutor, failure);
         try {
-            deleteOwnedTree(ownedRoot, 0);
+            deleteOwnedTree(traceRoot, 0);
+            deleteOwnedTree(artifactRoot, 0);
         } catch (IOException deletionFailure) {
             failure = append(failure,
-                    new IllegalStateException("Unable to remove bridge-owned artifacts",
+                    new IllegalStateException("Unable to remove transient harness storage",
                             deletionFailure));
         }
         if (failure != null) throw failure;
@@ -189,6 +196,15 @@ public final class HarnessBridge implements AutoCloseable {
             throw new IllegalArgumentException("Unable to create harness artifact root", failure);
         }
     }
+    private static Path createOwnedDirectory(Path path) {
+        try {
+            return Files.createDirectory(path);
+        } catch (IOException failure) {
+            throw new IllegalArgumentException("Unable to create harness evidence directory",
+                    failure);
+        }
+    }
+
 
     private static void deleteOwnedTree(Path path, int depth) throws IOException {
         if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return;
@@ -225,17 +241,46 @@ public final class HarnessBridge implements AutoCloseable {
 
     private static final class StorePublisher implements ArtifactReference.Publisher {
         private final FileArtifactStore store;
+        private final Path publishedRoot;
 
-        StorePublisher(FileArtifactStore store) {
+        StorePublisher(FileArtifactStore store, Path publishedRoot) {
             this.store = store;
+            this.publishedRoot = publishedRoot;
         }
 
-        @Override public ArtifactReference publish(String mediaType, byte[] content) {
+        @Override public synchronized ArtifactReference publish(
+                String mediaType, byte[] content) {
             ArtifactId id = store.put(SESSION_ID, ArtifactMediaType.fromValue(mediaType), content,
                     Instant.now().plus(ARTIFACT_LIFETIME));
             ArtifactStore.Metadata metadata = store.metadata(SESSION_ID, id);
-            return new ArtifactReference("artifact:" + id.value(), mediaType,
+            Path published = publishedRoot.resolve(metadata.sha256());
+            if (!Files.exists(published, LinkOption.NOFOLLOW_LINKS)) {
+                publishAtomically(published, content);
+            } else if (!Files.isRegularFile(published, LinkOption.NOFOLLOW_LINKS)
+                    || Files.isSymbolicLink(published)) {
+                throw new IllegalStateException("Published artifact target is unsafe");
+            }
+            return new ArtifactReference("artifact:" + metadata.sha256(), mediaType,
                     metadata.size(), metadata.sha256());
+        }
+
+        private void publishAtomically(Path published, byte[] content) {
+            Path temporary = null;
+            try {
+                temporary = Files.createTempFile(publishedRoot, ".artifact-", ".tmp");
+                Files.write(temporary, content, StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE);
+                Files.move(temporary, published, StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException failure) {
+                if (temporary != null) {
+                    try {
+                        Files.deleteIfExists(temporary);
+                    } catch (IOException cleanupFailure) {
+                        failure.addSuppressed(cleanupFailure);
+                    }
+                }
+                throw new IllegalStateException("Unable to publish benchmark artifact", failure);
+            }
         }
     }
 
@@ -261,12 +306,18 @@ public final class HarnessBridge implements AutoCloseable {
                         new IllegalStateException("a trace is already active"));
             }
             traceId = "trace-" + Long.toUnsignedString(sequence.incrementAndGet());
-            recorder.start(SESSION_ID, new TraceRecorder.Limits(
-                    command.maxBytes(), 10_000, Duration.ofMillis(command.maxDurationMillis())));
-            active = true;
-            record("trace-start", deadline);
-            return CompletableFuture.completedFuture(
-                    new HarnessResponse.Result.TraceStarted(traceId));
+            try {
+                recorder.start(SESSION_ID, new TraceRecorder.Limits(command.maxBytes(), 10_000,
+                        Duration.ofMillis(command.maxDurationMillis())));
+                record("trace-start", deadline);
+                active = true;
+                return CompletableFuture.completedFuture(
+                        new HarnessResponse.Result.TraceStarted(traceId));
+            } catch (RuntimeException failure) {
+                active = false;
+                recoverPartial(failure);
+                return CompletableFuture.failedFuture(failure);
+            }
         }
 
         @Override public synchronized CompletionStage<HarnessResponse.Result.TraceStopped> stop(
@@ -275,20 +326,46 @@ public final class HarnessBridge implements AutoCloseable {
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("no trace is active"));
             }
-            record("trace-stop", deadline);
-            TraceManifest manifest = recorder.stop();
-            active = false;
+            try {
+                record("trace-stop", deadline);
+                TraceManifest manifest = recorder.stop();
+                active = false;
+                ArtifactReference reference = publish(manifest);
+                return CompletableFuture.completedFuture(
+                        new HarnessResponse.Result.TraceStopped(traceId, reference.reference(),
+                                manifest.eventCount(), reference.byteLength()));
+            } catch (RuntimeException failure) {
+                active = false;
+                recoverPartial(failure);
+                return CompletableFuture.failedFuture(failure);
+            }
+        }
+
+        private ArtifactReference publish(TraceManifest manifest) {
             try {
                 byte[] archive = Files.readAllBytes(manifest.archive());
                 ArtifactReference reference = publisher.publish("application/zip", archive);
                 Files.delete(manifest.archive());
-                return CompletableFuture.completedFuture(
-                        new HarnessResponse.Result.TraceStopped(traceId, reference.reference(),
-                                manifest.eventCount(), reference.byteLength()));
+                return reference;
             } catch (IOException failure) {
-                return CompletableFuture.failedFuture(
-                        new IllegalStateException("Unable to publish trace archive", failure));
+                throw new IllegalStateException("Unable to publish trace archive", failure);
             }
+        }
+
+        private void recoverPartial(RuntimeException originalFailure) {
+            try {
+                recorder.close();
+                publishLastManifest();
+            } catch (RuntimeException cleanupFailure) {
+                originalFailure.addSuppressed(cleanupFailure);
+            }
+        }
+
+        private void publishLastManifest() {
+            recorder.lastManifest()
+                    .filter(manifest -> Files.exists(
+                            manifest.archive(), LinkOption.NOFOLLOW_LINKS))
+                    .ifPresent(this::publish);
         }
 
         private void record(String event, Deadline deadline) {
@@ -298,8 +375,9 @@ public final class HarnessBridge implements AutoCloseable {
         }
 
         @Override public synchronized void close() {
+            if (active) recorder.close();
             active = false;
-            recorder.close();
+            publishLastManifest();
         }
     }
 }

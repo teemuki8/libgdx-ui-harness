@@ -16,6 +16,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.InvocationTargetException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -29,7 +31,6 @@ public final class HarnessCli {
     private static final int MAX_COMMANDS = 10_000;
     private static final String CANDIDATE_CLASS =
             "benchmark.palisade.SkirmishConfigurationUi";
-    private static final Path ARTIFACT_ROOT = Path.of("build", "harness-artifacts");
 
     private HarnessCli() {
     }
@@ -164,6 +165,28 @@ public final class HarnessCli {
     private static Map<String, Object> error(String code, String message) {
         return Map.of("ok", false, "error", Map.of("code", code, "message", message));
     }
+    private static Path newArtifactRoot() {
+        Path build = Path.of("build").toAbsolutePath().normalize();
+        if (!Files.isDirectory(build, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(build)) {
+            throw new IllegalStateException(
+                    "HarnessCli requires an existing non-symbolic build directory");
+        }
+        Path runs = build.resolve("harness-artifacts");
+        try {
+            if (!Files.exists(runs, LinkOption.NOFOLLOW_LINKS)) {
+                Files.createDirectory(runs);
+            } else if (!Files.isDirectory(runs, LinkOption.NOFOLLOW_LINKS)
+                    || Files.isSymbolicLink(runs)) {
+                throw new IllegalStateException("Harness artifact base is unsafe");
+            }
+        } catch (IOException failure) {
+            throw new IllegalStateException("Unable to prepare harness artifact base", failure);
+        }
+        return runs.resolve("run-" + ProcessHandle.current().pid() + "-"
+                + Long.toUnsignedString(System.nanoTime()));
+    }
+
 
     private static final class HarnessApplication extends ApplicationAdapter {
         private static final float FIXED_STEP_SECONDS = 1f / 60f;
@@ -177,7 +200,7 @@ public final class HarnessCli {
             stage.getViewport().update(Gdx.graphics.getWidth(), Gdx.graphics.getHeight(), true);
             candidate.showInitial();
             Gdx.input.setInputProcessor(stage);
-            bridge = HarnessBridge.open(candidate, ARTIFACT_ROOT);
+            bridge = HarnessBridge.open(candidate, newArtifactRoot());
             cliThread = Thread.ofVirtual().name("palisade-harness-cli").start(() -> {
                 try {
                     run(bridge, System.in, System.out);
