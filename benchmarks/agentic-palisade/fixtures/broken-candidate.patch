@@ -1,0 +1,82 @@
+diff --git a/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java b/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java
+new file mode 100644
+--- /dev/null
++++ b/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java
+@@ -0,0 +1,77 @@
++package benchmark.palisade;
++
++import com.badlogic.gdx.Input;
++import com.badlogic.gdx.scenes.scene2d.InputEvent;
++import com.badlogic.gdx.scenes.scene2d.InputListener;
++import com.badlogic.gdx.scenes.scene2d.Stage;
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++
++/** Intentionally low-fidelity but runnable qualification candidate. */
++public final class SkirmishConfigurationUi implements CandidateUi {
++    private static final List<String> VISIBLE = List.of(
++            "map", "playerRealm", "majorRivalCount", "pettyRealmDensity",
++            "startingResources", "victoryCondition", "aiDifficulty", "simulationSpeed",
++            "richHarvest", "scarceGold", "costlyCavalry", "cavalryRush", "roadBoom",
++            "seed", "copySeed", "randomSeed", "cancel", "startBattle");
++    private final Stage stage = new Stage();
++    private int focus = -1;
++    private boolean conditional;
++
++    public SkirmishConfigurationUi() {
++        stage.addCaptureListener(new InputListener() {
++            @Override public boolean keyDown(InputEvent event, int keycode) {
++                if (keycode == Input.Keys.TAB) {
++                    focus = Math.floorMod(focus + 1, visible().size());
++                    return true;
++                }
++                if (keycode == Input.Keys.ENTER && "victoryCondition".equals(focused())) {
++                    conditional = !conditional;
++                    focus = visible().indexOf("victoryCondition");
++                    return true;
++                }
++                return true;
++            }
++        });
++    }
++
++    @Override public Stage stage() {
++        return stage;
++    }
++
++    @Override public void showInitial() {
++        stage.clear();
++        focus = -1;
++        conditional = false;
++    }
++
++    @Override public CandidateState snapshotState() {
++        Map<String, Object> state = new LinkedHashMap<>();
++        state.put("visibleControls", visible());
++        state.put("values", Map.of());
++        String focused = focused();
++        if (focused != null) state.put("focusedControlId", focused);
++        state.put("valid", false);
++        state.put("started", false);
++        state.put("seedText", "invalid");
++        return new CandidateState(state);
++    }
++
++    @Override public void dispose() {
++        stage.dispose();
++    }
++
++    private List<String> visible() {
++        if (!conditional) return VISIBLE;
++        List<String> result = new ArrayList<>(VISIBLE);
++        result.add(6, "rivalTargetCount");
++        return result;
++    }
++
++    private String focused() {
++        List<String> visible = visible();
++        return focus >= 0 && focus < visible.size() ? visible.get(focus) : null;
++    }
++}

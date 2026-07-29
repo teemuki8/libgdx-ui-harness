@@ -16,6 +16,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import threading
 import uuid
@@ -29,6 +30,8 @@ FIXED_REASONING = "medium"
 FIXED_PAIRS = 3
 FIXED_ROUNDS = 3
 FIXED_SECONDS = 45 * 60
+QUALIFICATION_SECONDS = 1
+QUALIFICATION_OMP = BENCHMARK_ROOT / "fixtures/mock-omp.py"
 TOOL_ALLOWLIST = "read,write,edit,bash,grep,glob"
 GENERATED_NAMES = {".gradle", "build", "__pycache__"}
 CANDIDATE_INPUT_NAMES = {"INSTRUCTIONS.md", "PROTOCOL.md", "corpus"}
@@ -575,7 +578,9 @@ def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
     config_path.chmod(0o444)
     round_log = artifact_root / "rounds.jsonl"
     round_hash = artifact_root / "rounds.sha256"
-    round_socket = run_dir / "round-supervisor.sock"
+    round_socket = (
+        Path(tempfile.gettempdir())
+        / f"palisade-round-{run_id}.sock")
     initial_candidate_hash = hash_candidate(workspace)
 
     item = {
@@ -989,6 +994,8 @@ def _validate_arguments(arguments, max_seconds):
         raise ValueError(f"pairs must be exactly {FIXED_PAIRS}")
     if max_seconds != FIXED_SECONDS:
         raise ValueError("measured runs must use exactly --max-time 45m")
+    if arguments.qualification and Path(arguments.omp).resolve() != QUALIFICATION_OMP.resolve():
+        raise ValueError("qualification requires the fixed mock OMP fixture")
 
 
 def main(argv=None):
@@ -998,6 +1005,7 @@ def main(argv=None):
     parser.add_argument("--max-time", required=True)
     parser.add_argument("--pairs", required=True, type=int)
     parser.add_argument("--omp", default="omp", help=argparse.SUPPRESS)
+    parser.add_argument("--qualification", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--dry-run", action="store_true")
     arguments = parser.parse_args(argv)
     try:
@@ -1015,6 +1023,10 @@ def main(argv=None):
             "template": hash_tree(BENCHMARK_ROOT / "template"),
             "protocol": sha256_bytes((BENCHMARK_ROOT / "PROTOCOL.md").read_bytes()),
         }
+        _copy_tree(BENCHMARK_ROOT / "corpus", output / "corpus")
+        _make_read_only(output / "corpus")
+        _copy_tree(BENCHMARK_ROOT / "template", output / "template")
+        _make_read_only(output / "template")
         runs = []
         index = 0
         for pair in range(1, FIXED_PAIRS + 1):
@@ -1050,7 +1062,9 @@ def main(argv=None):
         with ThreadPoolExecutor(max_workers=len(runs), thread_name_prefix="palisade-run") as executor:
             futures = [executor.submit(
                 _run_one, output, item, arguments.omp, arguments.model,
-                arguments.max_time, max_seconds, hashes) for item in runs]
+                arguments.max_time,
+                QUALIFICATION_SECONDS if arguments.qualification else max_seconds,
+                hashes) for item in runs]
             for future in as_completed(futures):
                 classifications.append(future.result())
         successful = classifications.count("success")

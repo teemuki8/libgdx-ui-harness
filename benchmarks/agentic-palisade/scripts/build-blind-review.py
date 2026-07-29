@@ -298,12 +298,25 @@ def _load_inputs(root):
         functional = _require_object(evaluation.get("functional"), "functional evaluation")
         if not all(isinstance(functional.get(name), int) for name in ("passed", "total")) or not 0 <= functional["passed"] <= functional["total"]:
             raise ValueError("invalid functional evaluation")
+        status = evaluation.get("status")
+        if status not in {
+                "complete", "compile-failed", "runtime-failed",
+                "invalid-candidate", "candidate-rejected"}:
+            raise ValueError("unsupported evaluation status")
         visuals = evaluation.get("visual")
-        if not isinstance(visuals, list) or {item.get("referenceId") for item in visuals} != set(REQUIRED_REFERENCES):
-            raise ValueError("evaluation must contain every canonical visual outcome")
         artifacts = evaluation.get("artifacts")
-        if not isinstance(artifacts, list):
-            raise ValueError("evaluation artifacts are missing")
+        if not isinstance(visuals, list) or not isinstance(artifacts, list):
+            raise ValueError("evaluation evidence lists are missing")
+        if visuals:
+            if {item.get("referenceId") for item in visuals} != set(REQUIRED_REFERENCES):
+                raise ValueError(
+                    "evaluation must contain every canonical visual outcome")
+        elif status == "complete":
+            raise ValueError(
+                "complete evaluation must contain every canonical visual outcome")
+        elif artifacts:
+            raise ValueError(
+                "failed evaluation must not claim artifacts without visual outcomes")
         artifact_by_path = {item.get("path"): item for item in artifacts if isinstance(item, dict)}
         captures = []
         public_visual = []

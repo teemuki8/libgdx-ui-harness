@@ -61,6 +61,26 @@ if mac_check in ci and mac_compile in ci:
     require(ci.index(mac_check) < ci.index(mac_compile),
             "macOS backend-neutral check must precede native fixture compilation")
 
+qualification_command = (
+    "xvfb-run -a python3 benchmarks/agentic-palisade/scripts/"
+    "qualify-pipeline.py --output \"$RUNNER_TEMP/agentic-palisade-qualification\""
+)
+require(qualification_command in ci,
+        "CI must execute the deterministic Agentic Palisade qualification under Xvfb")
+require(ci.count(qualification_command) == 1,
+        "CI must execute the paid-agent-free qualification exactly once")
+for marker in (
+        "python3 benchmarks/agentic-palisade/scripts/test-corpus.py",
+        "python3 benchmarks/agentic-palisade/scripts/test-treatment-symmetry.py",
+        "python3 benchmarks/agentic-palisade/scripts/test-telemetry.py",
+        "python3 benchmarks/agentic-palisade/scripts/test-runner.py",
+        "python3 benchmarks/agentic-palisade/scripts/test-blinding.py",
+        "./gradlew -p benchmarks/agentic-palisade/evaluator test",
+        "./gradlew -p benchmarks/agentic-palisade/template test"):
+    require(marker in ci, f"benchmark qualification prerequisite missing: {marker}")
+require("omp --model" not in ci and "run-benchmark.py --output" not in ci,
+        "CI must never invoke measured OMP agents")
+
 
 for path, text in (("ci.yml", ci), ("release.yml", release)):
     for action in re.findall(r"uses:\s+[^@\s]+@([^\s#]+)", text):

@@ -105,6 +105,42 @@ jobs:
             build/reports/parity-ci/**
             **/build/test-results/**
 
+  agentic-palisade-qualification:
+    name: Agentic Palisade qualification (fixtures only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install JDK 25
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Configure Gradle
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+      - name: Install Linux virtual display
+        run: sudo apt-get update && sudo apt-get install --yes xvfb
+      - name: Run backend-neutral benchmark contracts
+        run: |
+          python3 benchmarks/agentic-palisade/scripts/test-corpus.py
+          python3 benchmarks/agentic-palisade/scripts/test-treatment-symmetry.py
+          python3 benchmarks/agentic-palisade/scripts/test-telemetry.py
+          python3 benchmarks/agentic-palisade/scripts/test-runner.py
+          python3 benchmarks/agentic-palisade/scripts/test-blinding.py
+          ./gradlew -p benchmarks/agentic-palisade/evaluator test --no-daemon --console=plain --warning-mode=fail
+          ./gradlew -p benchmarks/agentic-palisade/template test --no-daemon --console=plain --warning-mode=fail
+      - name: Qualify the full synthetic pipeline
+        run: xvfb-run -a python3 benchmarks/agentic-palisade/scripts/qualify-pipeline.py --output "$RUNNER_TEMP/agentic-palisade-qualification"
+      - name: Retain failed qualification evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: failed-agentic-palisade-qualification
+          if-no-files-found: warn
+          retention-days: 14
+          path: ${{ runner.temp }}/agentic-palisade-qualification/**
+
   dependency-security:
     name: Locked and verified dependencies
     runs-on: ubuntu-latest

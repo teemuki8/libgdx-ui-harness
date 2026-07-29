@@ -41,6 +41,10 @@ public final class CandidateEvaluator {
     private static final long MAX_RESULT_BYTES = 16L * 1024L * 1024L;
     private static final int MAX_RESULT_LINES = 512;
     private static final Duration PROCESS_TIMEOUT = Duration.ofMinutes(3);
+    private static final Set<String> GENERATED_NAMES =
+            Set.of(".gradle", "build", "__pycache__");
+    private static final Set<String> CANDIDATE_INPUT_NAMES =
+            Set.of("INSTRUCTIONS.md", "PROTOCOL.md", "corpus");
     private static final Map<String, String> TRUSTED_TEMPLATE_FILES = Map.ofEntries(
             Map.entry("build.gradle.kts", "537819f6baf1d593a8298a439b65eea2080bc5d2633573d178d669bb277f6ac6"),
             Map.entry("settings.gradle.kts", "2098bf5d2904d7d13b7a4e5e9d1b309800b63e5002e990f44bac0299a2693301"),
@@ -68,7 +72,7 @@ public final class CandidateEvaluator {
         JsonNode corpus = readJson(request.corpusDirectory().resolve("spec.json"), 1_048_576L);
         FunctionalContract contract = FunctionalContract.fromCorpus(corpus);
         validateReferences(request.corpusDirectory(), corpus);
-        String candidateHash = treeSha256(request.candidateDirectory());
+        String candidateHash = candidateSha256(request.candidateDirectory());
         String corpusHash = treeSha256(request.corpusDirectory());
         var candidateIdentity = new EvaluationRecord.CandidateIdentity(request.candidateId(), candidateHash);
         var corpusIdentity = new EvaluationRecord.CorpusIdentity(corpus.path("schemaVersion").asText(), corpusHash);
@@ -110,7 +114,8 @@ public final class CandidateEvaluator {
                 EvaluationRecord complete = record("complete", candidateIdentity, corpusIdentity,
                         data.functional(), data.visual(), data.artifacts(), List.of());
                 publishAfterIdentityCheck(
-                        request.candidateDirectory(), candidateHash, request.outputDirectory(), complete);
+                        request.candidateDirectory(), candidateHash,
+                        request.outputDirectory(), complete, workspace);
                 return complete;
             } catch (RuntimeException | IOException launchFailure) {
                 EvaluationRecord failed = record("runtime-failed", candidateIdentity, corpusIdentity,
@@ -699,41 +704,75 @@ public final class CandidateEvaluator {
         }
     }
 
-    /** Computes a deterministic SHA-256 over relative paths and file bytes without following links. */
+    /** Computes the runner-compatible SHA-256 over relative file paths and bytes. */
     public static String treeSha256(Path root) throws IOException {
+        return runnerTreeSha256(root, false);
+    }
+
+    /** Computes the runner-compatible candidate overlay identity. */
+    static String candidateSha256(Path root) throws IOException {
+        return runnerTreeSha256(root, true);
+    }
+
+    private static String runnerTreeSha256(
+            Path root, boolean candidateOnly) throws IOException {
         Path normalized = root.toAbsolutePath().normalize();
         if (!Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS)) {
-            throw new IllegalArgumentException("Tree root must be a local directory");
+            throw new IllegalArgumentException(
+                    "Tree root must be a local directory");
         }
         List<Path> paths;
         try (var stream = Files.walk(normalized)) {
             paths = stream.filter(path -> !path.equals(normalized))
-                    .sorted(Comparator.comparing(path -> unixRelative(normalized, path))).toList();
-        }
-        if (paths.size() > MAX_TREE_FILES) {
-            throw new IllegalArgumentException("Tree has too many entries");
+                    .sorted(Comparator.comparing(
+                            path -> unixRelative(normalized, path))).toList();
         }
         MessageDigest digest = sha256Digest();
         long totalBytes = 0;
+        int fileCount = 0;
         for (Path path : paths) {
-            if (Files.isSymbolicLink(path)) {
-                throw new IllegalArgumentException("Symbolic links are not accepted");
+            Path relativePath = normalized.relativize(path);
+            boolean generated = false;
+            for (Path part : relativePath) {
+                if (GENERATED_NAMES.contains(part.toString())) {
+                    generated = true;
+                    break;
+                }
             }
-            String relative = unixRelative(normalized, path);
+            if (generated
+                    || (candidateOnly && relativePath.getNameCount() > 0
+                        && CANDIDATE_INPUT_NAMES.contains(
+                                relativePath.getName(0).toString()))) {
+                continue;
+            }
+            if (Files.isSymbolicLink(path)) {
+                throw new IllegalArgumentException(
+                        "Symbolic links are not accepted");
+            }
             if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
-                update(digest, "D\0" + relative + "\0");
-            } else if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
-                long bytes = Files.size(path);
-                totalBytes += bytes;
-                if (totalBytes > MAX_TREE_BYTES) {
-                    throw new IllegalArgumentException("Tree exceeds byte limit");
-                }
-                update(digest, "F\0" + relative + "\0" + bytes + "\0");
-                try (InputStream input = Files.newInputStream(path)) {
-                    input.transferTo(new java.security.DigestOutputStream(java.io.OutputStream.nullOutputStream(), digest));
-                }
-            } else {
+                continue;
+            }
+            if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
                 throw new IllegalArgumentException("Unsupported tree entry");
+            }
+            if (++fileCount > MAX_TREE_FILES) {
+                throw new IllegalArgumentException("Tree has too many files");
+            }
+            long bytes = Files.size(path);
+            totalBytes += bytes;
+            if (totalBytes > MAX_TREE_BYTES) {
+                throw new IllegalArgumentException("Tree exceeds byte limit");
+            }
+            byte[] relative = unixRelative(normalized, path)
+                    .getBytes(StandardCharsets.UTF_8);
+            digest.update(java.nio.ByteBuffer.allocate(Long.BYTES)
+                    .putLong(relative.length).array());
+            digest.update(relative);
+            digest.update(java.nio.ByteBuffer.allocate(Long.BYTES)
+                    .putLong(bytes).array());
+            try (InputStream input = Files.newInputStream(path)) {
+                input.transferTo(new java.security.DigestOutputStream(
+                        java.io.OutputStream.nullOutputStream(), digest));
             }
         }
         return hex(digest.digest());
@@ -801,38 +840,113 @@ public final class CandidateEvaluator {
     static void publishAfterIdentityCheck(
             Path candidate, String expectedIdentity, Path output, EvaluationRecord record)
             throws IOException {
-        verifyCandidateIdentity(candidate, expectedIdentity);
-        publish(output, record);
+        publishAfterIdentityCheck(candidate, expectedIdentity, output, record, null);
     }
 
-    private static void publish(Path outputDirectory, EvaluationRecord record) throws IOException {
+    static void publishAfterIdentityCheck(
+            Path candidate, String expectedIdentity, Path output, EvaluationRecord record,
+            Path workspace) throws IOException {
+        verifyCandidateIdentity(candidate, expectedIdentity);
+        publish(output, record, workspace);
+    }
+
+    private static void publish(
+            Path outputDirectory, EvaluationRecord record, Path workspace)
+            throws IOException {
         Path output = outputDirectory.toAbsolutePath().normalize();
         if (Files.exists(output, LinkOption.NOFOLLOW_LINKS)) {
-            throw new IllegalArgumentException("Evaluation output must not already exist");
+            throw new IllegalArgumentException(
+                    "Evaluation output must not already exist");
         }
-        Files.createDirectory(output);
-        Path destination = output.resolve("evaluation.json");
-        Path temporary = Files.createTempFile(output, ".evaluation.tmp-", ".json");
+        Files.createDirectories(output.getParent());
+        Path temporary = Files.createTempDirectory(
+                output.getParent(), "." + output.getFileName() + ".tmp-");
         boolean moved = false;
         try {
+            for (EvaluationRecord.Artifact artifact : record.artifacts()) {
+                if (workspace == null) {
+                    throw new IllegalArgumentException(
+                            "Evaluation artifacts require a trusted workspace");
+                }
+                Path source = artifactSource(workspace, artifact.path());
+                Path destination = temporary.resolve(artifact.path()).normalize();
+                if (!destination.startsWith(temporary)
+                        || !Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)
+                        || Files.isSymbolicLink(source)
+                        || Files.size(source) != artifact.bytes()
+                        || !fileSha256(source).equals(artifact.sha256())) {
+                    throw new IllegalArgumentException(
+                            "Evaluation artifact identity mismatch: "
+                                    + artifact.path());
+                }
+                Files.createDirectories(destination.getParent());
+                Files.copy(source, destination, StandardCopyOption.COPY_ATTRIBUTES);
+                if (Files.size(destination) != artifact.bytes()
+                        || !fileSha256(destination).equals(artifact.sha256())) {
+                    throw new IOException(
+                            "Published evaluation artifact changed: "
+                                    + artifact.path());
+                }
+            }
+            Path evaluation = temporary.resolve("evaluation.json");
             byte[] bytes = JSON.writeValueAsBytes(record);
-            try (var channel = java.nio.channels.FileChannel.open(temporary,
-                    StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+            try (var channel = java.nio.channels.FileChannel.open(
+                    evaluation, StandardOpenOption.CREATE_NEW,
+                    StandardOpenOption.WRITE)) {
                 channel.write(java.nio.ByteBuffer.wrap(bytes));
                 channel.force(true);
             }
+            Path sidecar = temporary.resolve("evaluation.sha256");
+            byte[] sidecarBytes = (
+                    fileSha256(evaluation) + "  evaluation.json\n")
+                    .getBytes(StandardCharsets.US_ASCII);
+            try (var channel = java.nio.channels.FileChannel.open(
+                    sidecar, StandardOpenOption.CREATE_NEW,
+                    StandardOpenOption.WRITE)) {
+                channel.write(java.nio.ByteBuffer.wrap(sidecarBytes));
+                channel.force(true);
+            }
             try {
-                Files.move(temporary, destination, StandardCopyOption.ATOMIC_MOVE);
+                Files.move(
+                        temporary, output, StandardCopyOption.ATOMIC_MOVE);
             } catch (AtomicMoveNotSupportedException unsupported) {
-                throw new IOException("Evaluation filesystem does not support atomic publication", unsupported);
+                throw new IOException(
+                        "Evaluation filesystem does not support atomic publication",
+                        unsupported);
             }
             moved = true;
         } finally {
             if (!moved) {
-                Files.deleteIfExists(temporary);
-                Files.deleteIfExists(output);
+                deleteTree(temporary);
             }
         }
+    }
+
+    private static Path artifactSource(Path workspace, String logicalPath) {
+        if (logicalPath.startsWith("captures/")) {
+            String name = logicalPath.substring("captures/".length());
+            String evidence = name.contains("1280x720")
+                    ? "evidence-1280" : "evidence-1920";
+            return workspace.resolve(evidence).resolve("captures").resolve(name);
+        }
+        if ("evidence/1920/results.ndjson".equals(logicalPath)) {
+            return workspace.resolve("evidence-1920/results.ndjson");
+        }
+        if ("evidence/1280/results.ndjson".equals(logicalPath)) {
+            return workspace.resolve("evidence-1280/results.ndjson");
+        }
+        String prefix = "evidence/functional/";
+        String suffix = "/results.ndjson";
+        if (logicalPath.startsWith(prefix) && logicalPath.endsWith(suffix)) {
+            String name = logicalPath.substring(
+                    prefix.length(), logicalPath.length() - suffix.length());
+            if (!name.isBlank() && name.indexOf('/') < 0) {
+                return workspace.resolve(
+                        "functional-" + name + "/results.ndjson");
+            }
+        }
+        throw new IllegalArgumentException(
+                "Unsupported evaluation artifact path: " + logicalPath);
     }
 
     private static ProcessResult runProcess(List<String> command, Path directory)
@@ -941,7 +1055,9 @@ public final class CandidateEvaluator {
     }
 
     private static void verifyCandidateIdentity(Path candidate, String expected) throws IOException {
-        if (!expected.equals(treeSha256(candidate))) throw new IllegalStateException("Candidate changed during evaluation");
+        if (!expected.equals(candidateSha256(candidate))) {
+            throw new IllegalStateException("Candidate changed during evaluation");
+        }
     }
 
     private static Set<String> names(Path directory) throws IOException {

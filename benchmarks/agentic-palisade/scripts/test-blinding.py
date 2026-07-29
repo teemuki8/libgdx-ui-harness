@@ -282,6 +282,50 @@ class BlindingTest(unittest.TestCase):
         for forbidden in ("baseline", "harness", "runId", "token", "diagnostic", str(self.input)):
             self.assertNotIn(forbidden.lower(), package_text.lower())
 
+    def test_failed_evaluation_is_retained_as_an_empty_blinded_candidate(self):
+        first = json.loads(
+            (self.input / "benchmark-manifest.json").read_text())["runs"][0]
+        evaluation_dir = (
+            self.input / "runs" / first["runId"] / "evaluation")
+        evaluation_path = evaluation_dir / "evaluation.json"
+        evaluation = json.loads(evaluation_path.read_text())
+        evaluation["status"] = "compile-failed"
+        evaluation["functional"]["passed"] = 0
+        for assertion in evaluation["functional"]["assertions"]:
+            assertion["passed"] = False
+        evaluation["visual"] = []
+        evaluation["artifacts"] = []
+        write_hashed_json(
+            evaluation_path, evaluation, evaluation_dir / "evaluation.sha256")
+        for capture in (evaluation_dir / "captures").glob("*.png"):
+            capture.unlink()
+
+        self.build()
+
+        private = json.loads(self.mapping.read_text())
+        label = next(
+            label for label, identity in private["labels"].items()
+            if identity["runId"] == first["runId"])
+        public = json.loads((self.review / "manifest.json").read_text())
+        candidate = next(
+            item for item in public["candidates"] if item["label"] == label)
+        self.assertEqual([], candidate["captures"])
+        self.assertEqual([], candidate["automatedVisual"])
+        BLIND.scan_package(self.review)
+        ratings_path, _response = valid_response(self.review)
+        lock_path = self.root / "failed-run-lock.json"
+        self.lock(ratings_path, lock_path)
+        self.assertTrue(lock_path.is_file())
+        report_path = self.root / "failed-run-report.json"
+        report = UNBLIND.unblind(
+            self.input, self.review, self.mapping, ratings_path, lock_path,
+            report_path)
+        self.assertEqual(6, len(report["channels"]["automatedVisual"]["raw"]))
+        failed_visual = next(
+            item for item in report["channels"]["automatedVisual"]["raw"]
+            if item["runId"] == first["runId"])
+        self.assertEqual([], failed_visual["outcomes"])
+
     def test_leakage_scanner_rejects_mutated_names_content_and_png_metadata(self):
         self.build()
         leaked_name = self.review / "baseline-notes.txt"

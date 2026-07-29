@@ -203,6 +203,16 @@ class DryRunTest(unittest.TestCase):
             self.assertEqual(manifest["reasoning"], "medium")
             self.assertEqual(manifest["rounds"], 3)
             self.assertEqual(manifest["maxTimeSeconds"], 2700)
+            self.assertTrue((output / "corpus/spec.json").is_file())
+            self.assertEqual(
+                manifest["hashes"]["corpus"],
+                self.runner.hash_tree(output / "corpus"),
+            )
+            self.assertTrue((output / "template/build.gradle.kts").is_file())
+            self.assertEqual(
+                manifest["hashes"]["template"],
+                self.runner.hash_tree(output / "template"),
+            )
 
             ids = [run["runId"] for run in manifest["runs"]]
             self.assertEqual(len(set(ids)), 6)
@@ -316,11 +326,37 @@ class DryRunTest(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("exactly --max-time 45m", completed.stderr)
 
+    def test_qualification_deadline_is_available_only_to_the_fixed_mock_omp(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake = root / "fake-omp"
+            write_fake_omp(fake)
+            completed = run_cli(
+                root / "out", "--omp", str(fake), "--qualification", "--dry-run")
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("qualification requires the fixed mock OMP fixture", completed.stderr)
+
 
 class SupervisionTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.runner = load_runner()
+
+    def test_round_supervisor_supports_a_deep_output_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / ("deep-" * 18)
+            root.mkdir()
+            output = root / "outcomes"
+            completed = run_cli(
+                output, "--omp", str(BENCHMARK_ROOT / "fixtures/mock-omp.py"),
+                "--qualification")
+            self.assertEqual(1, completed.returncode, completed.stderr)
+            manifest = read_json(output / "benchmark-manifest.json")
+            conforming = next(
+                run for run in manifest["runs"]
+                if run["pair"] == 1 and run["treatment"] == "baseline")
+            record = read_json(output / conforming["runRecord"])
+            self.assertEqual("success", record["exit"]["classification"])
 
     def test_runs_six_concurrently_with_fixed_isolation_and_retains_failures(self):
         with tempfile.TemporaryDirectory() as temporary:

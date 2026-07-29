@@ -1,5 +1,6 @@
 package benchmark.palisade.eval;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -10,10 +11,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -96,12 +100,77 @@ final class FunctionalContractTest {
         assertEquals(before, CandidateEvaluator.treeSha256(candidate));
         assertTrue(Files.isRegularFile(output.resolve("evaluation.json")));
         try (var files = Files.list(output)) {
-            assertEquals(Set.of("evaluation.json"), files.map(path -> path.getFileName().toString()).collect(java.util.stream.Collectors.toSet()));
+            assertEquals(Set.of("evaluation.json", "evaluation.sha256"), files.map(path -> path.getFileName().toString()).collect(java.util.stream.Collectors.toSet()));
         }
         JsonNode published = JSON.readTree(output.resolve("evaluation.json").toFile());
         assertEquals("agentic-palisade-evaluation/v1", published.path("schemaVersion").asText());
         assertEquals("candidate-fixture", published.path("candidate").path("id").asText());
         assertEquals(before, published.path("candidate").path("sha256").asText());
+    }
+
+    @Test
+    void completePublicationCopiesEveryHashBoundArtifactBeforeWorkspaceDeletion()
+            throws Exception {
+        Path candidate = temporary.resolve("artifact-candidate");
+        Files.createDirectories(candidate);
+        Files.writeString(candidate.resolve("source.txt"), "immutable", StandardCharsets.UTF_8);
+        String identity = CandidateEvaluator.treeSha256(candidate);
+        Path workspace = temporary.resolve("artifact-workspace");
+        Path source = workspace.resolve(
+                "evidence-1920/captures/initial-1920x1080-0.png");
+        Files.createDirectories(source.getParent());
+        byte[] content = "capture-bytes".getBytes(StandardCharsets.UTF_8);
+        Files.write(source, content);
+        String digest = HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(content));
+        FunctionalContract.Result functional =
+                FunctionalContract.fromCorpus(corpus()).evaluate(JSON.createObjectNode());
+        EvaluationRecord base = EvaluationRecord.forTesting(functional);
+        EvaluationRecord record = new EvaluationRecord(
+                base.schemaVersion(), base.status(),
+                new EvaluationRecord.CandidateIdentity("fixture", identity),
+                base.corpus(), base.functional(), base.visual(),
+                List.of(new EvaluationRecord.Artifact(
+                        "captures/initial-1920x1080-0.png", content.length, digest)),
+                base.diagnostics());
+        Path output = temporary.resolve("artifact-output");
+
+        CandidateEvaluator.publishAfterIdentityCheck(
+                candidate, identity, output, record, workspace);
+
+        assertArrayEquals(content, Files.readAllBytes(
+                output.resolve("captures/initial-1920x1080-0.png")));
+        assertTrue(Files.isRegularFile(output.resolve("evaluation.json")));
+        String evaluationDigest = HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(
+                        Files.readAllBytes(output.resolve("evaluation.json"))));
+        assertEquals(evaluationDigest + "  evaluation.json\n",
+                Files.readString(output.resolve("evaluation.sha256")));
+    }
+
+    @Test
+    void evaluatorUsesRunnerCompatibleTreeAndCandidateIdentities()
+            throws Exception {
+        Path corpus = temporary.resolve("identity-corpus");
+        Files.createDirectories(corpus.resolve("schema"));
+        Files.writeString(corpus.resolve("schema/x"), "x", StandardCharsets.UTF_8);
+        Files.writeString(corpus.resolve("spec.json"), "{}", StandardCharsets.UTF_8);
+        assertEquals(
+                "0f33016333440b164d0d1d6d69ef5227d716fdeed01b4262cc9f84db85bcc829",
+                CandidateEvaluator.treeSha256(corpus));
+
+        Path candidate = temporary.resolve("identity-overlay");
+        Path source = candidate.resolve("src/main/java/example/A.java");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, "class A {}\n", StandardCharsets.UTF_8);
+        Files.writeString(candidate.resolve("INSTRUCTIONS.md"), "neutral", StandardCharsets.UTF_8);
+        Files.createDirectories(candidate.resolve("corpus"));
+        Files.writeString(candidate.resolve("corpus/spec.json"), "neutral", StandardCharsets.UTF_8);
+        Files.createDirectories(candidate.resolve("build"));
+        Files.writeString(candidate.resolve("build/generated.bin"), "generated", StandardCharsets.UTF_8);
+        assertEquals(
+                "f9b9eaa43413a932b58d1e5a389fb6f230a1ab5d0aa14f8ff491274245d31487",
+                CandidateEvaluator.candidateSha256(candidate));
     }
 
     @Test

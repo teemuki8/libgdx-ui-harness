@@ -70,8 +70,14 @@ def _verify_public_files(review_dir, manifest):
         expected_files.add(path.relative_to(review_dir).as_posix())
     for candidate in manifest["candidates"]:
         captures = candidate.get("captures")
-        if not isinstance(captures, list) or len(captures) != 15:
-            raise ValueError("every public candidate requires fifteen captures")
+        if not isinstance(captures, list) or len(captures) not in (0, 15):
+            raise ValueError(
+                "public candidate must contain zero or fifteen captures")
+        if not captures:
+            if candidate.get("automatedVisual") != []:
+                raise ValueError(
+                    "capture-free candidate must not claim automated visuals")
+            continue
         counts = {reference_id: 0 for reference_id in BLIND.REQUIRED_REFERENCES}
         for capture in captures:
             if not isinstance(capture, dict) or capture.get("referenceId") not in counts:
@@ -357,6 +363,16 @@ def _functional_channel(label_runs):
     return {"raw": raw, "armSummaries": _arms(raw, fields), "pairedDeltas": paired}
 
 
+def _visual_arm_range(values, label_runs, reference_id, metric, treatment):
+    observed = [
+        values[(label, reference_id, metric)]
+        for label, run in label_runs.items()
+        if run["treatment"] == treatment
+        and (label, reference_id, metric) in values
+    ]
+    return _range(observed) if observed else None
+
+
 def _automated_visual_channel(label_runs):
     raw = []
     values = {}
@@ -378,14 +394,10 @@ def _automated_visual_channel(label_runs):
             summaries.append({
                 "referenceId": reference_id,
                 "metric": metric,
-                "baseline": _range(
-                    values[(label, reference_id, metric)]
-                    for label, run in label_runs.items()
-                    if run["treatment"] == "baseline"),
-                "harness": _range(
-                    values[(label, reference_id, metric)]
-                    for label, run in label_runs.items()
-                    if run["treatment"] == "harness"),
+                "baseline": _visual_arm_range(
+                    values, label_runs, reference_id, metric, "baseline"),
+                "harness": _visual_arm_range(
+                    values, label_runs, reference_id, metric, "harness"),
             })
     paired = []
     for pair in (1, 2, 3):

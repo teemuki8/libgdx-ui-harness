@@ -375,7 +375,10 @@ def validate_blinding() -> None:
     absolute_markers = ("/" + "home/", "\\\\" + "Users" + "\\\\")
     source_fragments = ("<" + "script", "<" + "style", "source" + "MappingURL")
     for path in ROOT.rglob("*"):
-        if not path.is_file() or "__pycache__" in path.parts:
+        relative = path.relative_to(ROOT)
+        if (not path.is_file()
+                or any(part in {".gradle", "build", "__pycache__"}
+                       for part in relative.parts)):
             continue
         require(path.suffix.lower() not in forbidden_suffixes, f"forbidden reference source file: {path.relative_to(ROOT)}")
         require(not ("hidden" in path.name.lower() and "test" in path.name.lower()), f"non-public test artifact is forbidden: {path.relative_to(ROOT)}")

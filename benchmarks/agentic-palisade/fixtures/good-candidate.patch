@@ -1,0 +1,372 @@
+diff --git a/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java b/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java
+new file mode 100644
+--- /dev/null
++++ b/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java
+@@ -0,0 +1,367 @@
++package benchmark.palisade;
++
++import com.badlogic.gdx.Gdx;
++import com.badlogic.gdx.Input;
++import com.badlogic.gdx.graphics.Color;
++import com.badlogic.gdx.graphics.Pixmap;
++import com.badlogic.gdx.graphics.Texture;
++import com.badlogic.gdx.graphics.g2d.Batch;
++import com.badlogic.gdx.graphics.g2d.BitmapFont;
++import com.badlogic.gdx.scenes.scene2d.Actor;
++import com.badlogic.gdx.scenes.scene2d.InputEvent;
++import com.badlogic.gdx.scenes.scene2d.InputListener;
++import com.badlogic.gdx.scenes.scene2d.Stage;
++import com.badlogic.gdx.utils.viewport.ScreenViewport;
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++
++/** Deterministic qualification candidate implementing the public corpus contract. */
++public final class SkirmishConfigurationUi implements CandidateUi {
++    private static final List<Map<String, Object>> CONTROLS = controls();
++    private static final List<String> BASE_VISIBLE = List.of(
++            "map", "playerRealm", "majorRivalCount", "pettyRealmDensity",
++            "startingResources", "victoryCondition", "aiDifficulty", "simulationSpeed",
++            "richHarvest", "scarceGold", "costlyCavalry", "cavalryRush", "roadBoom",
++            "seed", "copySeed", "randomSeed", "cancel", "startBattle");
++
++    private final Stage stage = new Stage(new ScreenViewport());
++    private final QualificationCanvas canvas = new QualificationCanvas();
++    private int focusIndex = -1;
++    private boolean selectOpen;
++    private boolean shiftDown;
++    private String pendingVictory = "conquest";
++    private String victory = "conquest";
++    private String seedText = "305419896";
++    private boolean bottom;
++    private boolean started;
++    private String outcome;
++    private String clipboardText;
++
++    public SkirmishConfigurationUi() {
++        if (Thread.currentThread().getContextClassLoader()
++                .getResource("missing-capture.fixture") != null) {
++            throw new IllegalStateException("qualification missing capture fixture");
++        }
++        stage.addActor(canvas);
++        stage.addCaptureListener(new InputListener() {
++            @Override public boolean keyDown(InputEvent event, int keycode) {
++                if (keycode == Input.Keys.SHIFT_LEFT || keycode == Input.Keys.SHIFT_RIGHT) {
++                    shiftDown = true;
++                    return true;
++                }
++                return handleKey(keycode);
++            }
++
++            @Override public boolean keyUp(InputEvent event, int keycode) {
++                if (keycode == Input.Keys.SHIFT_LEFT || keycode == Input.Keys.SHIFT_RIGHT) {
++                    shiftDown = false;
++                    return true;
++                }
++                return false;
++            }
++
++            @Override public boolean keyTyped(InputEvent event, char character) {
++                if ("seed".equals(focused()) && character >= 32 && character < 127) {
++                    seedText += character;
++                    return true;
++                }
++                return false;
++            }
++
++            @Override public boolean scrolled(
++                    InputEvent event, float x, float y, float amountX, float amountY) {
++                bottom = amountY > 0 || bottom;
++                return true;
++            }
++        });
++    }
++
++    @Override public Stage stage() {
++        return stage;
++    }
++
++    @Override public void showInitial() {
++        focusIndex = -1;
++        selectOpen = false;
++        pendingVictory = "conquest";
++        victory = "conquest";
++        seedText = "305419896";
++        bottom = false;
++        started = false;
++        outcome = null;
++        clipboardText = null;
++    }
++
++    @Override public CandidateState snapshotState() {
++        Map<String, Object> state = new LinkedHashMap<>();
++        state.put("visibleControls", visible());
++        state.put("values", values());
++        state.put("scrollPosition", bottom ? "bottom" : "top");
++        String focused = focused();
++        if (focused != null) {
++            state.put("focusedControlId", focused);
++            state.put("focusedControl", control(focused));
++        }
++        boolean valid = validSeed();
++        state.put("valid", valid);
++        state.put("started", started);
++        if (valid) {
++            state.put("seed", Long.parseLong(seedText));
++        } else {
++            state.put("seedText", seedText);
++        }
++        if (clipboardText != null) state.put("clipboardText", clipboardText);
++        if (outcome != null) {
++            state.put("outcome", outcome);
++            if ("dismissed".equals(outcome)) {
++                state.put("payloadDiscarded", true);
++            } else {
++                state.put("payload", values());
++            }
++        }
++        return new CandidateState(state);
++    }
++
++    @Override public void dispose() {
++        canvas.dispose();
++        stage.dispose();
++    }
++
++    private boolean handleKey(int keycode) {
++        if (keycode == Input.Keys.ESCAPE) {
++            outcome = "dismissed";
++            return true;
++        }
++        if (keycode == Input.Keys.TAB) {
++            List<String> visible = visible();
++            boolean reverse = shiftDown
++                    || Gdx.input.isKeyPressed(Input.Keys.SHIFT_LEFT)
++                    || Gdx.input.isKeyPressed(Input.Keys.SHIFT_RIGHT);
++            focusIndex = Math.floorMod(focusIndex + (reverse ? -1 : 1), visible.size());
++            return true;
++        }
++        String focused = focused();
++        if ("seed".equals(focused) && keycode == Input.Keys.A) {
++            seedText = "";
++            return true;
++        }
++        if ("victoryCondition".equals(focused)) {
++            if (keycode == Input.Keys.ENTER) {
++                if (selectOpen) {
++                    victory = pendingVictory;
++                    selectOpen = false;
++                    focusIndex = visible().indexOf("victoryCondition");
++                } else {
++                    pendingVictory = victory;
++                    selectOpen = true;
++                }
++                return true;
++            }
++            if (selectOpen && keycode == Input.Keys.DOWN) {
++                pendingVictory = "rival-target";
++                return true;
++            }
++            if (selectOpen && keycode == Input.Keys.UP) {
++                pendingVictory = "conquest";
++                return true;
++            }
++        }
++        if (keycode != Input.Keys.ENTER) return false;
++        if ("copySeed".equals(focused)) {
++            clipboardText = seedText;
++            Gdx.app.getClipboard().setContents(seedText);
++        } else if ("randomSeed".equals(focused)) {
++            seedText = "305419896";
++        } else if ("cancel".equals(focused)) {
++            outcome = "dismissed";
++        } else if ("startBattle".equals(focused) && validSeed()) {
++            started = true;
++            outcome = "confirmation";
++        }
++        return true;
++    }
++
++    private List<String> visible() {
++        List<String> result = new ArrayList<>(BASE_VISIBLE);
++        if ("rival-target".equals(victory)) result.add(6, "rivalTargetCount");
++        return result;
++    }
++
++    private String focused() {
++        List<String> visible = visible();
++        return focusIndex >= 0 && focusIndex < visible.size() ? visible.get(focusIndex) : null;
++    }
++
++    private boolean validSeed() {
++        try {
++            long value = Long.parseLong(seedText);
++            return value >= 0 && value <= 4_294_967_295L;
++        } catch (NumberFormatException ignored) {
++            return false;
++        }
++    }
++
++    private Map<String, Object> values() {
++        Map<String, Object> values = new LinkedHashMap<>();
++        values.put("map", "northern-realms-860");
++        values.put("playerRealm", "vestfold");
++        values.put("majorRivalCount", 3);
++        values.put("pettyRealmDensity", "standard");
++        values.put("startingResources", "standard");
++        values.put("victoryCondition", victory);
++        values.put("rivalTargetCount", "rival-target".equals(victory) ? 1 : null);
++        values.put("aiDifficulty", "standard");
++        values.put("simulationSpeed", "1");
++        values.put("richHarvest", false);
++        values.put("scarceGold", false);
++        values.put("costlyCavalry", false);
++        values.put("cavalryRush", false);
++        values.put("roadBoom", false);
++        values.put("seed", validSeed() ? Long.parseLong(seedText) : seedText);
++        return values;
++    }
++
++    private static Map<String, Object> control(String id) {
++        return CONTROLS.stream().filter(item -> id.equals(item.get("id"))).findFirst().orElseThrow();
++    }
++
++    private static List<Map<String, Object>> controls() {
++        List<Map<String, Object>> controls = new ArrayList<>();
++        controls.add(control("map", "select", "Map", "northern-realms-860", options(
++                "northern-realms-860", "The Northern Realms", "great-army-865", "The Great Army",
++                "seine-885", "The Seine", "ji-north-china-plain", "The Yellow Sky",
++                "yingchuan-runan-corridors", "Fires of Yingchuan", "nanyang-wan-basin", "Wan Under Siege",
++                "eastern-japan-1180", "The Eastern Muster", "ichi-no-tani", "Ichi-no-Tani",
++                "yashima-1185", "Yashima", "seto-inland-sea", "The Western Strait",
++                "vega-real-1495", "The Vega Real", "lucayan-crossings-1509", "Sails over Lucaya",
++                "windward-passage-1511", "The Windward Passage", "lake-under-tribute-1428", "The Lake Under Tribute",
++                "return-to-texcoco-1428", "Return to Tetzcoco", "coyoacan-holds-1431", "Coyohuacan Holds"),
++                validation(null, null, null, "choice")));
++        controls.add(control("playerRealm", "select", "Player realm", "vestfold", options(
++                "vestfold", "Vestfold", "danish-realm", "Danish Realm", "swealand", "Swealand",
++                "halogaland", "Hålogaland"), validation(null, null, null, "choice")));
++        controls.add(control("majorRivalCount", "range", "Major rival count", 3, List.of(), validation(1L, 3L, 1L, "integer")));
++        controls.add(control("pettyRealmDensity", "select", "Petty realm density", "standard", options(
++                "sparse", "Low", "standard", "Medium", "dense", "High"), validation(null, null, null, "choice")));
++        controls.add(control("startingResources", "select", "Starting resources", "standard", options(
++                "scarce", "Low", "standard", "Standard", "abundant", "High"), validation(null, null, null, "choice")));
++        controls.add(control("victoryCondition", "select", "Victory condition", "conquest", options(
++                "conquest", "Total conquest", "rival-target", "Rival target", "territorial-dominance", "Territorial control"),
++                validation(null, null, null, "choice")));
++        controls.add(control("rivalTargetCount", "number", "Rival target count", 1, List.of(), validation(1L, 3L, 1L, "integer")));
++        controls.add(control("aiDifficulty", "select", "AI difficulty", "standard", options(
++                "standard", "Standard", "hardened", "Hard", "relentless", "Very hard"), validation(null, null, null, "choice")));
++        controls.add(control("simulationSpeed", "select", "Simulation speed", "1", options(
++                "1", "Normal", "2", "Fast"), validation(null, null, null, "choice")));
++        for (String[] item : List.of(
++                new String[] {"richHarvest", "High income"}, new String[] {"scarceGold", "Low income"},
++                new String[] {"costlyCavalry", "Higher cavalry cost"}, new String[] {"cavalryRush", "Faster cavalry"},
++                new String[] {"roadBoom", "Faster road construction"})) {
++            controls.add(control(item[0], "checkbox", item[1], false, List.of(), validation(null, null, null, "boolean")));
++        }
++        controls.add(control("seed", "text", "Seed", "generatedUint32", List.of(), validation(0L, 4_294_967_295L, 1L, "uint32-decimal")));
++        controls.add(control("copySeed", "button", "COPY SEED", null, List.of(), validation(null, null, null, "action")));
++        controls.add(control("randomSeed", "button", "RANDOM SEED", null, List.of(), validation(null, null, null, "action")));
++        controls.add(control("cancel", "button", "CANCEL", null, List.of(), validation(null, null, null, "action")));
++        controls.add(control("startBattle", "button", "START BATTLE", null, List.of(), validation(null, null, null, "action")));
++        return List.copyOf(controls);
++    }
++
++    private static Map<String, Object> control(String id, String kind, String label, Object defaultValue,
++            List<Map<String, Object>> options, Map<String, Object> validation) {
++        Map<String, Object> value = new LinkedHashMap<>();
++        value.put("id", id);
++        value.put("kind", kind);
++        value.put("label", label);
++        value.put("options", options);
++        value.put("default", defaultValue);
++        value.put("validation", validation);
++        return value;
++    }
++
++    private static List<Map<String, Object>> options(String... pairs) {
++        List<Map<String, Object>> options = new ArrayList<>();
++        for (int index = 0; index < pairs.length; index += 2) {
++            options.add(Map.of("value", pairs[index], "label", pairs[index + 1]));
++        }
++        return List.copyOf(options);
++    }
++
++    private static Map<String, Object> validation(Long minimum, Long maximum, Long step, String format) {
++        Map<String, Object> value = new LinkedHashMap<>();
++        value.put("minimum", minimum == null ? null : Integer.valueOf(minimum.intValue()));
++        Object maximumValue = null;
++        if (maximum != null) {
++            maximumValue = maximum > Integer.MAX_VALUE ? maximum : Integer.valueOf(maximum.intValue());
++        }
++        value.put("maximum", maximumValue);
++        value.put("step", step == null ? null : Integer.valueOf(step.intValue()));
++        value.put("format", format);
++        return value;
++    }
++
++    private final class QualificationCanvas extends Actor {
++        private final Pixmap pixel = new Pixmap(1, 1, Pixmap.Format.RGBA8888);
++        private final Texture texture;
++        private final BitmapFont font = new BitmapFont();
++        private final BitmapFont title = new BitmapFont();
++
++        QualificationCanvas() {
++            pixel.setColor(Color.WHITE);
++            pixel.fill();
++            texture = new Texture(pixel);
++        }
++
++        @Override public void draw(Batch batch, float parentAlpha) {
++            float width = stage.getViewport().getWorldWidth();
++            float height = stage.getViewport().getWorldHeight();
++            setBounds(0, 0, width, height);
++            batch.setColor(Color.valueOf("061417ff"));
++            batch.draw(texture, 0, 0, width, height);
++            float panelWidth = Math.min(680, width - 48);
++            float x = (width - panelWidth) / 2f;
++            batch.setColor(Color.valueOf("0c2427ff"));
++            batch.draw(texture, x, 24, panelWidth, height - 48);
++            batch.setColor(Color.valueOf("cb7d58ff"));
++            batch.draw(texture, x, height - 28, panelWidth, 4);
++            batch.setColor(Color.WHITE);
++            title.getData().setScale(2f);
++            title.setColor(Color.valueOf("fff1ddff"));
++            title.draw(batch, "Skirmish Configuration", x + 95, height - 75);
++            title.getData().setScale(1f);
++            int start = bottom ? 10 : 0;
++            List<String> shown = visible();
++            float rowY = height - 125;
++            for (int index = start; index < shown.size() && rowY > 55; index++) {
++                Map<String, Object> metadata = control(shown.get(index));
++                batch.setColor(Color.valueOf("315154ff"));
++                batch.draw(texture, x + 42, rowY - 34, panelWidth - 84, 1);
++                font.setColor(Color.valueOf("fff1ddff"));
++                font.draw(batch, String.valueOf(metadata.get("label")), x + 58, rowY - 8);
++                batch.setColor(Color.valueOf("173538ff"));
++                batch.draw(texture, x + panelWidth - 225, rowY - 30, 180, 34);
++                font.setColor(Color.WHITE);
++                font.draw(batch, displayValue(shown.get(index)), x + panelWidth - 210, rowY - 8);
++                rowY -= 54;
++            }
++            batch.setColor(Color.WHITE);
++        }
++
++        private String displayValue(String id) {
++            Object value = values().get(id);
++            if ("map".equals(id)) return "The Northern Realms";
++            if ("playerRealm".equals(id)) return "Vestfold";
++            if ("victoryCondition".equals(id)) return "conquest".equals(victory) ? "Total conquest" : "Rival target";
++            return value == null ? "" : String.valueOf(value);
++        }
++
++        void dispose() {
++            font.dispose();
++            title.dispose();
++            texture.dispose();
++            pixel.dispose();
++        }
++    }
++}
