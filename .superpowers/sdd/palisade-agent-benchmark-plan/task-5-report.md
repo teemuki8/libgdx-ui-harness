@@ -198,18 +198,49 @@ OK
 The round-3 generated fixture validated all 6 records against the Draft
 2020-12 schema with format checking.
 
+### Fix round 4: single authoritative timeout shutdown
+
+The timeout-path spy regression was red because the wished-for
+`wait_for_process_group` boundary did not exist; the prior inline path invoked
+`terminate_process_group` and then unconditionally invoked
+`quiesce_process_group` with the same numeric leader PID. After the
+authoritative timeout helper had reaped the leader and verified its retained
+PGID, that second call could target a reused numeric process group.
+
+`wait_for_process_group` now owns the branch. A timeout calls
+`terminate_process_group` exactly once and returns its bounded shutdown
+result without another PGID probe or signal. A normal exit still calls
+`quiesce_process_group` to detect and terminate descendants. Spies assert one
+timeout termination and zero post-timeout quiescence calls; the synchronized
+SIGTERM-responsive leader/SIGTERM-ignoring child remains absent or a zombie,
+and the outcome remains `timed_out`.
+
+```text
+python3 -m unittest scripts.test-runner.SupervisionTest.test_terminates_the_entire_process_group_after_timeout
+Ran 1 test in 0.329s
+OK
+
+python3 -m unittest scripts/test-telemetry.py scripts/test-runner.py scripts/test-treatment-symmetry.py
+....................
+Ran 20 tests in 1.446s
+OK
+```
+
+The round-4 generated fixture validated all 6 records against the Draft
+2020-12 schema with format checking.
+
 ### Dry-run proof
 
 No agent was invoked:
 
 ```text
 python3 scripts/run-benchmark.py \
-  --output /tmp/agentic-palisade-task5-dry-run-r3 \
+  --output /tmp/agentic-palisade-task5-dry-run-r4 \
   --model openai-codex/gpt-5.6-sol:medium \
   --max-time 45m \
   --pairs 3 \
   --dry-run
-{"status": "prepared", "runs": 6, "output": "/tmp/agentic-palisade-task5-dry-run-r3"}
+{"status": "prepared", "runs": 6, "output": "/tmp/agentic-palisade-task5-dry-run-r4"}
 ```
 
 The dry-run test proves three matched pairs, six UUIDs, six distinct workspace/profile/cache/session/artifact/display coordinates, identical candidate hashes, an identical instruction prefix, and byte-identical shared repository inventories. The only inventory differences are `template/INSTRUCTIONS.md` after `## Treatment appendix` and the source-identical `treatments/harness/` overlay tree. Top-level and per-run input manifests have mode `0444`; mutating a candidate changes its recorded candidate hash.
@@ -220,7 +251,7 @@ A generated six-record failure-retention run was also validated with Python `jso
 
 - `scripts/run-benchmark.py --output <new-dir> --model openai-codex/gpt-5.6-sol:medium --max-time 45m --pairs 3 [--dry-run]` rejects an existing output, any other measured model/pair count/deadline, and writes `benchmark-manifest.json` once with mode `0444`.
 - Each run contains a fresh minimal repository skeleton and candidate template at `runs/<uuid>/repository/benchmarks/agentic-palisade/template`, plus unique `profile-home`, cache, Gradle cache, session, temporary, log, artifact, gate, and display coordinates. Generated template `.gradle`, `build`, Python caches, and symlinks are not copied.
-- Each OMP invocation fixes model/reasoning, cwd, JSON print mode, profile, session directory, config overlay, 45-minute internal limit, tool allowlist, auto approval/yolo, and disabled extensions/skills/rules/LSP/title generation. The supervisor adds the same external deadline and starts a new process session; timeout handling retains the group ID, gives SIGTERM one bounded grace interval, then probes, SIGKILLs remaining members, and boundedly verifies whole-group quiescence.
+- Each OMP invocation fixes model/reasoning, cwd, JSON print mode, profile, session directory, config overlay, 45-minute internal limit, tool allowlist, auto approval/yolo, and disabled extensions/skills/rules/LSP/title generation. The supervisor adds the same external deadline and starts a new process session; one authoritative timeout handler retains the group ID, gives SIGTERM one bounded grace interval, then probes, SIGKILLs remaining members, and boundedly verifies whole-group quiescence without reusing the reaped leader's numeric PID. Normal exits retain a separate descendant-quiescence pass.
 - The child environment is allowlisted and replaces `HOME`, all XDG roots, Gradle cache, temporary directory, display, OMP artifact root, and benchmark paths. API keys, SSH agents/askpass, cloud credential paths, Docker/Kubernetes config, PI tool-bridge state, and proxy/config leakage are not inherited.
 - `prompts/task.md` requires an initial candidate followed by `benchmark-feedback 1`, `2`, and `3` exactly once and in order. The fixed gate exchanges a schema-bound request/result with the runner-owned per-run supervisor; peer interpreter, exact argv, request ID, gate digest, round, and response identity are bound. Only the runner records accepted/rejected attempts, candidate hashes, request IDs, and ordered evidence after process termination. Missing, duplicate, reordered, overflow, malformed, forged-file, or forged-process rounds fail closed.
 - `scripts/parse-omp-session.py` accepts exactly one newline-terminated OMP v3 session JSONL export. It reads only stable assistant `usage`, `toolCall`, and `toolResult` fields; it never reads or interprets `thinking`. It aggregates input/output/cache-read/cache-write/reasoning categories only when every provider usage row supplies that category; otherwise the category is explicitly `unavailable` rather than undercounted.
@@ -242,6 +273,7 @@ Review fixes, prerequisite coordinate repair, and evidence report: `956630c` (`f
 Runner-owned round/outcome evidence fix round: `89fddde` (`fix(benchmark): own round and outcome evidence`).
 Exact gate identity and bounded supervisor fix round: `d91177b` (`fix(benchmark): authenticate and bound round gate`).
 Timeout whole-group quiescence fix round: `0f0174c` (`fix(benchmark): quiesce timed-out process groups`).
+Single authoritative timeout shutdown fix round: `c61db12` (`fix(benchmark): terminate timed-out groups once`).
 
 ## Concerns
 
