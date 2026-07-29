@@ -59,16 +59,16 @@ Initial auth regressions failed against the prior runner as expected:
 - a tool child could still open the parent's inherited pipe FD, even though the already-drained pipe contained no bytes;
 - an extensionless `/proc/self/fd/N` overlay was not loaded by OMP auth initialization.
 
-The final design uses OMP's canonical per-profile config only for startup, removes it before returning the broker response, and passes no config path in argv. Independent review additionally required a sanitized token-helper environment, process-group quiescence before preflight acceptance, active relay-handler joins, and a hermetic in-test broker; focused regressions were red before those fixes. Final focused green:
+The final design uses OMP's canonical per-profile config only for startup, removes it before returning the broker response, and passes no config path in argv. Independent review additionally required a sanitized token-helper environment, process-group quiescence before preflight acceptance, active relay-handler joins, a hermetic in-test broker, and relay-side enforcement of the fixed upstream endpoint; focused regressions were red before those fixes. Final focused green:
 
 ```text
 python3 -m unittest scripts/test-runner.py scripts/test-telemetry.py scripts/test-treatment-symmetry.py
-.........................
-Ran 25 tests in 7.003s
+..........................
+Ran 26 tests in 6.569s
 OK
 ```
 
-The regressions cover missing-broker abort before output allocation, successful exact-model preflight shape, sanitized broker-token lookup, preflight descendant rejection/cleanup, bounded active relay-handler shutdown, amendment manifest binding, six authenticated measured launches through a hermetic local broker, absence of bearer/secret paths from argv/environment/manifests/logs/candidate-readable files, and zero candidate-visible config bytes after relay retirement.
+The regressions cover missing-broker abort before output allocation, successful exact-model preflight shape, sanitized broker-token lookup, fixed broker endpoint enforcement, preflight descendant rejection/cleanup, bounded active relay-handler shutdown, amendment manifest binding, six authenticated measured launches through a hermetic local broker, absence of bearer/secret paths from argv/environment/manifests/logs/candidate-readable files, and zero candidate-visible config bytes after relay retirement.
 
 Dry-run proof, with no broker or model call:
 

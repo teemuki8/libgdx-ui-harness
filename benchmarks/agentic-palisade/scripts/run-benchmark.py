@@ -828,8 +828,11 @@ class BrokerRelay:
 
     def __init__(self, upstream_url, bearer_token, config_path):
         upstream = urllib.parse.urlsplit(upstream_url)
-        if (upstream.scheme != "http" or upstream.hostname != "127.0.0.1"
-                or upstream.port is None or upstream.path not in ("", "/")):
+        if (upstream_url != FIXED_BROKER_URL
+                or upstream.scheme != "http"
+                or upstream.hostname != "127.0.0.1"
+                or upstream.port is None
+                or upstream.path not in ("", "/")):
             raise ValueError("authentication preflight failed: invalid broker endpoint")
         self._upstream = upstream
         self._bearer_token = bearer_token

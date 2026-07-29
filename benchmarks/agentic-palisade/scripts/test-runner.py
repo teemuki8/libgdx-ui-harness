@@ -527,9 +527,12 @@ class AuthPreflightTest(unittest.TestCase):
             broker_url = f"http://127.0.0.1:{broker.server_port}"
             try:
                 token = self.runner._load_broker_token(str(fake))
-                with self.assertRaisesRegex(ValueError, "did not quiesce"):
-                    self.runner._run_auth_preflight(
-                        str(fake), MODEL, broker_url, token)
+                with mock.patch.object(
+                    self.runner, "FIXED_BROKER_URL", broker_url
+                ):
+                    with self.assertRaisesRegex(ValueError, "did not quiesce"):
+                        self.runner._run_auth_preflight(
+                            str(fake), MODEL, broker_url, token)
             finally:
                 broker.shutdown()
                 broker.server_close()
@@ -549,6 +552,15 @@ class AuthPreflightTest(unittest.TestCase):
             if state not in (None, "Z"):
                 os.kill(child_pid, signal.SIGKILL)
             self.assertIn(state, (None, "Z"))
+
+    def test_relay_rejects_uncommitted_endpoint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(ValueError, "invalid broker endpoint"):
+                self.runner.BrokerRelay(
+                    "http://127.0.0.1:8999",
+                    BROKER_TOKEN,
+                    Path(temporary) / "config.yml",
+                )
 
     def test_relay_stop_waits_for_active_handler(self):
         started = threading.Event()
