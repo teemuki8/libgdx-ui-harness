@@ -23,6 +23,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -38,6 +39,7 @@ public final class BenchmarkControl implements AutoCloseable {
     private static final int MAX_RESULT_BYTES = 65_536;
     private static final int MAX_DIMENSION = 4096;
     private static final Pattern CAPTURE_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]{0,63}");
+    private static final Map<String, String> LIBGDX_KEY_NAMES = libgdxKeyNames();
 
     private final List<JsonValue> commands;
     private final AtomicEvidence evidence;
@@ -262,14 +264,25 @@ public final class BenchmarkControl implements AutoCloseable {
         if (action == KeyAction.DOWN || action == KeyAction.UP) {
             requireOnly(input, "command", "action", "key", "shift", "control");
         }
-        String keyName = requireString(input, "key", 32).toUpperCase(Locale.ROOT);
-        int keyCode = Input.Keys.valueOf(keyName);
+        String keyName = requireString(input, "key", 32);
+        String libgdxKeyName = LIBGDX_KEY_NAMES.get(keyName);
+        int keyCode = libgdxKeyName == null ? -1 : Input.Keys.valueOf(libgdxKeyName);
         if (keyCode < 0) {
             throw new CommandRejected("INVALID_KEY");
         }
         Character character = input.get("character") == null
                 ? null : requireCharacter(input);
         return new KeyCommand(action, keyCode, character, shift, control);
+    }
+    private static Map<String, String> libgdxKeyNames() {
+        Map<String, String> names = new HashMap<>();
+        for (int keyCode = 0; keyCode <= Input.Keys.MAX_KEYCODE; keyCode++) {
+            String displayName = Input.Keys.toString(keyCode);
+            if (displayName != null) {
+                names.put(displayName.toUpperCase(Locale.ROOT), displayName);
+            }
+        }
+        return Map.copyOf(names);
     }
 
     private static char requireCharacter(JsonValue input) {

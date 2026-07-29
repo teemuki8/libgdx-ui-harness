@@ -181,3 +181,95 @@ Key-dispatch review-fix commit:
 
 - Captures intentionally rely on the benchmark protocol's device scale factor 1. `HdpiMode.Pixels` preserves pixel coordinates under that precondition; a runner on a Retina/high-DPI display must provide the declared scale-1 environment.
 - Evidence publication deliberately fails rather than degrading to a non-atomic move when the evidence filesystem does not support same-directory atomic moves.
+
+## Canonical key-name repair
+
+### Regression red
+
+The protocol-facing names are exact uppercase canonical names, while
+`Input.Keys.valueOf` resolves libGDX's display-case names. The focused regression command was:
+
+```text
+../../../gradlew test \
+  --tests benchmark.palisade.TemplateContractTest.canonicalUppercaseKeyNamesDispatchBalancedPressEvents \
+  --tests benchmark.palisade.TemplateContractTest.nonCanonicalKeyNameCasingIsRejectedBeforeInputDispatch \
+  --tests benchmark.palisade.TemplateContractTest.pressRejectsEveryMemberOutsideItsClosedSchemaBeforeInputDispatch \
+  --no-daemon --console=plain
+```
+
+Before the boundary fix, the expected red result was:
+
+```text
+TemplateContractTest > canonicalUppercaseKeyNamesDispatchBalancedPressEvents() FAILED
+LEFT ==> expected: <[down:21, up:21]> but was: <[]>
+3 tests completed, 1 failed
+BUILD FAILED in 5s
+```
+
+JUnit XML recorded `tests="3" skipped="0" failures="1" errors="0"`. The casing-policy
+and closed-schema tests passed in the red run; only real uppercase canonical key dispatch
+failed.
+
+### Regression green
+
+After the fix, the identical command produced:
+
+```text
+BUILD SUCCESSFUL in 5s
+3 actionable tasks: 2 executed, 1 up-to-date
+```
+
+The complete focused contract command then passed:
+
+```text
+../../../gradlew test --tests benchmark.palisade.TemplateContractTest \
+  --no-daemon --console=plain
+BUILD SUCCESSFUL in 6s
+3 actionable tasks: 2 executed, 1 up-to-date
+```
+
+JUnit XML recorded `tests="8" skipped="0" failures="0" errors="0"`.
+
+### Real launcher smoke
+
+The finite input was:
+
+```text
+{"command":"key","action":"press","key":"TAB"}
+{"command":"key","action":"press","key":"ENTER"}
+{"command":"key","action":"press","key":"ESCAPE"}
+{"command":"close"}
+```
+
+It was executed through the real LWJGL3 launcher:
+
+```text
+../../../gradlew run \
+  --args="--commands /tmp/palisade-key-smoke-20260729.ndjson --evidence /tmp/palisade-key-smoke-20260729-evidence" \
+  --no-daemon --console=plain
+BUILD SUCCESSFUL in 4s
+2 actionable tasks: 1 executed, 1 up-to-date
+```
+
+The launcher exited with status 0 and wrote these ordered results:
+
+```text
+{"sequence":0,"command":"key","ok":true,"state":{}}
+{"sequence":1,"command":"key","ok":true,"state":{}}
+{"sequence":2,"command":"key","ok":true,"state":{}}
+{"sequence":3,"command":"close","ok":true,"state":{}}
+```
+
+### Canonical key-name self-review
+
+- A single bounded startup map derives exact uppercase protocol names from libGDX's
+  display names and retains those display names for `Input.Keys.valueOf`; it is not a
+  hand-maintained alias table.
+- Per-command lookup is exact, so mixed- and lowercase spellings remain rejected as
+  `INVALID_KEY` instead of becoming undeclared aliases.
+- `parseKey` still validates the complete action-specific command before `applyKey`
+  emits any event. The press-schema regression enumerates every member belonging to
+  the other command shapes plus an arbitrary unknown member and observes zero events.
+- Successful presses still dispatch the real libGDX code as one balanced down/up pair.
+  Callback-failure cleanup and modifier release paths were not widened or bypassed.
+- No evaluator, frozen corpus, or public protocol file was changed.

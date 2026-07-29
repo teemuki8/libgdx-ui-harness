@@ -68,6 +68,88 @@ final class TemplateContractTest {
     }
 
     @Test
+    void canonicalUppercaseKeyNamesDispatchBalancedPressEvents() throws Exception {
+        Map<String, Integer> expectedCodes = Map.of(
+                "TAB", Input.Keys.TAB,
+                "ENTER", Input.Keys.ENTER,
+                "ESCAPE", Input.Keys.ESCAPE,
+                "UP", Input.Keys.UP,
+                "DOWN", Input.Keys.DOWN,
+                "LEFT", Input.Keys.LEFT,
+                "RIGHT", Input.Keys.RIGHT);
+
+        for (Map.Entry<String, Integer> entry : expectedCodes.entrySet()) {
+            String keyName = entry.getKey();
+            int keyCode = entry.getValue();
+            Path evidence = temporaryDirectory.resolve("canonical-" + keyName);
+            BenchmarkControl control = openControl(
+                    "{\"command\":\"key\",\"action\":\"press\",\"key\":\""
+                            + keyName + "\"}",
+                    evidence);
+            RecordingStage stage = new RecordingStage();
+
+            control.beforeFrame(stage);
+            control.afterCompletedFrame(CandidateState.empty());
+
+            assertEquals(List.of("down:" + keyCode, "up:" + keyCode),
+                    stage.events, keyName);
+            assertTrue(stage.keysDown.isEmpty(), keyName);
+            JsonValue result = new JsonReader().parse(Files.readString(
+                    evidence.resolve("results.ndjson"), StandardCharsets.UTF_8));
+            assertTrue(result.getBoolean("ok"), keyName);
+        }
+    }
+
+    @Test
+    void nonCanonicalKeyNameCasingIsRejectedBeforeInputDispatch() throws Exception {
+        for (String keyName : List.of(
+                "tab", "Tab", "enter", "Enter", "escape", "Escape",
+                "up", "Up", "down", "Down", "left", "Left", "right", "Right")) {
+            Path evidence = temporaryDirectory.resolve("noncanonical-" + keyName);
+            BenchmarkControl control = openControl(
+                    "{\"command\":\"key\",\"action\":\"press\",\"key\":\""
+                            + keyName + "\"}",
+                    evidence);
+            RecordingStage stage = new RecordingStage();
+
+            control.beforeFrame(stage);
+            control.afterCompletedFrame(CandidateState.empty());
+
+            assertTrue(stage.events.isEmpty(), keyName);
+            assertTrue(stage.keysDown.isEmpty(), keyName);
+            JsonValue result = new JsonReader().parse(Files.readString(
+                    evidence.resolve("results.ndjson"), StandardCharsets.UTF_8));
+            assertFalse(result.getBoolean("ok"), keyName);
+            assertEquals("INVALID_KEY", result.getString("error"), keyName);
+        }
+    }
+
+    @Test
+    void pressRejectsEveryMemberOutsideItsClosedSchemaBeforeInputDispatch()
+            throws Exception {
+        for (String unknownName : List.of(
+                "id", "width", "height", "x", "y", "button",
+                "amountX", "amountY", "unexpected")) {
+            Path evidence = temporaryDirectory.resolve("unknown-" + unknownName);
+            BenchmarkControl control = openControl(
+                    "{\"command\":\"key\",\"action\":\"press\",\"key\":\"ENTER\",\""
+                            + unknownName + "\":true}",
+                    evidence);
+            RecordingStage stage = new RecordingStage();
+
+            control.beforeFrame(stage);
+            control.afterCompletedFrame(CandidateState.empty());
+
+            assertTrue(stage.events.isEmpty(), unknownName);
+            assertTrue(stage.keysDown.isEmpty(), unknownName);
+            JsonValue result = new JsonReader().parse(Files.readString(
+                    evidence.resolve("results.ndjson"), StandardCharsets.UTF_8));
+            assertFalse(result.getBoolean("ok"), unknownName);
+            assertEquals("UNKNOWN_FIELD", result.getString("error"), unknownName);
+        }
+    }
+
+    @Test
     void malformedKeyCharacterIsRejectedBeforeAnyInputDispatch() throws Exception {
         Path evidence = temporaryDirectory.resolve("malformed-key-evidence");
         BenchmarkControl control = openControl(
