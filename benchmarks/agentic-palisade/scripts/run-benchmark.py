@@ -5,6 +5,8 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import hashlib
+import http.client
+import http.server
 import importlib.util
 import json
 import os
@@ -14,11 +16,13 @@ import shutil
 import signal
 import socket
 import struct
+import secrets
 import subprocess
 import sys
 import tempfile
 import time
 import threading
+import urllib.parse
 import uuid
 
 
@@ -27,6 +31,8 @@ BENCHMARK_ROOT = SCRIPT_ROOT.parent
 REPOSITORY_ROOT = BENCHMARK_ROOT.parent.parent
 FIXED_MODEL = "openai-codex/gpt-5.6-sol:medium"
 FIXED_REASONING = "medium"
+FIXED_BROKER_URL = "http://127.0.0.1:9000"
+PROTOCOL_AMENDMENT = "agentic-palisade/task-8-auth-broker-amendment-v1"
 FIXED_PAIRS = 3
 FIXED_ROUNDS = 3
 FIXED_SECONDS = 45 * 60
@@ -46,6 +52,7 @@ SAFE_PARENT_ENV = {
     "PATH", "SHELL", "TERM", "TZ",
 }
 
+AUTH_PREFLIGHT_SECONDS = 180
 
 def _load_telemetry_module():
     spec = importlib.util.spec_from_file_location(
@@ -569,13 +576,10 @@ def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
 
     prompt_path = run_dir / "task.md"
     shutil.copy2(BENCHMARK_ROOT / "prompts/task.md", prompt_path)
-    config_path = run_dir / "omp-config.yml"
-    config_path.write_text("{}\n", encoding="utf-8")
     gate_path = binary_root / "benchmark-feedback"
     gate_path.write_text(ROUND_GATE, encoding="utf-8")
     gate_path.chmod(0o555)
     prompt_path.chmod(0o444)
-    config_path.chmod(0o444)
     round_log = artifact_root / "rounds.jsonl"
     round_hash = artifact_root / "rounds.sha256"
     round_socket = (
@@ -613,6 +617,7 @@ def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
         "reasoning": FIXED_REASONING,
         "maxTimeSeconds": FIXED_SECONDS,
         "rounds": FIXED_ROUNDS,
+        "protocolAmendment": PROTOCOL_AMENDMENT,
         "hashes": {
             **hashes,
             "initialCandidate": initial_candidate_hash,
@@ -639,7 +644,6 @@ def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
         "gradleCache": gradle_cache,
         "prompt": prompt_path,
         "instructions": workspace / "INSTRUCTIONS.md",
-        "config": config_path,
         "roundLog": round_log,
         "roundHash": round_hash,
         "roundSocket": round_socket,
@@ -748,7 +752,6 @@ def _omp_command(omp, item, model, max_time_text):
         "--thinking", FIXED_REASONING,
         "--profile", item["runId"],
         "--session-dir", str(runtime["sessionRoot"]),
-        "--config", str(runtime["config"]),
         "--cwd", str(runtime["workspace"]),
         "--mode", "json",
         "--print",
@@ -816,6 +819,262 @@ def classify_process_exit(return_code, timed_out):
     return "success"
 
 
+class BrokerRelay:
+    MAX_BODY_BYTES = 8 * 1024 * 1024
+
+    def __init__(self, upstream_url, bearer_token, config_path):
+        upstream = urllib.parse.urlsplit(upstream_url)
+        if (upstream.scheme != "http" or upstream.hostname != "127.0.0.1"
+                or upstream.port != 9000 or upstream.path not in ("", "/")):
+            raise ValueError("authentication preflight failed: invalid broker endpoint")
+        self._upstream = upstream
+        self._bearer_token = bearer_token
+        self._config_path = Path(config_path)
+        self._config_directory = self._config_path.parent
+        self._client_token = secrets.token_urlsafe(32)
+        self._lock = threading.Lock()
+        self._claimed = False
+        self._retired = False
+        self.served = False
+        relay = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                relay._forward(self)
+
+            def do_POST(self):
+                relay._forward(self)
+
+            def do_PUT(self):
+                relay._forward(self)
+
+            def log_message(self, *_):
+                pass
+
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server.daemon_threads = True
+        self._thread = threading.Thread(
+            target=self._server.serve_forever,
+            name="palisade-auth-relay",
+            daemon=True,
+        )
+
+    @property
+    def config(self):
+        return {
+            "url": f"http://127.0.0.1:{self._server.server_port}",
+            "token": self._client_token,
+        }
+
+    def start(self):
+        self._thread.start()
+
+    def _forward(self, request):
+        expected = "Bearer " + self._client_token
+        with self._lock:
+            accepted = (
+                not self._claimed
+                and secrets.compare_digest(
+                    request.headers.get("Authorization", ""), expected)
+            )
+            if accepted:
+                self._claimed = True
+        if not accepted:
+            request.send_error(403)
+            return
+
+        length = int(request.headers.get("Content-Length", "0"))
+        if length < 0 or length > self.MAX_BODY_BYTES:
+            request.send_error(413)
+            self.retire()
+            return
+        body = request.rfile.read(length)
+        headers = {
+            key: value for key, value in request.headers.items()
+            if key.lower() not in {
+                "authorization", "connection", "content-length", "host",
+                "proxy-authorization", "transfer-encoding",
+            }
+        }
+        headers.update({
+            "Authorization": "Bearer " + self._bearer_token,
+            "Connection": "close",
+            "Content-Length": str(len(body)),
+            "Host": self._upstream.netloc,
+        })
+        connection = http.client.HTTPConnection(
+            self._upstream.hostname, self._upstream.port, timeout=10)
+        try:
+            connection.request(request.command, request.path, body=body, headers=headers)
+            response = connection.getresponse()
+            content = response.read(self.MAX_BODY_BYTES + 1)
+            if len(content) > self.MAX_BODY_BYTES:
+                raise OSError("broker response exceeded relay bound")
+            self.served = True
+            self.retire()
+            request.send_response(response.status)
+            for key, value in response.getheaders():
+                if key.lower() not in {
+                    "connection", "content-length", "transfer-encoding",
+                }:
+                    request.send_header(key, value)
+            request.send_header("Content-Length", str(len(content)))
+            request.send_header("Connection", "close")
+            request.end_headers()
+            request.wfile.write(content)
+        except OSError:
+            request.send_error(502)
+        finally:
+            connection.close()
+            if not self.served:
+                self.retire()
+
+    def retire(self):
+        with self._lock:
+            if self._retired:
+                return
+            self._retired = True
+            try:
+                self._config_path.write_bytes(b"")
+            except FileNotFoundError:
+                pass
+            try:
+                self._config_path.unlink(missing_ok=True)
+                self._config_directory.rmdir()
+            except OSError:
+                pass
+        self._server.shutdown()
+
+    def stop(self):
+        self.retire()
+        self._thread.join(timeout=2)
+        self._server.server_close()
+        if self._thread.is_alive():
+            raise RuntimeError("authentication relay did not stop")
+
+
+def _broker_config_lifecycle(config_path, broker_url, bearer_token):
+    config_path = Path(config_path)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        relay = BrokerRelay(broker_url, bearer_token, config_path)
+        content = (
+            json.dumps({"auth": {"broker": relay.config}}, separators=(",", ":"))
+            + "\n"
+        ).encode("utf-8")
+        with config_path.open("xb") as stream:
+            stream.write(content)
+        config_path.chmod(0o600)
+        relay.start()
+    except BaseException:
+        config_path.unlink(missing_ok=True)
+        raise
+    return relay
+
+
+def _preflight_environment(root):
+    root = Path(root)
+    environment = {
+        key: value for key, value in os.environ.items()
+        if key in SAFE_PARENT_ENV
+        and key not in CREDENTIAL_KEYS
+        and not key.endswith("_API_KEY")
+    }
+    environment.update({
+        "HOME": str(root),
+        "XDG_CONFIG_HOME": str(root / ".config"),
+        "XDG_CACHE_HOME": str(root / ".cache"),
+        "XDG_STATE_HOME": str(root / ".state"),
+        "XDG_DATA_HOME": str(root / ".local/share"),
+        "TMPDIR": str(root / "tmp"),
+    })
+    for key in ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+                "XDG_DATA_HOME", "TMPDIR"):
+        Path(environment[key]).mkdir(parents=True, exist_ok=False)
+    return environment
+
+
+def _load_broker_token(omp):
+    try:
+        completed = subprocess.run(
+            [omp, "auth-broker", "token"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError("authentication preflight failed: broker bearer unavailable") from error
+    if completed.returncode != 0:
+        raise ValueError("authentication preflight failed: broker bearer unavailable")
+    try:
+        token = completed.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError as error:
+        raise ValueError("authentication preflight failed: broker bearer unavailable") from error
+    if not token or len(token) > 8192 or "\n" in token or "\x00" in token:
+        raise ValueError("authentication preflight failed: broker bearer unavailable")
+    return token
+
+
+def _run_auth_preflight(omp, model, broker_url, bearer_token):
+    with tempfile.TemporaryDirectory(prefix="palisade-auth-preflight-") as temporary:
+        root = Path(temporary)
+        environment = _preflight_environment(root)
+        config_path = (
+            root / ".omp/profiles/palisade-auth-preflight/agent/config.yml")
+        relay = _broker_config_lifecycle(
+            config_path, broker_url, bearer_token)
+        command = [
+            omp,
+            "--model", model,
+            "--thinking", FIXED_REASONING,
+            "--profile", "palisade-auth-preflight",
+            "--cwd", str(root),
+            "--allow-home",
+            "--mode", "json",
+            "--print",
+            "--max-time", "3m",
+            "--no-session",
+            "--no-tools",
+            "--no-extensions",
+            "--no-skills",
+            "--no-rules",
+            "--no-lsp",
+            "--no-title",
+            "Reply with exactly AUTHENTICATED.",
+        ]
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=root,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as error:
+            relay.stop()
+            raise ValueError("authentication preflight failed: OMP did not start") from error
+        try:
+            try:
+                stdout, _ = process.communicate(timeout=AUTH_PREFLIGHT_SECONDS)
+            except subprocess.TimeoutExpired as error:
+                terminate_process_group(process)
+                process.communicate()
+                raise ValueError(
+                    "authentication preflight failed: exact-model request timed out"
+                ) from error
+        finally:
+            relay.stop()
+        if not relay.served:
+            raise ValueError(
+                "authentication preflight failed: broker relay was not accepted")
+        if process.returncode != 0 or not stdout.strip():
+            raise ValueError("authentication preflight failed: exact-model request was rejected")
+
+
 def _discover_session(session_root):
     candidates = sorted(
         path for path in Path(session_root).rglob("*.jsonl") if path.is_file())
@@ -824,7 +1083,32 @@ def _discover_session(session_root):
             f"expected exactly one OMP session export, found {len(candidates)}")
     return candidates[0]
 
-def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
+def _open_measured_process(command, item, runtime, environment, stdout, stderr,
+                           broker_url, bearer_token):
+    config_path = (
+        runtime["profileRoot"] / ".omp/profiles"
+        / item["runId"] / "agent/config.yml"
+    )
+    relay = _broker_config_lifecycle(
+        config_path, broker_url, bearer_token)
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=runtime["workspace"],
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
+            start_new_session=True,
+        )
+    except BaseException:
+        relay.stop()
+        raise
+    return process, relay
+
+
+def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes,
+             broker_url, bearer_token):
     runtime = item["_runtime"]
     started_at = utc_now()
     started = time.monotonic()
@@ -837,6 +1121,7 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
     launch_error = None
     supervisor_failures = []
     round_supervisor = None
+    auth_relay = None
     try:
         round_supervisor = RoundSupervisor(
             runtime["roundSocket"], runtime["workspace"], runtime["gate"])
@@ -846,21 +1131,21 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
     with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
         if not supervisor_failures:
             try:
-                process = subprocess.Popen(
-                    command,
-                    cwd=runtime["workspace"],
-                    env=environment,
-                    stdin=subprocess.DEVNULL,
-                    stdout=stdout,
-                    stderr=stderr,
-                    start_new_session=True,
-                )
+                process, auth_relay = _open_measured_process(
+                    command, item, runtime, environment, stdout, stderr,
+                    broker_url, bearer_token)
                 return_code, timed_out, shutdown_error = wait_for_process_group(
                     process, max_time_seconds)
                 if shutdown_error:
                     supervisor_failures.append(shutdown_error)
-            except OSError as error:
+            except (OSError, RuntimeError, ValueError) as error:
                 launch_error = str(error)
+            finally:
+                if auth_relay is not None:
+                    try:
+                        auth_relay.stop()
+                    except RuntimeError as error:
+                        supervisor_failures.append(str(error))
     if round_supervisor is not None:
         try:
             round_supervisor.stop()
@@ -996,6 +1281,12 @@ def _validate_arguments(arguments, max_seconds):
         raise ValueError("measured runs must use exactly --max-time 45m")
     if arguments.qualification and Path(arguments.omp).resolve() != QUALIFICATION_OMP.resolve():
         raise ValueError("qualification requires the fixed mock OMP fixture")
+    if arguments.auth_broker_url not in (None, FIXED_BROKER_URL):
+        raise ValueError(f"auth broker must be exactly {FIXED_BROKER_URL}")
+    if (not arguments.dry_run and not arguments.qualification
+            and arguments.auth_broker_url != FIXED_BROKER_URL):
+        raise ValueError(
+            f"measured runs require --auth-broker-url {FIXED_BROKER_URL}")
 
 
 def main(argv=None):
@@ -1004,6 +1295,13 @@ def main(argv=None):
     parser.add_argument("--model", required=True)
     parser.add_argument("--max-time", required=True)
     parser.add_argument("--pairs", required=True, type=int)
+    parser.add_argument(
+        "--auth-broker-url",
+        help=(
+            "required for measured runs; fixed precommitment: "
+            f"{FIXED_BROKER_URL}"
+        ),
+    )
     parser.add_argument("--omp", default="omp", help=argparse.SUPPRESS)
     parser.add_argument("--qualification", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--dry-run", action="store_true")
@@ -1014,6 +1312,12 @@ def main(argv=None):
         output = arguments.output.resolve()
         if output.exists():
             raise ValueError(f"output directory already exists: {output}")
+        broker_token = ""
+        if not arguments.dry_run and not arguments.qualification:
+            broker_token = _load_broker_token(arguments.omp)
+            _run_auth_preflight(
+                arguments.omp, arguments.model,
+                arguments.auth_broker_url, broker_token)
         output.mkdir(parents=True, exist_ok=False)
 
         treatment_inputs = _treatment_inputs()
@@ -1045,6 +1349,7 @@ def main(argv=None):
             "maxTimeSeconds": FIXED_SECONDS,
             "rounds": FIXED_ROUNDS,
             "pairs": FIXED_PAIRS,
+            "protocolAmendment": PROTOCOL_AMENDMENT,
             "hashes": hashes,
             "treatmentCommonInstructionHash": treatment_inputs["commonHash"],
             "approvedTreatmentDifferences": [
@@ -1064,7 +1369,8 @@ def main(argv=None):
                 _run_one, output, item, arguments.omp, arguments.model,
                 arguments.max_time,
                 QUALIFICATION_SECONDS if arguments.qualification else max_seconds,
-                hashes) for item in runs]
+                hashes, arguments.auth_broker_url or FIXED_BROKER_URL,
+                broker_token) for item in runs]
             for future in as_completed(futures):
                 classifications.append(future.result())
         successful = classifications.count("success")

@@ -21,6 +21,8 @@ HERE = Path(__file__).resolve().parent
 RUNNER_PATH = HERE / "run-benchmark.py"
 BENCHMARK_ROOT = HERE.parent
 MODEL = "openai-codex/gpt-5.6-sol:medium"
+BROKER_URL = "http://127.0.0.1:9000"
+BROKER_TOKEN = "test-broker-bearer"
 
 
 def load_runner():
@@ -67,6 +69,73 @@ def write_fake_omp(path):
         import subprocess
         import sys
         import time
+        import urllib.error
+        import urllib.request
+
+        broker_token = "test-broker-bearer"
+        if sys.argv[1:] == ["auth-broker", "token"]:
+            print(broker_token)
+            sys.exit(0)
+
+        profile = sys.argv[sys.argv.index("--profile") + 1]
+        config_path = (
+            Path(os.environ["HOME"]) / ".omp/profiles" / profile / "agent/config.yml"
+        )
+        config = json.loads(config_path.read_text())
+        broker = config["auth"]["broker"]
+        request = urllib.request.Request(
+            broker["url"] + "/__palisade_probe__",
+            headers={"Authorization": "Bearer " + broker["token"]},
+        )
+        relay_contacted = False
+        try:
+            with urllib.request.urlopen(request, timeout=2) as response:
+                response.read()
+            relay_contacted = True
+        except urllib.error.HTTPError as error:
+            error.read()
+            relay_contacted = True
+        except OSError:
+            pass
+        try:
+            config_retired = config_path.read_bytes() == b""
+        except FileNotFoundError:
+            config_retired = True
+        authenticated = (
+            broker["url"].startswith("http://127.0.0.1:")
+            and broker["url"] != "http://127.0.0.1:9000"
+            and broker["token"] != broker_token
+            and relay_contacted
+            and config_retired
+        )
+        if "--no-tools" in sys.argv:
+            proof = {
+                "argv": sys.argv[1:],
+                "authenticated": authenticated,
+                "benchmarkEnvironment": sorted(
+                    key for key in os.environ if key.startswith("BENCHMARK_")
+                ),
+                "configRetired": config_retired,
+                "credentialEnvironment": sorted(
+                    key for key in os.environ
+                    if key.endswith("_API_KEY") or key in {
+                        "SSH_AUTH_SOCK", "GIT_ASKPASS",
+                        "AWS_SHARED_CREDENTIALS_FILE",
+                        "GOOGLE_APPLICATION_CREDENTIALS", "DOCKER_CONFIG",
+                    }
+                ),
+            }
+            Path(sys.argv[0]).with_suffix(".preflight.json").write_text(
+                json.dumps(proof)
+            )
+            print(json.dumps({
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "AUTHENTICATED"}],
+                },
+            }))
+            sys.exit(0 if authenticated else 1)
 
         pair = int(os.environ["BENCHMARK_PAIR"])
         treatment = os.environ["BENCHMARK_TREATMENT"]
@@ -75,8 +144,43 @@ def write_fake_omp(path):
         output = artifacts.parents[2]
         artifacts.mkdir(parents=True, exist_ok=True)
         sessions.mkdir(parents=True, exist_ok=True)
+        leakage_probe = (
+            "import json,os,pathlib,sys;"
+            "needles=(b'test-'+b'broker-',b'auth-'+b'broker.token');"
+            "chunks=[b'\\0'.join(x.encode() for x in sys.argv),"
+            "b'\\0'.join(f'{k}={v}'.encode() for k,v in os.environ.items())];"
+            "parent=pathlib.Path(f'/proc/{os.getppid()}');"
+            "cmdline=(parent/'cmdline').read_bytes();"
+            "parent_environ=(parent/'environ').read_bytes();"
+            "chunks.extend((cmdline,parent_environ));"
+            "args=cmdline.rstrip(b'\\0').split(b'\\0');"
+            "values=dict(item.split(b'=',1) for item in parent_environ.rstrip(b'\\0').split(b'\\0'));"
+            "profile=args[args.index(b'--profile')+1].decode();"
+            "config_path=pathlib.Path(values[b'HOME'].decode())/'.omp'/'profiles'/profile/'agent'/'config.yml';"
+            "content=b'';readable=False;"
+            "exec(\"try:\\n readable=True\\n content=config_path.read_bytes()\\nexcept OSError:\\n pass\");"
+            "chunks.append(content);"
+            "hits=[i for i,c in enumerate(chunks) if any(n in c for n in needles)];"
+            "print(json.dumps({'leaked':bool(hits),'sources':hits,"
+            "'parentConfigBytes':len(content)}))"
+        )
+        leak_result = subprocess.run(
+            [sys.executable, "-c", leakage_probe],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            check=False,
+        )
         invocation = {
             "argv": sys.argv[1:],
+            "authenticated": authenticated,
+            "candidateToolProbe": (
+                json.loads(leak_result.stdout)
+                if leak_result.returncode == 0
+                else {"leaked": True, "sources": ["probe-error"],
+                      "parentConfigBytes": -1}
+            ),
             "cwd": os.getcwd(),
             "started": time.time(),
             "profileHome": os.environ["HOME"],
@@ -203,6 +307,10 @@ class DryRunTest(unittest.TestCase):
             self.assertEqual(manifest["reasoning"], "medium")
             self.assertEqual(manifest["rounds"], 3)
             self.assertEqual(manifest["maxTimeSeconds"], 2700)
+            self.assertEqual(
+                manifest["protocolAmendment"],
+                "agentic-palisade/task-8-auth-broker-amendment-v1",
+            )
             self.assertTrue((output / "corpus/spec.json").is_file())
             self.assertEqual(
                 manifest["hashes"]["corpus"],
@@ -337,6 +445,36 @@ class DryRunTest(unittest.TestCase):
             self.assertIn("qualification requires the fixed mock OMP fixture", completed.stderr)
 
 
+class AuthPreflightTest(unittest.TestCase):
+    def test_missing_broker_aborts_before_measured_output_allocation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake = root / "missing-broker-omp"
+            fake.write_text(textwrap.dedent('''
+                #!/usr/bin/env python3
+                import sys
+                if sys.argv[1:] == ["auth-broker", "token"]:
+                    sys.exit(1)
+                raise SystemExit("measured OMP must not launch")
+            ''').lstrip())
+            fake.chmod(0o755)
+            output = root / "must-not-exist"
+            completed = subprocess.run(
+                [sys.executable, str(RUNNER_PATH), "--output", str(output),
+                 "--model", MODEL, "--max-time", "45m", "--pairs", "3",
+                 "--omp", str(fake), "--auth-broker-url", BROKER_URL],
+                cwd=BENCHMARK_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertFalse(output.exists())
+            self.assertIn("authentication preflight failed", completed.stderr)
+            self.assertNotIn(BROKER_TOKEN, completed.stderr)
+
+
 class SupervisionTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -367,7 +505,7 @@ class SupervisionTest(unittest.TestCase):
             completed = subprocess.run(
                 [sys.executable, str(RUNNER_PATH), "--output", str(output),
                  "--model", MODEL, "--max-time", "45m", "--pairs", "3",
-                 "--omp", str(fake)],
+                 "--omp", str(fake), "--auth-broker-url", BROKER_URL],
                 cwd=BENCHMARK_ROOT,
                 text=True,
                 stdout=subprocess.PIPE,
@@ -377,6 +515,23 @@ class SupervisionTest(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
 
             manifest = read_json(output / "benchmark-manifest.json")
+            self.assertEqual(
+                manifest["protocolAmendment"],
+                "agentic-palisade/task-8-auth-broker-amendment-v1",
+            )
+            preflight = read_json(fake.with_suffix(".preflight.json"))
+            self.assertTrue(preflight["authenticated"])
+            self.assertEqual(preflight["benchmarkEnvironment"], [])
+            self.assertEqual(preflight["credentialEnvironment"], [])
+            self.assertIn("--no-tools", preflight["argv"])
+            self.assertIn("--no-session", preflight["argv"])
+            self.assertEqual(
+                preflight["argv"][preflight["argv"].index("--model") + 1],
+                MODEL,
+            )
+            self.assertNotIn("--config", preflight["argv"])
+            self.assertTrue(preflight["configRetired"])
+            self.assertNotIn(BROKER_TOKEN, json.dumps(preflight))
             records = [read_json(output / run["runRecord"]) for run in manifest["runs"]]
             self.assertEqual(len(records), 6)
             classifications = {(record["pair"], record["treatment"]):
@@ -473,6 +628,14 @@ class SupervisionTest(unittest.TestCase):
             self.assertEqual(len({entry["artifactRoot"] for entry in invocations}), 6)
             self.assertEqual(len({entry["display"] for entry in invocations}), 6)
             self.assertTrue(all(not entry["credentialKeys"] for entry in invocations))
+            self.assertTrue(all(entry["authenticated"] for entry in invocations))
+            self.assertTrue(all(
+                not entry["candidateToolProbe"]["leaked"] for entry in invocations
+            ), [entry["candidateToolProbe"] for entry in invocations])
+            self.assertTrue(all(
+                entry["candidateToolProbe"]["parentConfigBytes"] == 0
+                for entry in invocations
+            ), [entry["candidateToolProbe"] for entry in invocations])
             for entry in invocations:
                 args = entry["argv"]
                 self.assertIn("--mode", args)
@@ -487,6 +650,21 @@ class SupervisionTest(unittest.TestCase):
                 self.assertIn("--session-dir", args)
                 self.assertIn("--profile", args)
                 self.assertIn("--tools", args)
+                self.assertNotIn("--config", args)
+                self.assertNotIn(BROKER_TOKEN, json.dumps(entry))
+
+            forbidden = (BROKER_TOKEN.encode(), b"auth-broker.token", b"agent.db")
+            leaked_paths = []
+            for path in output.rglob("*"):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                try:
+                    content = path.read_bytes()
+                except OSError:
+                    continue
+                if any(needle in content for needle in forbidden):
+                    leaked_paths.append(path.relative_to(output).as_posix())
+            self.assertEqual(leaked_paths, [])
 
             starts = [json.loads(line)["time"]
                       for line in (output / "fake-events.jsonl").read_text().splitlines()]
