@@ -67,6 +67,10 @@ public final class HarnessCli {
                     write(output, error("limit-exceeded", "CLI command limit exceeded"));
                     return;
                 }
+                if (line.length > ProtocolJson.MAX_REQUEST_BYTES) {
+                    write(output, error("limit-exceeded", "JSON command exceeds byte limit"));
+                    return;
+                }
                 if (line.length == 0) {
                     write(output, error("invalid-request", "Empty JSON command"));
                     continue;
@@ -127,22 +131,21 @@ public final class HarnessCli {
 
     private static byte[] readBoundedLine(InputStream input) throws IOException {
         ByteArrayOutputStream line = new ByteArrayOutputStream();
-        boolean overLimit = false;
+        boolean sawInput = false;
         while (true) {
             int value = input.read();
             if (value == -1) {
-                if (line.size() == 0 && !overLimit) return null;
+                if (!sawInput) return null;
                 break;
             }
             if (value == '\n') break;
             if (value == '\r') continue;
-            if (line.size() < ProtocolJson.MAX_REQUEST_BYTES + 1) {
-                line.write(value);
-            } else {
-                overLimit = true;
+            sawInput = true;
+            if (line.size() >= ProtocolJson.MAX_REQUEST_BYTES) {
+                return new byte[ProtocolJson.MAX_REQUEST_BYTES + 1];
             }
+            line.write(value);
         }
-        if (overLimit) return new byte[ProtocolJson.MAX_REQUEST_BYTES + 1];
         return line.toByteArray();
     }
 

@@ -19,7 +19,6 @@ import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
 import dev.gdx.uiharness.core.model.Role;
 import dev.gdx.uiharness.protocol.ProtocolJson;
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -66,7 +65,7 @@ final class HarnessBridgeTest {
                 "closing the bridge must leave application-owned files alone");
 
         List<Map<String, Object>> responses = parseLines(application.output.get());
-        assertEquals(11, responses.size());
+        assertEquals(12, responses.size());
         assertSuccessKind(responses.get(0), "sessions-result");
         Map<String, Object> sessions = result(responses.get(0));
         List<?> catalog = (List<?>) sessions.get("sessions");
@@ -97,6 +96,7 @@ final class HarnessBridgeTest {
         assertSuccessKind(responses.get(8), "capabilities-result");
         assertRejected(responses.get(9), "unknown-operation");
         assertRejected(responses.get(10), "invalid-request");
+        assertRejected(responses.get(11), "limit-exceeded");
         assertTrue(application.artifactsObservedBeforeClose,
                 "screenshot and trace artifacts must be stored below the bridge-owned root");
     }
@@ -168,6 +168,19 @@ final class HarnessBridgeTest {
                 "{\"operation\":\"ui_snapshot\",\"arguments\":{" + session
                         + "},\"path\":\"/tmp/escape\"}") + "\n";
     }
+    private static java.io.InputStream boundedAttackInput() {
+        byte[] prefix = commands().getBytes(StandardCharsets.UTF_8);
+        return new java.io.InputStream() {
+            private int position;
+
+            @Override public int read() {
+                if (position < prefix.length) return prefix[position++] & 0xff;
+                if (position++ <= prefix.length + ProtocolJson.MAX_REQUEST_BYTES) return 'x';
+                throw new AssertionError("CLI read beyond its maximum JSON command size");
+            }
+        };
+    }
+
 
     private static final class FixtureApplication extends ApplicationAdapter {
         private final Path artifactRoot;
@@ -223,8 +236,8 @@ final class HarnessBridgeTest {
                 bridge.semantics().setRole(button, Role.BUTTON);
                 bridge.semantics().setAccessibleName(button, "START BATTLE");
                 ByteArrayOutputStream sink = new ByteArrayOutputStream();
-                cli = CompletableFuture.runAsync(() -> HarnessCli.run(bridge,
-                        new ByteArrayInputStream(commands().getBytes(StandardCharsets.UTF_8)), sink));
+                cli = CompletableFuture.runAsync(
+                        () -> HarnessCli.run(bridge, boundedAttackInput(), sink));
                 cli.whenComplete((ignored, thrown) -> {
                     output.set(sink.toByteArray());
                     if (thrown != null) failure.compareAndSet(null, thrown);
@@ -254,8 +267,9 @@ final class HarnessBridgeTest {
         @Override public void dispose() {
             try {
                 if (cli != null) cli.get(5, TimeUnit.SECONDS);
-                artifactsObservedBeforeClose = Files.walk(artifactRoot)
-                        .anyMatch(Files::isRegularFile);
+                try (var artifacts = Files.walk(artifactRoot)) {
+                    artifactsObservedBeforeClose = artifacts.anyMatch(Files::isRegularFile);
+                }
                 if (bridge != null) bridge.close();
                 assertFalse(candidateDisposed);
             } catch (Throwable thrown) {

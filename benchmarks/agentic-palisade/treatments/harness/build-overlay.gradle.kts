@@ -35,7 +35,9 @@ gradle.beforeProject {
     }
 
     pluginManager.withPlugin("application") {
-        extensions.getByType<org.gradle.api.plugins.JavaApplication>()
-            .mainClass.set("benchmark.palisade.HarnessCli")
+        afterEvaluate {
+            extensions.getByType<org.gradle.api.plugins.JavaApplication>()
+                .mainClass.set("benchmark.palisade.HarnessCli")
+        }
     }
 }
