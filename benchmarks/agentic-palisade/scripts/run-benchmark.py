@@ -678,10 +678,45 @@ def _sanitized_environment(item):
     return environment
 
 
-def quiesce_process_group(process_group, grace_seconds=0.05):
+def _process_group_exists(process_group):
     try:
         os.killpg(process_group, 0)
+        return True
     except ProcessLookupError:
+        return False
+
+
+def _process_group_has_live_members(process_group):
+    for process_path in Path("/proc").iterdir():
+        if not process_path.name.isdigit():
+            continue
+        try:
+            fields = (process_path / "stat").read_text().rsplit(")", 1)[1].split()
+            state = fields[0]
+            member_group = int(fields[2])
+        except (FileNotFoundError, PermissionError, IndexError, ValueError):
+            continue
+        if member_group == process_group and state != "Z":
+            return True
+    return False
+
+
+def _wait_for_process_group_exit(process_group, timeout_seconds):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if (not _process_group_exists(process_group)
+                or not _process_group_has_live_members(process_group)):
+            return True
+        time.sleep(0.01)
+    return (
+        not _process_group_exists(process_group)
+        or not _process_group_has_live_members(process_group)
+    )
+
+
+def quiesce_process_group(process_group, grace_seconds=0.05):
+    if (not _process_group_exists(process_group)
+            or not _process_group_has_live_members(process_group)):
         return None
     message = "descendant process group remained active after OMP exit"
     try:
@@ -689,10 +724,13 @@ def quiesce_process_group(process_group, grace_seconds=0.05):
     except ProcessLookupError:
         return message
     time.sleep(grace_seconds)
-    try:
-        os.killpg(process_group, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    if _process_group_exists(process_group):
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if not _wait_for_process_group_exit(process_group, 0.25):
+        return "descendant process group did not quiesce after SIGKILL"
     return message
 
 
@@ -724,24 +762,31 @@ def _omp_command(omp, item, model, max_time_text):
 
 
 def terminate_process_group(process, grace_seconds=0.25):
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
+    process_group = process.pid
     deadline = time.monotonic() + grace_seconds
     try:
+        os.killpg(process_group, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
         process.wait(timeout=grace_seconds)
-        return
     except subprocess.TimeoutExpired:
         pass
     remaining = deadline - time.monotonic()
     if remaining > 0:
         time.sleep(remaining)
+    if _process_group_exists(process_group):
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait()
+        process.wait(timeout=0.25)
+    except subprocess.TimeoutExpired:
+        return "OMP leader did not exit after SIGKILL"
+    if not _wait_for_process_group_exit(process_group, 0.25):
+        return "timed-out process group did not quiesce after SIGKILL"
+    return None
 
 
 def classify_process_exit(return_code, timed_out):
@@ -799,12 +844,13 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
                     return_code = process.wait(timeout=max_time_seconds)
                 except subprocess.TimeoutExpired:
                     timed_out = True
-                    terminate_process_group(process)
+                    shutdown_error = terminate_process_group(process)
                     return_code = process.returncode
-                if not timed_out:
-                    quiescence_error = quiesce_process_group(process.pid)
-                    if quiescence_error:
-                        supervisor_failures.append(quiescence_error)
+                    if shutdown_error:
+                        supervisor_failures.append(shutdown_error)
+                quiescence_error = quiesce_process_group(process.pid)
+                if quiescence_error:
+                    supervisor_failures.append(quiescence_error)
             except OSError as error:
                 launch_error = str(error)
     if round_supervisor is not None:

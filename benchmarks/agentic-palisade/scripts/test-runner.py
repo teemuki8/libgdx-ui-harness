@@ -475,12 +475,15 @@ class SupervisionTest(unittest.TestCase):
     def test_terminates_the_entire_process_group_after_timeout(self):
         with tempfile.TemporaryDirectory() as temporary:
             pid_path = Path(temporary) / "child.pid"
-            program = (
-                "import pathlib,signal,subprocess,sys,time;"
+            child_program = (
+                "import os,pathlib,signal,time;"
                 "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
-                "child=subprocess.Popen([sys.executable,'-c',"
-                "'import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)']);"
-                f"pathlib.Path({str(pid_path)!r}).write_text(str(child.pid));"
+                f"pathlib.Path({str(pid_path)!r}).write_text(str(os.getpid()));"
+                "time.sleep(60)"
+            )
+            program = (
+                "import subprocess,sys,time;"
+                f"subprocess.Popen([sys.executable,'-c',{child_program!r}]);"
                 "time.sleep(60)"
             )
             process = subprocess.Popen(
@@ -493,7 +496,13 @@ class SupervisionTest(unittest.TestCase):
             self.assertTrue(pid_path.exists())
             child_pid = int(pid_path.read_text())
 
-            self.runner.terminate_process_group(process, grace_seconds=0.05)
+            shutdown_error = self.runner.terminate_process_group(
+                process, grace_seconds=0.05)
+            self.assertIsNone(shutdown_error)
+            self.assertEqual(
+                self.runner.classify_process_exit(process.returncode, True),
+                "timed_out",
+            )
 
             deadline = time.time() + 2
             state = "running"
