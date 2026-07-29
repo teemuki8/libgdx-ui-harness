@@ -1,0 +1,322 @@
+{
+  "schemaVersion": "agentic-palisade/v1",
+  "title": "Palisade Skirmish Configuration",
+  "controls": [
+    {
+      "id": "map",
+      "kind": "select",
+      "label": "Map",
+      "options": [
+        { "value": "northern-realms-860", "label": "The Northern Realms" },
+        { "value": "great-army-865", "label": "The Great Army" },
+        { "value": "seine-885", "label": "The Seine" },
+        { "value": "ji-north-china-plain", "label": "The Yellow Sky" },
+        { "value": "yingchuan-runan-corridors", "label": "Fires of Yingchuan" },
+        { "value": "nanyang-wan-basin", "label": "Wan Under Siege" },
+        { "value": "eastern-japan-1180", "label": "The Eastern Muster" },
+        { "value": "ichi-no-tani", "label": "Ichi-no-Tani" },
+        { "value": "yashima-1185", "label": "Yashima" },
+        { "value": "seto-inland-sea", "label": "The Western Strait" },
+        { "value": "vega-real-1495", "label": "The Vega Real" },
+        { "value": "lucayan-crossings-1509", "label": "Sails over Lucaya" },
+        { "value": "windward-passage-1511", "label": "The Windward Passage" },
+        { "value": "lake-under-tribute-1428", "label": "The Lake Under Tribute" },
+        { "value": "return-to-texcoco-1428", "label": "Return to Tetzcoco" },
+        { "value": "coyoacan-holds-1431", "label": "Coyohuacan Holds" }
+      ],
+      "default": "northern-realms-860",
+      "focusOrder": 1,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "choice" },
+      "visibleWhen": null
+    },
+    {
+      "id": "playerRealm",
+      "kind": "select",
+      "label": "Player realm",
+      "options": [
+        { "value": "vestfold", "label": "Vestfold" },
+        { "value": "danish-realm", "label": "Danish Realm" },
+        { "value": "swealand", "label": "Swealand" },
+        { "value": "halogaland", "label": "Hålogaland" }
+      ],
+      "default": "vestfold",
+      "focusOrder": 2,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "choice" },
+      "visibleWhen": null
+    },
+    {
+      "id": "majorRivalCount",
+      "kind": "range",
+      "label": "Major rival count",
+      "options": [],
+      "default": 3,
+      "focusOrder": 3,
+      "validation": { "minimum": 1, "maximum": 3, "step": 1, "format": "integer" },
+      "visibleWhen": null
+    },
+    {
+      "id": "pettyRealmDensity",
+      "kind": "select",
+      "label": "Petty realm density",
+      "options": [
+        { "value": "sparse", "label": "Low" },
+        { "value": "standard", "label": "Medium" },
+        { "value": "dense", "label": "High" }
+      ],
+      "default": "standard",
+      "focusOrder": 4,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "choice" },
+      "visibleWhen": null
+    },
+    {
+      "id": "startingResources",
+      "kind": "select",
+      "label": "Starting resources",
+      "options": [
+        { "value": "scarce", "label": "Low" },
+        { "value": "standard", "label": "Standard" },
+        { "value": "abundant", "label": "High" }
+      ],
+      "default": "standard",
+      "focusOrder": 5,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "choice" },
+      "visibleWhen": null
+    },
+    {
+      "id": "victoryCondition",
+      "kind": "select",
+      "label": "Victory condition",
+      "options": [
+        { "value": "conquest", "label": "Total conquest" },
+        { "value": "rival-target", "label": "Rival target" },
+        { "value": "territorial-dominance", "label": "Territorial control" }
+      ],
+      "default": "conquest",
+      "focusOrder": 6,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "choice" },
+      "visibleWhen": null
+    },
+    {
+      "id": "rivalTargetCount",
+      "kind": "number",
+      "label": "Rival target count",
+      "options": [],
+      "default": 1,
+      "focusOrder": 7,
+      "validation": { "minimum": 1, "maximum": 3, "step": 1, "format": "integer" },
+      "visibleWhen": { "controlId": "victoryCondition", "equals": "rival-target" }
+    },
+    {
+      "id": "aiDifficulty",
+      "kind": "select",
+      "label": "AI difficulty",
+      "options": [
+        { "value": "standard", "label": "Standard" },
+        { "value": "hardened", "label": "Hard" },
+        { "value": "relentless", "label": "Very hard" }
+      ],
+      "default": "standard",
+      "focusOrder": 8,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "choice" },
+      "visibleWhen": null
+    },
+    {
+      "id": "simulationSpeed",
+      "kind": "select",
+      "label": "Simulation speed",
+      "options": [
+        { "value": "1", "label": "Normal" },
+        { "value": "2", "label": "Fast" }
+      ],
+      "default": "1",
+      "focusOrder": 9,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "choice" },
+      "visibleWhen": null
+    },
+    {
+      "id": "richHarvest",
+      "kind": "checkbox",
+      "label": "High income",
+      "options": [],
+      "default": false,
+      "focusOrder": 10,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "boolean" },
+      "visibleWhen": null
+    },
+    {
+      "id": "scarceGold",
+      "kind": "checkbox",
+      "label": "Low income",
+      "options": [],
+      "default": false,
+      "focusOrder": 11,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "boolean" },
+      "visibleWhen": null
+    },
+    {
+      "id": "costlyCavalry",
+      "kind": "checkbox",
+      "label": "Higher cavalry cost",
+      "options": [],
+      "default": false,
+      "focusOrder": 12,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "boolean" },
+      "visibleWhen": null
+    },
+    {
+      "id": "cavalryRush",
+      "kind": "checkbox",
+      "label": "Faster cavalry",
+      "options": [],
+      "default": false,
+      "focusOrder": 13,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "boolean" },
+      "visibleWhen": null
+    },
+    {
+      "id": "roadBoom",
+      "kind": "checkbox",
+      "label": "Faster road construction",
+      "options": [],
+      "default": false,
+      "focusOrder": 14,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "boolean" },
+      "visibleWhen": null
+    },
+    {
+      "id": "seed",
+      "kind": "text",
+      "label": "Seed",
+      "options": [],
+      "default": "generatedUint32",
+      "focusOrder": 15,
+      "validation": { "minimum": 0, "maximum": 4294967295, "step": 1, "format": "uint32-decimal" },
+      "visibleWhen": null
+    },
+    {
+      "id": "copySeed",
+      "kind": "button",
+      "label": "COPY SEED",
+      "options": [],
+      "default": null,
+      "focusOrder": 16,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "action" },
+      "visibleWhen": null
+    },
+    {
+      "id": "randomSeed",
+      "kind": "button",
+      "label": "RANDOM SEED",
+      "options": [],
+      "default": null,
+      "focusOrder": 17,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "action" },
+      "visibleWhen": null
+    },
+    {
+      "id": "cancel",
+      "kind": "button",
+      "label": "CANCEL",
+      "options": [],
+      "default": null,
+      "focusOrder": 18,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "action" },
+      "visibleWhen": null
+    },
+    {
+      "id": "startBattle",
+      "kind": "button",
+      "label": "START BATTLE",
+      "options": [],
+      "default": null,
+      "focusOrder": 19,
+      "validation": { "minimum": null, "maximum": null, "step": null, "format": "action" },
+      "visibleWhen": null
+    }
+  ],
+  "states": [
+    {
+      "id": "initial",
+      "label": "Initial configuration, top of the bounded form",
+      "scrollPosition": "top",
+      "visibleControls": ["map", "playerRealm", "majorRivalCount", "pettyRealmDensity", "startingResources", "victoryCondition", "aiDifficulty", "simulationSpeed", "richHarvest", "scarceGold", "costlyCavalry", "cavalryRush", "roadBoom", "seed", "copySeed", "randomSeed", "cancel", "startBattle"],
+      "values": { "map": "northern-realms-860", "playerRealm": "vestfold", "majorRivalCount": 3, "pettyRealmDensity": "standard", "startingResources": "standard", "victoryCondition": "conquest", "rivalTargetCount": null, "aiDifficulty": "standard", "simulationSpeed": "1", "richHarvest": false, "scarceGold": false, "costlyCavalry": false, "cavalryRush": false, "roadBoom": false, "seed": 305419896 },
+      "payload": null
+    },
+    {
+      "id": "bottom",
+      "label": "Configuration scrolled to seed and actions",
+      "scrollPosition": "bottom",
+      "visibleControls": ["map", "playerRealm", "majorRivalCount", "pettyRealmDensity", "startingResources", "victoryCondition", "aiDifficulty", "simulationSpeed", "richHarvest", "scarceGold", "costlyCavalry", "cavalryRush", "roadBoom", "seed", "copySeed", "randomSeed", "cancel", "startBattle"],
+      "values": { "map": "northern-realms-860", "playerRealm": "vestfold", "majorRivalCount": 3, "pettyRealmDensity": "standard", "startingResources": "standard", "victoryCondition": "conquest", "rivalTargetCount": null, "aiDifficulty": "standard", "simulationSpeed": "1", "richHarvest": false, "scarceGold": false, "costlyCavalry": false, "cavalryRush": false, "roadBoom": false, "seed": 305419896 },
+      "payload": null
+    },
+    {
+      "id": "confirmation",
+      "label": "Accepted configuration payload",
+      "scrollPosition": "none",
+      "visibleControls": [],
+      "values": { "map": "northern-realms-860", "playerRealm": "vestfold", "majorRivalCount": 3, "pettyRealmDensity": "standard", "startingResources": "standard", "victoryCondition": "conquest", "rivalTargetCount": null, "aiDifficulty": "standard", "simulationSpeed": "1", "richHarvest": false, "scarceGold": false, "costlyCavalry": false, "cavalryRush": false, "roadBoom": false, "seed": 305419896 },
+      "payload": { "map": "northern-realms-860", "playerRealm": "vestfold", "majorRivalCount": 3, "pettyRealmDensity": "standard", "startingResources": "standard", "victoryCondition": "conquest", "rivalTargetCount": null, "aiDifficulty": "standard", "simulationSpeed": "1", "richHarvest": false, "scarceGold": false, "costlyCavalry": false, "cavalryRush": false, "roadBoom": false, "seed": 305419896 }
+    }
+  ],
+  "transitions": [
+    {
+      "id": "scrollToBottom",
+      "from": "initial",
+      "trigger": "Scroll the bounded configuration surface to its maximum vertical offset",
+      "to": "bottom",
+      "effect": "Seed, validation status, and the four action buttons are in view",
+      "fixture": { "randomUint32": null, "expectedSeed": null, "expectedClipboardText": null }
+    },
+    {
+      "id": "copySeed",
+      "from": "bottom",
+      "trigger": "Activate COPY SEED",
+      "to": "bottom",
+      "effect": "Write the current decimal seed to the clipboard without changing configuration",
+      "fixture": { "randomUint32": null, "expectedSeed": 305419896, "expectedClipboardText": "305419896" }
+    },
+    {
+      "id": "randomSeed",
+      "from": "bottom",
+      "trigger": "Activate RANDOM SEED with the fixture random source",
+      "to": "bottom",
+      "effect": "Replace the seed with the unsigned 32-bit decimal value and keep the configuration valid",
+      "fixture": { "randomUint32": 305419896, "expectedSeed": 305419896, "expectedClipboardText": null }
+    },
+    {
+      "id": "cancel",
+      "from": "bottom",
+      "trigger": "Activate CANCEL",
+      "to": "dismissed",
+      "effect": "Discard the configuration and return to the main menu",
+      "fixture": { "randomUint32": null, "expectedSeed": null, "expectedClipboardText": null }
+    },
+    {
+      "id": "escape",
+      "from": "initial",
+      "trigger": "Press Escape",
+      "to": "dismissed",
+      "effect": "Discard the configuration and return to the main menu, matching CANCEL",
+      "fixture": { "randomUint32": null, "expectedSeed": null, "expectedClipboardText": null }
+    },
+    {
+      "id": "startBattle",
+      "from": "bottom",
+      "trigger": "Activate START BATTLE while the configuration is valid",
+      "to": "confirmation",
+      "effect": "Accept the normalized confirmation payload and begin the skirmish",
+      "fixture": { "randomUint32": null, "expectedSeed": 305419896, "expectedClipboardText": null }
+    }
+  ],
+  "viewports": [
+    { "id": "desktop-1920x1080", "width": 1920, "height": 1080, "deviceScaleFactor": 1 },
+    { "id": "desktop-1280x720", "width": 1280, "height": 720, "deviceScaleFactor": 1 }
+  ],
+  "references": [
+    { "id": "initial-1920x1080", "stateId": "initial", "viewportId": "desktop-1920x1080", "file": "reference/initial-1920x1080.png", "width": 1920, "height": 1080, "bytes": 211979, "sha256": "98c092bfd976171cb17745b425e8d0ae357e93f085ed8eae9e618ee56c0f5cb3" },
+    { "id": "bottom-1920x1080", "stateId": "bottom", "viewportId": "desktop-1920x1080", "file": "reference/bottom-1920x1080.png", "width": 1920, "height": 1080, "bytes": 211697, "sha256": "92b4dd35574d3b614bd1f4a05c172dd9df9c41ef96396a7fab45902e7f4f2fb6" },
+    { "id": "initial-1280x720", "stateId": "initial", "viewportId": "desktop-1280x720", "file": "reference/initial-1280x720.png", "width": 1280, "height": 720, "bytes": 102974, "sha256": "9de83761bb4135d618c48830afc280b85c36ff413f7d3b7248d0fb168b8d5ad0" }
+  ]
+}

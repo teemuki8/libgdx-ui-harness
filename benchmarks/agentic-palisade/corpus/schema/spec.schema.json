@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agentic-palisade/v1/spec.schema.json",
+  "title": "Agentic Palisade frozen corpus specification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "title",
+    "controls",
+    "states",
+    "transitions",
+    "viewports",
+    "references"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "agentic-palisade/v1" },
+    "title": { "type": "string", "minLength": 1 },
+    "controls": {
+      "type": "array",
+      "minItems": 19,
+      "maxItems": 19,
+      "items": { "$ref": "#/$defs/control" }
+    },
+    "states": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/state" }
+    },
+    "transitions": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": { "$ref": "#/$defs/transition" }
+    },
+    "viewports": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "$ref": "#/$defs/viewport" }
+    },
+    "references": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/reference" }
+    }
+  },
+  "$defs": {
+    "option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "label"],
+      "properties": {
+        "value": { "type": "string" },
+        "label": { "type": "string", "minLength": 1 }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum", "maximum", "step", "format"],
+      "properties": {
+        "minimum": { "type": ["integer", "null"] },
+        "maximum": { "type": ["integer", "null"] },
+        "step": { "type": ["integer", "null"] },
+        "format": {
+          "enum": ["choice", "integer", "boolean", "uint32-decimal", "action"]
+        }
+      }
+    },
+    "visibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["controlId", "equals"],
+      "properties": {
+        "controlId": { "const": "victoryCondition" },
+        "equals": { "const": "rival-target" }
+      }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "label", "options", "default", "focusOrder", "validation", "visibleWhen"],
+      "properties": {
+        "id": {
+          "enum": [
+            "map",
+            "playerRealm",
+            "majorRivalCount",
+            "pettyRealmDensity",
+            "startingResources",
+            "victoryCondition",
+            "rivalTargetCount",
+            "aiDifficulty",
+            "simulationSpeed",
+            "richHarvest",
+            "scarceGold",
+            "costlyCavalry",
+            "cavalryRush",
+            "roadBoom",
+            "seed",
+            "copySeed",
+            "randomSeed",
+            "cancel",
+            "startBattle"
+          ]
+        },
+        "kind": {
+          "enum": ["select", "range", "number", "checkbox", "text", "button"]
+        },
+        "label": { "type": "string", "minLength": 1 },
+        "options": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/option" }
+        },
+        "default": {
+          "type": ["string", "integer", "boolean", "null"]
+        },
+        "focusOrder": { "type": "integer", "minimum": 1, "maximum": 19 },
+        "validation": { "$ref": "#/$defs/validation" },
+        "visibleWhen": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/visibility" }
+          ]
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "map",
+        "playerRealm",
+        "majorRivalCount",
+        "pettyRealmDensity",
+        "startingResources",
+        "victoryCondition",
+        "rivalTargetCount",
+        "aiDifficulty",
+        "simulationSpeed",
+        "richHarvest",
+        "scarceGold",
+        "costlyCavalry",
+        "cavalryRush",
+        "roadBoom",
+        "seed"
+      ],
+      "properties": {
+        "map": { "type": "string" },
+        "playerRealm": { "type": "string" },
+        "majorRivalCount": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "pettyRealmDensity": { "enum": ["sparse", "standard", "dense"] },
+        "startingResources": { "enum": ["scarce", "standard", "abundant"] },
+        "victoryCondition": { "enum": ["conquest", "rival-target", "territorial-dominance"] },
+        "rivalTargetCount": { "type": ["integer", "null"] },
+        "aiDifficulty": { "enum": ["standard", "hardened", "relentless"] },
+        "simulationSpeed": { "enum": ["1", "2"] },
+        "richHarvest": { "type": "boolean" },
+        "scarceGold": { "type": "boolean" },
+        "costlyCavalry": { "type": "boolean" },
+        "cavalryRush": { "type": "boolean" },
+        "roadBoom": { "type": "boolean" },
+        "seed": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "scrollPosition", "visibleControls", "values", "payload"],
+      "properties": {
+        "id": { "enum": ["initial", "bottom", "confirmation"] },
+        "label": { "type": "string", "minLength": 1 },
+        "scrollPosition": { "enum": ["top", "bottom", "none"] },
+        "visibleControls": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "values": { "$ref": "#/$defs/configuration" },
+        "payload": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/configuration" }
+          ]
+        }
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["randomUint32", "expectedSeed", "expectedClipboardText"],
+      "properties": {
+        "randomUint32": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+        "expectedSeed": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+        "expectedClipboardText": { "type": ["string", "null"] }
+      }
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "from", "trigger", "to", "effect", "fixture"],
+      "properties": {
+        "id": { "enum": ["scrollToBottom", "copySeed", "randomSeed", "cancel", "escape", "startBattle"] },
+        "from": { "enum": ["initial", "bottom"] },
+        "trigger": { "type": "string", "minLength": 1 },
+        "to": { "enum": ["initial", "bottom", "confirmation", "dismissed"] },
+        "effect": { "type": "string", "minLength": 1 },
+        "fixture": { "$ref": "#/$defs/fixture" }
+      }
+    },
+    "viewport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "width", "height", "deviceScaleFactor"],
+      "properties": {
+        "id": { "enum": ["desktop-1920x1080", "desktop-1280x720"] },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "deviceScaleFactor": { "const": 1 }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "stateId", "viewportId", "file", "width", "height", "bytes", "sha256"],
+      "properties": {
+        "id": { "enum": ["initial-1920x1080", "bottom-1920x1080", "initial-1280x720"] },
+        "stateId": { "enum": ["initial", "bottom"] },
+        "viewportId": { "enum": ["desktop-1920x1080", "desktop-1280x720"] },
+        "file": { "type": "string", "pattern": "^reference/[a-z0-9-]+\\.png$" },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}
