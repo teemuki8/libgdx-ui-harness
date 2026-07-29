@@ -176,7 +176,16 @@ public final class HarnessToolHandler implements AutoCloseable {
             content.put("frame", snapshot.frame());
             content.put("rootId", snapshot.rootId());
             content.put("nodeCount", snapshot.nodes().size());
-            offloadLarge(content, encoded, "application/json");
+            if (snapshot.contract() != null) {
+                content.put("contractSchemaVersion", snapshot.contract().schemaVersion());
+                content.put("stateId", snapshot.contract().stateId());
+                content.put("controlCount", snapshot.contract().controls().size());
+                @SuppressWarnings("unchecked")
+                Map<String, Object> contract = COMMAND_MAPPER.convertValue(
+                        snapshot.contract(), Map.class);
+                content.put("contract", contract);
+            }
+            offloadLarge(content, encoded, "application/json", "contract");
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.Query query) {

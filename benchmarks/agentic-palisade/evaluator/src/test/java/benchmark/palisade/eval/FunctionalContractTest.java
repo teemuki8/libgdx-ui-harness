@@ -54,6 +54,76 @@ final class FunctionalContractTest {
     }
 
     @Test
+    void publicStateActionFixturePassesAllTwentyFiveGroupsWithoutAliases() throws Exception {
+        JsonNode corpus = corpus();
+        FunctionalContract contract = FunctionalContract.fromCorpus(corpus);
+
+        FunctionalContract.Result result =
+                contract.evaluatePublicContract(publicContractFixture(corpus));
+
+        assertEquals(25, result.assertions().size());
+        assertEquals(25, result.passedCount(), () -> result.assertions().toString());
+    }
+
+    @Test
+    void publicContractMissingFieldUnknownMajorAndDuplicateIdFailClosed() throws Exception {
+        JsonNode corpus = corpus();
+        ObjectNode missing = publicContractFixture(corpus);
+        ((ObjectNode) missing.path("scenarios").path("initial")).remove("focusOrder");
+        PublicStateActionContract.ContractDiagnosticException missingFailure = assertThrows(
+                PublicStateActionContract.ContractDiagnosticException.class,
+                () -> PublicStateActionContract.toFunctionalEvidence(missing));
+        assertEquals("$.scenarios.initial.focusOrder", missingFailure.path());
+        assertEquals("required field", missingFailure.expected());
+        assertTrue(missingFailure.affectedAssertions().contains("controls.focus-order"));
+        assertTrue(missingFailure.affectedAssertions().contains("state.initial.values"));
+
+        ObjectNode unknown = publicContractFixture(corpus);
+        ((ObjectNode) unknown.path("scenarios").path("initial"))
+                .put("schemaVersion", "state-action/v2.0");
+        assertEquals("$.scenarios.initial.schemaVersion", assertThrows(
+                PublicStateActionContract.ContractDiagnosticException.class,
+                () -> PublicStateActionContract.toFunctionalEvidence(unknown)).path());
+
+        ObjectNode duplicate = publicContractFixture(corpus);
+        ArrayNode controls = (ArrayNode) duplicate.path("scenarios")
+                .path("initial").path("controls");
+        controls.add(controls.get(0).deepCopy());
+        assertTrue(assertThrows(
+                PublicStateActionContract.ContractDiagnosticException.class,
+                () -> PublicStateActionContract.toFunctionalEvidence(duplicate))
+                .path().endsWith(".controls[19].id"));
+    }
+
+    @Test
+    void publicEvaluationDistinguishesCompatibilityExecutionAndAssertionFailures()
+            throws Exception {
+        JsonNode corpus = corpus();
+        FunctionalContract contract = FunctionalContract.fromCorpus(corpus);
+
+        ObjectNode incompatible = publicContractFixture(corpus);
+        ((ObjectNode) incompatible.path("scenarios").path("initial"))
+                .put("schemaVersion", "state-action/v2.0");
+        assertEquals(FunctionalContract.PublicStatus.CONTRACT_INCOMPATIBLE,
+                contract.evaluatePublicContractOutcome(incompatible).status());
+
+        ObjectNode unexecuted = publicContractFixture(corpus);
+        ((ObjectNode) unexecuted.path("scenarios")).remove("escape");
+        assertEquals(FunctionalContract.PublicStatus.SCENARIO_UNEXECUTED,
+                contract.evaluatePublicContractOutcome(unexecuted).status());
+
+        ObjectNode failed = publicContractFixture(corpus);
+        ((ObjectNode) failed.path("scenarios").path("initial")
+                .path("controls").path(0).path("currentValue"))
+                .put("textValue", "unexpected");
+        assertEquals(FunctionalContract.PublicStatus.ASSERTION_FAILED,
+                contract.evaluatePublicContractOutcome(failed).status());
+
+        assertEquals(FunctionalContract.PublicStatus.PASSED,
+                contract.evaluatePublicContractOutcome(publicContractFixture(corpus)).status());
+    }
+
+    @Test
     void failuresRemainIndependentAndRetainBoundedEvidence() throws Exception {
         JsonNode corpus = corpus();
         FunctionalContract contract = FunctionalContract.fromCorpus(corpus);
@@ -415,6 +485,207 @@ final class FunctionalContractTest {
         confirmation.put("outcome", "confirmation");
         confirmation.set("payload", confirmationState.path("payload").deepCopy());
         return fixture;
+    }
+
+    private static ObjectNode publicContractFixture(JsonNode corpus) {
+        ObjectNode legacy = conformingFixture(corpus);
+        ObjectNode suite = JSON.createObjectNode();
+        suite.put("schemaVersion", "state-action-suite/v1");
+        ObjectNode scenarios = suite.putObject("scenarios");
+        legacy.path("checkpoints").properties().forEach(entry ->
+                scenarios.set(entry.getKey(),
+                        publicScenario(corpus, entry.getKey(), entry.getValue())));
+        return suite;
+    }
+
+    private static ObjectNode publicScenario(
+            JsonNode corpus, String name, JsonNode checkpoint) {
+        JsonNode initial = findById(corpus.path("states"), "initial");
+        JsonNode values = checkpoint.path("values").isObject()
+                ? checkpoint.path("values") : initial.path("values");
+        JsonNode visible = checkpoint.path("visibleControls").isArray()
+                ? checkpoint.path("visibleControls") : initial.path("visibleControls");
+        ObjectNode contract = JSON.createObjectNode();
+        contract.put("schemaVersion", "state-action/v1.0");
+        contract.put("stateId", "fixture-" + name);
+        contract.put("revision", 1);
+        contract.put("frame", 1);
+        ArrayNode controls = contract.putArray("controls");
+        int index = 0;
+        for (JsonNode definition : corpus.path("controls")) {
+            String id = definition.path("id").asText();
+            ObjectNode control = controls.addObject();
+            control.put("id", id);
+            control.put("role", roleFor(definition.path("kind").asText()));
+            control.put("kind", definition.path("kind").asText());
+            control.put("accessibleName", definition.path("label").asText());
+            ArrayNode options = control.putArray("options");
+            definition.path("options").forEach(option -> {
+                ObjectNode item = options.addObject();
+                item.set("value", typed(option.path("value")));
+                item.put("label", option.path("label").asText());
+            });
+            control.set("defaultValue", typed(definition.path("default")));
+            JsonNode current = values.path(id);
+            if ("seed".equals(id)) {
+                if (checkpoint.has("seed")) {
+                    current = checkpoint.path("seed");
+                } else if (checkpoint.has("seedText")) {
+                    current = checkpoint.path("seedText");
+                }
+            }
+            control.set("currentValue", typed(current));
+            boolean isVisible = contains(visible, id);
+            control.put("visible", isVisible);
+            control.put("enabled", true);
+            control.put("actionable", isVisible);
+            control.put("focusable", isVisible);
+            control.put("focused", id.equals(checkpoint.path("focusedControlId").asText()));
+            ObjectNode rule = control.putObject("validationRule");
+            rule.put("format", definition.path("validation").path("format").asText());
+            addOptionalTyped(rule, "minimum",
+                    definition.path("validation").get("minimum"));
+            addOptionalTyped(rule, "maximum",
+                    definition.path("validation").get("maximum"));
+            addOptionalTyped(rule, "step", definition.path("validation").get("step"));
+            ObjectNode status = control.putObject("validationStatus");
+            boolean valid = !"seed".equals(id)
+                    || !checkpoint.has("valid") || checkpoint.path("valid").asBoolean();
+            status.put("valid", valid);
+            ArrayNode messages = status.putArray("messages");
+            if (!valid) {
+                messages.add("Seed must be an unsigned 32-bit decimal integer");
+            }
+            index++;
+        }
+        JsonNode focus = checkpoint.path("focusOrder").isArray()
+                ? checkpoint.path("focusOrder") : visible;
+        contract.set("focusOrder", focus.deepCopy());
+        if (checkpoint.has("focusedControlId")) {
+            contract.set("focusedControlId",
+                    checkpoint.path("focusedControlId").deepCopy());
+        }
+        ArrayNode conditions = contract.putArray("conditions");
+        for (JsonNode definition : corpus.path("controls")) {
+            if (definition.path("visibleWhen").isObject()) {
+                ObjectNode condition = conditions.addObject();
+                condition.put("controllerId",
+                        definition.path("visibleWhen").path("controlId").asText());
+                condition.set("equalsValue",
+                        typed(definition.path("visibleWhen").path("equals")));
+                condition.put("dependentId", definition.path("id").asText());
+                condition.put("visibleWhenEqual", true);
+                condition.put("actionableWhenEqual", true);
+                condition.put("restoreFocusTo",
+                        definition.path("visibleWhen").path("controlId").asText());
+            }
+        }
+        ObjectNode viewport = contract.putArray("viewports").addObject();
+        viewport.put("id", "configuration");
+        viewport.put("width", 1920);
+        viewport.put("height", 1080);
+        boolean bottom = "bottom".equals(checkpoint.path("scrollPosition").asText());
+        viewport.put("scrollX", 0);
+        viewport.put("scrollY", bottom ? 1 : 0);
+        viewport.put("maxScrollX", 0);
+        viewport.put("maxScrollY", 1);
+        viewport.set("visibleControlIds", visible.deepCopy());
+        addPublicTransition(contract, name, checkpoint);
+        return contract;
+    }
+
+    private static void addPublicTransition(
+            ObjectNode contract, String name, JsonNode checkpoint) {
+        String action = switch (name) {
+            case "invalidStart" -> "start-battle";
+            case "copySeed" -> "copy-seed";
+            case "randomSeed" -> "random-seed";
+            case "cancel" -> "cancel";
+            case "escape" -> "escape";
+            case "confirmation" -> "start-battle";
+            default -> null;
+        };
+        if (action == null) {
+            return;
+        }
+        ObjectNode transition = contract.putObject("transition");
+        boolean accepted = !"invalidStart".equals(name);
+        transition.put("actionId", action);
+        transition.put("accepted", accepted);
+        if (!accepted) {
+            transition.put("rejectionReason", "validation-failed");
+        }
+        transition.put("resultingStateId", contract.path("stateId").asText());
+        transition.put("resultingRevision", contract.path("revision").asLong());
+        ObjectNode validation = transition.putObject("validation");
+        validation.put("valid", accepted);
+        ArrayNode messages = validation.putArray("messages");
+        if (!accepted) {
+            messages.add("Seed must be an unsigned 32-bit decimal integer");
+        }
+        String kind = switch (name) {
+            case "cancel", "escape" -> "dismissed";
+            case "confirmation" -> "confirmation";
+            default -> "none";
+        };
+        transition.put("kind", kind);
+        if ("copySeed".equals(name)) {
+            transition.put("clipboardText", checkpoint.path("clipboardText").asText());
+        }
+        ObjectNode payload = transition.putObject("acceptedPayload");
+        if ("randomSeed".equals(name)) {
+            payload.set("previousSeed", typed(checkpoint.path("previousSeed")));
+            payload.set("seed", typed(checkpoint.path("seed")));
+        } else if ("confirmation".equals(name)) {
+            checkpoint.path("payload").properties().forEach(
+                    entry -> payload.set(entry.getKey(), typed(entry.getValue())));
+        }
+    }
+
+    private static void addOptionalTyped(
+            ObjectNode destination, String name, JsonNode value) {
+        if (value != null && !value.isNull()) {
+            destination.set(name, typed(value));
+        }
+    }
+
+    private static ObjectNode typed(JsonNode value) {
+        ObjectNode typed = JSON.createObjectNode();
+        if (value == null || value.isMissingNode() || value.isNull()) {
+            return typed.put("type", "null");
+        }
+        if (value.isBoolean()) {
+            return typed.put("type", "boolean")
+                    .put("booleanValue", value.booleanValue());
+        }
+        if (value.isIntegralNumber()) {
+            return typed.put("type", "integer")
+                    .put("integerValue", value.longValue());
+        }
+        if (value.isNumber()) {
+            return typed.put("type", "decimal")
+                    .put("decimalValue", value.decimalValue().toPlainString());
+        }
+        return typed.put("type", "text").put("textValue", value.asText());
+    }
+
+    private static String roleFor(String kind) {
+        return switch (kind) {
+            case "button" -> "button";
+            case "checkbox" -> "checkbox";
+            case "select" -> "select";
+            case "range" -> "slider";
+            default -> "text-field";
+        };
+    }
+
+    private static boolean contains(JsonNode array, String value) {
+        for (JsonNode item : array) {
+            if (value.equals(item.asText())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static JsonNode findById(JsonNode array, String id) {

@@ -123,6 +123,19 @@
         "required" : [ "reference", "mediaType", "byteLength", "sha256" ],
         "type" : "object"
       },
+      "contract" : {
+        "type" : "object"
+      },
+      "contractSchemaVersion" : {
+        "maxLength" : 16384,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "controlCount" : {
+        "maximum" : 256,
+        "minimum" : 0,
+        "type" : "integer"
+      },
       "frame" : {
         "maximum" : 9223372036854775807,
         "minimum" : 0,
@@ -144,6 +157,11 @@
       },
       "rootId" : {
         "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "stateId" : {
+        "maxLength" : 16384,
         "minLength" : 1,
         "type" : "string"
       }

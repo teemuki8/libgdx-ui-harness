@@ -2,6 +2,7 @@ package dev.gdx.uiharness.protocol;
 
 import dev.gdx.uiharness.core.action.Harness;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
+import dev.gdx.uiharness.core.contract.StateActionContract;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
@@ -36,12 +37,22 @@ public final class HarnessProtocolService {
     private static final Pattern FILE_PATH = Pattern.compile(
             "(?:[A-Za-z]:\\\\|(?<![A-Za-z0-9:/])/(?!/))[^\\s,;\\\"'{}\\[\\]]+");
     private final Map<String, Session> sessions;
+    private final Map<String, ContractProvider> contracts;
     private final MonotonicClock clock;
     private final Executor blockingExecutor;
 
     /** Creates a service over an immutable session registry. */
     public HarnessProtocolService(
             Map<String, Session> sessions, MonotonicClock clock, Executor blockingExecutor) {
+        this(sessions, Map.of(), clock, blockingExecutor);
+    }
+
+    /** Creates a service with optional evaluator-complete contract providers by session ID. */
+    public HarnessProtocolService(
+            Map<String, Session> sessions,
+            Map<String, ContractProvider> contracts,
+            MonotonicClock clock,
+            Executor blockingExecutor) {
         Objects.requireNonNull(sessions, "sessions");
         LinkedHashMap<String, Session> copy = new LinkedHashMap<>();
         sessions.forEach((id, session) -> {
@@ -49,6 +60,17 @@ public final class HarnessProtocolService {
             copy.put(id, Objects.requireNonNull(session, "session"));
         });
         this.sessions = Map.copyOf(copy);
+        Objects.requireNonNull(contracts, "contracts");
+        LinkedHashMap<String, ContractProvider> contractCopy = new LinkedHashMap<>();
+        contracts.forEach((id, provider) -> {
+            ProtocolJson.requireIdentifier(id, "contract sessionId");
+            if (!copy.containsKey(id)) {
+                throw new IllegalArgumentException(
+                        "contract provider has no matching session: " + id);
+            }
+            contractCopy.put(id, Objects.requireNonNull(provider, "contract provider"));
+        });
+        this.contracts = Map.copyOf(contractCopy);
         this.clock = Objects.requireNonNull(clock, "clock");
         this.blockingExecutor = Objects.requireNonNull(blockingExecutor, "blockingExecutor");
     }
@@ -109,6 +131,17 @@ public final class HarnessProtocolService {
 
         requireCapability(session, capability(command));
         if (command instanceof Command.Snapshot) {
+            ContractProvider contract = contracts.get(request.sessionId());
+            if (contract != null) {
+                CompletionStage<HarnessResponse.Result.Snapshot> combined =
+                        session.harness().snapshot(deadline).thenCombine(
+                                contract.snapshot(deadline),
+                                (snapshot, stateAction) ->
+                                        new HarnessResponse.Result.Snapshot(
+                                                HarnessResponse.SnapshotData.fromCore(
+                                                        snapshot, stateAction)));
+                return RoutedOperation.map(combined, Function.identity());
+            }
             return RoutedOperation.map(session.harness().snapshot(deadline),
                     snapshot -> new HarnessResponse.Result.Snapshot(
                             HarnessResponse.SnapshotData.fromCore(snapshot)));
@@ -430,5 +463,12 @@ public final class HarnessProtocolService {
                 }
             };
         }
+    }
+
+    /** Render-thread-safe source of the public evaluator-complete contract. */
+    @FunctionalInterface
+    public interface ContractProvider {
+        /** Captures the resulting completed-frame contract before the monotonic deadline. */
+        CompletionStage<StateActionContract> snapshot(Deadline deadline);
     }
 }

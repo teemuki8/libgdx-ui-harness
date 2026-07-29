@@ -4,14 +4,21 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Predicate;
 
 /** Hidden, treatment-neutral assertions over launcher-produced state snapshots. */
 public final class FunctionalContract {
     private static final String CORPUS_SCHEMA = "agentic-palisade/v1";
     private static final int MAX_EVIDENCE_CHARACTERS = 512;
+    private static final Set<String> REQUIRED_SCENARIOS = Set.of(
+            "initial", "bottom", "conditionalVisible", "conditionalHidden",
+            "minimumSeed", "maximumSeed", "belowMinimumSeed", "aboveMaximumSeed",
+            "invalidStart", "copySeed", "randomSeed", "cancel", "escape",
+            "confirmation");
 
     private final List<Check> checks;
 
@@ -59,6 +66,36 @@ public final class FunctionalContract {
             assertions.add(new Assertion(check.id(), passed, bound(detail)));
         }
         return new Result(assertions);
+    }
+
+    /** Evaluates a suite of published state/action snapshots without candidate-specific aliases. */
+    public Result evaluatePublicContract(JsonNode suite) {
+        return evaluate(PublicStateActionContract.toFunctionalEvidence(suite));
+    }
+
+    /**
+     * Evaluates the public contract with a machine-stable top-level classification.
+     * Contract compatibility and missing execution evidence never masquerade as assertion failures.
+     */
+    public PublicEvaluation evaluatePublicContractOutcome(JsonNode suite) {
+        try {
+            Set<String> missing = new LinkedHashSet<>(REQUIRED_SCENARIOS);
+            if (suite != null && suite.path("scenarios").isObject()) {
+                suite.path("scenarios").fieldNames()
+                        .forEachRemaining(missing::remove);
+            }
+            if (!missing.isEmpty()) {
+                return new PublicEvaluation(
+                        PublicStatus.SCENARIO_UNEXECUTED, null, null, List.copyOf(missing));
+            }
+            Result result = evaluatePublicContract(suite);
+            return new PublicEvaluation(
+                    result.allPassed() ? PublicStatus.PASSED : PublicStatus.ASSERTION_FAILED,
+                    result, null, List.of());
+        } catch (PublicStateActionContract.ContractDiagnosticException incompatible) {
+            return new PublicEvaluation(
+                    PublicStatus.CONTRACT_INCOMPATIBLE, null, incompatible, List.of());
+        }
     }
 
     private static void addControlChecks(List<Check> checks, JsonNode corpus) {
@@ -271,6 +308,26 @@ public final class FunctionalContract {
 
         public boolean allPassed() {
             return passedCount() == assertions.size();
+        }
+    }
+
+    /** Stable public evaluator classifications consumed by benchmark and release gates. */
+    public enum PublicStatus {
+        PASSED,
+        CONTRACT_INCOMPATIBLE,
+        SCENARIO_UNEXECUTED,
+        ASSERTION_FAILED
+    }
+
+    /** Compact public evaluation result; only the fields relevant to its status are populated. */
+    public record PublicEvaluation(
+            PublicStatus status,
+            Result result,
+            PublicStateActionContract.ContractDiagnosticException diagnostic,
+            List<String> missingScenarios) {
+        public PublicEvaluation {
+            Objects.requireNonNull(status, "status");
+            missingScenarios = List.copyOf(missingScenarios);
         }
     }
 

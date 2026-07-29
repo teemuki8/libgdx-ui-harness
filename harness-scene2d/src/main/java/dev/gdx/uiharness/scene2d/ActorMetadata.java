@@ -1,5 +1,6 @@
 package dev.gdx.uiharness.scene2d;
 
+import dev.gdx.uiharness.core.contract.ContractValue;
 import dev.gdx.uiharness.core.model.Role;
 import java.util.Map;
 import java.util.Objects;
@@ -11,38 +12,78 @@ public record ActorMetadata(
         String text,
         String label,
         String testId,
+        ControlMetadata control,
+        ContractValue currentValue,
+        String viewportId,
         Map<String, String> properties) {
     static final ActorMetadata EMPTY =
-            new ActorMetadata(null, null, null, null, null, Map.of());
+            new ActorMetadata(null, null, null, null, null, null, null, null, Map.of());
 
     /** Defensively copies the custom property map. */
     public ActorMetadata {
         properties = Map.copyOf(Objects.requireNonNull(properties, "properties"));
     }
 
+    /** Retains the original metadata constructor for locator-only integrations. */
+    public ActorMetadata(
+            Role role,
+            String accessibleName,
+            String text,
+            String label,
+            String testId,
+            Map<String, String> properties) {
+        this(role, accessibleName, text, label, testId, null, null, null, properties);
+    }
+
     ActorMetadata withRole(Role value) {
-        return new ActorMetadata(value, accessibleName, text, label, testId, properties);
+        return copy(value, accessibleName, text, label, testId, control, currentValue, viewportId);
     }
 
     ActorMetadata withAccessibleName(String value) {
-        return new ActorMetadata(role, value, text, label, testId, properties);
+        return copy(role, value, text, label, testId, control, currentValue, viewportId);
     }
 
     ActorMetadata withText(String value) {
-        return new ActorMetadata(role, accessibleName, value, label, testId, properties);
+        return copy(role, accessibleName, value, label, testId, control, currentValue, viewportId);
     }
 
     ActorMetadata withLabel(String value) {
-        return new ActorMetadata(role, accessibleName, text, value, testId, properties);
+        return copy(role, accessibleName, text, value, testId, control, currentValue, viewportId);
     }
 
     ActorMetadata withTestId(String value) {
-        return new ActorMetadata(role, accessibleName, text, label, value, properties);
+        return copy(role, accessibleName, text, label, value, control, currentValue, viewportId);
+    }
+
+    ActorMetadata withControl(ControlMetadata value) {
+        return copy(role, accessibleName, text, label, testId, value, currentValue, viewportId);
+    }
+
+    ActorMetadata withCurrentValue(ContractValue value) {
+        return copy(role, accessibleName, text, label, testId, control, value, viewportId);
+    }
+
+    ActorMetadata withViewportId(String value) {
+        return copy(role, accessibleName, text, label, testId, control, currentValue, value);
     }
 
     ActorMetadata withProperty(String key, String value) {
         var updated = new java.util.LinkedHashMap<>(properties);
         updated.put(key, value);
-        return new ActorMetadata(role, accessibleName, text, label, testId, updated);
+        return new ActorMetadata(role, accessibleName, text, label, testId,
+                control, currentValue, viewportId, updated);
+    }
+
+    private ActorMetadata copy(
+            Role nextRole,
+            String nextAccessibleName,
+            String nextText,
+            String nextLabel,
+            String nextTestId,
+            ControlMetadata nextControl,
+            ContractValue nextCurrentValue,
+            String nextViewportId) {
+        return new ActorMetadata(nextRole, nextAccessibleName, nextText, nextLabel, nextTestId,
+                nextControl, nextCurrentValue, nextViewportId, properties);
     }
 }

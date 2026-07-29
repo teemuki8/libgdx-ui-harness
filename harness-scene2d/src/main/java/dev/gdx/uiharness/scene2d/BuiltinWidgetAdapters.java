@@ -14,7 +14,9 @@ import com.badlogic.gdx.scenes.scene2d.ui.TextArea;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
 import com.badlogic.gdx.scenes.scene2d.ui.TextField;
 import com.badlogic.gdx.scenes.scene2d.ui.Window;
+import dev.gdx.uiharness.core.contract.ContractValue;
 import dev.gdx.uiharness.core.model.Role;
+import java.math.BigDecimal;
 
 /** Registers semantic inference for standard Scene2D.UI widgets. */
 public final class BuiltinWidgetAdapters {
@@ -27,11 +29,13 @@ public final class BuiltinWidgetAdapters {
                 .role(Role.BUTTON)
                 .enabled(!button.isDisabled())
                 .checked(button.isChecked())
+                .currentValue(ContractValue.bool(button.isChecked()))
                 .focusable(true));
         registry.register(TextButton.class, (button, target) -> text(
                         target.role(Role.BUTTON)
                                 .enabled(!button.isDisabled())
                                 .checked(button.isChecked())
+                                .currentValue(ContractValue.bool(button.isChecked()))
                                 .focusable(true),
                         Role.BUTTON,
                         button.getText()));
@@ -39,6 +43,7 @@ public final class BuiltinWidgetAdapters {
                         target.role(Role.CHECKBOX)
                                 .enabled(!checkBox.isDisabled())
                                 .checked(checkBox.isChecked())
+                                .currentValue(ContractValue.bool(checkBox.isChecked()))
                                 .focusable(true),
                         Role.CHECKBOX,
                         checkBox.getText()));
@@ -73,6 +78,7 @@ public final class BuiltinWidgetAdapters {
         text(target.role(role)
                         .enabled(!field.isDisabled())
                         .editable(!field.isDisabled())
+                        .currentValue(ContractValue.text(field.getText().toString()))
                         .focusable(true),
                 role,
                 field.getText());
@@ -86,6 +92,7 @@ public final class BuiltinWidgetAdapters {
                 .focusable(true)
                 .property("selectedIndex", Integer.toString(selectBox.getSelectedIndex()));
         if (selected != null) {
+            target.currentValue(ContractValue.text(selected.toString()));
             text(target, Role.SELECT, selected.toString());
         }
     }
@@ -93,6 +100,8 @@ public final class BuiltinWidgetAdapters {
     private static void progressBar(
             ProgressBar progressBar, ActorSemanticAdapter.Target target) {
         target.enabled(!progressBar.isDisabled())
+                .currentValue(ContractValue.decimal(
+                        new BigDecimal(Float.toString(progressBar.getValue()))))
                 .property("value", Float.toString(progressBar.getValue()))
                 .property("min", Float.toString(progressBar.getMinValue()))
                 .property("max", Float.toString(progressBar.getMaxValue()))
@@ -106,6 +115,7 @@ public final class BuiltinWidgetAdapters {
                 .focusable(true)
                 .property("selectedIndex", Integer.toString(list.getSelectedIndex()));
         if (selected != null) {
+            target.currentValue(ContractValue.text(selected.toString()));
             text(target, Role.LIST, selected.toString());
         }
     }
