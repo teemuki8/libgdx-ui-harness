@@ -80,8 +80,6 @@ final class FunctionalContractTest {
     void uncompilableCandidatePublishesZeroPassEvaluationWithoutChangingCandidate() throws Exception {
         Path candidate = temporary.resolve("candidate");
         Files.createDirectories(candidate.resolve("src/main/java/benchmark/palisade"));
-        Files.writeString(candidate.resolve("settings.gradle.kts"), "rootProject.name = \"broken\"\n", StandardCharsets.UTF_8);
-        Files.writeString(candidate.resolve("build.gradle.kts"), "plugins { java }\njava { toolchain.languageVersion.set(JavaLanguageVersion.of(25)) }\n", StandardCharsets.UTF_8);
         Files.writeString(candidate.resolve("src/main/java/benchmark/palisade/Broken.java"),
                 "package benchmark.palisade; public class Broken { this is not Java; }\n",
                 StandardCharsets.UTF_8);
@@ -104,6 +102,54 @@ final class FunctionalContractTest {
         assertEquals("agentic-palisade-evaluation/v1", published.path("schemaVersion").asText());
         assertEquals("candidate-fixture", published.path("candidate").path("id").asText());
         assertEquals(before, published.path("candidate").path("sha256").asText());
+    }
+
+    @Test
+    void forgedBuildAndNeutralControlAreRejectedWithoutExecution() throws Exception {
+        Path candidate = temporary.resolve("forged-candidate");
+        Path reserved = candidate.resolve(
+                "src/main/java/benchmark/palisade/CandidateLauncher.java");
+        Files.createDirectories(reserved.getParent());
+        Path marker = temporary.resolve("forged-build-executed");
+        Files.writeString(candidate.resolve("build.gradle.kts"),
+                "file(\"" + marker.toString().replace("\\", "\\\\")
+                        + "\").writeText(\"executed\")\n",
+                StandardCharsets.UTF_8);
+        Files.writeString(reserved,
+                "package benchmark.palisade; public final class CandidateLauncher {}",
+                StandardCharsets.UTF_8);
+        Path output = temporary.resolve("forged-output");
+
+        EvaluationRecord record = CandidateEvaluator.evaluate(
+                new CandidateEvaluator.Request(
+                        candidate,
+                        Path.of(System.getProperty("palisade.corpus")),
+                        output, "forged-candidate",
+                        Path.of(System.getProperty("palisade.rootGradle"))));
+
+        assertEquals("invalid-candidate", record.status());
+        assertEquals(0, record.functional().passed());
+        assertFalse(Files.exists(marker));
+        assertTrue(Files.isRegularFile(output.resolve("evaluation.json")));
+    }
+
+    @Test
+    void focusNavigationUsesVisibleControlsRatherThanCorpusFocusNumbers()
+            throws Exception {
+        JsonNode initial = findById(corpus().path("states"), "initial");
+        ObjectNode state = JSON.createObjectNode();
+        state.set("visibleControls", initial.path("visibleControls").deepCopy());
+
+        assertEquals(6, CandidateEvaluator.tabCountTo(
+                state, "victoryCondition"));
+        assertEquals(14, CandidateEvaluator.tabCountTo(state, "seed"));
+        assertEquals(15, CandidateEvaluator.tabCountTo(state, "copySeed"));
+        assertEquals(16, CandidateEvaluator.tabCountTo(state, "randomSeed"));
+        assertEquals(17, CandidateEvaluator.tabCountTo(state, "cancel"));
+        assertEquals(18, CandidateEvaluator.tabCountTo(state, "startBattle"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CandidateEvaluator.tabCountTo(
+                        state, "rivalTargetCount"));
     }
 
     @Test

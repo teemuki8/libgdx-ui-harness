@@ -23,7 +23,7 @@ After build dependency wiring was corrected, the expected red was missing produc
 - Security regressions were written first for direct scenario-state ownership, explicit `CandidateLauncher`, pre-publication candidate identity, and absent candidate-local resource classpath entries. They initially failed to compile because the required APIs did not exist, then passed after implementation.
 - The complete public-behavior fixture was tightened to require bounded, evaluator-aggregated focused-control metadata and a RANDOM SEED precondition of seed `1`; the stable-ID set test failed before those assertions were restored, then passed.
 
-### Final focused green
+### Pre-review focused green
 
 ```text
 ../../../gradlew clean test --tests 'benchmark.palisade.eval.*' --no-daemon
@@ -43,7 +43,7 @@ complete
 BUILD SUCCESSFUL in 32s
 ```
 
-The blank template produced exactly one atomic `evaluation.json`: schema `agentic-palisade-evaluation/v1`, status `complete`, functional `0/25`, three visual outcomes, and 29 hash-bound artifacts. This proves TAB/ENTER/ESCAPE and capture streams reach and return through the repaired neutral `CandidateLauncher`; missing behavior is evaluated as failed data rather than an evaluator process failure.
+Before the blocking review fix, the blank template produced exactly one atomic `evaluation.json`: schema `agentic-palisade-evaluation/v1`, status `complete`, functional `0/25`, three visual outcomes, and 29 hash-bound artifacts. The final trusted-workspace evidence superseding this run is recorded below.
 
 The fixed public command also ran successfully:
 
@@ -57,7 +57,7 @@ Its output contained only aggregate behavioral counts, corpus-declared reference
 ## Interfaces
 
 - `CandidateEvaluator.Request(candidateDirectory, corpusDirectory, newOutputDirectory, candidateId, gradleExecutable)` validates local identities and requires output outside candidate/corpus.
-- The evaluator hashes the immutable candidate and frozen corpus, copies the candidate to a temporary workspace, compiles the copy, resolves its runtime classpath, and explicitly starts the fixed `benchmark.palisade.CandidateLauncher` class with `--commands` and `--evidence`.
+- The evaluator hashes the immutable candidate and frozen corpus, reconstructs a temporary project from SHA-pinned repository-owned template infrastructure, overlays only verified candidate implementation/helpers/assets, resolves the trusted runtime classpath, and explicitly starts the fixed `benchmark.palisade.CandidateLauncher` class with `--commands` and `--evidence`.
 - Ordered neutral scenarios use only `resize`, `pointer`, `key`, `capture`, and `close`. Launcher result schemas, sequence/command/artifact identity, exact evidence layout, extras, viewport dimensions, file bounds, and hashes fail closed.
 - `FunctionalContract` returns 25 stable, independent assertions with bounded internal evidence. Compile/runtime failures return zero passed assertions and still publish an evaluation record.
 - `VisualMetrics` reports RGB MAE; luminance SSIM at scales 1/2/4; Sobel-edge F1; quantized palette delta; non-background bounds displacement; four clipping flags; five-capture repeatability; and a separate high-pass font-raster residual. It uses only Java ImageIO and bounded dimensions/files/arrays.
@@ -71,8 +71,55 @@ Its output contained only aggregate behavioral counts, corpus-declared reference
 - Candidate identity is rehashed before publication. Unsupported atomic moves fail rather than falling back to a non-atomic write; unsuccessful publication removes the temporary file/output directory.
 - Candidate checkpoint bundles are ignored. Evaluator-owned checkpoints contain direct states observed after evaluator-driven commands; full control metadata is aggregated from one bounded `focusedControl` observation per focus step so no `CandidateState` exceeds its 128-node budget.
 - RANDOM SEED first replaces the seed with `1`; the assertion requires both that previous value and the fixture result `305419896`, preventing a no-op button from passing.
-- Uncompilable candidates are tested through a real copied Gradle project and produce `compile-failed`, zero passed assertions, unchanged source identity, and one atomic output file.
+- Uncompilable candidates are tested through invalid Java overlaid onto the trusted Gradle project and produce `compile-failed`, zero passed assertions, unchanged source identity, and one atomic output file.
 - Two focused independent reviews were performed. The final reviewer found no remaining Critical or Important Task 4 issue after explicit-launcher, checkpoint ownership, CandidateState-budget, publication-order, bounded-decode/hash-order, RANDOM precondition, and metadata fixes.
+
+## Blocking review fix round 1
+
+The evaluator no longer copies or executes candidate-controlled Gradle,
+settings, launcher, or control infrastructure. It reconstructs the execution
+workspace from seven repository-owned, SHA-256-pinned neutral template files,
+then overlays only candidate Java helpers/implementation sources,
+`src/main/resources`, and `assets`. Modified reserved files, reserved type
+declarations, executable resource collisions, symlinks, destination
+collisions, and source/destination hash drift are rejected before Gradle can
+run. The regression candidate contains both a forged `build.gradle.kts` with
+an execution marker and a forged `CandidateLauncher`; evaluation returns
+`invalid-candidate`, zero passed assertions, an atomic record, and no marker.
+
+Focus commands now derive all absolute and relative Tab distances from each
+initial `visibleControls` observation instead of corpus focus numbers. With
+the conditional `rivalTargetCount` hidden, the asserted sequences are:
+`victoryCondition=6`, `seed=14`, `copySeed=15`, `randomSeed=16`, `cancel=17`,
+and `startBattle=18`; the hidden target is rejected as non-visible. Relative
+seed-to-random and seed-to-start transitions are likewise derived from the
+same observed list.
+
+Focused red/green command:
+
+```text
+../../../gradlew test \
+  --tests 'benchmark.palisade.eval.FunctionalContractTest.forgedBuildAndNeutralControlAreRejectedWithoutExecution' \
+  --tests 'benchmark.palisade.eval.FunctionalContractTest.focusNavigationUsesVisibleControlsRatherThanCorpusFocusNumbers' \
+  --tests 'benchmark.palisade.eval.FunctionalContractTest.uncompilableCandidatePublishesZeroPassEvaluationWithoutChangingCandidate' \
+  --no-daemon
+BUILD SUCCESSFUL in 10s
+```
+
+Final review-fix verification:
+
+```text
+../../../gradlew clean test --tests 'benchmark.palisade.eval.*' --no-daemon
+BUILD SUCCESSFUL in 10s
+4 actionable tasks: 4 executed
+```
+
+The focused suite now records 19 tests: 13 functional and 6 visual, with zero
+failures, errors, or skips. The real trusted-workspace blank-template smoke
+returned `complete`, functional `0/25`, three visual outcomes, 17 hash-bound
+artifacts, and exactly one atomic `evaluation.json` in 22 seconds. An
+independent focused re-review found no remaining Critical or Important issue
+in either blocking review area.
 
 ## Commit
 

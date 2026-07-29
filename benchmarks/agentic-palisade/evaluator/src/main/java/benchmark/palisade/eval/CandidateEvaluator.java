@@ -12,14 +12,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
@@ -44,6 +41,16 @@ public final class CandidateEvaluator {
     private static final long MAX_RESULT_BYTES = 16L * 1024L * 1024L;
     private static final int MAX_RESULT_LINES = 512;
     private static final Duration PROCESS_TIMEOUT = Duration.ofMinutes(3);
+    private static final Map<String, String> TRUSTED_TEMPLATE_FILES = Map.ofEntries(
+            Map.entry("build.gradle.kts", "537819f6baf1d593a8298a439b65eea2080bc5d2633573d178d669bb277f6ac6"),
+            Map.entry("settings.gradle.kts", "2098bf5d2904d7d13b7a4e5e9d1b309800b63e5002e990f44bac0299a2693301"),
+            Map.entry("src/main/java/benchmark/palisade/CandidateLauncher.java", "aa8bf5d629899646f770b6e395b877879e72111baaf6305239fda71348bc8024"),
+            Map.entry("src/main/java/benchmark/palisade/BenchmarkControl.java", "5c33f4fbf41a53e2986d962dfe40adac599dcb4c948688e24e771b89caa0db68"),
+            Map.entry("src/main/java/benchmark/palisade/CandidateApplication.java", "8d20fb4f2b11de529ce30ae9f846abb45ce1e937fe0dd14563c7490de5625725"),
+            Map.entry("src/main/java/benchmark/palisade/CandidateState.java", "c6dbeb6127b63acd37cece591b44a07b98ee306164ca513b1f997eff8ab1173f"),
+            Map.entry("src/main/java/benchmark/palisade/CandidateUi.java", "fe93166097d0a357b85452a09f91fd7c2690e8d4f7d6648bc426456741c10eb7"));
+    private static final Pattern RESERVED_TYPE_DECLARATION = Pattern.compile(
+            "\\b(?:class|record|interface|enum)\\s+(?:CandidateLauncher|BenchmarkControl|CandidateApplication|CandidateState|CandidateUi)\\b");
     private static final ObjectMapper JSON = new ObjectMapper(JsonFactory.builder()
             .streamReadConstraints(StreamReadConstraints.builder()
                     .maxNestingDepth(32).maxStringLength(65_536).maxNumberLength(128)
@@ -70,7 +77,21 @@ public final class CandidateEvaluator {
         Path workspace = Files.createTempDirectory("palisade-candidate-");
         try {
             Path candidateCopy = workspace.resolve("candidate");
-            copyTree(request.candidateDirectory(), candidateCopy);
+            try {
+                prepareTrustedWorkspace(
+                        request.candidateDirectory(),
+                        request.corpusDirectory().getParent().resolve("template"),
+                        candidateCopy);
+            } catch (CandidateRejected rejected) {
+                EvaluationRecord failed = record(
+                        "invalid-candidate", candidateIdentity, corpusIdentity,
+                        noEvidence, List.of(), List.of(),
+                        List.of(boundDiagnostic(rejected)));
+                publishAfterIdentityCheck(
+                        request.candidateDirectory(), candidateHash,
+                        request.outputDirectory(), failed);
+                return failed;
+            }
             ProcessResult compilation = runProcess(List.of(request.gradleExecutable().toString(), "-p",
                     candidateCopy.toString(), "classes", "--no-daemon", "--console=plain"), workspace);
             if (compilation.exitCode() != 0) {
@@ -149,14 +170,15 @@ public final class CandidateEvaluator {
         List<ResultLine> results1280 = readResults(
                 evidence1280.resolve("results.ndjson"), commands1280);
 
+        ObjectNode initialState = stateForCapture(
+                results1920, "captures/initial-1920x1080-0.png");
+        ObjectNode bottomState = stateForCapture(
+                results1920, "captures/bottom-1920x1080-0.png");
         List<EvaluationRecord.Artifact> artifacts = new ArrayList<>();
         ObjectNode functionalEvidence = runFunctionalScenarios(
-                runtimeClasspath, candidateCopy, workspace);
+                runtimeClasspath, candidateCopy, workspace, initialState);
         addFunctionalArtifacts(workspace, artifacts);
         ObjectNode checkpoints = functionalEvidence.withObject("checkpoints");
-        ObjectNode initialState = stateForCapture(results1920, "captures/initial-1920x1080-0.png");
-        ObjectNode bottomState = stateForCapture(results1920, "captures/bottom-1920x1080-0.png");
-        copyCheckpointIfAbsent(checkpoints, "initial", initialState);
         copyObservedCheckpoint(checkpoints, "bottom", bottomState);
         FunctionalContract.Result functional = contract.evaluate(functionalEvidence);
 
@@ -292,15 +314,22 @@ public final class CandidateEvaluator {
         }
     }
 
-    private static ObjectNode runFunctionalScenarios(String runtimeClasspath, Path candidateCopy, Path workspace)
-            throws IOException, InterruptedException {
+    private static ObjectNode runFunctionalScenarios(
+            String runtimeClasspath, Path candidateCopy, Path workspace,
+            ObjectNode initialState) throws IOException, InterruptedException {
         ObjectNode evidence = JSON.createObjectNode();
         ObjectNode checkpoints = evidence.putObject("checkpoints");
-
-        List<ObjectNode> focusCommands = tabs(18);
+        int visibleCount;
+        try {
+            visibleCount = visibleControls(initialState).size();
+        } catch (IllegalArgumentException missingObservation) {
+            copyObservedCheckpoint(checkpoints, "initial", initialState);
+            return evidence;
+        }
+        List<ObjectNode> focusCommands = tabs(visibleCount);
         List<ResultLine> focusResults = runFunctionalScenario(
                 runtimeClasspath, candidateCopy, workspace, "focus", focusCommands);
-        ObjectNode initial = focusResults.get(0).state().deepCopy();
+        ObjectNode initial = initialState.deepCopy();
         ArrayNode observedFocusOrder = initial.putArray("focusOrder");
         ArrayNode observedControlOrder = initial.putArray("controlOrder");
         ArrayNode observedControls = initial.putArray("controls");
@@ -315,7 +344,8 @@ public final class CandidateEvaluator {
         }
 
         List<ObjectNode> conditional = new ArrayList<>();
-        conditional.addAll(tabs(6));
+        conditional.addAll(tabs(
+                tabCountTo(initialState, "victoryCondition")));
         conditional.add(key("ENTER", false));
         conditional.add(key("DOWN", false));
         conditional.add(key("ENTER", false));
@@ -338,25 +368,39 @@ public final class CandidateEvaluator {
         copyObservedCheckpoint(checkpoints, "conditionalVisible", conditionalResults.get(visibleIndex).state());
         copyObservedCheckpoint(checkpoints, "conditionalHidden", conditionalResults.get(conditional.size() - 1).state());
 
+        int seedTabs = tabCountTo(initialState, "seed");
+        int seedToStart = tabDistance(
+                initialState, "seed", "startBattle");
         copyObservedCheckpoint(checkpoints, "minimumSeed", runSeedScenario(
-                runtimeClasspath, candidateCopy, workspace, "seed-minimum", "0", false));
+                runtimeClasspath, candidateCopy, workspace,
+                "seed-minimum", "0", false, seedTabs, seedToStart));
         copyObservedCheckpoint(checkpoints, "maximumSeed", runSeedScenario(
-                runtimeClasspath, candidateCopy, workspace, "seed-maximum", "4294967295", false));
+                runtimeClasspath, candidateCopy, workspace,
+                "seed-maximum", "4294967295", false,
+                seedTabs, seedToStart));
         copyObservedCheckpoint(checkpoints, "belowMinimumSeed", runSeedScenario(
-                runtimeClasspath, candidateCopy, workspace, "seed-below", "-1", false));
+                runtimeClasspath, candidateCopy, workspace,
+                "seed-below", "-1", false, seedTabs, seedToStart));
         copyObservedCheckpoint(checkpoints, "aboveMaximumSeed", runSeedScenario(
-                runtimeClasspath, candidateCopy, workspace, "seed-above", "4294967296", false));
+                runtimeClasspath, candidateCopy, workspace,
+                "seed-above", "4294967296", false,
+                seedTabs, seedToStart));
         copyObservedCheckpoint(checkpoints, "invalidStart", runSeedScenario(
-                runtimeClasspath, candidateCopy, workspace, "invalid-start", "-1", true));
+                runtimeClasspath, candidateCopy, workspace,
+                "invalid-start", "-1", true, seedTabs, seedToStart));
 
         copyObservedCheckpoint(checkpoints, "copySeed", runActionScenario(
-                runtimeClasspath, candidateCopy, workspace, "copy-seed", 16));
+                runtimeClasspath, candidateCopy, workspace, "copy-seed",
+                tabCountTo(initialState, "copySeed")));
         copyObservedCheckpoint(checkpoints, "randomSeed", runRandomSeedScenario(
-                runtimeClasspath, candidateCopy, workspace));
+                runtimeClasspath, candidateCopy, workspace, seedTabs,
+                tabDistance(initialState, "seed", "randomSeed")));
         copyObservedCheckpoint(checkpoints, "cancel", runActionScenario(
-                runtimeClasspath, candidateCopy, workspace, "cancel", 18));
+                runtimeClasspath, candidateCopy, workspace, "cancel",
+                tabCountTo(initialState, "cancel")));
         copyObservedCheckpoint(checkpoints, "confirmation", runActionScenario(
-                runtimeClasspath, candidateCopy, workspace, "start-battle", 19));
+                runtimeClasspath, candidateCopy, workspace, "start-battle",
+                tabCountTo(initialState, "startBattle")));
         copyObservedCheckpoint(checkpoints, "escape", runEscapeScenario(
                 runtimeClasspath, candidateCopy, workspace));
         return evidence;
@@ -371,21 +415,27 @@ public final class CandidateEvaluator {
                 "random-seed", "cancel", "start-battle", "escape")) {
             Path results = workspace.resolve("functional-" + name)
                     .resolve("results.ndjson");
+            if (!Files.isRegularFile(results, LinkOption.NOFOLLOW_LINKS)) {
+                continue;
+            }
             artifacts.add(artifact(
                     "evidence/functional/" + name + "/results.ndjson", results));
         }
     }
 
-    private static ObjectNode runSeedScenario(String runtimeClasspath, Path candidateCopy, Path workspace,
-            String name, String seed, boolean activateStart) throws IOException, InterruptedException {
-        List<ObjectNode> commands = new ArrayList<>(tabs(15));
+    private static ObjectNode runSeedScenario(
+            String runtimeClasspath, Path candidateCopy, Path workspace,
+            String name, String seed, boolean activateStart,
+            int seedTabs, int seedToStart)
+            throws IOException, InterruptedException {
+        List<ObjectNode> commands = new ArrayList<>(tabs(seedTabs));
         commands.add(key("A", false).put("control", true));
         for (int index = 0; index < seed.length(); index++) {
             commands.add(command("key").put("action", "type")
                     .put("character", String.valueOf(seed.charAt(index))));
         }
         if (activateStart) {
-            commands.addAll(tabs(4));
+            commands.addAll(tabs(seedToStart));
             commands.add(key("ENTER", false));
         }
         List<ResultLine> results = runFunctionalScenario(
@@ -394,13 +444,14 @@ public final class CandidateEvaluator {
     }
 
     private static ObjectNode runRandomSeedScenario(
-            String runtimeClasspath, Path candidateCopy, Path workspace)
+            String runtimeClasspath, Path candidateCopy, Path workspace,
+            int seedTabs, int seedToRandom)
             throws IOException, InterruptedException {
-        List<ObjectNode> commands = new ArrayList<>(tabs(15));
+        List<ObjectNode> commands = new ArrayList<>(tabs(seedTabs));
         commands.add(key("A", false).put("control", true));
         commands.add(command("key").put("action", "type").put("character", "1"));
         int previousIndex = commands.size() - 1;
-        commands.addAll(tabs(2));
+        commands.addAll(tabs(seedToRandom));
         commands.add(key("ENTER", false));
         List<ResultLine> results = runFunctionalScenario(
                 runtimeClasspath, candidateCopy, workspace,
@@ -443,6 +494,47 @@ public final class CandidateEvaluator {
         validateEvidenceLayout(scenarioEvidence, Set.of());
         return readResults(
                 scenarioEvidence.resolve("results.ndjson"), commands, false);
+    }
+
+    static int tabCountTo(JsonNode state, String target) {
+        List<String> visible = visibleControls(state);
+        int index = visible.indexOf(target);
+        if (index < 0) {
+            throw new IllegalArgumentException(
+                    "Target control is not visible: " + target);
+        }
+        return index + 1;
+    }
+
+    private static int tabDistance(
+            JsonNode state, String current, String target) {
+        List<String> visible = visibleControls(state);
+        int currentIndex = visible.indexOf(current);
+        int targetIndex = visible.indexOf(target);
+        if (currentIndex < 0 || targetIndex <= currentIndex) {
+            throw new IllegalArgumentException(
+                    "Invalid visible focus transition");
+        }
+        return targetIndex - currentIndex;
+    }
+
+    private static List<String> visibleControls(JsonNode state) {
+        JsonNode observed = state.path("visibleControls");
+        if (!observed.isArray() || observed.isEmpty()
+                || observed.size() > 64) {
+            throw new IllegalArgumentException(
+                    "Missing bounded visibleControls observation");
+        }
+        List<String> visible = new ArrayList<>(observed.size());
+        for (JsonNode value : observed) {
+            String id = value.textValue();
+            if (id == null || id.isBlank() || visible.contains(id)) {
+                throw new IllegalArgumentException(
+                        "Invalid visibleControls observation");
+            }
+            visible.add(id);
+        }
+        return List.copyOf(visible);
     }
 
     private static List<ObjectNode> tabs(int count) {
@@ -761,19 +853,84 @@ public final class CandidateEvaluator {
         return new ProcessResult(process.exitValue());
     }
 
-    private static void copyTree(Path source, Path destination) throws IOException {
-        Files.walkFileTree(source, new SimpleFileVisitor<>() {
-            @Override public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes) throws IOException {
-                if (Files.isSymbolicLink(directory)) throw new IllegalArgumentException("Candidate links are forbidden");
-                Files.createDirectories(destination.resolve(source.relativize(directory).toString()));
-                return FileVisitResult.CONTINUE;
+    private static void prepareTrustedWorkspace(
+            Path candidate, Path trustedTemplate, Path destination)
+            throws IOException {
+        if (!Files.isDirectory(trustedTemplate, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalStateException("Trusted candidate template is unavailable");
+        }
+        Files.createDirectories(destination);
+        for (Map.Entry<String, String> entry : TRUSTED_TEMPLATE_FILES.entrySet()) {
+            Path source = trustedTemplate.resolve(entry.getKey());
+            if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)
+                    || !entry.getValue().equals(fileSha256(source))) {
+                throw new IllegalStateException(
+                        "Trusted candidate template identity mismatch");
             }
-            @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) throws IOException {
-                if (!attributes.isRegularFile() || Files.isSymbolicLink(file)) throw new IllegalArgumentException("Candidate contains unsupported entries");
-                Files.copy(file, destination.resolve(source.relativize(file).toString()), StandardCopyOption.COPY_ATTRIBUTES);
-                return FileVisitResult.CONTINUE;
+            copyVerified(source, destination.resolve(entry.getKey()));
+        }
+
+        List<Path> candidateFiles;
+        try (var paths = Files.walk(candidate)) {
+            candidateFiles = paths.filter(path -> !path.equals(candidate))
+                    .filter(path -> Files.isRegularFile(
+                            path, LinkOption.NOFOLLOW_LINKS))
+                    .sorted(Comparator.comparing(
+                            path -> unixRelative(candidate, path)))
+                    .toList();
+        }
+        for (Path source : candidateFiles) {
+            String relative = unixRelative(candidate, source);
+            String trustedHash = TRUSTED_TEMPLATE_FILES.get(relative);
+            if (trustedHash != null) {
+                if (!trustedHash.equals(fileSha256(source))) {
+                    throw new CandidateRejected(
+                            "Candidate modified reserved neutral infrastructure");
+                }
+                continue;
             }
-        });
+            boolean javaSource = relative.startsWith("src/main/java/")
+                    && relative.endsWith(".java");
+            boolean resource = relative.startsWith("src/main/resources/")
+                    || relative.startsWith("assets/");
+            if (!javaSource && !resource) {
+                continue;
+            }
+            if (resource && (relative.endsWith(".class")
+                    || relative.endsWith(".jar")
+                    || relative.endsWith(".gradle")
+                    || relative.endsWith(".kts"))) {
+                throw new CandidateRejected(
+                        "Candidate resource collides with executable infrastructure");
+            }
+            if (javaSource) {
+                String sourceText = Files.readString(
+                        source, StandardCharsets.UTF_8);
+                if (RESERVED_TYPE_DECLARATION.matcher(sourceText).find()) {
+                    throw new CandidateRejected(
+                            "Candidate declared a reserved neutral type");
+                }
+            }
+            Path target = destination.resolve(relative).normalize();
+            if (!target.startsWith(destination)
+                    || Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                throw new CandidateRejected(
+                        "Candidate overlay collides with trusted workspace");
+            }
+            copyVerified(source, target);
+        }
+    }
+
+    private static void copyVerified(Path source, Path destination)
+            throws IOException {
+        String before = fileSha256(source);
+        Files.createDirectories(destination.getParent());
+        Files.copy(source, destination, StandardCopyOption.COPY_ATTRIBUTES);
+        if (!before.equals(fileSha256(source))
+                || !before.equals(fileSha256(destination))) {
+            throw new CandidateRejected(
+                    "Candidate input changed while constructing workspace");
+        }
     }
 
     private static void deleteTree(Path root) throws IOException {
@@ -862,6 +1019,12 @@ public final class CandidateEvaluator {
             Path normalized = Objects.requireNonNull(path, name).toAbsolutePath().normalize();
             if (!Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS)) throw new IllegalArgumentException(name + " must be a local directory");
             return normalized;
+        }
+    }
+
+    private static final class CandidateRejected extends RuntimeException {
+        private CandidateRejected(String message) {
+            super(message, null, false, false);
         }
     }
 
