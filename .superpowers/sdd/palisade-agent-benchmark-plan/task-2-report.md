@@ -93,6 +93,61 @@ BUILD SUCCESSFUL in 6s
 
 JUnit XML recorded `tests="3" skipped="0" failures="0" errors="0"`. The integration test launched a separate JVM/LWJGL3 process, rejected an unknown command and `../escape` capture ID, atomically recorded seven ordered JSON results, decoded valid 1280x720 and 1920x1080 PNGs, found no escaped artifact or temporary evidence file, and observed process exit code 0.
 
+### Key-dispatch review fix
+
+Regression command:
+
+```text
+../../../gradlew test \
+  --tests benchmark.palisade.TemplateContractTest.malformedKeyCharacterIsRejectedBeforeAnyInputDispatch \
+  --tests benchmark.palisade.TemplateContractTest.keyCallbackFailureReleasesPressedKeyAndModifiersWithoutReplacingFailure \
+  --no-daemon
+```
+
+After correcting the test fixture so it exercised `BenchmarkControl`, the expected red result was:
+
+```text
+TemplateContractTest > malformedKeyCharacterIsRejectedBeforeAnyInputDispatch() FAILED
+expected: <true> but was: <false>
+TemplateContractTest > keyCallbackFailureReleasesPressedKeyAndModifiersWithoutReplacingFailure() FAILED
+expected key events included up:29 but observed no up:29
+2 tests completed, 2 failed
+BUILD FAILED in 5s
+```
+
+This demonstrated both root causes: optional character validation occurred after modifier/key dispatch, and a callback failure between key-down and key-up left the primary key logically down.
+
+After parsing the complete key command before dispatch and adding balanced failure cleanup, the identical command produced:
+
+```text
+BUILD SUCCESSFUL in 5s
+3 actionable tasks: 2 executed, 1 up-to-date
+```
+
+The first complete focused run then exposed an existing asynchronous resize race rather than a key regression:
+
+```text
+../../../gradlew clean test --tests benchmark.palisade.TemplateContractTest --no-daemon
+TemplateContractTest > launchesCapturesBothViewportsRejectsUnsafeCommandsAndExitsCleanly() FAILED
+expected: <1920> but was: <1280>
+5 tests completed, 1 failed
+BUILD FAILED in 6s
+```
+
+`BenchmarkControl` now retains a resize command until the completed back buffer reaches the requested bounded dimensions, so the next command cannot race the native resize. Final focused commands and results:
+
+```text
+../../../gradlew clean test --tests benchmark.palisade.TemplateContractTest --no-daemon
+BUILD SUCCESSFUL in 6s
+4 actionable tasks: 4 executed
+
+../../../gradlew test --tests benchmark.palisade.TemplateContractTest --rerun-tasks --no-daemon
+BUILD SUCCESSFUL in 6s
+3 actionable tasks: 3 executed
+```
+
+The repeated final JUnit XML recorded `tests="5" skipped="0" failures="0" errors="0"`.
+
 ## Self-review
 
 - The measured implementation target is loaded only by the exact name `benchmark.palisade.SkirmishConfigurationUi`; when present it must implement `CandidateUi` and expose a public no-argument constructor.
@@ -105,6 +160,8 @@ JUnit XML recorded `tests="3" skipped="0" failures="0" errors="0"`. The integrat
 - Source review found no socket/listener, process execution, runtime command, harness package, or harness dependency in production sources. The only transport is the finite local command file.
 - Java application construction is synchronous in `main`; Gradle supplies `-XstartOnFirstThread` on macOS.
 - A separate focused reviewer initially raised blank-target and high-DPI concerns, then retracted both after applying the explicit blank-template requirement and protocol device-scale-factor-1 precondition. The corrected review had no actionable findings.
+- Key commands are fully parsed and action-specifically validated before any `Stage` input method is called. Pressed keys and scoped modifiers are released on callback failure; cleanup failures are suppressed onto the original runtime failure rather than replacing it.
+- Native resize completion is condition-based and bounded to 120 completed frames before failing closed, preventing the following capture from observing the prior viewport.
 
 ## Commit
 
@@ -112,6 +169,12 @@ Template implementation commit:
 
 ```text
 395150f64a2ef9fa06871d2f37ae05837440944a feat(benchmark): add neutral candidate template
+```
+
+Key-dispatch review-fix commit:
+
+```text
+0353296fbe2434ab367c11af0a595eb319c30f78 fix(benchmark): balance validated key dispatch
 ```
 
 ## Concerns
