@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -80,10 +81,60 @@ EXPECTED_DEFAULTS = [
     None,
     None,
 ]
+EXPECTED_OPTIONS = {
+    "map": [
+        ("northern-realms-860", "The Northern Realms"),
+        ("great-army-865", "The Great Army"),
+        ("seine-885", "The Seine"),
+        ("ji-north-china-plain", "The Yellow Sky"),
+        ("yingchuan-runan-corridors", "Fires of Yingchuan"),
+        ("nanyang-wan-basin", "Wan Under Siege"),
+        ("eastern-japan-1180", "The Eastern Muster"),
+        ("ichi-no-tani", "Ichi-no-Tani"),
+        ("yashima-1185", "Yashima"),
+        ("seto-inland-sea", "The Western Strait"),
+        ("vega-real-1495", "The Vega Real"),
+        ("lucayan-crossings-1509", "Sails over Lucaya"),
+        ("windward-passage-1511", "The Windward Passage"),
+        ("lake-under-tribute-1428", "The Lake Under Tribute"),
+        ("return-to-texcoco-1428", "Return to Tetzcoco"),
+        ("coyoacan-holds-1431", "Coyohuacan Holds"),
+    ],
+    "playerRealm": [
+        ("vestfold", "Vestfold"),
+        ("danish-realm", "Danish Realm"),
+        ("swealand", "Swealand"),
+        ("halogaland", "Hålogaland"),
+    ],
+    "pettyRealmDensity": [
+        ("sparse", "Low"),
+        ("standard", "Medium"),
+        ("dense", "High"),
+    ],
+    "startingResources": [
+        ("scarce", "Low"),
+        ("standard", "Standard"),
+        ("abundant", "High"),
+    ],
+    "victoryCondition": [
+        ("conquest", "Total conquest"),
+        ("rival-target", "Rival target"),
+        ("territorial-dominance", "Territorial control"),
+    ],
+    "aiDifficulty": [
+        ("standard", "Standard"),
+        ("hardened", "Hard"),
+        ("relentless", "Very hard"),
+    ],
+    "simulationSpeed": [
+        ("1", "Normal"),
+        ("2", "Fast"),
+    ],
+}
 EXPECTED_REFERENCES = {
-    "initial-1920x1080": ("initial-1920x1080.png", 1920, 1080),
-    "bottom-1920x1080": ("bottom-1920x1080.png", 1920, 1080),
-    "initial-1280x720": ("initial-1280x720.png", 1280, 720),
+    "initial-1920x1080": ("initial-1920x1080.png", 1920, 1080, "initial", "desktop-1920x1080"),
+    "bottom-1920x1080": ("bottom-1920x1080.png", 1920, 1080, "bottom", "desktop-1920x1080"),
+    "initial-1280x720": ("initial-1280x720.png", 1280, 720, "initial", "desktop-1280x720"),
 }
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -217,6 +268,12 @@ def validate_controls(controls: Any) -> None:
     require(ids == EXPECTED_CONTROL_IDS, f"unexpected controls/order: {ids}")
     require([control.get("label") for control in controls] == EXPECTED_LABELS, "unexpected control labels/order")
     require([control.get("default") for control in controls] == EXPECTED_DEFAULTS, "unexpected control defaults/order")
+    controls_by_id = {control["id"]: control for control in controls}
+    option_control_ids = {control["id"] for control in controls if control["options"]}
+    require(option_control_ids == set(EXPECTED_OPTIONS), f"unexpected option-bearing controls: {sorted(option_control_ids)}")
+    for control_id, expected_options in EXPECTED_OPTIONS.items():
+        actual_options = [(option["value"], option["label"]) for option in controls_by_id[control_id]["options"]]
+        require(actual_options == expected_options, f"unexpected options/order for {control_id}: {actual_options}")
     require(all(control.get("focusOrder") == index + 1 for index, control in enumerate(controls)), "focusOrder must be contiguous and match control order")
     conditional = controls[EXPECTED_CONTROL_IDS.index("rivalTargetCount")]["visibleWhen"]
     require(conditional == {"controlId": "victoryCondition", "equals": "rival-target"}, "unexpected rival-target visibility rule")
@@ -260,7 +317,9 @@ def validate_references(references: Any) -> None:
     require([reference.get("id") for reference in references] == list(EXPECTED_REFERENCES), "unexpected references/order")
     for reference in references:
         reference_id = reference["id"]
-        filename, expected_width, expected_height = EXPECTED_REFERENCES[reference_id]
+        filename, expected_width, expected_height, expected_state, expected_viewport = EXPECTED_REFERENCES[reference_id]
+        require(reference.get("stateId") == expected_state, f"unexpected state binding for {reference_id}")
+        require(reference.get("viewportId") == expected_viewport, f"unexpected viewport binding for {reference_id}")
         require(reference.get("file") == f"reference/{filename}", f"unexpected file for {reference_id}")
         require(reference.get("width") == expected_width and reference.get("height") == expected_height, f"recorded dimensions mismatch for {reference_id}")
         path = REFERENCE_DIR / filename
@@ -269,6 +328,45 @@ def validate_references(references: Any) -> None:
         require(png_dimensions(data, reference_id) == (expected_width, expected_height), f"PNG dimensions mismatch for {reference_id}")
         require(reference.get("bytes") == len(data), f"byte length mismatch for {reference_id}")
         require(reference.get("sha256") == hashlib.sha256(data).hexdigest(), f"SHA-256 mismatch for {reference_id}")
+
+def require_rejected(value: Any, validator: Any, label: str) -> None:
+    try:
+        validator(value)
+    except ValidationError:
+        return
+    raise ValidationError(f"validator accepted negative mutation: {label}")
+
+
+def validate_negative_mutations(spec: Any) -> None:
+    map_index = EXPECTED_CONTROL_IDS.index("map")
+    mutations = []
+
+    removed = copy.deepcopy(spec)
+    removed["controls"][map_index]["options"].pop()
+    mutations.append(("removed option", removed))
+
+    reordered = copy.deepcopy(spec)
+    reordered["controls"][map_index]["options"][0:2] = reversed(reordered["controls"][map_index]["options"][0:2])
+    mutations.append(("reordered options", reordered))
+
+    relabeled = copy.deepcopy(spec)
+    relabeled["controls"][map_index]["options"][0]["label"] = "Changed label"
+    mutations.append(("relabeled option", relabeled))
+
+    changed_value = copy.deepcopy(spec)
+    changed_value["controls"][map_index]["options"][0]["value"] = "changed-value"
+    mutations.append(("changed option value", changed_value))
+
+    for label, mutated in mutations:
+        require_rejected(mutated, validate_spec, label)
+
+    wrong_state = copy.deepcopy(spec["references"])
+    wrong_state[0]["stateId"] = "bottom"
+    require_rejected(wrong_state, validate_references, "changed reference state")
+
+    wrong_viewport = copy.deepcopy(spec["references"])
+    wrong_viewport[0]["viewportId"] = "desktop-1280x720"
+    require_rejected(wrong_viewport, validate_references, "changed reference viewport")
 
 
 def validate_blinding() -> None:
@@ -295,6 +393,7 @@ def main() -> int:
         validate_schema(schema)
         validate_instance(spec, schema, schema, "spec")
         validate_spec(spec)
+        validate_negative_mutations(spec)
         validate_references(spec["references"])
         validate_blinding()
     except ValidationError as error:

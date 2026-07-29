@@ -53,6 +53,12 @@ Two outcome families are reported separately:
 
 A run is conforming only when all mandatory behavioral checks pass. Visual measurements supplement that gate and must not be used to excuse a behavioral mismatch. Results must identify the corpus schema version and reference digests used.
 
+## Experimental precommitment
+
+Before any treatment work begins, precommit exactly three matched pairs (six runs total). Every run in all three pairs uses the identical model and reasoning setting `openai-codex/gpt-5.6-sol:medium`, an identical 45-minute maximum, and exactly three refinement rounds.
+
+Within each matched pair, use the same corpus version, task starting point, execution environment, and evaluation procedure. Harness availability and its accompanying instructions are the only treatment difference: one run receives the libGDX UI harness and instructions for using it, while its matched run receives neither. Prompts, tools, inputs, time limits, refinement opportunities, evaluator exposure, and human intervention must otherwise remain identical.
+
 ## Blinding
 
 Roles are separated:
