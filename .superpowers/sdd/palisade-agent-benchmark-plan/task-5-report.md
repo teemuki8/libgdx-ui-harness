@@ -102,18 +102,54 @@ call must have one matching result. Final candidate hash failures publish
 `null` plus a retained `final_candidate_hash` failure instead of dropping the
 record.
 
+### Fix round 1: runner-owned rounds and authoritative outcomes
+
+The collision/forgery integration regression was red against the prior
+implementation: a fake measured process precreated `run-record.json`, which
+was then loaded as `{\"forged\": true}` and caused the six-record assertion to
+fail. The same process wrote a formerly valid three-round `rounds.jsonl`
+without making a third gate request, then sent a syntactically valid round-3
+request directly to the supervisor. Before peer binding, that direct request
+was accepted and incorrectly changed the run classification to `success`.
+
+Round acceptance now travels through a per-run Unix supervisor channel. The
+fixed `benchmark-feedback` executable sends one schema-bound request and waits
+for its matching result. Linux peer credentials and `/proc/<pid>/cmdline` bind
+the request to the exact immutable gate path and round argument; direct socket
+requests are rejected. The runner validates order/limit, independently hashes
+the candidate, and retains request/result identity in memory. Only
+after the measured process group has terminated does the runner atomically
+replace `rounds.jsonl` with its own evidence and publish an immutable SHA-256
+sidecar. The forged file produced no third acceptance; authoritative accepted
+rounds remained `[1, 2]`.
+
+`run-record.json` is likewise serialized to a same-directory temporary file,
+fsynced, atomically replaced over any candidate collision, chmod-protected,
+and bound by `run-record.sha256`. The forged record and forged sidecar were
+both replaced; all six authoritative records remained available.
+
+```text
+python3 -m unittest scripts/test-telemetry.py scripts/test-runner.py scripts/test-treatment-symmetry.py
+....................
+Ran 20 tests in 0.980s
+OK
+```
+
+The post-fix six-record failure fixture validated against the Draft 2020-12
+run-record schema with format checking: 6 records validated.
+
 ### Dry-run proof
 
 No agent was invoked:
 
 ```text
 python3 scripts/run-benchmark.py \
-  --output /tmp/agentic-palisade-task5-dry-run-final \
+  --output /tmp/agentic-palisade-task5-dry-run-gate \
   --model openai-codex/gpt-5.6-sol:medium \
   --max-time 45m \
   --pairs 3 \
   --dry-run
-{"status": "prepared", "runs": 6, "output": "/tmp/agentic-palisade-task5-dry-run-final"}
+{"status": "prepared", "runs": 6, "output": "/tmp/agentic-palisade-task5-dry-run-gate"}
 ```
 
 The dry-run test proves three matched pairs, six UUIDs, six distinct workspace/profile/cache/session/artifact/display coordinates, identical candidate hashes, an identical instruction prefix, and byte-identical shared repository inventories. The only inventory differences are `template/INSTRUCTIONS.md` after `## Treatment appendix` and the source-identical `treatments/harness/` overlay tree. Top-level and per-run input manifests have mode `0444`; mutating a candidate changes its recorded candidate hash.
@@ -126,9 +162,9 @@ A generated six-record failure-retention run was also validated with Python `jso
 - Each run contains a fresh minimal repository skeleton and candidate template at `runs/<uuid>/repository/benchmarks/agentic-palisade/template`, plus unique `profile-home`, cache, Gradle cache, session, temporary, log, artifact, gate, and display coordinates. Generated template `.gradle`, `build`, Python caches, and symlinks are not copied.
 - Each OMP invocation fixes model/reasoning, cwd, JSON print mode, profile, session directory, config overlay, 45-minute internal limit, tool allowlist, auto approval/yolo, and disabled extensions/skills/rules/LSP/title generation. The supervisor adds the same external deadline and starts a new process session for whole-group termination.
 - The child environment is allowlisted and replaces `HOME`, all XDG roots, Gradle cache, temporary directory, display, OMP artifact root, and benchmark paths. API keys, SSH agents/askpass, cloud credential paths, Docker/Kubernetes config, PI tool-bridge state, and proxy/config leakage are not inherited.
-- `prompts/task.md` requires an initial candidate followed by `benchmark-feedback 1`, `2`, and `3` exactly once and in order. The fixed gate takes an append lock, records every accepted or rejected attempt with timestamp and candidate hash, rejects malformed state, missing order, duplicates, and overflow, and emits only public corpus-declared source coordinates.
+- `prompts/task.md` requires an initial candidate followed by `benchmark-feedback 1`, `2`, and `3` exactly once and in order. The fixed gate exchanges a schema-bound request/result with the runner-owned per-run supervisor; only the runner records accepted/rejected attempts, candidate hashes, request IDs, and ordered evidence after process termination. Missing, duplicate, reordered, overflow, malformed, or forged-file rounds fail closed.
 - `scripts/parse-omp-session.py` accepts exactly one newline-terminated OMP v3 session JSONL export. It reads only stable assistant `usage`, `toolCall`, and `toolResult` fields; it never reads or interprets `thinking`. It aggregates input/output/cache-read/cache-write/reasoning categories only when every provider usage row supplies that category; otherwise the category is explicitly `unavailable` rather than undercounted.
-- `run-record.json` is written exactly once with mode `0444`, conforms to `agentic-palisade/run-record-v1`, and records hashes, timestamps/wall time, exit code/signal/classification, provider tokens, tools by name, edit/build/launch/screenshot counts, tool and runner failures, and up to three accepted round markers. Timed-out, crashed, nonzero, malformed-telemetry, round-protocol, protected-input, and final-hash failures retain raw stdout/stderr, any session bytes, artifacts, round attempts, and either the final candidate hash or explicit `null` when hashing itself failed.
+- `run-record.json` conforms to `agentic-palisade/run-record-v1` and records hashes, timestamps/wall time, exit code/signal/classification, provider tokens, tools by name, edit/build/launch/screenshot counts, tool and runner failures, and up to three gate-bound round markers. After process termination it atomically replaces any collision, is protected with mode `0444`, and is bound by an immutable SHA-256 sidecar. Timed-out, crashed, nonzero, malformed-telemetry, round-protocol, protected-input, and final-hash failures retain raw stdout/stderr, session bytes, artifacts, runner-owned round evidence, and either the final candidate hash or explicit `null` when hashing itself failed.
 
 ## Self-review
 

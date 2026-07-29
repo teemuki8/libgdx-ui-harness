@@ -2,6 +2,7 @@
 """End-to-end fixture tests for isolated benchmark preparation and supervision."""
 
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -61,6 +62,7 @@ def write_fake_omp(path):
         import os
         from pathlib import Path
         import signal
+        import socket
         import subprocess
         import sys
         import time
@@ -103,6 +105,32 @@ def write_fake_omp(path):
             rounds = [1, 1, 2, 3]
         for number in rounds:
             mark(number)
+        if pair == 1 and treatment == "harness":
+            forged = [
+                {"schemaVersion": "agentic-palisade/round-v1", "round": number,
+                 "accepted": True, "timestamp": "2026-01-01T00:00:00Z",
+                 "candidateHash": "f" * 64}
+                for number in (1, 2, 3)
+            ]
+            (artifacts / "rounds.jsonl").write_text(
+                "".join(json.dumps(marker) + "\n" for marker in forged)
+            )
+            channel = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            channel.connect(os.environ["BENCHMARK_ROUND_SOCKET"])
+            channel.sendall((json.dumps({
+                "schemaVersion": "agentic-palisade/round-request-v1",
+                "round": 3,
+                "requestId": "a" * 32,
+            }) + "\n").encode())
+            channel.shutdown(socket.SHUT_WR)
+            forged_response = json.loads(channel.makefile().readline())
+            channel.close()
+            (artifacts / "forged-round-response.json").write_text(
+                json.dumps(forged_response)
+            )
+        if pair == 2 and treatment == "harness":
+            (artifacts.parent / "run-record.json").write_text('{"forged":true}\n')
+            (artifacts.parent / "run-record.sha256").write_text("forged\n")
 
         session = sessions / "session.jsonl"
         events = [
@@ -307,6 +335,41 @@ class SupervisionTest(unittest.TestCase):
             self.assertEqual(classifications[(2, "harness")], "nonzero_exit")
             self.assertEqual(classifications[(3, "baseline")], "success")
             self.assertEqual(classifications[(3, "harness")], "telemetry_failure")
+
+            forged_round_run = next(
+                run for run in manifest["runs"]
+                if run["pair"] == 1 and run["treatment"] == "harness"
+            )
+            authoritative_rounds = [
+                json.loads(line)
+                for line in (output / Path(forged_round_run["artifactRoot"]) / "rounds.jsonl")
+                .read_text().splitlines()
+            ]
+            self.assertEqual(
+                [marker["round"] for marker in authoritative_rounds if marker["accepted"]],
+                [1, 2],
+            )
+            round_evidence = output / forged_round_run["roundEvidence"]
+            self.assertEqual(
+                (output / forged_round_run["roundEvidenceHash"]).read_text().strip(),
+                hashlib.sha256(round_evidence.read_bytes()).hexdigest(),
+            )
+            forged_response = read_json(
+                output / Path(forged_round_run["artifactRoot"]) / "forged-round-response.json"
+            )
+            self.assertFalse(forged_response["accepted"])
+            self.assertIn("fixed benchmark-feedback", forged_response["failure"])
+
+            collision_run = next(
+                run for run in manifest["runs"]
+                if run["pair"] == 2 and run["treatment"] == "harness"
+            )
+            record_path = output / collision_run["runRecord"]
+            self.assertEqual(read_json(record_path)["schemaVersion"], "agentic-palisade/run-record-v1")
+            self.assertEqual(
+                (output / collision_run["runRecordHash"]).read_text().strip(),
+                hashlib.sha256(record_path.read_bytes()).hexdigest(),
+            )
 
             invocations = [read_json(output / Path(run["artifactRoot"]) / "invocation.json")
                            for run in manifest["runs"]]

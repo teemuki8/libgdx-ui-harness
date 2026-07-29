@@ -12,9 +12,12 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import socket
+import struct
 import subprocess
 import sys
 import time
+import threading
 import uuid
 
 
@@ -214,86 +217,235 @@ def _treatment_inputs():
 
 
 ROUND_GATE = r'''#!/usr/bin/env python3
-import datetime
-import fcntl
-import hashlib
 import json
 import os
-from pathlib import Path
+import socket
 import sys
-
-IGNORED = {".gradle", "build", "__pycache__"}
-INPUTS = {"INSTRUCTIONS.md", "PROTOCOL.md", "corpus"}
-
-def candidate_hash(root):
-    digest = hashlib.sha256()
-    for item in sorted(root.rglob("*"), key=lambda value: value.relative_to(root).as_posix()):
-        relative = item.relative_to(root)
-        if relative.parts and relative.parts[0] in INPUTS:
-            continue
-        if any(part in IGNORED for part in relative.parts) or not item.is_file():
-            continue
-        encoded = relative.as_posix().encode("utf-8")
-        content = item.read_bytes()
-        digest.update(len(encoded).to_bytes(8, "big"))
-        digest.update(encoded)
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return digest.hexdigest()
+import uuid
 
 if len(sys.argv) != 2 or not sys.argv[1].isascii() or not sys.argv[1].isdigit():
     print("usage: benchmark-feedback <round-number>", file=sys.stderr)
     raise SystemExit(2)
-number = int(sys.argv[1])
-workspace = Path(os.environ["BENCHMARK_WORKSPACE"]).resolve()
-log_path = Path(os.environ["BENCHMARK_ROUND_LOG"]).resolve()
-log_path.parent.mkdir(parents=True, exist_ok=True)
-with log_path.open("a+", encoding="utf-8") as stream:
-    fcntl.flock(stream, fcntl.LOCK_EX)
-    stream.seek(0)
-    previous = []
-    malformed = False
-    for line in stream:
-        try:
-            previous.append(json.loads(line))
-        except json.JSONDecodeError:
-            malformed = True
+request = {
+    "schemaVersion": "agentic-palisade/round-request-v1",
+    "round": int(sys.argv[1]),
+    "requestId": uuid.uuid4().hex,
+}
+payload = (json.dumps(request, sort_keys=True) + "\n").encode("utf-8")
+channel = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    channel.connect(os.environ["BENCHMARK_ROUND_SOCKET"])
+    channel.sendall(payload)
+    channel.shutdown(socket.SHUT_WR)
+    response_bytes = bytearray()
+    while b"\n" not in response_bytes:
+        chunk = channel.recv(4096)
+        if not chunk:
             break
-    accepted = [entry for entry in previous if entry.get("accepted") is True]
-    expected = len(accepted) + 1
-    failure = None
-    if malformed:
-        failure = "existing round log is malformed"
-    elif any(entry.get("accepted") is not True for entry in previous):
-        failure = "a prior round attempt was rejected"
-    elif number != expected:
-        failure = f"expected round {expected}"
-    elif number > 3:
-        failure = "round limit exceeded"
-    record = {
-        "schemaVersion": "agentic-palisade/round-v1",
-        "round": number,
-        "accepted": failure is None,
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-        "candidateHash": candidate_hash(workspace),
-    }
-    if failure is not None:
-        record["failure"] = failure
-    stream.seek(0, os.SEEK_END)
-    stream.write(json.dumps(record, sort_keys=True) + "\n")
-    stream.flush()
-    os.fsync(stream.fileno())
-    fcntl.flock(stream, fcntl.LOCK_UN)
-if failure is not None:
-    print(json.dumps(record, sort_keys=True), file=sys.stderr)
+        response_bytes.extend(chunk)
+        if len(response_bytes) > 65536:
+            raise RuntimeError("round supervisor response exceeded 65536 bytes")
+finally:
+    channel.close()
+try:
+    lines = bytes(response_bytes).splitlines()
+    if len(lines) != 1:
+        raise ValueError("round supervisor returned no single response")
+    response = json.loads(lines[0])
+    if response.get("requestId") != request["requestId"]:
+        raise ValueError("round supervisor request identity mismatch")
+    if response.get("round") != request["round"]:
+        raise ValueError("round supervisor round mismatch")
+except (json.JSONDecodeError, ValueError) as error:
+    print(f"benchmark-feedback: {error}", file=sys.stderr)
+    raise SystemExit(4)
+if response.get("accepted") is not True:
+    print(json.dumps(response, sort_keys=True), file=sys.stderr)
     raise SystemExit(3)
-print(json.dumps({
-    "accepted": True,
-    "round": number,
-    "feedbackSources": ["PROTOCOL.md", "corpus/spec.json", "corpus/reference/"],
-    "instruction": "Inspect only public corpus-declared evidence and this workspace's bounded outputs.",
-}, sort_keys=True))
+print(json.dumps(response, sort_keys=True))
 '''
+
+
+class RoundSupervisor:
+    def __init__(self, socket_path, workspace, gate_path):
+        self.socket_path = Path(socket_path)
+        self.workspace = Path(workspace)
+        self.gate_path = Path(gate_path).resolve()
+        self.attempts = []
+        self._stop = threading.Event()
+        self._server = None
+        self._thread = None
+
+    def start(self):
+        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._server.bind(str(self.socket_path))
+        self.socket_path.chmod(0o600)
+        self._server.listen(FIXED_ROUNDS + 2)
+        self._server.settimeout(0.05)
+        self._thread = threading.Thread(
+            target=self._serve,
+            name=f"round-supervisor-{self.workspace.parent.name}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+            if self._thread.is_alive():
+                raise RuntimeError("round supervisor did not stop")
+        if self._server is not None:
+            self._server.close()
+        try:
+            self.socket_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _serve(self):
+        while not self._stop.is_set():
+            try:
+                connection, _ = self._server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            with connection:
+                credentials = connection.getsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_PEERCRED,
+                    struct.calcsize("3i"),
+                )
+                peer_pid, _, _ = struct.unpack("3i", credentials)
+                response = self._handle(connection, peer_pid)
+                connection.sendall(
+                    (json.dumps(response, sort_keys=True) + "\n").encode("utf-8"))
+
+    def _handle(self, connection, peer_pid):
+        payload = bytearray()
+        while b"\n" not in payload:
+            chunk = connection.recv(4096)
+            if not chunk:
+                break
+            payload.extend(chunk)
+            if len(payload) > 65536:
+                break
+        failure = None
+        request = {}
+        try:
+            lines = bytes(payload).splitlines()
+            if len(lines) != 1:
+                raise ValueError("request must contain exactly one JSON line")
+            request = json.loads(lines[0])
+            if not isinstance(request, dict):
+                raise ValueError("request must be an object")
+            if set(request) != {"schemaVersion", "round", "requestId"}:
+                raise ValueError("request fields do not match the fixed gate schema")
+            if request["schemaVersion"] != "agentic-palisade/round-request-v1":
+                raise ValueError("unsupported round request schema")
+            if (isinstance(request["round"], bool)
+                    or not isinstance(request["round"], int)):
+                raise ValueError("round must be an integer")
+            if (not isinstance(request["requestId"], str)
+                    or not re.fullmatch(r"[0-9a-f]{32}", request["requestId"])):
+                raise ValueError("requestId must be a UUID4 hex value")
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            failure = str(error)
+
+        accepted = [attempt for attempt in self.attempts if attempt["accepted"]]
+        number = request.get("round", 0)
+        request_id = request.get("requestId")
+        if not isinstance(request_id, str):
+            request_id = "invalid-" + uuid.uuid4().hex
+        if failure is None and not self._is_fixed_gate(peer_pid, number):
+            failure = "request did not originate from fixed benchmark-feedback"
+        expected = len(accepted) + 1
+        if failure is None and any(not attempt["accepted"] for attempt in self.attempts):
+            failure = "a prior round request was rejected"
+        elif failure is None and number != expected:
+            failure = f"expected round {expected}"
+        elif failure is None and number > FIXED_ROUNDS:
+            failure = "round limit exceeded"
+        candidate_hash = "0" * 64
+        if failure is None:
+            try:
+                candidate_hash = hash_candidate(self.workspace)
+            except (OSError, ValueError) as error:
+                failure = f"candidate hash failed: {error}"
+        record = {
+            "schemaVersion": "agentic-palisade/round-v1",
+            "round": number,
+            "accepted": failure is None,
+            "timestamp": utc_now(),
+            "candidateHash": candidate_hash,
+            "requestId": request_id,
+            "channel": "runner-supervisor",
+        }
+        if failure is not None:
+            record["failure"] = failure
+        self.attempts.append(record)
+        response = dict(record)
+        if failure is None:
+            response.update({
+                "feedbackSources": [
+                    "PROTOCOL.md",
+                    "corpus/spec.json",
+                    "corpus/reference/",
+                ],
+                "instruction": (
+                    "Inspect only public corpus-declared evidence and this "
+                    "workspace's bounded outputs."
+                ),
+            })
+        return response
+
+    def _is_fixed_gate(self, peer_pid, number):
+        try:
+            arguments = [
+                argument.decode("utf-8")
+                for argument in Path(f"/proc/{peer_pid}/cmdline").read_bytes().split(b"\0")
+                if argument
+            ]
+        except (OSError, UnicodeDecodeError):
+            return False
+        return str(self.gate_path) in arguments and arguments[-1] == str(number)
+
+
+def _atomic_replace_bytes(path, content, mode=0o444):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(mode)
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _publish_hashed_bytes(path, content, hash_path):
+    digest = sha256_bytes(content)
+    _atomic_replace_bytes(path, content)
+    _atomic_replace_bytes(hash_path, (digest + "\n").encode("ascii"))
+    return digest
+
+
+def _authoritative_json_bytes(value):
+    return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
 def _empty_telemetry():
@@ -360,6 +512,8 @@ def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
     prompt_path.chmod(0o444)
     config_path.chmod(0o444)
     round_log = artifact_root / "rounds.jsonl"
+    round_hash = artifact_root / "rounds.sha256"
+    round_socket = run_dir / "round-supervisor.sock"
     initial_candidate_hash = hash_candidate(workspace)
 
     item = {
@@ -374,6 +528,9 @@ def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
         "artifactRoot": _relative(output, artifact_root),
         "inputManifest": _relative(output, run_dir / "input-manifest.json"),
         "runRecord": _relative(output, run_dir / "run-record.json"),
+        "runRecordHash": _relative(output, run_dir / "run-record.sha256"),
+        "roundEvidence": _relative(output, round_log),
+        "roundEvidenceHash": _relative(output, round_hash),
         "initialCandidateHash": initial_candidate_hash,
         "treatmentAppendixHash": treatment_inputs[treatment]["appendixHash"],
         "instructionsHash": instructions_hash,
@@ -417,6 +574,8 @@ def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
         "instructions": workspace / "INSTRUCTIONS.md",
         "config": config_path,
         "roundLog": round_log,
+        "roundHash": round_hash,
+        "roundSocket": round_socket,
         "gate": gate_path,
     }
     return item
@@ -447,7 +606,7 @@ def _sanitized_environment(item):
         "BENCHMARK_WORKSPACE": str(runtime["workspace"]),
         "BENCHMARK_SESSION_ROOT": str(runtime["sessionRoot"]),
         "BENCHMARK_ARTIFACT_ROOT": str(runtime["artifactRoot"]),
-        "BENCHMARK_ROUND_LOG": str(runtime["roundLog"]),
+        "BENCHMARK_ROUND_SOCKET": str(runtime["roundSocket"]),
         "BENCHMARK_ROUND_GATE": str(runtime["gate"]),
     })
     for path in (Path(environment["XDG_CONFIG_HOME"]), Path(environment["XDG_STATE_HOME"]),
@@ -534,31 +693,49 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
     timed_out = False
     return_code = None
     launch_error = None
+    supervisor_error = None
+    round_supervisor = RoundSupervisor(
+        runtime["roundSocket"], runtime["workspace"], runtime["gate"])
+    try:
+        round_supervisor.start()
+    except OSError as error:
+        launch_error = f"round supervisor failed to start: {error}"
     with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
-        try:
-            process = subprocess.Popen(
-                command,
-                cwd=runtime["workspace"],
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=stdout,
-                stderr=stderr,
-                start_new_session=True,
-            )
+        if launch_error is None:
             try:
-                return_code = process.wait(timeout=max_time_seconds)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                terminate_process_group(process)
-                return_code = process.returncode
-        except OSError as error:
-            launch_error = str(error)
-
+                process = subprocess.Popen(
+                    command,
+                    cwd=runtime["workspace"],
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout,
+                    stderr=stderr,
+                    start_new_session=True,
+                )
+                try:
+                    return_code = process.wait(timeout=max_time_seconds)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    terminate_process_group(process)
+                    return_code = process.returncode
+            except OSError as error:
+                launch_error = str(error)
+    try:
+        round_supervisor.stop()
+    except (OSError, RuntimeError) as error:
+        supervisor_error = str(error)
+    round_content = b"".join(
+        (json.dumps(attempt, sort_keys=True) + "\n").encode("utf-8")
+        for attempt in round_supervisor.attempts
+    )
+    _publish_hashed_bytes(runtime["roundLog"], round_content, runtime["roundHash"])
     finished_at = utc_now()
     wall_time = time.monotonic() - started
     failures = []
     if launch_error:
         failures.append({"phase": "omp_launch", "message": launch_error})
+    if supervisor_error:
+        failures.append({"phase": "round_supervisor", "message": supervisor_error})
     if timed_out:
         failures.append({"phase": "deadline", "message": f"exceeded {max_time_text}"})
     elif return_code not in (0, None):
@@ -650,12 +827,19 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
             "stdout": _relative(output, stdout_path),
             "stderr": _relative(output, stderr_path),
             "sessionExport": _relative(output, session_path) if session_path else None,
+            "roundEvidence": item["roundEvidence"],
+            "roundEvidenceHash": item["roundEvidenceHash"],
+            "runRecordHash": item["runRecordHash"],
         },
         "telemetry": telemetry,
         "rounds": rounds,
         "failures": failures,
     }
-    _write_exclusive_json(output / item["runRecord"], record)
+    _publish_hashed_bytes(
+        output / item["runRecord"],
+        _authoritative_json_bytes(record),
+        output / item["runRecordHash"],
+    )
     return classification
 
 

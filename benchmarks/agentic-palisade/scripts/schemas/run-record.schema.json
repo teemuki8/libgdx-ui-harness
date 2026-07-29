@@ -108,7 +108,10 @@
         "artifactRoot",
         "stdout",
         "stderr",
-        "sessionExport"
+        "sessionExport",
+        "roundEvidence",
+        "roundEvidenceHash",
+        "runRecordHash"
       ],
       "properties": {
         "workspace": {"$ref": "#/$defs/relativePath"},
@@ -123,7 +126,10 @@
             {"$ref": "#/$defs/relativePath"},
             {"type": "null"}
           ]
-        }
+        },
+        "roundEvidence": {"$ref": "#/$defs/relativePath"},
+        "roundEvidenceHash": {"$ref": "#/$defs/relativePath"},
+        "runRecordHash": {"$ref": "#/$defs/relativePath"}
       }
     },
     "telemetry": {
@@ -225,13 +231,23 @@
     "roundMarker": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "round", "accepted", "timestamp", "candidateHash"],
+      "required": [
+        "schemaVersion",
+        "round",
+        "accepted",
+        "timestamp",
+        "candidateHash",
+        "requestId",
+        "channel"
+      ],
       "properties": {
         "schemaVersion": {"const": "agentic-palisade/round-v1"},
         "round": {"type": "integer", "minimum": 1, "maximum": 3},
         "accepted": {"const": true},
         "timestamp": {"type": "string", "format": "date-time"},
-        "candidateHash": {"$ref": "#/$defs/sha256"}
+        "candidateHash": {"$ref": "#/$defs/sha256"},
+        "requestId": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "channel": {"const": "runner-supervisor"}
       }
     }
   }
