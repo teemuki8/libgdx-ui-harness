@@ -218,9 +218,11 @@ def _treatment_inputs():
 
 ROUND_GATE = r'''#!/usr/bin/env python3
 import json
+import hashlib
 import os
 import socket
 import sys
+from pathlib import Path
 import uuid
 
 if len(sys.argv) != 2 or not sys.argv[1].isascii() or not sys.argv[1].isdigit():
@@ -230,6 +232,7 @@ request = {
     "schemaVersion": "agentic-palisade/round-request-v1",
     "round": int(sys.argv[1]),
     "requestId": uuid.uuid4().hex,
+    "gateDigest": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
 }
 payload = (json.dumps(request, sort_keys=True) + "\n").encode("utf-8")
 channel = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -256,6 +259,8 @@ try:
         raise ValueError("round supervisor request identity mismatch")
     if response.get("round") != request["round"]:
         raise ValueError("round supervisor round mismatch")
+    if response.get("gateDigest") != request["gateDigest"]:
+        raise ValueError("round supervisor gate digest mismatch")
 except (json.JSONDecodeError, ValueError) as error:
     print(f"benchmark-feedback: {error}", file=sys.stderr)
     raise SystemExit(4)
@@ -271,10 +276,15 @@ class RoundSupervisor:
         self.socket_path = Path(socket_path)
         self.workspace = Path(workspace)
         self.gate_path = Path(gate_path).resolve()
+        self.gate_digest = sha256_bytes(self.gate_path.read_bytes())
+        self.interpreter = Path(sys.executable).resolve()
         self.attempts = []
+        self._errors = []
         self._stop = threading.Event()
         self._server = None
         self._thread = None
+        self._connections = set()
+        self._connections_lock = threading.Lock()
 
     def start(self):
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,16 +302,29 @@ class RoundSupervisor:
 
     def stop(self):
         self._stop.set()
+        if self._server is not None:
+            self._server.close()
+        with self._connections_lock:
+            connections = tuple(self._connections)
+        if connections:
+            self._errors.append(
+                f"{len(connections)} round connection(s) active at shutdown")
+        for connection in connections:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connection.close()
         if self._thread is not None:
             self._thread.join(timeout=2)
             if self._thread.is_alive():
-                raise RuntimeError("round supervisor did not stop")
-        if self._server is not None:
-            self._server.close()
+                self._errors.append("round supervisor did not stop")
         try:
             self.socket_path.unlink()
         except FileNotFoundError:
             pass
+        if self._errors:
+            raise RuntimeError("; ".join(self._errors))
 
     def _serve(self):
         while not self._stop.is_set():
@@ -309,9 +332,14 @@ class RoundSupervisor:
                 connection, _ = self._server.accept()
             except socket.timeout:
                 continue
-            except OSError:
+            except OSError as error:
+                if not self._stop.is_set():
+                    self._errors.append(f"round accept failed: {error}")
                 return
-            with connection:
+            with self._connections_lock:
+                self._connections.add(connection)
+            try:
+                connection.settimeout(0.25)
                 credentials = connection.getsockopt(
                     socket.SOL_SOCKET,
                     socket.SO_PEERCRED,
@@ -321,43 +349,68 @@ class RoundSupervisor:
                 response = self._handle(connection, peer_pid)
                 connection.sendall(
                     (json.dumps(response, sort_keys=True) + "\n").encode("utf-8"))
+            except (OSError, struct.error) as error:
+                if not self._stop.is_set():
+                    self._errors.append(f"round connection failed: {error}")
+            finally:
+                with self._connections_lock:
+                    self._connections.discard(connection)
+                connection.close()
 
     def _handle(self, connection, peer_pid):
         payload = bytearray()
-        while b"\n" not in payload:
-            chunk = connection.recv(4096)
-            if not chunk:
-                break
-            payload.extend(chunk)
-            if len(payload) > 65536:
-                break
         failure = None
-        request = {}
         try:
-            lines = bytes(payload).splitlines()
-            if len(lines) != 1:
-                raise ValueError("request must contain exactly one JSON line")
-            request = json.loads(lines[0])
-            if not isinstance(request, dict):
-                raise ValueError("request must be an object")
-            if set(request) != {"schemaVersion", "round", "requestId"}:
-                raise ValueError("request fields do not match the fixed gate schema")
-            if request["schemaVersion"] != "agentic-palisade/round-request-v1":
-                raise ValueError("unsupported round request schema")
-            if (isinstance(request["round"], bool)
-                    or not isinstance(request["round"], int)):
-                raise ValueError("round must be an integer")
-            if (not isinstance(request["requestId"], str)
-                    or not re.fullmatch(r"[0-9a-f]{32}", request["requestId"])):
-                raise ValueError("requestId must be a UUID4 hex value")
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-            failure = str(error)
+            while b"\n" not in payload:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                payload.extend(chunk)
+                if len(payload) > 65536:
+                    break
+        except socket.timeout:
+            failure = "round request read timed out"
+            self._errors.append(failure)
+        except OSError as error:
+            failure = f"round request read failed: {error}"
+            if not self._stop.is_set():
+                self._errors.append(failure)
+        request = {}
+        if failure is None:
+            try:
+                lines = bytes(payload).splitlines()
+                if len(lines) != 1:
+                    raise ValueError("request must contain exactly one JSON line")
+                request = json.loads(lines[0])
+                if not isinstance(request, dict):
+                    raise ValueError("request must be an object")
+                if set(request) != {
+                        "schemaVersion", "round", "requestId", "gateDigest"}:
+                    raise ValueError("request fields do not match the fixed gate schema")
+                if request["schemaVersion"] != "agentic-palisade/round-request-v1":
+                    raise ValueError("unsupported round request schema")
+                if (isinstance(request["round"], bool)
+                        or not isinstance(request["round"], int)):
+                    raise ValueError("round must be an integer")
+                if (not isinstance(request["requestId"], str)
+                        or not re.fullmatch(r"[0-9a-f]{32}", request["requestId"])):
+                    raise ValueError("requestId must be a UUID4 hex value")
+                if (not isinstance(request["gateDigest"], str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", request["gateDigest"])):
+                    raise ValueError("gateDigest must be a SHA-256 value")
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+                failure = str(error)
 
         accepted = [attempt for attempt in self.attempts if attempt["accepted"]]
         number = request.get("round", 0)
         request_id = request.get("requestId")
         if not isinstance(request_id, str):
             request_id = "invalid-" + uuid.uuid4().hex
+        gate_digest = request.get("gateDigest")
+        if not isinstance(gate_digest, str):
+            gate_digest = "0" * 64
+        if failure is None and gate_digest != self.gate_digest:
+            failure = "request gate digest does not match fixed benchmark-feedback"
         if failure is None and not self._is_fixed_gate(peer_pid, number):
             failure = "request did not originate from fixed benchmark-feedback"
         expected = len(accepted) + 1
@@ -380,6 +433,7 @@ class RoundSupervisor:
             "timestamp": utc_now(),
             "candidateHash": candidate_hash,
             "requestId": request_id,
+            "gateDigest": gate_digest,
             "channel": "runner-supervisor",
         }
         if failure is not None:
@@ -407,9 +461,17 @@ class RoundSupervisor:
                 for argument in Path(f"/proc/{peer_pid}/cmdline").read_bytes().split(b"\0")
                 if argument
             ]
+            executable = Path(f"/proc/{peer_pid}/exe").resolve(strict=True)
+            current_gate_digest = sha256_bytes(self.gate_path.read_bytes())
         except (OSError, UnicodeDecodeError):
             return False
-        return str(self.gate_path) in arguments and arguments[-1] == str(number)
+        return (
+            executable == self.interpreter
+            and len(arguments) == 3
+            and arguments[1] == str(self.gate_path)
+            and arguments[2] == str(number)
+            and current_gate_digest == self.gate_digest
+        )
 
 
 def _atomic_replace_bytes(path, content, mode=0o444):
@@ -616,6 +678,25 @@ def _sanitized_environment(item):
     return environment
 
 
+def quiesce_process_group(process_group, grace_seconds=0.05):
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return None
+    message = "descendant process group remained active after OMP exit"
+    try:
+        os.killpg(process_group, signal.SIGTERM)
+    except ProcessLookupError:
+        return message
+    time.sleep(grace_seconds)
+    try:
+        os.killpg(process_group, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    return message
+
+
+
 def _omp_command(omp, item, model, max_time_text):
     runtime = item["_runtime"]
     return [
@@ -650,6 +731,7 @@ def terminate_process_group(process, grace_seconds=0.25):
     deadline = time.monotonic() + grace_seconds
     try:
         process.wait(timeout=grace_seconds)
+        return
     except subprocess.TimeoutExpired:
         pass
     remaining = deadline - time.monotonic()
@@ -675,12 +757,12 @@ def classify_process_exit(return_code, timed_out):
 
 
 def _discover_session(session_root):
-    candidates = sorted(path for path in Path(session_root).rglob("*.jsonl") if path.is_file())
+    candidates = sorted(
+        path for path in Path(session_root).rglob("*.jsonl") if path.is_file())
     if len(candidates) != 1:
         raise TELEMETRY.TelemetryError(
             f"expected exactly one OMP session export, found {len(candidates)}")
     return candidates[0]
-
 
 def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
     runtime = item["_runtime"]
@@ -693,15 +775,16 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
     timed_out = False
     return_code = None
     launch_error = None
-    supervisor_error = None
-    round_supervisor = RoundSupervisor(
-        runtime["roundSocket"], runtime["workspace"], runtime["gate"])
+    supervisor_failures = []
+    round_supervisor = None
     try:
+        round_supervisor = RoundSupervisor(
+            runtime["roundSocket"], runtime["workspace"], runtime["gate"])
         round_supervisor.start()
-    except OSError as error:
-        launch_error = f"round supervisor failed to start: {error}"
+    except (OSError, RuntimeError) as error:
+        supervisor_failures.append(f"round supervisor failed to start: {error}")
     with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
-        if launch_error is None:
+        if not supervisor_failures:
             try:
                 process = subprocess.Popen(
                     command,
@@ -718,15 +801,20 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
                     timed_out = True
                     terminate_process_group(process)
                     return_code = process.returncode
+                if not timed_out:
+                    quiescence_error = quiesce_process_group(process.pid)
+                    if quiescence_error:
+                        supervisor_failures.append(quiescence_error)
             except OSError as error:
                 launch_error = str(error)
-    try:
-        round_supervisor.stop()
-    except (OSError, RuntimeError) as error:
-        supervisor_error = str(error)
+    if round_supervisor is not None:
+        try:
+            round_supervisor.stop()
+        except (OSError, RuntimeError) as error:
+            supervisor_failures.append(str(error))
     round_content = b"".join(
         (json.dumps(attempt, sort_keys=True) + "\n").encode("utf-8")
-        for attempt in round_supervisor.attempts
+        for attempt in (round_supervisor.attempts if round_supervisor else ())
     )
     _publish_hashed_bytes(runtime["roundLog"], round_content, runtime["roundHash"])
     finished_at = utc_now()
@@ -734,8 +822,8 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
     failures = []
     if launch_error:
         failures.append({"phase": "omp_launch", "message": launch_error})
-    if supervisor_error:
-        failures.append({"phase": "round_supervisor", "message": supervisor_error})
+    for supervisor_failure in supervisor_failures:
+        failures.append({"phase": "round_supervisor", "message": supervisor_failure})
     if timed_out:
         failures.append({"phase": "deadline", "message": f"exceeded {max_time_text}"})
     elif return_code not in (0, None):
@@ -783,7 +871,9 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
         failures.append({"phase": "tool", **operation})
 
     classification = classify_process_exit(return_code, timed_out)
-    if launch_error:
+    if supervisor_failures:
+        classification = "round_supervisor_failure"
+    elif launch_error:
         classification = "crashed"
     elif classification == "success" and protected_drift:
         classification = "input_integrity_failure"

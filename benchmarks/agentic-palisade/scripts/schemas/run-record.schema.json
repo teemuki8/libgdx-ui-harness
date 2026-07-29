@@ -50,6 +50,7 @@
             "crashed",
             "telemetry_failure",
             "round_protocol_failure",
+            "round_supervisor_failure",
             "input_integrity_failure",
             "candidate_integrity_failure"
           ]
@@ -238,6 +239,7 @@
         "timestamp",
         "candidateHash",
         "requestId",
+        "gateDigest",
         "channel"
       ],
       "properties": {
@@ -247,6 +249,7 @@
         "timestamp": {"type": "string", "format": "date-time"},
         "candidateHash": {"$ref": "#/$defs/sha256"},
         "requestId": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "gateDigest": {"$ref": "#/$defs/sha256"},
         "channel": {"const": "runner-supervisor"}
       }
     }

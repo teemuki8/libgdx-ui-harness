@@ -115,23 +115,38 @@ def write_fake_omp(path):
             (artifacts / "rounds.jsonl").write_text(
                 "".join(json.dumps(marker) + "\n" for marker in forged)
             )
-            channel = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            channel.connect(os.environ["BENCHMARK_ROUND_SOCKET"])
-            channel.sendall((json.dumps({
-                "schemaVersion": "agentic-palisade/round-request-v1",
-                "round": 3,
-                "requestId": "a" * 32,
-            }) + "\n").encode())
-            channel.shutdown(socket.SHUT_WR)
-            forged_response = json.loads(channel.makefile().readline())
-            channel.close()
-            (artifacts / "forged-round-response.json").write_text(
-                json.dumps(forged_response)
+            forgery = (
+                "import hashlib,json,os,pathlib,socket,sys;"
+                "channel=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);"
+                "channel.connect(os.environ['BENCHMARK_ROUND_SOCKET']);"
+                "channel.sendall((json.dumps({'schemaVersion':"
+                "'agentic-palisade/round-request-v1','round':3,"
+                "'requestId':'a'*32,'gateDigest':hashlib.sha256("
+                "pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()})+'\\n').encode());"
+                "channel.shutdown(socket.SHUT_WR);"
+                "print(channel.makefile().readline(),end='')"
             )
+            forged = subprocess.run(
+                [sys.executable, "-c", forgery, gate, "3"],
+                text=True,
+                stdout=subprocess.PIPE,
+                check=False,
+            )
+            (artifacts / "forged-round-response.json").write_text(forged.stdout)
         if pair == 2 and treatment == "harness":
             (artifacts.parent / "run-record.json").write_text('{"forged":true}\n')
             (artifacts.parent / "run-record.sha256").write_text("forged\n")
 
+        if pair == 3 and treatment == "baseline":
+            hanger = (
+                "import os,socket,time;"
+                "channel=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);"
+                "channel.connect(os.environ['BENCHMARK_ROUND_SOCKET']);"
+                "time.sleep(3)"
+            )
+            child = subprocess.Popen([sys.executable, "-c", hanger])
+            (artifacts / "hung-round-child.pid").write_text(str(child.pid))
+            time.sleep(0.05)
         session = sessions / "session.jsonl"
         events = [
             {"type": "session", "version": 3, "id": f"{pair}-{treatment}"},
@@ -333,7 +348,7 @@ class SupervisionTest(unittest.TestCase):
             self.assertEqual(classifications[(1, "harness")], "round_protocol_failure")
             self.assertEqual(classifications[(2, "baseline")], "round_protocol_failure")
             self.assertEqual(classifications[(2, "harness")], "nonzero_exit")
-            self.assertEqual(classifications[(3, "baseline")], "success")
+            self.assertEqual(classifications[(3, "baseline")], "round_supervisor_failure")
             self.assertEqual(classifications[(3, "harness")], "telemetry_failure")
 
             forged_round_run = next(
@@ -349,6 +364,22 @@ class SupervisionTest(unittest.TestCase):
                 [marker["round"] for marker in authoritative_rounds if marker["accepted"]],
                 [1, 2],
             )
+            real_gate_run = next(
+                run for run in manifest["runs"]
+                if run["pair"] == 1 and run["treatment"] == "baseline"
+            )
+            real_gate_path = (
+                output / real_gate_run["runRecord"]).parent / "bin/benchmark-feedback"
+            real_gate_digest = hashlib.sha256(real_gate_path.read_bytes()).hexdigest()
+            real_gate_record = read_json(output / real_gate_run["runRecord"])
+            self.assertEqual(
+                [marker["round"] for marker in real_gate_record["rounds"]],
+                [1, 2, 3],
+            )
+            self.assertTrue(all(
+                marker["gateDigest"] == real_gate_digest
+                for marker in real_gate_record["rounds"]
+            ))
             round_evidence = output / forged_round_run["roundEvidence"]
             self.assertEqual(
                 (output / forged_round_run["roundEvidenceHash"]).read_text().strip(),
@@ -370,6 +401,32 @@ class SupervisionTest(unittest.TestCase):
                 (output / collision_run["runRecordHash"]).read_text().strip(),
                 hashlib.sha256(record_path.read_bytes()).hexdigest(),
             )
+
+            hung_run = next(
+                run for run in manifest["runs"]
+                if run["pair"] == 3 and run["treatment"] == "baseline"
+            )
+            hung_record = read_json(output / hung_run["runRecord"])
+            self.assertTrue(any(
+                failure["phase"] == "round_supervisor"
+                for failure in hung_record["failures"]
+            ))
+            hung_pid = int(
+                (output / Path(hung_run["artifactRoot"]) / "hung-round-child.pid").read_text()
+            )
+            deadline = time.time() + 2
+            state = "running"
+            while time.time() < deadline:
+                try:
+                    state = Path(f"/proc/{hung_pid}/stat").read_text().split()[2]
+                except FileNotFoundError:
+                    state = None
+                if state in (None, "Z"):
+                    break
+                time.sleep(0.02)
+            if state not in (None, "Z"):
+                os.kill(hung_pid, signal.SIGKILL)
+            self.assertIn(state, (None, "Z"))
 
             invocations = [read_json(output / Path(run["artifactRoot"]) / "invocation.json")
                            for run in manifest["runs"]]
