@@ -100,7 +100,7 @@ public final class BenchmarkControl implements AutoCloseable {
     /** Applies exactly one ordered command before the next deterministic draw. */
     public void beforeFrame(Stage stage) {
         if (pending != null) {
-            throw new IllegalStateException("Previous command has not completed a frame");
+            return;
         }
         if (nextCommand >= commands.size()) {
             exitRequested = true;
@@ -128,6 +128,9 @@ public final class BenchmarkControl implements AutoCloseable {
     /** Records a result and any capture only after the Stage has finished drawing. */
     public void afterCompletedFrame(CandidateState state) {
         if (pending == null) {
+            return;
+        }
+        if (!pending.resizeCompleted()) {
             return;
         }
         try {
@@ -177,62 +180,127 @@ public final class BenchmarkControl implements AutoCloseable {
         if (!Gdx.graphics.setWindowedMode(width, height)) {
             throw new CommandRejected("RESIZE_FAILED");
         }
-        pending = PendingResult.ok(sequence, "resize");
+        pending = PendingResult.resize(sequence, width, height);
     }
 
     private void applyKey(JsonValue input, Stage stage, int sequence) {
+        KeyCommand command = parseKey(input);
+        Throwable failure = null;
+        boolean shiftNeedsRelease = false;
+        boolean controlNeedsRelease = false;
+        boolean keyNeedsRelease = false;
+        boolean persistentKeyDown = false;
+        try {
+            if (command.shift) {
+                shiftNeedsRelease = true;
+                stage.keyDown(Input.Keys.SHIFT_LEFT);
+            }
+            if (command.control) {
+                controlNeedsRelease = true;
+                stage.keyDown(Input.Keys.CONTROL_LEFT);
+            }
+            switch (command.action) {
+                case TYPE -> stage.keyTyped(command.character);
+                case DOWN -> {
+                    keyNeedsRelease = true;
+                    stage.keyDown(command.keyCode);
+                    keyNeedsRelease = false;
+                    persistentKeyDown = true;
+                }
+                case UP -> {
+                    keyNeedsRelease = true;
+                    stage.keyUp(command.keyCode);
+                    keyNeedsRelease = false;
+                }
+                case PRESS -> {
+                    keyNeedsRelease = true;
+                    stage.keyDown(command.keyCode);
+                    if (command.character != null) {
+                        stage.keyTyped(command.character);
+                    }
+                    stage.keyUp(command.keyCode);
+                    keyNeedsRelease = false;
+                }
+            }
+        } catch (RuntimeException | Error callbackFailure) {
+            failure = callbackFailure;
+        } finally {
+            if (keyNeedsRelease) {
+                failure = releaseKey(stage, command.keyCode, failure);
+            }
+            if (controlNeedsRelease) {
+                failure = releaseKey(stage, Input.Keys.CONTROL_LEFT, failure);
+            }
+            if (shiftNeedsRelease) {
+                failure = releaseKey(stage, Input.Keys.SHIFT_LEFT, failure);
+            }
+            if (persistentKeyDown && failure != null) {
+                failure = releaseKey(stage, command.keyCode, failure);
+            }
+        }
+        rethrow(failure);
+        pending = PendingResult.ok(sequence, "key");
+    }
+
+    private static KeyCommand parseKey(JsonValue input) {
         requireOnly(input, "command", "action", "key", "character", "shift", "control");
-        String action = optionalString(input, "action", "press", 16);
+        String actionText = optionalString(input, "action", "press", 16);
+        KeyAction action = switch (actionText) {
+            case "type" -> KeyAction.TYPE;
+            case "down" -> KeyAction.DOWN;
+            case "up" -> KeyAction.UP;
+            case "press" -> KeyAction.PRESS;
+            default -> throw new CommandRejected("INVALID_KEY_ACTION");
+        };
         boolean shift = optionalBoolean(input, "shift");
         boolean control = optionalBoolean(input, "control");
-        if (shift) {
-            stage.keyDown(Input.Keys.SHIFT_LEFT);
+        if (action == KeyAction.TYPE) {
+            requireOnly(input, "command", "action", "character", "shift", "control");
+            return new KeyCommand(action, -1, requireCharacter(input), shift, control);
         }
-        if (control) {
-            stage.keyDown(Input.Keys.CONTROL_LEFT);
+
+        if (action == KeyAction.DOWN || action == KeyAction.UP) {
+            requireOnly(input, "command", "action", "key", "shift", "control");
         }
+        String keyName = requireString(input, "key", 32).toUpperCase(Locale.ROOT);
+        int keyCode = Input.Keys.valueOf(keyName);
+        if (keyCode < 0) {
+            throw new CommandRejected("INVALID_KEY");
+        }
+        Character character = input.get("character") == null
+                ? null : requireCharacter(input);
+        return new KeyCommand(action, keyCode, character, shift, control);
+    }
+
+    private static char requireCharacter(JsonValue input) {
+        String character = requireString(input, "character", 2);
+        if (character.length() != 1) {
+            throw new CommandRejected("INVALID_KEY");
+        }
+        return character.charAt(0);
+    }
+
+    private static Throwable releaseKey(Stage stage, int keyCode, Throwable failure) {
         try {
-            if ("type".equals(action)) {
-                String character = requireString(input, "character", 2);
-                if (character.codePointCount(0, character.length()) != 1
-                        || character.length() != 1) {
-                    throw new CommandRejected("INVALID_KEY");
-                }
-                stage.keyTyped(character.charAt(0));
-            } else {
-                String keyName = requireString(input, "key", 32)
-                        .toUpperCase(Locale.ROOT);
-                int keyCode = Input.Keys.valueOf(keyName);
-                if (keyCode < 0) {
-                    throw new CommandRejected("INVALID_KEY");
-                }
-                switch (action) {
-                    case "down" -> stage.keyDown(keyCode);
-                    case "up" -> stage.keyUp(keyCode);
-                    case "press" -> {
-                        stage.keyDown(keyCode);
-                        JsonValue character = input.get("character");
-                        if (character != null) {
-                            String text = requireString(input, "character", 2);
-                            if (text.length() != 1) {
-                                throw new CommandRejected("INVALID_KEY");
-                            }
-                            stage.keyTyped(text.charAt(0));
-                        }
-                        stage.keyUp(keyCode);
-                    }
-                    default -> throw new CommandRejected("INVALID_KEY_ACTION");
-                }
+            stage.keyUp(keyCode);
+        } catch (RuntimeException | Error releaseFailure) {
+            if (failure == null) {
+                return releaseFailure;
             }
-        } finally {
-            if (control) {
-                stage.keyUp(Input.Keys.CONTROL_LEFT);
-            }
-            if (shift) {
-                stage.keyUp(Input.Keys.SHIFT_LEFT);
+            if (failure != releaseFailure) {
+                failure.addSuppressed(releaseFailure);
             }
         }
-        pending = PendingResult.ok(sequence, "key");
+        return failure;
+    }
+
+    private static void rethrow(Throwable failure) {
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
     }
 
     private void applyPointer(JsonValue input, Stage stage, int sequence) {
@@ -405,6 +473,21 @@ public final class BenchmarkControl implements AutoCloseable {
         return number;
     }
 
+    private enum KeyAction {
+        TYPE,
+        DOWN,
+        UP,
+        PRESS
+    }
+
+    private record KeyCommand(
+            KeyAction action,
+            int keyCode,
+            Character character,
+            boolean shift,
+            boolean control) {
+    }
+
     private static final class CommandRejected extends RuntimeException {
         private final String code;
 
@@ -419,21 +502,48 @@ public final class BenchmarkControl implements AutoCloseable {
         private final String command;
         private final boolean ok;
         private final String error;
+        private final int resizeWidth;
+        private final int resizeHeight;
         private String artifact;
+        private int resizeWaitFrames;
 
-        private PendingResult(int sequence, String command, boolean ok, String error) {
+        private PendingResult(
+                int sequence,
+                String command,
+                boolean ok,
+                String error,
+                int resizeWidth,
+                int resizeHeight) {
             this.sequence = sequence;
             this.command = command;
             this.ok = ok;
             this.error = error;
+            this.resizeWidth = resizeWidth;
+            this.resizeHeight = resizeHeight;
         }
 
         private static PendingResult ok(int sequence, String command) {
-            return new PendingResult(sequence, command, true, null);
+            return new PendingResult(sequence, command, true, null, 0, 0);
+        }
+
+        private static PendingResult resize(int sequence, int width, int height) {
+            return new PendingResult(sequence, "resize", true, null, width, height);
         }
 
         private static PendingResult error(int sequence, String command, String error) {
-            return new PendingResult(sequence, command, false, error);
+            return new PendingResult(sequence, command, false, error, 0, 0);
+        }
+
+        private boolean resizeCompleted() {
+            if (resizeWidth == 0
+                    || (Gdx.graphics.getBackBufferWidth() == resizeWidth
+                            && Gdx.graphics.getBackBufferHeight() == resizeHeight)) {
+                return true;
+            }
+            if (++resizeWaitFrames > 120) {
+                throw new IllegalStateException("Timed out waiting for completed resize");
+            }
+            return false;
         }
     }
 
