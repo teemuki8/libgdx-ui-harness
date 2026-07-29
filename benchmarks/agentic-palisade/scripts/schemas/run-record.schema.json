@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://teemuki8.github.io/libgdx-ui-harness/agentic-palisade/run-record.schema.json",
+  "title": "Agentic Palisade run record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "pair",
+    "treatment",
+    "model",
+    "reasoning",
+    "timestamps",
+    "wallTimeSeconds",
+    "exit",
+    "hashes",
+    "paths",
+    "telemetry",
+    "rounds",
+    "failures"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "agentic-palisade/run-record-v1"},
+    "runId": {"type": "string", "format": "uuid"},
+    "pair": {"type": "integer", "minimum": 1, "maximum": 3},
+    "treatment": {"enum": ["baseline", "harness"]},
+    "model": {"const": "openai-codex/gpt-5.6-sol:medium"},
+    "reasoning": {"const": "medium"},
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startedAt", "finishedAt"],
+      "properties": {
+        "startedAt": {"type": "string", "format": "date-time"},
+        "finishedAt": {"type": "string", "format": "date-time"}
+      }
+    },
+    "wallTimeSeconds": {"type": "number", "minimum": 0},
+    "exit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "code", "signal", "timedOut"],
+      "properties": {
+        "classification": {
+          "enum": [
+            "success",
+            "timed_out",
+            "nonzero_exit",
+            "crashed",
+            "telemetry_failure",
+            "round_protocol_failure"
+          ]
+        },
+        "code": {"type": ["integer", "null"], "minimum": 0},
+        "signal": {"type": ["integer", "null"], "minimum": 1},
+        "timedOut": {"type": "boolean"}
+      }
+    },
+    "hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prompt",
+        "corpus",
+        "template",
+        "protocol",
+        "inputManifest",
+        "treatmentAppendix",
+        "initialCandidate",
+        "finalCandidate"
+      ],
+      "properties": {
+        "prompt": {"$ref": "#/$defs/sha256"},
+        "corpus": {"$ref": "#/$defs/sha256"},
+        "template": {"$ref": "#/$defs/sha256"},
+        "protocol": {"$ref": "#/$defs/sha256"},
+        "inputManifest": {"$ref": "#/$defs/sha256"},
+        "treatmentAppendix": {"$ref": "#/$defs/sha256"},
+        "initialCandidate": {"$ref": "#/$defs/sha256"},
+        "finalCandidate": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspace",
+        "profileRoot",
+        "cacheRoot",
+        "sessionRoot",
+        "artifactRoot",
+        "stdout",
+        "stderr",
+        "sessionExport"
+      ],
+      "properties": {
+        "workspace": {"$ref": "#/$defs/relativePath"},
+        "profileRoot": {"$ref": "#/$defs/relativePath"},
+        "cacheRoot": {"$ref": "#/$defs/relativePath"},
+        "sessionRoot": {"$ref": "#/$defs/relativePath"},
+        "artifactRoot": {"$ref": "#/$defs/relativePath"},
+        "stdout": {"$ref": "#/$defs/relativePath"},
+        "stderr": {"$ref": "#/$defs/relativePath"},
+        "sessionExport": {
+          "anyOf": [
+            {"$ref": "#/$defs/relativePath"},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens",
+        "toolCalls",
+        "edits",
+        "builds",
+        "launches",
+        "screenshots",
+        "failedOperations"
+      ],
+      "properties": {
+        "tokens": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["input", "output", "cacheRead", "cacheWrite", "reasoning"],
+          "properties": {
+            "input": {"$ref": "#/$defs/tokenCategory"},
+            "output": {"$ref": "#/$defs/tokenCategory"},
+            "cacheRead": {"$ref": "#/$defs/tokenCategory"},
+            "cacheWrite": {"$ref": "#/$defs/tokenCategory"},
+            "reasoning": {"$ref": "#/$defs/tokenCategory"}
+          }
+        },
+        "toolCalls": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "edits": {"type": "integer", "minimum": 0},
+        "builds": {"type": "integer", "minimum": 0},
+        "launches": {"type": "integer", "minimum": 0},
+        "screenshots": {"type": "integer", "minimum": 0},
+        "failedOperations": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/failedOperation"}
+        }
+      }
+    },
+    "rounds": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {"$ref": "#/$defs/roundMarker"}
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["phase"],
+        "properties": {
+          "phase": {"type": "string", "minLength": 1},
+          "message": {"type": "string"},
+          "toolCallId": {"type": "string"},
+          "name": {"type": "string"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "not": {"pattern": "^(?:/|.*(?:^|/)\\.\\.(?:/|$))"}
+    },
+    "tokenCategory": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "value"],
+          "properties": {
+            "status": {"const": "available"},
+            "value": {"type": "integer", "minimum": 0}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "value"],
+          "properties": {
+            "status": {"const": "unavailable"},
+            "value": {"type": "null"}
+          }
+        }
+      ]
+    },
+    "failedOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolCallId", "name"],
+      "properties": {
+        "toolCallId": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1}
+      }
+    },
+    "roundMarker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "round", "accepted", "timestamp", "candidateHash"],
+      "properties": {
+        "schemaVersion": {"const": "agentic-palisade/round-v1"},
+        "round": {"type": "integer", "minimum": 1, "maximum": 3},
+        "accepted": {"const": true},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "candidateHash": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

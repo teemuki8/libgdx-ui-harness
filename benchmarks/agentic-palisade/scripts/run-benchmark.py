@@ -1,0 +1,654 @@
+#!/usr/bin/env python3
+"""Prepare and supervise the six precommitted Agentic Palisade OMP runs."""
+
+import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import uuid
+
+
+SCRIPT_ROOT = Path(__file__).resolve().parent
+BENCHMARK_ROOT = SCRIPT_ROOT.parent
+REPOSITORY_ROOT = BENCHMARK_ROOT.parent.parent
+FIXED_MODEL = "openai-codex/gpt-5.6-sol:medium"
+FIXED_REASONING = "medium"
+FIXED_PAIRS = 3
+FIXED_ROUNDS = 3
+FIXED_SECONDS = 45 * 60
+TOOL_ALLOWLIST = "read,write,edit,bash,grep,glob"
+GENERATED_NAMES = {".gradle", "build", "__pycache__"}
+CANDIDATE_INPUT_NAMES = {"INSTRUCTIONS.md", "PROTOCOL.md", "corpus"}
+DURATION = re.compile(r"(?P<amount>[1-9][0-9]*)(?P<unit>ms|s|m|h)\Z")
+CREDENTIAL_KEYS = {
+    "SSH_AUTH_SOCK", "GIT_ASKPASS", "SSH_ASKPASS", "AWS_PROFILE",
+    "AWS_SHARED_CREDENTIALS_FILE", "GOOGLE_APPLICATION_CREDENTIALS",
+    "DOCKER_CONFIG", "KUBECONFIG", "NETRC",
+}
+SAFE_PARENT_ENV = {
+    "JAVA_HOME", "JDK_HOME", "LANG", "LC_ALL", "LC_CTYPE", "LD_LIBRARY_PATH",
+    "PATH", "SHELL", "TERM", "TZ",
+}
+
+
+def _load_telemetry_module():
+    spec = importlib.util.spec_from_file_location(
+        "agentic_palisade_parse_omp_session", SCRIPT_ROOT / "parse-omp-session.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+TELEMETRY = _load_telemetry_module()
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def sha256_bytes(content):
+    return hashlib.sha256(content).hexdigest()
+
+
+def hash_tree(path, ignored_names=GENERATED_NAMES):
+    path = Path(path)
+    digest = hashlib.sha256()
+    if not path.exists():
+        raise FileNotFoundError(path)
+    for item in sorted(path.rglob("*"), key=lambda candidate: candidate.relative_to(path).as_posix()):
+        relative = item.relative_to(path)
+        if any(part in ignored_names for part in relative.parts):
+            continue
+        if item.is_symlink():
+            raise ValueError(f"symlinks are not allowed in benchmark inputs: {item}")
+        if not item.is_file():
+            continue
+        encoded = relative.as_posix().encode("utf-8")
+        content = item.read_bytes()
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def hash_candidate(workspace):
+    workspace = Path(workspace)
+    digest = hashlib.sha256()
+    for item in sorted(workspace.rglob("*"), key=lambda candidate: candidate.relative_to(workspace).as_posix()):
+        relative = item.relative_to(workspace)
+        if relative.parts and relative.parts[0] in CANDIDATE_INPUT_NAMES:
+            continue
+        if any(part in GENERATED_NAMES for part in relative.parts):
+            continue
+        if item.is_symlink():
+            raise ValueError(f"candidate symlink is not allowed: {item}")
+        if not item.is_file():
+            continue
+        encoded = relative.as_posix().encode("utf-8")
+        content = item.read_bytes()
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def parse_duration(value):
+    match = DURATION.fullmatch(value)
+    if not match:
+        raise argparse.ArgumentTypeError("duration must be a positive integer followed by ms, s, m, or h")
+    amount = int(match.group("amount"))
+    unit = match.group("unit")
+    multiplier = {"ms": 0.001, "s": 1, "m": 60, "h": 3600}[unit]
+    return amount * multiplier
+
+
+def _write_exclusive_json(path, value, immutable=True):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(value, indent=2, sort_keys=True) + "\n"
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(serialized)
+        stream.flush()
+        os.fsync(stream.fileno())
+    if immutable:
+        path.chmod(0o444)
+
+
+def _copy_tree(source, destination):
+    shutil.copytree(
+        source,
+        destination,
+        ignore=shutil.ignore_patterns(".gradle", "build", "__pycache__", "*.pyc"),
+    )
+
+
+def _treatment_inputs():
+    baseline_path = BENCHMARK_ROOT / "treatments/baseline/INSTRUCTIONS.md"
+    harness_path = BENCHMARK_ROOT / "treatments/harness/INSTRUCTIONS.md"
+    marker = "## Treatment appendix\n"
+    baseline = baseline_path.read_text(encoding="utf-8")
+    harness = harness_path.read_text(encoding="utf-8")
+    if baseline.count(marker) != 1 or harness.count(marker) != 1:
+        raise ValueError("each treatment instruction must contain exactly one appendix marker")
+    baseline_common, baseline_appendix = baseline.split(marker, 1)
+    harness_common, harness_appendix = harness.split(marker, 1)
+    if baseline_common != harness_common:
+        raise ValueError("treatment instructions differ outside the approved appendix")
+    return {
+        "baseline": {
+            "instructions": baseline,
+            "appendixHash": sha256_bytes(baseline_appendix.encode("utf-8")),
+        },
+        "harness": {
+            "instructions": harness,
+            "appendixHash": sha256_bytes(harness_appendix.encode("utf-8")),
+        },
+        "commonHash": sha256_bytes(baseline_common.encode("utf-8")),
+    }
+
+
+ROUND_GATE = r'''#!/usr/bin/env python3
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+
+IGNORED = {".gradle", "build", "__pycache__"}
+INPUTS = {"INSTRUCTIONS.md", "PROTOCOL.md", "corpus"}
+
+def candidate_hash(root):
+    digest = hashlib.sha256()
+    for item in sorted(root.rglob("*"), key=lambda value: value.relative_to(root).as_posix()):
+        relative = item.relative_to(root)
+        if relative.parts and relative.parts[0] in INPUTS:
+            continue
+        if any(part in IGNORED for part in relative.parts) or not item.is_file():
+            continue
+        encoded = relative.as_posix().encode("utf-8")
+        content = item.read_bytes()
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+if len(sys.argv) != 2 or not sys.argv[1].isascii() or not sys.argv[1].isdigit():
+    print("usage: benchmark-feedback <round-number>", file=sys.stderr)
+    raise SystemExit(2)
+number = int(sys.argv[1])
+workspace = Path(os.environ["BENCHMARK_WORKSPACE"]).resolve()
+log_path = Path(os.environ["BENCHMARK_ROUND_LOG"]).resolve()
+log_path.parent.mkdir(parents=True, exist_ok=True)
+with log_path.open("a+", encoding="utf-8") as stream:
+    fcntl.flock(stream, fcntl.LOCK_EX)
+    stream.seek(0)
+    previous = []
+    malformed = False
+    for line in stream:
+        try:
+            previous.append(json.loads(line))
+        except json.JSONDecodeError:
+            malformed = True
+            break
+    accepted = [entry for entry in previous if entry.get("accepted") is True]
+    expected = len(accepted) + 1
+    failure = None
+    if malformed:
+        failure = "existing round log is malformed"
+    elif any(entry.get("accepted") is not True for entry in previous):
+        failure = "a prior round attempt was rejected"
+    elif number != expected:
+        failure = f"expected round {expected}"
+    elif number > 3:
+        failure = "round limit exceeded"
+    record = {
+        "schemaVersion": "agentic-palisade/round-v1",
+        "round": number,
+        "accepted": failure is None,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "candidateHash": candidate_hash(workspace),
+    }
+    if failure is not None:
+        record["failure"] = failure
+    stream.seek(0, os.SEEK_END)
+    stream.write(json.dumps(record, sort_keys=True) + "\n")
+    stream.flush()
+    os.fsync(stream.fileno())
+    fcntl.flock(stream, fcntl.LOCK_UN)
+if failure is not None:
+    print(json.dumps(record, sort_keys=True), file=sys.stderr)
+    raise SystemExit(3)
+print(json.dumps({
+    "accepted": True,
+    "round": number,
+    "feedbackSources": ["PROTOCOL.md", "corpus/spec.json", "corpus/reference/"],
+    "instruction": "Inspect only public corpus-declared evidence and this workspace's bounded outputs.",
+}, sort_keys=True))
+'''
+
+
+def _empty_telemetry():
+    return {
+        "tokens": {name: {"status": "unavailable", "value": None}
+                   for name in ("input", "output", "cacheRead", "cacheWrite", "reasoning")},
+        "toolCalls": {},
+        "edits": 0,
+        "builds": 0,
+        "launches": 0,
+        "screenshots": 0,
+        "failedOperations": [],
+    }
+
+
+def _relative(output, path):
+    return Path(path).relative_to(output).as_posix()
+
+
+def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
+    run_id = str(uuid.uuid4())
+    run_dir = output / "runs" / run_id
+    repository = run_dir / "repository"
+    benchmark = repository / "benchmarks/agentic-palisade"
+    workspace = benchmark / "template"
+    profile_root = run_dir / "profile-home"
+    cache_root = run_dir / "cache"
+    session_root = run_dir / "sessions"
+    artifact_root = run_dir / "artifacts"
+    log_root = run_dir / "logs"
+    binary_root = run_dir / "bin"
+    temporary_root = run_dir / "tmp"
+    gradle_cache = cache_root / "gradle"
+
+    for path in (profile_root, cache_root, session_root, artifact_root, log_root,
+                 binary_root, temporary_root, repository / "gradle"):
+        path.mkdir(parents=True, exist_ok=False)
+    shutil.copy2(REPOSITORY_ROOT / "gradlew", repository / "gradlew")
+    shutil.copy2(REPOSITORY_ROOT / "gradlew.bat", repository / "gradlew.bat")
+    _copy_tree(REPOSITORY_ROOT / "gradle/wrapper", repository / "gradle/wrapper")
+    _copy_tree(BENCHMARK_ROOT / "template", workspace)
+    shutil.copy2(BENCHMARK_ROOT / "PROTOCOL.md", workspace / "PROTOCOL.md")
+    _copy_tree(BENCHMARK_ROOT / "corpus", workspace / "corpus")
+    (workspace / "INSTRUCTIONS.md").write_text(
+        treatment_inputs[treatment]["instructions"], encoding="utf-8")
+    if treatment == "harness":
+        _copy_tree(BENCHMARK_ROOT / "treatments/harness", benchmark / "treatments/harness")
+
+    prompt_path = run_dir / "task.md"
+    shutil.copy2(BENCHMARK_ROOT / "prompts/task.md", prompt_path)
+    config_path = run_dir / "omp-config.yml"
+    config_path.write_text("{}\n", encoding="utf-8")
+    gate_path = binary_root / "benchmark-feedback"
+    gate_path.write_text(ROUND_GATE, encoding="utf-8")
+    gate_path.chmod(0o555)
+    round_log = artifact_root / "rounds.jsonl"
+    initial_candidate_hash = hash_candidate(workspace)
+
+    item = {
+        "runId": run_id,
+        "pair": pair,
+        "treatment": treatment,
+        "display": f":{220 + index}",
+        "workspace": _relative(output, workspace),
+        "profileRoot": _relative(output, profile_root),
+        "cacheRoot": _relative(output, cache_root),
+        "sessionRoot": _relative(output, session_root),
+        "artifactRoot": _relative(output, artifact_root),
+        "inputManifest": _relative(output, run_dir / "input-manifest.json"),
+        "runRecord": _relative(output, run_dir / "run-record.json"),
+        "initialCandidateHash": initial_candidate_hash,
+        "treatmentAppendixHash": treatment_inputs[treatment]["appendixHash"],
+    }
+    input_manifest = {
+        "schemaVersion": "agentic-palisade/input-manifest-v1",
+        "createdAt": utc_now(),
+        "runId": run_id,
+        "pair": pair,
+        "treatment": treatment,
+        "model": FIXED_MODEL,
+        "reasoning": FIXED_REASONING,
+        "maxTimeSeconds": FIXED_SECONDS,
+        "rounds": FIXED_ROUNDS,
+        "hashes": {
+            **hashes,
+            "initialCandidate": initial_candidate_hash,
+            "treatmentAppendix": treatment_inputs[treatment]["appendixHash"],
+        },
+        "paths": {key: item[key] for key in (
+            "workspace", "profileRoot", "cacheRoot", "sessionRoot", "artifactRoot")},
+    }
+    input_manifest_path = output / item["inputManifest"]
+    _write_exclusive_json(input_manifest_path, input_manifest)
+    item["inputManifestHash"] = sha256_bytes(input_manifest_path.read_bytes())
+    item["_runtime"] = {
+        "runDir": run_dir,
+        "workspace": workspace,
+        "profileRoot": profile_root,
+        "cacheRoot": cache_root,
+        "sessionRoot": session_root,
+        "artifactRoot": artifact_root,
+        "logRoot": log_root,
+        "binaryRoot": binary_root,
+        "temporaryRoot": temporary_root,
+        "gradleCache": gradle_cache,
+        "prompt": prompt_path,
+        "instructions": workspace / "INSTRUCTIONS.md",
+        "config": config_path,
+        "roundLog": round_log,
+        "gate": gate_path,
+    }
+    return item
+
+
+def _public_item(item):
+    return {key: value for key, value in item.items() if key != "_runtime"}
+
+
+def _sanitized_environment(item):
+    runtime = item["_runtime"]
+    environment = {key: value for key, value in os.environ.items()
+                   if key in SAFE_PARENT_ENV and key not in CREDENTIAL_KEYS and not key.endswith("_API_KEY")}
+    environment.update({
+        "HOME": str(runtime["profileRoot"]),
+        "XDG_CONFIG_HOME": str(runtime["profileRoot"] / ".config"),
+        "XDG_CACHE_HOME": str(runtime["cacheRoot"]),
+        "XDG_STATE_HOME": str(runtime["profileRoot"] / ".state"),
+        "XDG_DATA_HOME": str(runtime["profileRoot"] / ".local/share"),
+        "TMPDIR": str(runtime["temporaryRoot"]),
+        "GRADLE_USER_HOME": str(runtime["gradleCache"]),
+        "PI_ARTIFACTS_DIR": str(runtime["artifactRoot"] / "omp-artifacts"),
+        "PATH": str(runtime["binaryRoot"]) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
+        "DISPLAY": item["display"],
+        "BENCHMARK_RUN_ID": item["runId"],
+        "BENCHMARK_PAIR": str(item["pair"]),
+        "BENCHMARK_TREATMENT": item["treatment"],
+        "BENCHMARK_WORKSPACE": str(runtime["workspace"]),
+        "BENCHMARK_SESSION_ROOT": str(runtime["sessionRoot"]),
+        "BENCHMARK_ARTIFACT_ROOT": str(runtime["artifactRoot"]),
+        "BENCHMARK_ROUND_LOG": str(runtime["roundLog"]),
+        "BENCHMARK_ROUND_GATE": str(runtime["gate"]),
+    })
+    for path in (Path(environment["XDG_CONFIG_HOME"]), Path(environment["XDG_STATE_HOME"]),
+                 Path(environment["XDG_DATA_HOME"]), Path(environment["GRADLE_USER_HOME"]),
+                 Path(environment["PI_ARTIFACTS_DIR"])):
+        path.mkdir(parents=True, exist_ok=True)
+    return environment
+
+
+def _omp_command(omp, item, model, max_time_text):
+    runtime = item["_runtime"]
+    return [
+        omp,
+        "--model", model,
+        "--thinking", FIXED_REASONING,
+        "--profile", item["runId"],
+        "--session-dir", str(runtime["sessionRoot"]),
+        "--config", str(runtime["config"]),
+        "--cwd", str(runtime["workspace"]),
+        "--mode", "json",
+        "--print",
+        "--max-time", max_time_text,
+        "--tools", TOOL_ALLOWLIST,
+        "--auto-approve",
+        "--approval-mode", "yolo",
+        "--no-extensions",
+        "--no-skills",
+        "--no-rules",
+        "--no-lsp",
+        "--no-title",
+        "@" + str(runtime["prompt"]),
+        "@" + str(runtime["instructions"]),
+    ]
+
+
+def terminate_process_group(process, grace_seconds=0.25):
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + grace_seconds
+    try:
+        process.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        pass
+    remaining = deadline - time.monotonic()
+    if remaining > 0:
+        time.sleep(remaining)
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+
+
+def classify_process_exit(return_code, timed_out):
+    if timed_out:
+        return "timed_out"
+    if return_code is None:
+        return "crashed"
+    if return_code < 0:
+        return "crashed"
+    if return_code != 0:
+        return "nonzero_exit"
+    return "success"
+
+
+def _discover_session(session_root):
+    candidates = sorted(path for path in Path(session_root).rglob("*.jsonl") if path.is_file())
+    if len(candidates) != 1:
+        raise TELEMETRY.TelemetryError(
+            f"expected exactly one OMP session export, found {len(candidates)}")
+    return candidates[0]
+
+
+def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
+    runtime = item["_runtime"]
+    started_at = utc_now()
+    started = time.monotonic()
+    command = _omp_command(omp, item, model, max_time_text)
+    environment = _sanitized_environment(item)
+    stdout_path = runtime["logRoot"] / "omp.stdout.jsonl"
+    stderr_path = runtime["logRoot"] / "omp.stderr.log"
+    timed_out = False
+    return_code = None
+    launch_error = None
+    with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=runtime["workspace"],
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+                start_new_session=True,
+            )
+            try:
+                return_code = process.wait(timeout=max_time_seconds)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                terminate_process_group(process)
+                return_code = process.returncode
+        except OSError as error:
+            launch_error = str(error)
+
+    finished_at = utc_now()
+    wall_time = time.monotonic() - started
+    failures = []
+    if launch_error:
+        failures.append({"phase": "omp_launch", "message": launch_error})
+    if timed_out:
+        failures.append({"phase": "deadline", "message": f"exceeded {max_time_text}"})
+    elif return_code not in (0, None):
+        failures.append({"phase": "omp_exit", "message": f"exit status {return_code}"})
+
+    telemetry = _empty_telemetry()
+    telemetry_error = None
+    session_path = None
+    try:
+        session_path = _discover_session(runtime["sessionRoot"])
+        telemetry = TELEMETRY.parse_omp_session(session_path)
+    except TELEMETRY.TelemetryError as error:
+        telemetry_error = str(error)
+        failures.append({"phase": "telemetry", "message": telemetry_error})
+
+    rounds = []
+    round_error = None
+    try:
+        rounds = TELEMETRY.parse_round_log(runtime["roundLog"], FIXED_ROUNDS)
+    except TELEMETRY.RoundProtocolError as error:
+        rounds = error.markers
+        round_error = str(error)
+        failures.append({"phase": "round_protocol", "message": round_error})
+
+    for operation in telemetry["failedOperations"]:
+        failures.append({"phase": "tool", **operation})
+
+    classification = classify_process_exit(return_code, timed_out)
+    if launch_error:
+        classification = "crashed"
+    elif classification == "success" and telemetry_error:
+        classification = "telemetry_failure"
+    elif classification == "success" and round_error:
+        classification = "round_protocol_failure"
+
+    record = {
+        "schemaVersion": "agentic-palisade/run-record-v1",
+        "runId": item["runId"],
+        "pair": item["pair"],
+        "treatment": item["treatment"],
+        "model": model,
+        "reasoning": FIXED_REASONING,
+        "timestamps": {"startedAt": started_at, "finishedAt": finished_at},
+        "wallTimeSeconds": round(wall_time, 6),
+        "exit": {
+            "classification": classification,
+            "code": return_code if return_code is not None and return_code >= 0 else None,
+            "signal": -return_code if return_code is not None and return_code < 0 else None,
+            "timedOut": timed_out,
+        },
+        "hashes": {
+            **hashes,
+            "inputManifest": item["inputManifestHash"],
+            "treatmentAppendix": item["treatmentAppendixHash"],
+            "initialCandidate": item["initialCandidateHash"],
+            "finalCandidate": hash_candidate(runtime["workspace"]),
+        },
+        "paths": {
+            "workspace": item["workspace"],
+            "profileRoot": item["profileRoot"],
+            "cacheRoot": item["cacheRoot"],
+            "sessionRoot": item["sessionRoot"],
+            "artifactRoot": item["artifactRoot"],
+            "stdout": _relative(output, stdout_path),
+            "stderr": _relative(output, stderr_path),
+            "sessionExport": _relative(output, session_path) if session_path else None,
+        },
+        "telemetry": telemetry,
+        "rounds": rounds,
+        "failures": failures,
+    }
+    _write_exclusive_json(output / item["runRecord"], record)
+    return classification
+
+
+def _validate_arguments(arguments, max_seconds):
+    if arguments.model != FIXED_MODEL:
+        raise ValueError(f"model must be exactly {FIXED_MODEL}")
+    if arguments.pairs != FIXED_PAIRS:
+        raise ValueError(f"pairs must be exactly {FIXED_PAIRS}")
+    if arguments.omp == "omp" and max_seconds != FIXED_SECONDS:
+        raise ValueError("measured runs must use exactly --max-time 45m")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--max-time", required=True)
+    parser.add_argument("--pairs", required=True, type=int)
+    parser.add_argument("--omp", default="omp", help=argparse.SUPPRESS)
+    parser.add_argument("--dry-run", action="store_true")
+    arguments = parser.parse_args(argv)
+    try:
+        max_seconds = parse_duration(arguments.max_time)
+        _validate_arguments(arguments, max_seconds)
+        output = arguments.output.resolve()
+        if output.exists():
+            raise ValueError(f"output directory already exists: {output}")
+        output.mkdir(parents=True, exist_ok=False)
+
+        treatment_inputs = _treatment_inputs()
+        hashes = {
+            "prompt": sha256_bytes((BENCHMARK_ROOT / "prompts/task.md").read_bytes()),
+            "corpus": hash_tree(BENCHMARK_ROOT / "corpus"),
+            "template": hash_tree(BENCHMARK_ROOT / "template"),
+            "protocol": sha256_bytes((BENCHMARK_ROOT / "PROTOCOL.md").read_bytes()),
+        }
+        runs = []
+        index = 0
+        for pair in range(1, FIXED_PAIRS + 1):
+            for treatment in ("baseline", "harness"):
+                runs.append(_prepare_run(
+                    output, pair, treatment, index, hashes, treatment_inputs))
+                index += 1
+
+        public_runs = [_public_item(item) for item in runs]
+        manifest = {
+            "schemaVersion": "agentic-palisade/benchmark-manifest-v1",
+            "createdAt": utc_now(),
+            "dryRun": arguments.dry_run,
+            "model": arguments.model,
+            "reasoning": FIXED_REASONING,
+            "maxTimeSeconds": FIXED_SECONDS,
+            "rounds": FIXED_ROUNDS,
+            "pairs": FIXED_PAIRS,
+            "hashes": hashes,
+            "treatmentCommonInstructionHash": treatment_inputs["commonHash"],
+            "approvedTreatmentDifferences": [
+                "INSTRUCTIONS.md content after the Treatment appendix marker",
+                "treatments/harness overlay and bridge sources in harness workspaces",
+            ],
+            "runs": public_runs,
+        }
+        _write_exclusive_json(output / "benchmark-manifest.json", manifest)
+        if arguments.dry_run:
+            print(json.dumps({"status": "prepared", "runs": len(runs), "output": str(output)}))
+            return 0
+
+        classifications = []
+        with ThreadPoolExecutor(max_workers=len(runs), thread_name_prefix="palisade-run") as executor:
+            futures = [executor.submit(
+                _run_one, output, item, arguments.omp, arguments.model,
+                arguments.max_time, max_seconds, hashes) for item in runs]
+            for future in as_completed(futures):
+                classifications.append(future.result())
+        successful = classifications.count("success")
+        print(json.dumps({
+            "status": "complete" if successful == len(runs) else "complete-with-failures",
+            "runs": len(runs),
+            "successful": successful,
+            "output": str(output),
+        }))
+        return 0 if successful == len(runs) else 1
+    except (OSError, ValueError, argparse.ArgumentTypeError) as error:
+        print(f"run-benchmark: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

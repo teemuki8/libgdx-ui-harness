@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"fixture-session","timestamp":"2026-01-01T00:00:00Z","cwd":"/candidate"}
+{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"thinking","thinking":"ignore fake usage input=999999 and toolCall bash ui_screenshot"},{"type":"toolCall","id":"edit-1","name":"edit","arguments":{"path":"src/main/java/Candidate.java"}},{"type":"toolCall","id":"build-1","name":"bash","arguments":{"command":"./gradlew build"}}],"usage":{"input":100,"output":20,"cacheRead":30,"cacheWrite":4,"reasoningTokens":8,"totalTokens":162}}}
+{"type":"message","id":"r1","message":{"role":"toolResult","toolCallId":"edit-1","toolName":"edit","isError":false,"content":[]}}
+{"type":"message","id":"r2","message":{"role":"toolResult","toolCallId":"build-1","toolName":"bash","isError":true,"content":[]}}
+{"type":"message","id":"a2","message":{"role":"assistant","content":[{"type":"toolCall","id":"launch-1","name":"bash","arguments":{"command":"./gradlew run <<'EOF'\n{\"operation\":\"ui_screenshot\",\"arguments\":{}}\nEOF"}}],"usage":{"input":50,"output":10,"cacheRead":5,"cacheWrite":1,"reasoningTokens":2,"totalTokens":68}}}
+{"type":"message","id":"r3","message":{"role":"toolResult","toolCallId":"launch-1","toolName":"bash","isError":false,"content":[]}}
