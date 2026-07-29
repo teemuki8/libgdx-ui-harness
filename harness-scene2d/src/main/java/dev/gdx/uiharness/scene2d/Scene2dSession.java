@@ -6,6 +6,7 @@ import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.limits.HarnessLimits;
+import dev.gdx.uiharness.core.contract.StateActionContract;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
@@ -19,6 +20,7 @@ public final class Scene2dSession implements AutoCloseable {
     private final Semantics semantics;
     private final ActorAdapterRegistry adapters;
     private final Scene2dSnapshotter snapshotter;
+    private final Scene2dContractSnapshotter contractSnapshotter;
     private final ActorTokens actorTokens = new ActorTokens();
     private volatile boolean open = true;
 
@@ -33,6 +35,8 @@ public final class Scene2dSession implements AutoCloseable {
         semantics = new Semantics(this::isOpen);
         adapters = new ActorAdapterRegistry();
         snapshotter = new Scene2dSnapshotter(limits, semantics, adapters);
+        contractSnapshotter =
+                new Scene2dContractSnapshotter(stage, semantics, adapters, snapshotter);
     }
 
     /** Returns the metadata facade owned by this session. */
@@ -50,6 +54,12 @@ public final class Scene2dSession implements AutoCloseable {
     public SemanticSnapshot snapshot(long revision, long frame) {
         requireOpen();
         return snapshotter.snapshot(stage, revision, frame);
+    }
+
+    /** Captures the evaluator-complete contract after a completed frame. */
+    public StateActionContract stateActionContract(long revision, long frame) {
+        requireOpen();
+        return contractSnapshotter.snapshot(revision, frame);
     }
 
     /** Returns this session's stable weak-identity token without retaining the Actor. */

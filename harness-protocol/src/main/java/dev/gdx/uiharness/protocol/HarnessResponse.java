@@ -4,6 +4,14 @@ import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import dev.gdx.uiharness.core.action.ActionResult;
 import dev.gdx.uiharness.core.capture.CapturedImage;
+import dev.gdx.uiharness.core.contract.ConditionalRule;
+import dev.gdx.uiharness.core.contract.ContractValue;
+import dev.gdx.uiharness.core.contract.ControlState;
+import dev.gdx.uiharness.core.contract.StateActionContract;
+import dev.gdx.uiharness.core.contract.TransitionOutcome;
+import dev.gdx.uiharness.core.contract.ValidationRule;
+import dev.gdx.uiharness.core.contract.ValidationStatus;
+import dev.gdx.uiharness.core.contract.ViewportState;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
@@ -15,6 +23,7 @@ import dev.gdx.uiharness.core.model.SemanticState;
 import dev.gdx.uiharness.core.wait.WaitResult;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -253,7 +262,12 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
     }
 
     /** Explicit transport representation of a semantic snapshot. */
-    record SnapshotData(long revision, long frame, String rootId, List<NodeData> nodes) {
+    record SnapshotData(
+            long revision,
+            long frame,
+            String rootId,
+            List<NodeData> nodes,
+            ContractData contract) {
         /** Validates and copies snapshot data. */
         public SnapshotData {
             if (revision < 0 || frame < 0) {
@@ -263,10 +277,31 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             nodes = List.copyOf(Objects.requireNonNull(nodes, "nodes"));
         }
 
+        /** Retains the original V1 constructor for sessions without a domain contract. */
+        public SnapshotData(
+                long revision, long frame, String rootId, List<NodeData> nodes) {
+            this(revision, frame, rootId, nodes, null);
+        }
+
         static SnapshotData fromCore(SemanticSnapshot snapshot) {
             List<NodeData> nodes = new ArrayList<>(snapshot.nodes().size());
             appendDepthFirst(snapshot, snapshot.rootId(), nodes);
-            return new SnapshotData(snapshot.revision(), snapshot.frame(), snapshot.rootId(), nodes);
+            return new SnapshotData(
+                    snapshot.revision(), snapshot.frame(), snapshot.rootId(), nodes, null);
+        }
+
+        static SnapshotData fromCore(
+                SemanticSnapshot snapshot, StateActionContract contract) {
+            Objects.requireNonNull(contract, "contract");
+            if (snapshot.revision() != contract.revision()
+                    || snapshot.frame() != contract.frame()) {
+                throw new IllegalArgumentException(
+                        "semantic snapshot and state/action contract identities differ");
+            }
+            SnapshotData semantic = fromCore(snapshot);
+            return new SnapshotData(
+                    semantic.revision(), semantic.frame(), semantic.rootId(), semantic.nodes(),
+                    ContractData.fromCore(contract));
         }
 
         private static void appendDepthFirst(
@@ -277,6 +312,349 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                 appendDepthFirst(snapshot, childId, destination);
             }
         }
+    }
+
+    /** Strict transport representation of the public evaluator-complete contract. */
+    record ContractData(
+            String schemaVersion,
+            String stateId,
+            long revision,
+            long frame,
+            List<ControlData> controls,
+            List<String> focusOrder,
+            String focusedControlId,
+            List<ConditionData> conditions,
+            List<ViewportData> viewports,
+            TransitionData transition) {
+        public ContractData {
+            ProtocolJson.requireText(schemaVersion, "contract schemaVersion");
+            if (!schemaVersion.startsWith("state-action/v1.")) {
+                throw new IllegalArgumentException("unsupported state/action contract major");
+            }
+            ProtocolJson.requireText(stateId, "contract stateId");
+            if (revision < 0 || frame < 0) {
+                throw new IllegalArgumentException("contract counters must be non-negative");
+            }
+            controls = List.copyOf(Objects.requireNonNull(controls, "controls"));
+            focusOrder = List.copyOf(Objects.requireNonNull(focusOrder, "focusOrder"));
+            conditions = List.copyOf(Objects.requireNonNull(conditions, "conditions"));
+            viewports = List.copyOf(Objects.requireNonNull(viewports, "viewports"));
+            if (controls.size() > 256 || focusOrder.size() > 256
+                    || conditions.size() > 256 || viewports.size() > 256) {
+                throw new IllegalArgumentException("contract collection exceeds 256 entries");
+            }
+            java.util.Set<String> ids = new java.util.HashSet<>();
+            for (int index = 0; index < controls.size(); index++) {
+                if (!ids.add(controls.get(index).id())) {
+                    throw new IllegalArgumentException(
+                            "duplicate contract control ID at $.controls[" + index + "].id");
+                }
+            }
+            if (!ids.containsAll(focusOrder)
+                    || focusOrder.size() != new java.util.HashSet<>(focusOrder).size()
+                    || (focusedControlId != null && !ids.contains(focusedControlId))) {
+                throw new IllegalArgumentException("contract focus references unknown control");
+            }
+            for (ConditionData condition : conditions) {
+                if (!ids.contains(condition.controllerId())
+                        || !ids.contains(condition.dependentId())
+                        || (condition.restoreFocusTo() != null
+                        && !ids.contains(condition.restoreFocusTo()))) {
+                    throw new IllegalArgumentException(
+                            "contract condition references unknown control");
+                }
+            }
+            java.util.Set<String> viewportIds = new java.util.HashSet<>();
+            for (ViewportData viewport : viewports) {
+                if (!viewportIds.add(viewport.id())
+                        || !ids.containsAll(viewport.visibleControlIds())) {
+                    throw new IllegalArgumentException(
+                            "contract viewport identity or control reference is invalid");
+                }
+            }
+            if (transition != null
+                    && (transition.resultingRevision() != revision
+                    || !transition.resultingStateId().equals(stateId))) {
+                throw new IllegalArgumentException(
+                        "contract transition does not identify the resulting state");
+            }
+        }
+
+        static ContractData fromCore(StateActionContract contract) {
+            Objects.requireNonNull(contract, "contract");
+            return new ContractData(
+                    contract.schemaVersion().wireName(), contract.stateId(),
+                    contract.revision(), contract.frame(),
+                    contract.controls().stream().map(ControlData::fromCore).toList(),
+                    contract.focusOrder(), contract.focusedControlId(),
+                    contract.conditions().stream().map(ConditionData::fromCore).toList(),
+                    contract.viewports().stream().map(ViewportData::fromCore).toList(),
+                    contract.transition() == null
+                            ? null : TransitionData.fromCore(contract.transition()));
+        }
+    }
+
+    record ControlData(
+            String id,
+            String role,
+            String kind,
+            String accessibleName,
+            List<OptionData> options,
+            ValueData defaultValue,
+            ValueData currentValue,
+            boolean visible,
+            boolean enabled,
+            boolean actionable,
+            boolean focusable,
+            boolean focused,
+            ValidationRuleData validationRule,
+            ValidationStatusData validationStatus) {
+        public ControlData {
+            ProtocolJson.requireIdentifier(id, "control id");
+            ProtocolJson.requireIdentifier(role, "control role");
+            ProtocolJson.requireIdentifier(kind, "control kind");
+            if (!java.util.Set.of(
+                    "button", "checkbox", "number", "range", "select", "text")
+                    .contains(kind)) {
+                throw new IllegalArgumentException("unknown control kind: " + kind);
+            }
+            ProtocolJson.requireText(accessibleName, "control accessibleName");
+            options = List.copyOf(Objects.requireNonNull(options, "options"));
+            Objects.requireNonNull(defaultValue, "defaultValue");
+            Objects.requireNonNull(currentValue, "currentValue");
+            Objects.requireNonNull(validationRule, "validationRule");
+            Objects.requireNonNull(validationStatus, "validationStatus");
+            if (focused && !focusable) {
+                throw new IllegalArgumentException("focused control must be focusable");
+            }
+            if (actionable && (!visible || !enabled)) {
+                throw new IllegalArgumentException(
+                        "actionable control must be visible and enabled");
+            }
+        }
+
+        static ControlData fromCore(ControlState state) {
+            return new ControlData(
+                    state.id(), wire(state.role().name()), wire(state.kind().name()),
+                    state.accessibleName(),
+                    state.options().stream()
+                            .map(option -> new OptionData(
+                                    ValueData.fromCore(option.value()), option.label()))
+                            .toList(),
+                    ValueData.fromCore(state.defaultValue()),
+                    ValueData.fromCore(state.currentValue()),
+                    state.visible(), state.enabled(), state.actionable(), state.focusable(),
+                    state.focused(), ValidationRuleData.fromCore(state.validationRule()),
+                    ValidationStatusData.fromCore(state.validationStatus()));
+        }
+    }
+
+    record OptionData(ValueData value, String label) {
+        public OptionData {
+            Objects.requireNonNull(value, "value");
+            ProtocolJson.requireText(label, "option label");
+        }
+    }
+
+    record ValueData(
+            String type,
+            Boolean booleanValue,
+            Long integerValue,
+            String decimalValue,
+            String textValue) {
+        public ValueData {
+            ProtocolJson.requireIdentifier(type, "value type");
+            int present = (booleanValue == null ? 0 : 1)
+                    + (integerValue == null ? 0 : 1)
+                    + (decimalValue == null ? 0 : 1)
+                    + (textValue == null ? 0 : 1);
+            int expected = "null".equals(type) ? 0 : 1;
+            if (present != expected) {
+                throw new IllegalArgumentException("typed value has an invalid payload count");
+            }
+            switch (type) {
+                case "null" -> {
+                    // No payload.
+                }
+                case "boolean" -> Objects.requireNonNull(booleanValue, "booleanValue");
+                case "integer" -> Objects.requireNonNull(integerValue, "integerValue");
+                case "decimal" -> ProtocolJson.requireText(decimalValue, "decimalValue");
+                case "text" -> {
+                    Objects.requireNonNull(textValue, "textValue");
+                    if (textValue.length() > ProtocolJson.MAX_STRING_LENGTH) {
+                        throw new IllegalArgumentException("textValue exceeds protocol limit");
+                    }
+                }
+                default -> throw new IllegalArgumentException("unknown typed value: " + type);
+            }
+        }
+
+        static ValueData fromCore(ContractValue value) {
+            return switch (value) {
+                case ContractValue.NullValue ignored ->
+                        new ValueData("null", null, null, null, null);
+                case ContractValue.BooleanValue item ->
+                        new ValueData("boolean", item.value(), null, null, null);
+                case ContractValue.IntegerValue item ->
+                        new ValueData("integer", null, item.value(), null, null);
+                case ContractValue.DecimalValue item ->
+                        new ValueData("decimal", null, null,
+                                item.value().toPlainString(), null);
+                case ContractValue.TextValue item ->
+                        new ValueData("text", null, null, null, item.value());
+            };
+        }
+    }
+
+    record ValidationRuleData(
+            String format, ValueData minimum, ValueData maximum, ValueData step) {
+        public ValidationRuleData {
+            ProtocolJson.requireIdentifier(format, "validation format");
+        }
+
+        static ValidationRuleData fromCore(ValidationRule rule) {
+            return new ValidationRuleData(
+                    rule.format(), nullable(rule.minimum()), nullable(rule.maximum()),
+                    nullable(rule.step()));
+        }
+
+        private static ValueData nullable(ContractValue value) {
+            return value == null ? null : ValueData.fromCore(value);
+        }
+    }
+
+    record ValidationStatusData(boolean valid, List<String> messages) {
+        public ValidationStatusData {
+            messages = List.copyOf(Objects.requireNonNull(messages, "messages"));
+            messages.forEach(message ->
+                    ProtocolJson.requireText(message, "validation message"));
+            if (valid && !messages.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "valid status must not contain validation messages");
+            }
+        }
+
+        static ValidationStatusData fromCore(ValidationStatus status) {
+            return new ValidationStatusData(status.valid(), status.messages());
+        }
+    }
+
+    record ConditionData(
+            String controllerId,
+            ValueData equalsValue,
+            String dependentId,
+            boolean visibleWhenEqual,
+            boolean actionableWhenEqual,
+            String restoreFocusTo) {
+        public ConditionData {
+            ProtocolJson.requireIdentifier(controllerId, "condition controllerId");
+            Objects.requireNonNull(equalsValue, "equalsValue");
+            ProtocolJson.requireIdentifier(dependentId, "condition dependentId");
+            if (restoreFocusTo != null) {
+                ProtocolJson.requireIdentifier(restoreFocusTo, "condition restoreFocusTo");
+            }
+        }
+
+        static ConditionData fromCore(ConditionalRule condition) {
+            return new ConditionData(
+                    condition.controllerId(), ValueData.fromCore(condition.equalsValue()),
+                    condition.dependentId(), condition.visibleWhenEqual(),
+                    condition.actionableWhenEqual(), condition.restoreFocusTo());
+        }
+    }
+
+    record ViewportData(
+            String id,
+            double width,
+            double height,
+            double scrollX,
+            double scrollY,
+            double maxScrollX,
+            double maxScrollY,
+            List<String> visibleControlIds) {
+        public ViewportData {
+            ProtocolJson.requireIdentifier(id, "viewport id");
+            if (!finiteNonNegative(width) || !finiteNonNegative(height)
+                    || !finiteNonNegative(scrollX) || !finiteNonNegative(scrollY)
+                    || !finiteNonNegative(maxScrollX) || !finiteNonNegative(maxScrollY)
+                    || scrollX > maxScrollX || scrollY > maxScrollY) {
+                throw new IllegalArgumentException("invalid viewport dimensions or scroll");
+            }
+            visibleControlIds = List.copyOf(
+                    Objects.requireNonNull(visibleControlIds, "visibleControlIds"));
+            if (visibleControlIds.size() > 256) {
+                throw new IllegalArgumentException(
+                        "viewport visible controls exceeds 256 entries");
+            }
+        }
+
+        static ViewportData fromCore(ViewportState viewport) {
+            return new ViewportData(
+                    viewport.id(), viewport.width(), viewport.height(), viewport.scrollX(),
+                    viewport.scrollY(), viewport.maxScrollX(), viewport.maxScrollY(),
+                    viewport.visibleControlIds());
+        }
+    }
+
+    record TransitionData(
+            String actionId,
+            boolean accepted,
+            String rejectionReason,
+            String resultingStateId,
+            long resultingRevision,
+            ValidationStatusData validation,
+            String kind,
+            String clipboardText,
+            Map<String, ValueData> acceptedPayload) {
+        public TransitionData {
+            ProtocolJson.requireIdentifier(actionId, "transition actionId");
+            if (accepted && rejectionReason != null) {
+                throw new IllegalArgumentException(
+                        "accepted transition has a rejection reason");
+            }
+            if (!accepted) {
+                ProtocolJson.requireText(rejectionReason, "transition rejectionReason");
+            }
+            ProtocolJson.requireText(resultingStateId, "transition resultingStateId");
+            if (resultingRevision < 0) {
+                throw new IllegalArgumentException(
+                        "transition resultingRevision must be non-negative");
+            }
+            Objects.requireNonNull(validation, "validation");
+            ProtocolJson.requireIdentifier(kind, "transition kind");
+            acceptedPayload = java.util.Collections.unmodifiableMap(
+                    new LinkedHashMap<>(
+                            Objects.requireNonNull(
+                                    acceptedPayload, "acceptedPayload")));
+            if (acceptedPayload.size() > 256) {
+                throw new IllegalArgumentException(
+                        "transition payload exceeds 256 entries");
+            }
+            if (!accepted && !acceptedPayload.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "rejected transition has an accepted payload");
+            }
+        }
+
+        static TransitionData fromCore(TransitionOutcome transition) {
+            LinkedHashMap<String, ValueData> payload = new LinkedHashMap<>();
+            transition.acceptedPayload().forEach(
+                    (key, value) -> payload.put(key, ValueData.fromCore(value)));
+            return new TransitionData(
+                    transition.actionId(), transition.accepted(),
+                    transition.rejectionReason(), transition.resultingStateId(),
+                    transition.resultingRevision(),
+                    ValidationStatusData.fromCore(transition.validation()),
+                    wire(transition.kind().name()), transition.clipboardText(), payload);
+        }
+    }
+
+    private static boolean finiteNonNegative(double value) {
+        return Double.isFinite(value) && value >= 0;
+    }
+
+    private static String wire(String name) {
+        return name.toLowerCase(Locale.ROOT).replace('_', '-');
     }
 
     /** Explicit transport representation of one semantic node. */

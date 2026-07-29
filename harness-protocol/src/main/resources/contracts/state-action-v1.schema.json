@@ -1,0 +1,241 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/teemuki8/libgdx-ui-harness/contracts/state-action-v1.schema.json",
+  "title": "libGDX UI Harness state/action contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "stateId",
+    "revision",
+    "frame",
+    "controls",
+    "focusOrder",
+    "conditions",
+    "viewports"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "pattern": "^state-action/v1\\.[0-9]+$"
+    },
+    "stateId": {"type": "string", "minLength": 1, "maxLength": 16384},
+    "revision": {"type": "integer", "minimum": 0},
+    "frame": {"type": "integer", "minimum": 0},
+    "controls": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"$ref": "#/$defs/control"}
+    },
+    "focusOrder": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"$ref": "#/$defs/id"}
+    },
+    "focusedControlId": {"$ref": "#/$defs/id"},
+    "conditions": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"$ref": "#/$defs/condition"}
+    },
+    "viewports": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"$ref": "#/$defs/viewport"}
+    },
+    "transition": {"$ref": "#/$defs/transition"}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {"enum": ["null", "boolean", "integer", "decimal", "text"]},
+        "booleanValue": {"type": "boolean"},
+        "integerValue": {"type": "integer"},
+        "decimalValue": {"type": "string", "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"},
+        "textValue": {"type": "string", "maxLength": 16384}
+      },
+      "oneOf": [
+        {
+          "properties": {"type": {"const": "null"}},
+          "not": {
+            "anyOf": [
+              {"required": ["booleanValue"]},
+              {"required": ["integerValue"]},
+              {"required": ["decimalValue"]},
+              {"required": ["textValue"]}
+            ]
+          }
+        },
+        {
+          "required": ["booleanValue"],
+          "properties": {"type": {"const": "boolean"}},
+          "not": {
+            "anyOf": [
+              {"required": ["integerValue"]},
+              {"required": ["decimalValue"]},
+              {"required": ["textValue"]}
+            ]
+          }
+        },
+        {
+          "required": ["integerValue"],
+          "properties": {"type": {"const": "integer"}},
+          "not": {
+            "anyOf": [
+              {"required": ["booleanValue"]},
+              {"required": ["decimalValue"]},
+              {"required": ["textValue"]}
+            ]
+          }
+        },
+        {
+          "required": ["decimalValue"],
+          "properties": {"type": {"const": "decimal"}},
+          "not": {
+            "anyOf": [
+              {"required": ["booleanValue"]},
+              {"required": ["integerValue"]},
+              {"required": ["textValue"]}
+            ]
+          }
+        },
+        {
+          "required": ["textValue"],
+          "properties": {"type": {"const": "text"}},
+          "not": {
+            "anyOf": [
+              {"required": ["booleanValue"]},
+              {"required": ["integerValue"]},
+              {"required": ["decimalValue"]}
+            ]
+          }
+        }
+      ]
+    },
+    "validationStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["valid", "messages"],
+      "properties": {
+        "valid": {"type": "boolean"},
+        "messages": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {"type": "string", "minLength": 1, "maxLength": 16384}
+        }
+      }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "role", "kind", "accessibleName", "options", "defaultValue",
+        "currentValue", "visible", "enabled", "actionable", "focusable", "focused",
+        "validationRule", "validationStatus"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "role": {"$ref": "#/$defs/id"},
+        "kind": {"enum": ["button", "checkbox", "number", "range", "select", "text"]},
+        "accessibleName": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "options": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["value", "label"],
+            "properties": {
+              "value": {"$ref": "#/$defs/value"},
+              "label": {"type": "string", "minLength": 1, "maxLength": 16384}
+            }
+          }
+        },
+        "defaultValue": {"$ref": "#/$defs/value"},
+        "currentValue": {"$ref": "#/$defs/value"},
+        "visible": {"type": "boolean"},
+        "enabled": {"type": "boolean"},
+        "actionable": {"type": "boolean"},
+        "focusable": {"type": "boolean"},
+        "focused": {"type": "boolean"},
+        "validationRule": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["format"],
+          "properties": {
+            "format": {"$ref": "#/$defs/id"},
+            "minimum": {"$ref": "#/$defs/value"},
+            "maximum": {"$ref": "#/$defs/value"},
+            "step": {"$ref": "#/$defs/value"}
+          }
+        },
+        "validationStatus": {"$ref": "#/$defs/validationStatus"}
+      }
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "controllerId", "equalsValue", "dependentId",
+        "visibleWhenEqual", "actionableWhenEqual"
+      ],
+      "properties": {
+        "controllerId": {"$ref": "#/$defs/id"},
+        "equalsValue": {"$ref": "#/$defs/value"},
+        "dependentId": {"$ref": "#/$defs/id"},
+        "visibleWhenEqual": {"type": "boolean"},
+        "actionableWhenEqual": {"type": "boolean"},
+        "restoreFocusTo": {"$ref": "#/$defs/id"}
+      }
+    },
+    "viewport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "width", "height", "scrollX", "scrollY",
+        "maxScrollX", "maxScrollY", "visibleControlIds"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "width": {"type": "number", "minimum": 0},
+        "height": {"type": "number", "minimum": 0},
+        "scrollX": {"type": "number", "minimum": 0},
+        "scrollY": {"type": "number", "minimum": 0},
+        "maxScrollX": {"type": "number", "minimum": 0},
+        "maxScrollY": {"type": "number", "minimum": 0},
+        "visibleControlIds": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {"$ref": "#/$defs/id"}
+        }
+      }
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actionId", "accepted", "resultingStateId", "resultingRevision",
+        "validation", "kind", "acceptedPayload"
+      ],
+      "properties": {
+        "actionId": {"$ref": "#/$defs/id"},
+        "accepted": {"type": "boolean"},
+        "rejectionReason": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "resultingStateId": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "resultingRevision": {"type": "integer", "minimum": 0},
+        "validation": {"$ref": "#/$defs/validationStatus"},
+        "kind": {"enum": ["none", "dismissed", "confirmation"]},
+        "clipboardText": {"type": "string", "maxLength": 16384},
+        "acceptedPayload": {
+          "type": "object",
+          "maxProperties": 256,
+          "additionalProperties": {"$ref": "#/$defs/value"}
+        }
+      }
+    }
+  }
+}

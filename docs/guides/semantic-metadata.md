@@ -57,3 +57,37 @@ Node IDs are snapshot-local and may change after actor replacement. Store locato
 6. structural/property filters, with index last.
 
 Strict actions require exactly one fresh match. Zero matches yield `not-found`; multiple matches yield `strictness-violation`; both carry bounded candidate summaries. Metadata should make those diagnostics more discriminating rather than force callers to choose an arbitrary index.
+
+## Evaluator-complete state and action contracts
+
+`SemanticSnapshot` remains the locator-oriented observation. Applications that need an
+independent evaluator can additionally publish the versioned `state-action/v1` contract.
+Domain facts are explicit because adapters cannot reliably infer stable IDs, defaults, option
+meaning, validation rules, or conditional behavior:
+
+```java
+semantics.setControl(seedField, new ControlMetadata(
+    "seed", 13, 13, ControlKind.TEXT, List.of(),
+    ContractValue.text("generatedUint32"),
+    new ValidationRule(
+        "uint32-decimal", ContractValue.integer(0),
+        ContractValue.integer(4_294_967_295L), ContractValue.integer(1)),
+    new ValidationStatus(true, List.of())));
+semantics.setViewport(formScrollPane, "configuration");
+semantics.addCondition(new ConditionalRule(
+    "victoryCondition", ContractValue.text("rival-target"),
+    "rivalTargetCount", true, true, "victoryCondition"));
+```
+
+Built-in adapters supply current typed values for standard Scene2D.UI widgets. Use
+`setCurrentValue` for a custom widget or when its domain value differs from displayed text.
+After a real input-dispatch action and the resulting completed frame, attach its normalized
+outcome with `setTransition`; rejected transitions must include a reason and cannot include an
+accepted payload.
+
+Capture through `Scene2dSession.stateActionContract(revision, frame)` only on the render thread.
+The contract contains ordered controls and focus traversal, effective visibility, enabledness and
+actionability, focus, validation, conditions, viewport scroll state, a content-derived state ID,
+and the optional last transition. Unknown major versions, duplicate IDs, and broken references
+fail closed with a JSON-path diagnostic. A newer minor version remains readable only while all
+required V1 fields retain their meaning.

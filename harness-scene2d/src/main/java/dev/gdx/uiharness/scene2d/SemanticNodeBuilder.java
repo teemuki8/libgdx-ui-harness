@@ -3,6 +3,7 @@ package dev.gdx.uiharness.scene2d;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
+import dev.gdx.uiharness.core.contract.ContractValue;
 import dev.gdx.uiharness.core.model.Role;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -23,6 +24,7 @@ final class SemanticNodeBuilder implements ActorSemanticAdapter.Target {
     Boolean expanded;
     Boolean editable;
     boolean focusable;
+    ContractValue currentValue;
     final Map<String, String> properties = new LinkedHashMap<>();
 
     /** Sets the inferred role. */
@@ -91,6 +93,11 @@ final class SemanticNodeBuilder implements ActorSemanticAdapter.Target {
         return this;
     }
 
+    @Override public SemanticNodeBuilder currentValue(ContractValue value) {
+        currentValue = Objects.requireNonNull(value, "value");
+        return this;
+    }
+
     /** Adds or replaces a custom semantic property. */
     public SemanticNodeBuilder property(String key, String value) {
         Objects.requireNonNull(key, "key");
@@ -117,6 +124,9 @@ final class SemanticNodeBuilder implements ActorSemanticAdapter.Target {
         }
         if (metadata.testId() != null) {
             testId = metadata.testId();
+        }
+        if (metadata.currentValue() != null) {
+            currentValue = metadata.currentValue();
         }
         metadata.properties().forEach(this::property);
     }

@@ -1,6 +1,7 @@
 package dev.gdx.uiharness.scene2d;
 
 import com.badlogic.gdx.scenes.scene2d.Actor;
+import dev.gdx.uiharness.core.contract.ContractValue;
 import dev.gdx.uiharness.core.model.Role;
 
 /** Contributes inferred semantic values for actors of a registered class. */
@@ -46,6 +47,11 @@ public interface ActorSemanticAdapter<A extends Actor> {
 
         /** Marks whether the widget supports focus. */
         Target focusable(boolean value);
+
+        /** Supplies the current typed domain value when it can be inferred safely. */
+        default Target currentValue(ContractValue value) {
+            return this;
+        }
 
         /** Adds or replaces a custom semantic property. */
         Target property(String key, String value);

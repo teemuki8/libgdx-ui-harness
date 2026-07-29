@@ -103,7 +103,12 @@ public final class HarnessBridge implements AutoCloseable {
         HarnessProtocolService.Session session = new HarnessProtocolService.Session(
                 sceneHarness, locators, waits, capture, new CapabilitySet(CAPABILITIES), traces);
         HarnessProtocolService protocol = new HarnessProtocolService(
-                Map.of(SESSION_ID, session), clock, protocolExecutor);
+                Map.of(SESSION_ID, session),
+                Map.of(SESSION_ID, deadline -> scheduler.submit(
+                        () -> sceneSession.stateActionContract(
+                                revision.get(), frame.get()),
+                        deadline)),
+                clock, protocolExecutor);
         tools = new HarnessToolHandler(protocol, publisher);
     }
 

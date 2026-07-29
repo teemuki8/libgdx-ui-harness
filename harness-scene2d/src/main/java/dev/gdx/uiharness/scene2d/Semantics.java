@@ -4,10 +4,14 @@ import com.badlogic.gdx.scenes.scene2d.Actor;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
+import dev.gdx.uiharness.core.contract.ConditionalRule;
+import dev.gdx.uiharness.core.contract.ContractValue;
 import dev.gdx.uiharness.core.model.Role;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.BooleanSupplier;
@@ -17,6 +21,8 @@ import java.util.function.UnaryOperator;
 public final class Semantics {
     private final ReferenceQueue<Actor> staleActors = new ReferenceQueue<>();
     private final Map<IdentityWeakReference, ActorMetadata> metadata = new HashMap<>();
+    private final List<ConditionalRule> conditions = new ArrayList<>();
+    private TransitionObservation transition;
     private final BooleanSupplier open;
 
     Semantics(BooleanSupplier open) {
@@ -60,6 +66,36 @@ public final class Semantics {
         update(actor, metadata -> metadata.withProperty(key, value));
     }
 
+    /** Attaches the stable domain definition required by state/action contracts. */
+    public void setControl(Actor actor, ControlMetadata control) {
+        Objects.requireNonNull(control, "control");
+        update(actor, value -> value.withControl(control));
+    }
+
+    /** Overrides an adapter-inferred current typed value. */
+    public void setCurrentValue(Actor actor, ContractValue currentValue) {
+        Objects.requireNonNull(currentValue, "currentValue");
+        update(actor, value -> value.withCurrentValue(currentValue));
+    }
+
+    /** Marks an actor as a named viewport in evaluator-complete snapshots. */
+    public void setViewport(Actor actor, String viewportId) {
+        Objects.requireNonNull(viewportId, "viewportId");
+        update(actor, value -> value.withViewportId(viewportId));
+    }
+
+    /** Adds one ordered application-domain conditional relationship. */
+    public synchronized void addCondition(ConditionalRule condition) {
+        requireOpen();
+        conditions.add(Objects.requireNonNull(condition, "condition"));
+    }
+
+    /** Replaces the normalized outcome attached to subsequent completed-frame snapshots. */
+    public synchronized void setTransition(TransitionObservation observation) {
+        requireOpen();
+        transition = Objects.requireNonNull(observation, "observation");
+    }
+
     /** Removes all explicit semantic metadata for one actor. */
     public synchronized void clear(Actor actor) {
         requireOpen();
@@ -74,8 +110,20 @@ public final class Semantics {
         return value == null ? ActorMetadata.EMPTY : value;
     }
 
+    synchronized List<ConditionalRule> conditions() {
+        requireOpen();
+        return List.copyOf(conditions);
+    }
+
+    synchronized TransitionObservation transition() {
+        requireOpen();
+        return transition;
+    }
+
     synchronized void close() {
         metadata.clear();
+        conditions.clear();
+        transition = null;
         while (staleActors.poll() != null) {
             // Drain references so a closed session retains no stale keys.
         }
