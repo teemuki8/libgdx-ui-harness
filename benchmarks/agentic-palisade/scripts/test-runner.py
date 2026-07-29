@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import signal
 import stat
+from unittest import mock
 import subprocess
 import sys
 import tempfile
@@ -496,11 +497,20 @@ class SupervisionTest(unittest.TestCase):
             self.assertTrue(pid_path.exists())
             child_pid = int(pid_path.read_text())
 
-            shutdown_error = self.runner.terminate_process_group(
-                process, grace_seconds=0.05)
+            with mock.patch.object(
+                    self.runner, "terminate_process_group",
+                    wraps=self.runner.terminate_process_group) as termination_spy:
+                with mock.patch.object(
+                        self.runner, "quiesce_process_group",
+                        wraps=self.runner.quiesce_process_group) as quiesce_spy:
+                    return_code, timed_out, shutdown_error = (
+                        self.runner.wait_for_process_group(process, 0.01))
+            termination_spy.assert_called_once_with(process)
+            quiesce_spy.assert_not_called()
             self.assertIsNone(shutdown_error)
+            self.assertTrue(timed_out)
             self.assertEqual(
-                self.runner.classify_process_exit(process.returncode, True),
+                self.runner.classify_process_exit(return_code, timed_out),
                 "timed_out",
             )
 

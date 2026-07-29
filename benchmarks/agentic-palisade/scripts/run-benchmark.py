@@ -789,6 +789,16 @@ def terminate_process_group(process, grace_seconds=0.25):
     return None
 
 
+def wait_for_process_group(process, timeout_seconds):
+    try:
+        return_code = process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        shutdown_error = terminate_process_group(process)
+        return process.returncode, True, shutdown_error
+    quiescence_error = quiesce_process_group(process.pid)
+    return return_code, False, quiescence_error
+
+
 def classify_process_exit(return_code, timed_out):
     if timed_out:
         return "timed_out"
@@ -840,17 +850,10 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
                     stderr=stderr,
                     start_new_session=True,
                 )
-                try:
-                    return_code = process.wait(timeout=max_time_seconds)
-                except subprocess.TimeoutExpired:
-                    timed_out = True
-                    shutdown_error = terminate_process_group(process)
-                    return_code = process.returncode
-                    if shutdown_error:
-                        supervisor_failures.append(shutdown_error)
-                quiescence_error = quiesce_process_group(process.pid)
-                if quiescence_error:
-                    supervisor_failures.append(quiescence_error)
+                return_code, timed_out, shutdown_error = wait_for_process_group(
+                    process, max_time_seconds)
+                if shutdown_error:
+                    supervisor_failures.append(shutdown_error)
             except OSError as error:
                 launch_error = str(error)
     if round_supervisor is not None:
