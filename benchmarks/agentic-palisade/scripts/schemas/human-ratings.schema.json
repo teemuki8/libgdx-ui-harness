@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentic-palisade:human-ratings:v1",
+  "title": "Blinded human fidelity ratings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "packageManifestSha256",
+    "fidelity",
+    "ranking",
+    "preferred"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "agentic-palisade/human-ratings-v1"},
+    "packageManifestSha256": {"$ref": "#/$defs/sha256"},
+    "fidelity": {"$ref": "#/$defs/fidelityByLabel"},
+    "ranking": {"$ref": "#/$defs/rankByLabel"},
+    "preferred": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pair-1", "pair-2", "pair-3"],
+      "properties": {
+        "pair-1": {"$ref": "#/$defs/label"},
+        "pair-2": {"$ref": "#/$defs/label"},
+        "pair-3": {"$ref": "#/$defs/label"}
+      }
+    },
+    "comments": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 7,
+      "properties": {
+        "A": {"$ref": "#/$defs/comment"},
+        "B": {"$ref": "#/$defs/comment"},
+        "C": {"$ref": "#/$defs/comment"},
+        "D": {"$ref": "#/$defs/comment"},
+        "E": {"$ref": "#/$defs/comment"},
+        "F": {"$ref": "#/$defs/comment"},
+        "overall": {"$ref": "#/$defs/comment"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "label": {"enum": ["A", "B", "C", "D", "E", "F"]},
+    "comment": {"type": "string", "maxLength": 2000},
+    "fidelityByLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["A", "B", "C", "D", "E", "F"],
+      "properties": {
+        "A": {"type": "integer", "minimum": 1, "maximum": 7},
+        "B": {"type": "integer", "minimum": 1, "maximum": 7},
+        "C": {"type": "integer", "minimum": 1, "maximum": 7},
+        "D": {"type": "integer", "minimum": 1, "maximum": 7},
+        "E": {"type": "integer", "minimum": 1, "maximum": 7},
+        "F": {"type": "integer", "minimum": 1, "maximum": 7}
+      }
+    },
+    "rankByLabel": {
+      "type": "object",
+      "description": "Values must be a bijection over 1 through 6; semantic validation enforces uniqueness.",
+      "additionalProperties": false,
+      "required": ["A", "B", "C", "D", "E", "F"],
+      "properties": {
+        "A": {"type": "integer", "minimum": 1, "maximum": 6},
+        "B": {"type": "integer", "minimum": 1, "maximum": 6},
+        "C": {"type": "integer", "minimum": 1, "maximum": 6},
+        "D": {"type": "integer", "minimum": 1, "maximum": 6},
+        "E": {"type": "integer", "minimum": 1, "maximum": 6},
+        "F": {"type": "integer", "minimum": 1, "maximum": 6}
+      }
+    }
+  }
+}

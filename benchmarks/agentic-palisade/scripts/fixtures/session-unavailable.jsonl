@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"fixture-session","timestamp":"2026-01-01T00:00:00Z","cwd":"/candidate"}
+{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":7,"output":3,"totalTokens":10}}}
