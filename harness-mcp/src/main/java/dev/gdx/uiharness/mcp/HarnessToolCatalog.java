@@ -353,7 +353,7 @@ public final class HarnessToolCatalog {
                 "observed", string(1, ProtocolJson.MAX_STRING_LENGTH),
                 "blocking", Map.of("type", "boolean")),
                 List.of(
-                        "category", "controlId", "path",
+                        "category", "path",
                         "expected", "observed", "blocking"));
     }
 

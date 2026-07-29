@@ -1727,7 +1727,7 @@
               "type" : "string"
             }
           },
-          "required" : [ "category", "controlId", "path", "expected", "observed", "blocking" ],
+          "required" : [ "category", "path", "expected", "observed", "blocking" ],
           "type" : "object"
         },
         "maxItems" : 1024,

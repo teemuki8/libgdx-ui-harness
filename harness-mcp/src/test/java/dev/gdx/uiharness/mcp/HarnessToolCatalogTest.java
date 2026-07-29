@@ -72,6 +72,26 @@ final class HarnessToolCatalogTest {
                 <= ProtocolJson.MAX_REQUEST_BYTES / 256);
     }
 
+    @Test void comparisonOutputAllowsUnattributedRasterResidual() {
+        Map<String, Object> output = Map.of(
+                "kind", "inspect-compare-result",
+                "status", "not-converged",
+                "policy", "pixel-exact/v1",
+                "iterations", 1,
+                "elapsedMillis", 10,
+                "differences", List.of(Map.of(
+                        "category", "raster-residual",
+                        "path", "$.pixels",
+                        "expected", "reference pixels",
+                        "observed", "1 current pixel differs",
+                        "blocking", true)),
+                "diagnostics", List.of());
+
+        assertTrue(McpJsonDefaults.getSchemaValidator()
+                .validate(catalog.tool("ui_inspect_compare").outputSchema(), output)
+                .valid());
+    }
+
     @Test void catalogContainsNoPathExecutionReflectionOrCodeParameters() throws Exception {
         String json = ProtocolJson.mapper().writeValueAsString(catalog.tools().stream()
                 .map(McpSchema.Tool::inputSchema)
