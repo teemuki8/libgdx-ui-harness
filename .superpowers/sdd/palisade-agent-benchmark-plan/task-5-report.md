@@ -173,12 +173,13 @@ A generated six-record failure-retention run was also validated with Python `jso
 - Direct process results take precedence over derived telemetry failures, so timeouts, signals, and nonzero exits cannot be mislabeled or erased by a missing/truncated session. A zero exit still fails closed on malformed telemetry or any round protocol violation.
 - No retry path exists. All six workspaces are prepared before the six-worker executor starts, and every worker publishes one retained run record even if OMP cannot launch.
 - The schema permits fewer than three accepted markers only because failed outcomes must remain serializable; successful classification requires the parser to observe exactly `[1, 2, 3]`.
-- An independent reviewer completed two fix rounds and reported no remaining Critical or Important finding after protected-input/overlay integrity, unconditional deadline, unfinished-tool, and final-hash retention fixes.
+- The initial independent reviewer cleared protected-input/overlay integrity, unconditional deadline, unfinished-tool, and final-hash retention fixes before the later runner-owned-evidence fix round.
 
 ## Commit
 
 Implementation: `c33675e` (`feat(benchmark): isolate OMP runs and telemetry`).
 Review fixes, prerequisite coordinate repair, and evidence report: `956630c` (`fix(benchmark): fail closed on run integrity`).
+Runner-owned round/outcome evidence fix round: `89fddde` (`fix(benchmark): own round and outcome evidence`).
 
 ## Concerns
 
