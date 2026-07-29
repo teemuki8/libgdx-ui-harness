@@ -17,6 +17,7 @@ SCRIPT_ROOT = Path(__file__).resolve().parent
 BENCHMARK_ROOT = SCRIPT_ROOT.parent
 REPOSITORY_ROOT = BENCHMARK_ROOT.parent.parent
 MODEL = "openai-codex/gpt-5.6-sol:medium"
+PROTOCOL_AMENDMENT = "agentic-palisade/task-8-auth-broker-amendment-v1"
 CASES = {
     (1, "baseline"): ("conforming", "success", "complete"),
     (1, "harness"): ("uncompilable", "success", "compile-failed"),
@@ -130,8 +131,15 @@ def inventory(root, omitted=()):
     return result
 
 
+def require_protocol_amendment(manifest):
+    if manifest.get("protocolAmendment") != PROTOCOL_AMENDMENT:
+        raise ValueError("unsupported benchmark protocol amendment")
+    return True
+
+
 def validate_treatment_symmetry(prepared):
     manifest = json_file(prepared / "benchmark-manifest.json")
+    require_protocol_amendment(manifest)
     if len(manifest["runs"]) != 6 or len({run["initialCandidateHash"] for run in manifest["runs"]}) != 1:
         raise ValueError("prepared candidates are not six identical neutral templates")
     for pair in (1, 2, 3):
@@ -217,6 +225,7 @@ def qualify(output):
         raise ValueError("runner completion summary drifted")
 
     manifest = json_file(run_root / "benchmark-manifest.json")
+    require_protocol_amendment(manifest)
     by_case = {}
     records = {}
     for listed in manifest["runs"]:
@@ -252,7 +261,9 @@ def qualify(output):
         evaluation_dir = run_root / "runs" / record["runId"] / "evaluation"
         completed = run_command(
             f"evaluate-{case_name}", [
-                evaluator, "evaluate", "--candidate", item["candidate"],
+                evaluator, "evaluate",
+                "--benchmark-manifest", run_root / "benchmark-manifest.json",
+                "--candidate", item["candidate"],
                 "--corpus", run_root / "corpus", "--output", evaluation_dir,
                 "--candidate-id", record["runId"]], logs, 0,
             cwd=REPOSITORY_ROOT, env=evaluator_env)

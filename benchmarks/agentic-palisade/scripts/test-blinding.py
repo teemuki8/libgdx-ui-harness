@@ -14,6 +14,8 @@ import unittest
 import zlib
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
+REPOSITORY_ROOT = SCRIPT_ROOT.parents[2]
+PROTOCOL_AMENDMENT = "agentic-palisade/task-8-auth-broker-amendment-v1"
 LABELS = tuple("ABCDEF")
 REFERENCES = (
     ("initial-1920x1080", "initial", "desktop-1920x1080", 1920, 1080),
@@ -169,6 +171,7 @@ def create_fixture(root):
         })
     benchmark_manifest = {
         "schemaVersion": "agentic-palisade/benchmark-manifest-v1",
+        "protocolAmendment": PROTOCOL_AMENDMENT,
         "model": "openai-codex/gpt-5.6-sol:medium",
         "pairs": 3,
         "runs": manifest_runs,
@@ -381,6 +384,34 @@ class BlindingTest(unittest.TestCase):
         image.write_bytes(payload[:marker] + png_chunk(b"tEXt", b"treatment\x00baseline") + payload[marker:])
         with self.assertRaisesRegex(ValueError, "metadata"):
             BLIND.scan_package(self.review)
+
+    def test_protocol_amendment_gate_precedes_evaluation_reads(self):
+        manifest, _references, runs, _hashes = BLIND._load_inputs(self.input)
+        self.assertEqual(manifest["protocolAmendment"], PROTOCOL_AMENDMENT)
+        self.assertEqual(len(runs), 6)
+
+        for value in (None, "agentic-palisade/wrong-amendment"):
+            with self.subTest(value=value):
+                source = create_fixture(
+                    self.root / ("missing-amendment" if value is None else "wrong-amendment"))
+                manifest_path = source / "benchmark-manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                if value is None:
+                    manifest.pop("protocolAmendment")
+                else:
+                    manifest["protocolAmendment"] = value
+                manifest_path.write_bytes(canonical_bytes(manifest))
+                first = manifest["runs"][0]
+                (source / "runs" / first["runId"] / "evaluation" / "evaluation.json").unlink()
+                with self.assertRaisesRegex(ValueError, "protocol amendment"):
+                    BLIND._load_inputs(source)
+
+        aborted = (
+            REPOSITORY_ROOT / "build/reports/agentic-palisade/20260729T173223Z"
+        )
+        self.assertTrue((aborted / "benchmark-manifest.json").is_file())
+        with self.assertRaisesRegex(ValueError, "protocol amendment"):
+            BLIND._load_inputs(aborted)
 
     def test_requires_exactly_six_hash_bound_run_and_evaluation_inputs(self):
         manifest_path = self.input / "benchmark-manifest.json"

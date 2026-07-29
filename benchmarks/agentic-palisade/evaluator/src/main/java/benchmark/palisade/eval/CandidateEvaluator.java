@@ -39,6 +39,10 @@ public final class CandidateEvaluator {
     private static final int MAX_TREE_FILES = 20_000;
     private static final long MAX_TREE_BYTES = 512L * 1024L * 1024L;
     private static final long MAX_RESULT_BYTES = 16L * 1024L * 1024L;
+    private static final String BENCHMARK_MANIFEST_VERSION =
+            "agentic-palisade/benchmark-manifest-v1";
+    private static final String PROTOCOL_AMENDMENT =
+            "agentic-palisade/task-8-auth-broker-amendment-v1";
     private static final int MAX_RESULT_LINES = 512;
     private static final Duration PROCESS_TIMEOUT = Duration.ofMinutes(3);
     private static final Set<String> GENERATED_NAMES =
@@ -137,10 +141,13 @@ public final class CandidateEvaluator {
             System.out.println(PublicFeedback.toJson(JSON.treeToValue(root, EvaluationRecord.class)));
             return;
         }
-        if (args.length != 9 || !"evaluate".equals(args[0])) {
-            throw new IllegalArgumentException("Expected evaluate --candidate <dir> --corpus <dir> --output <new-dir> --candidate-id <id>");
+        if (args.length != 11 || !"evaluate".equals(args[0])) {
+            throw new IllegalArgumentException(
+                    "Expected evaluate --benchmark-manifest <file> --candidate <dir> "
+                    + "--corpus <dir> --output <new-dir> --candidate-id <id>");
         }
         Map<String, String> options = parseOptions(args, 1);
+        validateBenchmarkManifest(Path.of(required(options, "--benchmark-manifest")));
         String gradle = System.getenv().getOrDefault("PALISADE_GRADLE", "gradle");
         EvaluationRecord record = evaluate(new Request(Path.of(required(options, "--candidate")),
                 Path.of(required(options, "--corpus")), Path.of(required(options, "--output")),
@@ -815,6 +822,17 @@ public final class CandidateEvaluator {
     }
 
 
+    static void validateBenchmarkManifest(Path path) throws IOException {
+        JsonNode manifest = readJson(path, MAX_RESULT_BYTES);
+        if (!BENCHMARK_MANIFEST_VERSION.equals(manifest.path("schemaVersion").textValue())
+                || !PROTOCOL_AMENDMENT.equals(
+                        manifest.path("protocolAmendment").textValue())) {
+            throw new IllegalArgumentException(
+                    "Unsupported benchmark protocol amendment");
+        }
+    }
+
+
     private static JsonNode readJson(Path path, long maxBytes) throws IOException {
         if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) || Files.size(path) > maxBytes) {
             throw new IllegalArgumentException("JSON evidence is missing or oversized");
@@ -1104,7 +1122,9 @@ public final class CandidateEvaluator {
                 throw new IllegalArgumentException("Invalid evaluator options");
             }
         }
-        if (!options.keySet().equals(Set.of("--candidate", "--corpus", "--output", "--candidate-id"))) {
+        if (!options.keySet().equals(Set.of(
+                "--benchmark-manifest", "--candidate", "--corpus",
+                "--output", "--candidate-id"))) {
             throw new IllegalArgumentException("Invalid evaluator options");
         }
         return options;

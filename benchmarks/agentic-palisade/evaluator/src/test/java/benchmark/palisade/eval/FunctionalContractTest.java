@@ -254,10 +254,42 @@ final class FunctionalContractTest {
     }
 
     @Test
-    void evaluateCliAcceptsItsDocumentedFourOptionPairs() {
+    void evaluatorRequiresExactBrokerProtocolAmendmentBeforeCandidateInputs() throws Exception {
+        Path valid = temporary.resolve("valid-manifest.json");
+        Files.writeString(valid,
+                "{\"schemaVersion\":\"agentic-palisade/benchmark-manifest-v1\","
+                + "\"protocolAmendment\":\"agentic-palisade/task-8-auth-broker-amendment-v1\"}");
+        CandidateEvaluator.validateBenchmarkManifest(valid);
+
+        for (String json : List.of(
+                "{\"schemaVersion\":\"agentic-palisade/benchmark-manifest-v1\"}",
+                "{\"schemaVersion\":\"agentic-palisade/benchmark-manifest-v1\","
+                + "\"protocolAmendment\":\"agentic-palisade/wrong\"}")) {
+            Path invalid = temporary.resolve("invalid-" + Integer.toUnsignedString(json.hashCode()) + ".json");
+            Files.writeString(invalid, json);
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> CandidateEvaluator.main(new String[] {
+                        "evaluate",
+                        "--benchmark-manifest", invalid.toString(),
+                        "--candidate", temporary.resolve("missing-candidate").toString(),
+                        "--corpus", temporary.resolve("missing-corpus").toString(),
+                        "--output", temporary.resolve("output").toString(),
+                        "--candidate-id", "candidate-one"
+                    }));
+            assertTrue(failure.getMessage().contains("protocol amendment"));
+        }
+    }
+
+    @Test
+    void evaluateCliAcceptsItsDocumentedFiveOptionPairs() throws Exception {
+        Path manifest = temporary.resolve("benchmark-manifest.json");
+        Files.writeString(manifest,
+                "{\"schemaVersion\":\"agentic-palisade/benchmark-manifest-v1\","
+                + "\"protocolAmendment\":\"agentic-palisade/task-8-auth-broker-amendment-v1\"}");
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> CandidateEvaluator.main(new String[] {
                     "evaluate",
+                    "--benchmark-manifest", manifest.toString(),
                     "--candidate", temporary.resolve("missing-candidate").toString(),
                     "--corpus", temporary.resolve("missing-corpus").toString(),
                     "--output", temporary.resolve("output").toString(),

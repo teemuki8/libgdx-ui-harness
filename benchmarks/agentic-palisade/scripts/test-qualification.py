@@ -71,6 +71,17 @@ class QualificationTest(unittest.TestCase):
                 tampered, before, rejected, "rejected"))
 
 
+    def test_protocol_amendment_gate_requires_exact_identity(self):
+        amended = {
+            "protocolAmendment":
+                "agentic-palisade/task-8-auth-broker-amendment-v1"
+        }
+        self.assertTrue(QUALIFICATION.require_protocol_amendment(amended))
+        for manifest in ({}, {"protocolAmendment": "agentic-palisade/wrong"}):
+            with self.subTest(manifest=manifest):
+                with self.assertRaisesRegex(ValueError, "protocol amendment"):
+                    QUALIFICATION.require_protocol_amendment(manifest)
+
     def test_exact_production_pipeline_qualifies_expected_failures_and_tamper_rejection(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "qualification"

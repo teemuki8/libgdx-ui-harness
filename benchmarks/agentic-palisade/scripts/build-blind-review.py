@@ -17,6 +17,7 @@ import tempfile
 LABELS = tuple("ABCDEF")
 SCHEMA_VERSION = "agentic-palisade/blind-review-v1"
 MAPPING_VERSION = "agentic-palisade/blind-mapping-v1"
+PROTOCOL_AMENDMENT = "agentic-palisade/task-8-auth-broker-amendment-v1"
 SHUFFLE_DOMAIN = b"agentic-palisade/blind-shuffle/v1\x00"
 REQUIRED_REFERENCES = (
     "initial-1920x1080",
@@ -252,6 +253,8 @@ def _load_inputs(root):
     manifest = _json(manifest_path)
     if manifest.get("schemaVersion") != "agentic-palisade/benchmark-manifest-v1":
         raise ValueError("unsupported benchmark manifest schema")
+    if manifest.get("protocolAmendment") != PROTOCOL_AMENDMENT:
+        raise ValueError("unsupported benchmark protocol amendment")
     listed_runs = manifest.get("runs")
     if not isinstance(listed_runs, list) or len(listed_runs) != 6:
         raise ValueError("blind review requires exactly six immutable runs")

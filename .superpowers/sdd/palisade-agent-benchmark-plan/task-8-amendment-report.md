@@ -109,3 +109,57 @@ python3 benchmarks/agentic-palisade/scripts/run-benchmark.py \
 ```
 
 This command has not been executed.
+
+## Consumer-boundary amendment gate
+
+Independent review found that the runner bound the amendment identity into new
+manifests, but downstream consumers did not yet require it. That omission could
+allow the preserved pre-amendment infrastructure abort to reach a later stage
+and fail on missing evaluation data rather than being excluded by identity.
+
+The exact value
+`agentic-palisade/task-8-auth-broker-amendment-v1` is now required:
+
+- by the evaluator CLI before it resolves candidate or corpus inputs;
+- by qualification before it reads run records or launches the evaluator;
+- by blinded packaging before it reads any run record or evaluation; and
+- by lock/unblind analysis through its mandatory blinded-input reload.
+
+The evaluator's precommitted form is now:
+
+```text
+agentic-palisade-evaluator evaluate \
+  --benchmark-manifest <amended-run-root>/benchmark-manifest.json \
+  --candidate <immutable-candidate> \
+  --corpus <amended-run-root>/corpus \
+  --output <new-evaluation-directory> \
+  --candidate-id <run-id>
+```
+
+Regressions were observed red first: the blinding test reached the deliberately
+missing `evaluation.json` for both missing and wrong identities and for the real
+`20260729T173223Z` abort; the qualification test failed because no gate existed;
+and the evaluator test failed to compile because no manifest validator existed.
+After the gates and fixture identity were added:
+
+```text
+python3 scripts/test-blinding.py
+.............
+Ran 13 tests in 16.874s
+OK
+
+python3 -m unittest \
+  scripts.test-qualification.QualificationTest.test_protocol_amendment_gate_requires_exact_identity \
+  scripts.test-qualification.QualificationTest.test_channel_continuity_rejects_a_drop_from_every_final_channel \
+  scripts.test-qualification.QualificationTest.test_rejected_input_retention_detects_destructive_handling
+...
+Ran 3 tests in 0.001s
+OK
+
+./gradlew -p benchmarks/agentic-palisade/evaluator test
+BUILD SUCCESSFUL in 6s
+```
+
+The valid amended six-run fixture passes the same loader. Missing, wrong, and
+the real preserved-abort identity are rejected before evaluation reads. This
+review round ran no model, measured agent, candidate, or evaluator scenario.
