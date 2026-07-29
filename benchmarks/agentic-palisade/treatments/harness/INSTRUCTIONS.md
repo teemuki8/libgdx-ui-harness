@@ -12,7 +12,7 @@ The generated harness overlay adds `io.github.teemuki8:harness-lwjgl3:1.0.0` and
 ../../../gradlew -p . --init-script ../treatments/harness/build-overlay.gradle.kts run
 ```
 
-Send one JSON object per line on standard input. Every object has exactly `operation` and `arguments`; the stable session is `candidate-ui`. The nine fixed operations are:
+Send one JSON object per line on standard input. Every object has exactly `operation` and `arguments`; the stable session is `candidate-ui`. The ten fixed operations are:
 
 - `ui_sessions` with `{}`;
 - `ui_capabilities`, `ui_snapshot`, and `ui_trace_stop` with `{"sessionId":"candidate-ui"}`;
@@ -20,6 +20,8 @@ Send one JSON object per line on standard input. Every object has exactly `opera
 - `ui_action` with a locator and one allowlisted action;
 - `ui_wait` with a locator and `present` or `visible`;
 - `ui_screenshot` with the required pixel and PNG bounds;
+- `ui_inspect_compare` with reference `initial-1280x720`, policy `pixel-exact` version 1,
+  viewport `desktop-1280x720`, and explicit iteration, duration, pixel, and PNG bounds;
 - `ui_trace_start` with bounded duration and byte limits.
 
 Locators and actions use the published V1 `kind` discriminator. For example, a role/name locator composes `{"kind":"role","role":"button"}` with a `{"kind":"name","match":{"mode":"exact","source":"START BATTLE"}}` filter. The CLI rejects extra envelope fields, unknown operations, class names, scripts, arbitrary commands, and artifact paths.

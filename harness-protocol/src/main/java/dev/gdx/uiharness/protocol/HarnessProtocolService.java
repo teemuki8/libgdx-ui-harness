@@ -38,19 +38,30 @@ public final class HarnessProtocolService {
             "(?:[A-Za-z]:\\\\|(?<![A-Za-z0-9:/])/(?!/))[^\\s,;\\\"'{}\\[\\]]+");
     private final Map<String, Session> sessions;
     private final Map<String, ContractProvider> contracts;
+    private final Map<String, InspectCaptureCompareService> comparisons;
     private final MonotonicClock clock;
     private final Executor blockingExecutor;
 
     /** Creates a service over an immutable session registry. */
     public HarnessProtocolService(
             Map<String, Session> sessions, MonotonicClock clock, Executor blockingExecutor) {
-        this(sessions, Map.of(), clock, blockingExecutor);
+        this(sessions, Map.of(), Map.of(), clock, blockingExecutor);
     }
 
     /** Creates a service with optional evaluator-complete contract providers by session ID. */
     public HarnessProtocolService(
             Map<String, Session> sessions,
             Map<String, ContractProvider> contracts,
+            MonotonicClock clock,
+            Executor blockingExecutor) {
+        this(sessions, contracts, Map.of(), clock, blockingExecutor);
+    }
+
+    /** Creates a service with optional contract and inspect-compare providers by session ID. */
+    public HarnessProtocolService(
+            Map<String, Session> sessions,
+            Map<String, ContractProvider> contracts,
+            Map<String, InspectCaptureCompareService> comparisons,
             MonotonicClock clock,
             Executor blockingExecutor) {
         Objects.requireNonNull(sessions, "sessions");
@@ -71,6 +82,19 @@ public final class HarnessProtocolService {
             contractCopy.put(id, Objects.requireNonNull(provider, "contract provider"));
         });
         this.contracts = Map.copyOf(contractCopy);
+        Objects.requireNonNull(comparisons, "comparisons");
+        LinkedHashMap<String, InspectCaptureCompareService> comparisonCopy =
+                new LinkedHashMap<>();
+        comparisons.forEach((id, comparison) -> {
+            ProtocolJson.requireIdentifier(id, "comparison sessionId");
+            if (!copy.containsKey(id)) {
+                throw new IllegalArgumentException(
+                        "comparison service has no matching session: " + id);
+            }
+            comparisonCopy.put(
+                    id, Objects.requireNonNull(comparison, "comparison service"));
+        });
+        this.comparisons = Map.copyOf(comparisonCopy);
         this.clock = Objects.requireNonNull(clock, "clock");
         this.blockingExecutor = Objects.requireNonNull(blockingExecutor, "blockingExecutor");
     }
@@ -166,6 +190,17 @@ public final class HarnessProtocolService {
             return RoutedOperation.map(session.capture().capture(screenshot.toCore(), deadline),
                     HarnessResponse.Result.Screenshot::fromCore);
         }
+        if (command instanceof Command.InspectCompare compare) {
+            InspectCaptureCompareService comparison = comparisons.get(request.sessionId());
+            if (comparison == null) {
+                throw new HarnessException(ErrorCode.UNSUPPORTED_CAPABILITY,
+                        "Session does not support inspect-capture-compare",
+                        ErrorEvidence.empty());
+            }
+            return RoutedOperation.map(
+                    comparison.execute(compare.toCore(), deadline),
+                    HarnessResponse.Result.InspectCompare::fromCore);
+        }
         if (command instanceof Command.TraceStart traceStart) {
             return RoutedOperation.map(session.traces().start(traceStart, deadline),
                     Function.identity());
@@ -197,6 +232,9 @@ public final class HarnessProtocolService {
         }
         if (command instanceof Command.Screenshot) {
             return "screenshot";
+        }
+        if (command instanceof Command.InspectCompare) {
+            return "compare";
         }
         return "trace";
     }

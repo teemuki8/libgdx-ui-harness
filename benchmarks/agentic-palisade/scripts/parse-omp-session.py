@@ -20,6 +20,8 @@ EDIT_TOOLS = {"edit", "write", "ast_edit"}
 BUILD_TASK = re.compile(r"(?:^|\s)(?:build|assemble|classes|compileJava|test|check|jar)(?:\s|$)")
 LAUNCH_TASK = re.compile(r"(?:^|\s)(?:run|runCandidate|launch)(?:\s|$)")
 SCREENSHOT_OPERATION = re.compile(r"(?:ui_screenshot|(?:^|\s)capture(?:\s|$))")
+DIRECT_CAPTURE_OPERATION = re.compile(r"\bui_(?:screenshot|inspect_compare)\b")
+LAUNCHER_CAPTURE_OPERATION = re.compile(r"(?:^|\s)capture(?:\s|$)")
 HEX_256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -92,6 +94,17 @@ def parse_omp_session(path):
     builds = 0
     launches = 0
     screenshots = 0
+    capture_calls = {}
+    capture_events = Counter({
+        "attempted": 0,
+        "schemaRejected": 0,
+        "accepted": 0,
+        "inspected": 0,
+        "compared": 0,
+        "stale": 0,
+        "completionUsed": 0,
+        "launcherCaptures": 0,
+    })
 
     for record_number, record in enumerate(records, start=1):
         event_type = record.get("type")
@@ -128,6 +141,9 @@ def parse_omp_session(path):
                     raise TelemetryError(f"tool arguments at record {record_number} are not an object")
                 tool_calls[call_id] = name
                 tool_counts[name] += 1
+                if name in ("ui_screenshot", "ui_inspect_compare"):
+                    capture_calls[call_id] = name
+                    capture_events["attempted"] += 1
                 if name == "bash":
                     command = _command(arguments)
                     has_gradle = "gradlew" in command or re.search(r"(?:^|\s)gradle(?:\s|$)", command)
@@ -136,6 +152,12 @@ def parse_omp_session(path):
                     if has_gradle and LAUNCH_TASK.search(command):
                         launches += 1
                     screenshots += len(SCREENSHOT_OPERATION.findall(command))
+                    attempts = len(DIRECT_CAPTURE_OPERATION.findall(command))
+                    launcher_captures = len(LAUNCHER_CAPTURE_OPERATION.findall(command))
+                    if attempts or launcher_captures:
+                        capture_calls[call_id] = name
+                    capture_events["attempted"] += attempts
+                    capture_events["launcherCaptures"] += launcher_captures
         elif role == "toolResult":
             call_id = message.get("toolCallId")
             name = message.get("toolName")
@@ -162,6 +184,26 @@ def parse_omp_session(path):
             raise TelemetryError(f"tool result error flag at record {record_number} is not boolean")
         if is_error:
             failed_operations.append({"toolCallId": call_id, "name": name})
+        if call_id in capture_calls:
+            visible = json.dumps(
+                message.get("content", []), sort_keys=True, separators=(",", ":"))
+            if is_error and (
+                    "invalid-arguments" in visible
+                    or "schema" in visible.lower()):
+                capture_events["schemaRejected"] += 1
+            if "screenshot-result" in visible:
+                capture_events["accepted"] += 1
+            if "inspect-compare-result" in visible:
+                if "currentArtifact" in visible:
+                    capture_events["accepted"] += 1
+                    capture_events["inspected"] += 1
+                if re.search(r'\bmetrics\b.{0,4}[{\\"]', visible):
+                    capture_events["compared"] += 1
+            if re.search(r'\bstatus\b.{0,16}\bstale\b', visible):
+                capture_events["stale"] += 1
+                capture_events["inspected"] += 1
+            if re.search(r'\bstatus\b.{0,16}\bconverged\b', visible):
+                capture_events["completionUsed"] += 1
     unfinished = sorted(set(tool_calls) - seen_results)
     if unfinished:
         raise TelemetryError(f"unfinished tool calls: {', '.join(unfinished)}")
@@ -184,6 +226,7 @@ def parse_omp_session(path):
         "builds": builds,
         "launches": launches,
         "screenshots": screenshots,
+        "captureEvents": dict(capture_events),
         "failedOperations": failed_operations,
     }
 

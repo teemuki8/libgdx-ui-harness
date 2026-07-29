@@ -49,9 +49,9 @@ final class HarnessMcpClient implements Closeable {
         }
         client.notify("notifications/initialized", Map.of());
         JsonNode listed = client.request("tools/list", Map.of());
-        if (listed.path("tools").size() != 9) {
+        if (listed.path("tools").size() != 10) {
             client.close();
-            throw new IllegalStateException("Expected the nine production tools: " + listed);
+            throw new IllegalStateException("Expected the ten production tools: " + listed);
         }
         return client;
     }
@@ -199,6 +199,32 @@ final class HarnessMcpClient implements Closeable {
                         artifact.path("sha256").asText()));
     }
 
+    Comparison inspectCompare(String sessionId) throws Exception {
+        LinkedHashMap<String, Object> arguments = new LinkedHashMap<>();
+        arguments.put("sessionId", sessionId);
+        arguments.put("referenceId", "reference-screen");
+        arguments.put("policyId", "reference-smoke");
+        arguments.put("policyVersion", 1);
+        arguments.put("viewportId", "main");
+        arguments.put("maxIterations", 1);
+        arguments.put("maxDurationMillis", 30_000);
+        arguments.put("maxWidth", 1280);
+        arguments.put("maxHeight", 720);
+        arguments.put("maxPixels", 1280L * 720);
+        arguments.put("maxPngBytes", 4 * 1_024 * 1_024);
+        JsonNode content = call("ui_inspect_compare", arguments);
+        requireKind(content, "inspect-compare-result");
+        return new Comparison(
+                content.path("status").asText(),
+                content.path("revision").asLong(),
+                content.path("frame").asLong(),
+                content.path("sha256").asText(),
+                artifact(content.path("currentArtifact")),
+                artifact(content.path("evidenceArtifact")),
+                content.path("differences").toString(),
+                content.path("metrics").toString());
+    }
+
     Trace stopTrace(String sessionId) throws Exception {
         JsonNode content = call("ui_trace_stop", Map.of("sessionId", sessionId));
         requireKind(content, "trace-stopped");
@@ -323,6 +349,14 @@ final class HarnessMcpClient implements Closeable {
         }
     }
 
+    private static Artifact artifact(JsonNode node) {
+        return new Artifact(
+                node.path("reference").asText(),
+                node.path("mediaType").asText(),
+                node.path("byteLength").asLong(),
+                node.path("sha256").asText());
+    }
+
     static final class TraceEvidence {
         private final List<TraceEventData> events;
 
@@ -409,6 +443,16 @@ final class HarnessMcpClient implements Closeable {
     record Artifact(String reference, String mediaType, long byteLength, String sha256) {}
 
     record Screenshot(int width, int height, Artifact artifact) {}
+
+    record Comparison(
+            String status,
+            long revision,
+            long frame,
+            String sha256,
+            Artifact current,
+            Artifact evidence,
+            String differences,
+            String metrics) {}
 
     record Snapshot(long revision, long frame, String rootId, int nodeCount) {}
 

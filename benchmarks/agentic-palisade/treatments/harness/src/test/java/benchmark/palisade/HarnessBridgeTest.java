@@ -44,7 +44,7 @@ final class HarnessBridgeTest {
 
         Lwjgl3ApplicationConfiguration configuration = new Lwjgl3ApplicationConfiguration();
         configuration.setTitle("Harness bridge contract");
-        configuration.setWindowedMode(320, 240);
+        configuration.setWindowedMode(1280, 720);
         configuration.setInitialVisible(false);
         configuration.setHdpiMode(HdpiMode.Pixels);
         configuration.disableAudio(true);
@@ -75,7 +75,7 @@ final class HarnessBridgeTest {
                 "closing the bridge must leave application-owned files alone");
 
         List<Map<String, Object>> responses = parseLines(application.output.get());
-        assertEquals(15, responses.size());
+        assertEquals(16, responses.size());
         assertSuccessKind(responses.get(0), "sessions-result");
         Map<String, Object> sessions = result(responses.get(0));
         List<?> catalog = (List<?>) sessions.get("sessions");
@@ -97,19 +97,25 @@ final class HarnessBridgeTest {
         assertSuccessKind(responses.get(5), "trace-started");
         assertSuccessKind(responses.get(6), "screenshot-result");
         Map<String, Object> screenshot = result(responses.get(6));
-        assertEquals(320, ((Number) screenshot.get("width")).intValue());
-        assertEquals(240, ((Number) screenshot.get("height")).intValue());
+        assertEquals(1280, ((Number) screenshot.get("width")).intValue());
+        assertEquals(720, ((Number) screenshot.get("height")).intValue());
         assertOpaqueArtifact((Map<?, ?>) screenshot.get("artifact"), "image/png");
 
-        assertSuccessKind(responses.get(7), "trace-stopped");
-        assertTrue(((Number) result(responses.get(7)).get("eventCount")).longValue() >= 2);
-        assertSuccessKind(responses.get(8), "capabilities-result");
-        assertRejected(responses.get(9), "limit-exceeded");
-        assertSuccessKind(responses.get(10), "trace-started");
-        assertSuccessKind(responses.get(11), "trace-stopped");
-        assertRejected(responses.get(12), "unknown-operation");
-        assertRejected(responses.get(13), "invalid-request");
-        assertRejected(responses.get(14), "limit-exceeded");
+        assertSuccessKind(responses.get(7), "inspect-compare-result");
+        Map<String, Object> comparison = result(responses.get(7));
+        assertEquals("not-converged", comparison.get("status"));
+        assertOpaqueArtifact((Map<?, ?>) comparison.get("currentArtifact"), "image/png");
+        assertOpaqueArtifact(
+                (Map<?, ?>) comparison.get("evidenceArtifact"), "application/json");
+        assertSuccessKind(responses.get(8), "trace-stopped");
+        assertTrue(((Number) result(responses.get(8)).get("eventCount")).longValue() >= 2);
+        assertSuccessKind(responses.get(9), "capabilities-result");
+        assertRejected(responses.get(10), "limit-exceeded");
+        assertSuccessKind(responses.get(11), "trace-started");
+        assertSuccessKind(responses.get(12), "trace-stopped");
+        assertRejected(responses.get(13), "unknown-operation");
+        assertRejected(responses.get(14), "invalid-request");
+        assertRejected(responses.get(15), "limit-exceeded");
         assertTrue(application.artifactsObservedBeforeClose,
                 "screenshot and trace artifacts must be stored below the bridge-owned root");
     }
@@ -173,7 +179,14 @@ final class HarnessBridgeTest {
                 "{\"operation\":\"ui_trace_start\",\"arguments\":{" + session
                         + ",\"maxDurationMillis\":30000,\"maxBytes\":1048576}}",
                 "{\"operation\":\"ui_screenshot\",\"arguments\":{" + session
-                        + ",\"maxWidth\":320,\"maxHeight\":240,\"maxPixels\":76800,"
+                        + ",\"maxWidth\":1280,\"maxHeight\":720,\"maxPixels\":921600,"
+                        + "\"maxPngBytes\":1048576}}",
+                "{\"operation\":\"ui_inspect_compare\",\"arguments\":{" + session
+                        + ",\"referenceId\":\"initial-1280x720\","
+                        + "\"policyId\":\"pixel-exact\",\"policyVersion\":1,"
+                        + "\"viewportId\":\"desktop-1280x720\",\"maxIterations\":1,"
+                        + "\"maxDurationMillis\":30000,\"maxWidth\":1280,"
+                        + "\"maxHeight\":720,\"maxPixels\":921600,"
                         + "\"maxPngBytes\":1048576}}",
                 "{\"operation\":\"ui_trace_stop\",\"arguments\":{" + session + "}}",
                 "{\"operation\":\"ui_capabilities\",\"arguments\":{" + session + "}}",
@@ -218,7 +231,7 @@ final class HarnessBridgeTest {
         @Override public void create() {
             try {
                 stage = new Stage(new ScreenViewport());
-                stage.getViewport().update(320, 240, true);
+                stage.getViewport().update(1280, 720, true);
                 Actor button = new Actor();
                 button.setBounds(80, 80, 160, 80);
                 button.addListener(new InputListener() {

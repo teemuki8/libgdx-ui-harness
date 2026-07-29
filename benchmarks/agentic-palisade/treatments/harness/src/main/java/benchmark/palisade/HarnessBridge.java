@@ -1,6 +1,7 @@
 package benchmark.palisade;
 
 import com.badlogic.gdx.scenes.scene2d.Stage;
+import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.locator.StrictResolution;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
@@ -10,8 +11,11 @@ import dev.gdx.uiharness.core.trace.TraceEvent;
 import dev.gdx.uiharness.core.trace.TraceManifest;
 import dev.gdx.uiharness.core.trace.TraceRecorder;
 import dev.gdx.uiharness.core.wait.WaitEngine;
+import dev.gdx.uiharness.core.visual.VisualPolicy;
+import dev.gdx.uiharness.core.visual.VisualReference;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3ScreenCapture;
+import dev.gdx.uiharness.lwjgl3.Lwjgl3VisualComparator;
 import dev.gdx.uiharness.mcp.ArtifactReference;
 import dev.gdx.uiharness.mcp.HarnessToolHandler;
 import dev.gdx.uiharness.protocol.ArtifactId;
@@ -22,6 +26,7 @@ import dev.gdx.uiharness.protocol.Command;
 import dev.gdx.uiharness.protocol.FileArtifactStore;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
 import dev.gdx.uiharness.protocol.HarnessResponse;
+import dev.gdx.uiharness.protocol.InspectCaptureCompareService;
 import dev.gdx.uiharness.scene2d.RenderThreadScheduler;
 import dev.gdx.uiharness.scene2d.Scene2dHarness;
 import dev.gdx.uiharness.scene2d.Scene2dSession;
@@ -37,6 +42,7 @@ import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.InstantSource;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -53,7 +59,7 @@ public final class HarnessBridge implements AutoCloseable {
     public static final String SESSION_ID = "candidate-ui";
 
     private static final List<String> CAPABILITIES = List.of(
-            "action", "query", "screenshot", "snapshot", "trace", "wait");
+            "action", "compare", "query", "screenshot", "snapshot", "trace", "wait");
     private static final Duration ARTIFACT_LIFETIME = Duration.ofHours(1);
     private static final int SCHEDULER_CAPACITY = 128;
     private static final int FENCE_CAPACITY = 64;
@@ -102,12 +108,22 @@ public final class HarnessBridge implements AutoCloseable {
                 Thread.ofVirtual().name("palisade-harness-protocol-", 0).factory());
         HarnessProtocolService.Session session = new HarnessProtocolService.Session(
                 sceneHarness, locators, waits, capture, new CapabilitySet(CAPABILITIES), traces);
+        HarnessProtocolService.ContractProvider contracts = deadline -> scheduler.submit(
+                () -> sceneSession.stateActionContract(revision.get(), frame.get()),
+                deadline);
+        VisualReference reference = initialReference();
+        VisualPolicy policy = VisualPolicy.pixelExactV1();
+        InspectCaptureCompareService comparison = new InspectCaptureCompareService(
+                SESSION_ID, "palisade-skirmish", "desktop-1280x720",
+                sceneHarness, capture, contracts,
+                id -> reference.referenceId().equals(id)
+                        ? java.util.Optional.of(reference) : java.util.Optional.empty(),
+                List.of(policy), new Lwjgl3VisualComparator(), clock,
+                InstantSource.system());
         HarnessProtocolService protocol = new HarnessProtocolService(
                 Map.of(SESSION_ID, session),
-                Map.of(SESSION_ID, deadline -> scheduler.submit(
-                        () -> sceneSession.stateActionContract(
-                                revision.get(), frame.get()),
-                        deadline)),
+                Map.of(SESSION_ID, contracts),
+                Map.of(SESSION_ID, comparison),
                 clock, protocolExecutor);
         tools = new HarnessToolHandler(protocol, publisher);
     }
@@ -177,6 +193,35 @@ public final class HarnessBridge implements AutoCloseable {
                 () -> sceneSession.snapshot(revision.get(), frame.get()),
                 Deadline.after(clock, Duration.ofSeconds(30)))
                 .toCompletableFuture().join();
+    }
+
+    private static VisualReference initialReference() {
+        Path reference = locateInitialReference();
+        try {
+            byte[] png = Files.readAllBytes(reference);
+            return new VisualReference(
+                    "initial-1280x720", "palisade-skirmish", "corpus-v1",
+                    "desktop-1280x720", png,
+                    "9de83761bb4135d618c48830afc280b85c36ff413f7d3b7248d0fb168b8d5ad0",
+                    1280, 720, new CapturedImage.Scale(1, 1),
+                    Instant.EPOCH, null, null);
+        } catch (IOException failure) {
+            throw new IllegalStateException(
+                    "Unable to read the fixed public visual reference", failure);
+        }
+    }
+
+    private static Path locateInitialReference() {
+        for (Path candidate : List.of(
+                Path.of("../corpus/reference/initial-1280x720.png"),
+                Path.of("benchmarks/agentic-palisade/corpus/reference/initial-1280x720.png"))) {
+            Path normalized = candidate.toAbsolutePath().normalize();
+            if (Files.isRegularFile(normalized, LinkOption.NOFOLLOW_LINKS)
+                    && !Files.isSymbolicLink(normalized)) {
+                return normalized;
+            }
+        }
+        throw new IllegalStateException("Fixed public visual reference is missing");
     }
 
     private void requireOpen() {

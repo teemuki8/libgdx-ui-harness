@@ -143,6 +143,7 @@
         "builds",
         "launches",
         "screenshots",
+        "captureEvents",
         "failedOperations"
       ],
       "properties": {
@@ -166,6 +167,30 @@
         "builds": {"type": "integer", "minimum": 0},
         "launches": {"type": "integer", "minimum": 0},
         "screenshots": {"type": "integer", "minimum": 0},
+        "captureEvents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attempted",
+            "schemaRejected",
+            "accepted",
+            "inspected",
+            "compared",
+            "stale",
+            "completionUsed",
+            "launcherCaptures"
+          ],
+          "properties": {
+            "attempted": {"type": "integer", "minimum": 0},
+            "schemaRejected": {"type": "integer", "minimum": 0},
+            "accepted": {"type": "integer", "minimum": 0},
+            "inspected": {"type": "integer", "minimum": 0},
+            "compared": {"type": "integer", "minimum": 0},
+            "stale": {"type": "integer", "minimum": 0},
+            "completionUsed": {"type": "integer", "minimum": 0},
+            "launcherCaptures": {"type": "integer", "minimum": 0}
+          }
+        },
         "failedOperations": {
           "type": "array",
           "items": {"$ref": "#/$defs/failedOperation"}

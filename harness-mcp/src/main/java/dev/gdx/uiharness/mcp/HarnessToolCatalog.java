@@ -11,7 +11,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 
-/** Immutable catalog of the nine allowlisted MCP tools and their bounded JSON schemas. */
+/** Immutable catalog of the ten allowlisted MCP tools and their bounded JSON schemas. */
 public final class HarnessToolCatalog {
     private static final int MAX_IDENTIFIER = 256;
     private static final Map<String, Object> ARTIFACT_SCHEMA = object(Map.of(
@@ -90,6 +90,55 @@ public final class HarnessToolCatalog {
                                 "scaleY", positiveNumber(Double.MAX_VALUE)),
                                 List.of("artifact", "frame", "revision", "width", "height",
                                         "scaleX", "scaleY"))),
+                tool("ui_inspect_compare",
+                        "Inspect, capture, and compare one current full frame. Minimal valid "
+                                + "arguments: {\"sessionId\":\"game\",\"referenceId\":\"main\","
+                                + "\"policyId\":\"pixel-exact\",\"policyVersion\":1,"
+                                + "\"viewportId\":\"main\",\"maxIterations\":1,"
+                                + "\"maxDurationMillis\":30000,\"maxWidth\":8192,"
+                                + "\"maxHeight\":8192,\"maxPixels\":33554432,"
+                                + "\"maxPngBytes\":12579840}",
+                        sessionInput(Map.of(
+                                "referenceId", string(1, MAX_IDENTIFIER),
+                                "policyId", string(1, 240),
+                                "policyVersion", integer(1, Integer.MAX_VALUE),
+                                "viewportId", string(1, MAX_IDENTIFIER),
+                                "maxIterations", integer(1, 64),
+                                "maxDurationMillis", integer(1, 120_000),
+                                "maxWidth", integer(1, 8_192),
+                                "maxHeight", integer(1, 8_192),
+                                "maxPixels", integer(1, 33_554_432L),
+                                "maxPngBytes", integer(
+                                        1, HarnessResponse.Result.Screenshot.MAX_PNG_BYTES)),
+                                List.of(
+                                        "referenceId", "policyId", "policyVersion",
+                                        "viewportId", "maxIterations", "maxDurationMillis",
+                                        "maxWidth", "maxHeight", "maxPixels", "maxPngBytes")),
+                        output("inspect-compare-result", Map.ofEntries(
+                                Map.entry("status", enumString(
+                                        "incomplete", "stale",
+                                        "not-converged", "converged")),
+                                Map.entry("policy", string(1, MAX_IDENTIFIER)),
+                                Map.entry("referenceId", string(1, MAX_IDENTIFIER)),
+                                Map.entry("currentArtifact", ARTIFACT_SCHEMA),
+                                Map.entry("evidenceArtifact", ARTIFACT_SCHEMA),
+                                Map.entry("revision", integer(0, Long.MAX_VALUE)),
+                                Map.entry("frame", integer(0, Long.MAX_VALUE)),
+                                Map.entry("width", integer(1, 8_192)),
+                                Map.entry("height", integer(1, 8_192)),
+                                Map.entry("scaleX", positiveNumber(Double.MAX_VALUE)),
+                                Map.entry("scaleY", positiveNumber(Double.MAX_VALUE)),
+                                Map.entry("sha256", string(64, 64)),
+                                Map.entry("iterations", integer(0, 64)),
+                                Map.entry("elapsedMillis", integer(0, 120_000)),
+                                Map.entry("metrics", comparisonMetricsSchema()),
+                                Map.entry("differences", array(
+                                        visualDifferenceSchema(), 1_024)),
+                                Map.entry("diagnostics", array(
+                                        comparisonDiagnosticSchema(), 256))),
+                                List.of(
+                                        "status", "policy", "iterations",
+                                        "elapsedMillis", "differences", "diagnostics"))),
                 tool("ui_trace_start", "Start bounded trace collection",
                         sessionInput(Map.of(
                                 "maxDurationMillis", integer(1, 3_600_000),
@@ -281,6 +330,40 @@ public final class HarnessToolCatalog {
                 "sessionId", string(1, MAX_IDENTIFIER),
                 "capabilities", array(string(1, MAX_IDENTIFIER), 256)),
                 List.of("sessionId", "capabilities"));
+    }
+
+    private static Map<String, Object> comparisonMetricsSchema() {
+        return object(Map.of(
+                "differingPixels", integer(0, 33_554_432L),
+                "meanAbsoluteError", number(0, 255),
+                "maximumChannelDelta", integer(0, 255)),
+                List.of(
+                        "differingPixels", "meanAbsoluteError",
+                        "maximumChannelDelta"));
+    }
+
+    private static Map<String, Object> visualDifferenceSchema() {
+        return object(Map.of(
+                "category", enumString(
+                        "text", "value", "bounds", "padding", "visibility",
+                        "raster-residual"),
+                "controlId", nullableString(),
+                "path", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                "expected", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                "observed", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                "blocking", Map.of("type", "boolean")),
+                List.of(
+                        "category", "path",
+                        "expected", "observed", "blocking"));
+    }
+
+    private static Map<String, Object> comparisonDiagnosticSchema() {
+        return object(Map.of(
+                "code", string(1, MAX_IDENTIFIER),
+                "path", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                "expected", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                "observed", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                List.of("code", "path", "expected", "observed"));
     }
 
     private static Map<String, Object> nodeSummarySchema() {

@@ -1575,6 +1575,289 @@
         "minimum" : 1,
         "type" : "integer"
       },
+      "maxDurationMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxHeight" : {
+        "maximum" : 8192,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxIterations" : {
+        "maximum" : 64,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxPixels" : {
+        "maximum" : 33554432,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxPngBytes" : {
+        "maximum" : 12579840,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxWidth" : {
+        "maximum" : 8192,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "policyId" : {
+        "maxLength" : 240,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "policyVersion" : {
+        "maximum" : 2147483647,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "referenceId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "viewportId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId", "referenceId", "policyId", "policyVersion", "viewportId", "maxIterations", "maxDurationMillis", "maxWidth", "maxHeight", "maxPixels", "maxPngBytes" ],
+    "type" : "object"
+  },
+  "name" : "ui_inspect_compare",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "currentArtifact" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "byteLength" : {
+            "maximum" : 16777216,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "mediaType" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "reference" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "sha256" : {
+            "maxLength" : 64,
+            "minLength" : 64,
+            "type" : "string"
+          }
+        },
+        "required" : [ "reference", "mediaType", "byteLength", "sha256" ],
+        "type" : "object"
+      },
+      "diagnostics" : {
+        "items" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "code" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "expected" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "observed" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "path" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            }
+          },
+          "required" : [ "code", "path", "expected", "observed" ],
+          "type" : "object"
+        },
+        "maxItems" : 256,
+        "type" : "array"
+      },
+      "differences" : {
+        "items" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "blocking" : {
+              "type" : "boolean"
+            },
+            "category" : {
+              "enum" : [ "text", "value", "bounds", "padding", "visibility", "raster-residual" ],
+              "type" : "string"
+            },
+            "controlId" : {
+              "maxLength" : 16384,
+              "type" : [ "string", "null" ]
+            },
+            "expected" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "observed" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "path" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            }
+          },
+          "required" : [ "category", "path", "expected", "observed", "blocking" ],
+          "type" : "object"
+        },
+        "maxItems" : 1024,
+        "type" : "array"
+      },
+      "elapsedMillis" : {
+        "maximum" : 120000,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "evidenceArtifact" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "byteLength" : {
+            "maximum" : 16777216,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "mediaType" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "reference" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "sha256" : {
+            "maxLength" : 64,
+            "minLength" : 64,
+            "type" : "string"
+          }
+        },
+        "required" : [ "reference", "mediaType", "byteLength", "sha256" ],
+        "type" : "object"
+      },
+      "frame" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "height" : {
+        "maximum" : 8192,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "iterations" : {
+        "maximum" : 64,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "kind" : {
+        "const" : "inspect-compare-result",
+        "type" : "string"
+      },
+      "metrics" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "differingPixels" : {
+            "maximum" : 33554432,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "maximumChannelDelta" : {
+            "maximum" : 255,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "meanAbsoluteError" : {
+            "maximum" : 255.0,
+            "minimum" : 0.0,
+            "type" : "number"
+          }
+        },
+        "required" : [ "differingPixels", "meanAbsoluteError", "maximumChannelDelta" ],
+        "type" : "object"
+      },
+      "policy" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "referenceId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "revision" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "scaleX" : {
+        "exclusiveMinimum" : 0,
+        "maximum" : 1.7976931348623157E308,
+        "type" : "number"
+      },
+      "scaleY" : {
+        "exclusiveMinimum" : 0,
+        "maximum" : 1.7976931348623157E308,
+        "type" : "number"
+      },
+      "sha256" : {
+        "maxLength" : 64,
+        "minLength" : 64,
+        "type" : "string"
+      },
+      "status" : {
+        "enum" : [ "incomplete", "stale", "not-converged", "converged" ],
+        "type" : "string"
+      },
+      "width" : {
+        "maximum" : 8192,
+        "minimum" : 1,
+        "type" : "integer"
+      }
+    },
+    "required" : [ "kind", "status", "policy", "iterations", "elapsedMillis", "differences", "diagnostics" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
       "maxBytes" : {
         "maximum" : 67108864,
         "minimum" : 1,

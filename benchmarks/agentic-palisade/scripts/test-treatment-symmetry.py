@@ -19,7 +19,7 @@ EXPECTED_COMMON_HASH = (
 )
 EXPECTED_APPENDIX_HASHES = {
     "baseline": "6addeb7eda9150d3ee901062f34cab7b72e09feeb7a011e15b44451603f99681",
-    "harness": "e777014034225c37c5fbfa46a9a1c735d4c48faf019b0511e6b2a8089c69b8cb",
+    "harness": "19961d30b28b3b12955705eaa6aaca7518eab684a28bf0e72dc6d7630eedda8b",
 }
 PUBLISHED_COORDINATES = {
     b'io.github.teemuki8:harness-lwjgl3:1.0.0',

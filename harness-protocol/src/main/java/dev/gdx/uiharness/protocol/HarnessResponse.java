@@ -21,14 +21,19 @@ import dev.gdx.uiharness.core.model.SemanticNode;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.model.SemanticState;
 import dev.gdx.uiharness.core.wait.WaitResult;
+import dev.gdx.uiharness.core.visual.VisualComparisonResult;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /** Explicit V1 response union, correlated to exactly one request and session. */
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "status")
@@ -82,12 +87,13 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(value = Result.Action.class, name = "action"),
         @JsonSubTypes.Type(value = Result.Wait.class, name = "wait"),
         @JsonSubTypes.Type(value = Result.Screenshot.class, name = "screenshot"),
+        @JsonSubTypes.Type(value = Result.InspectCompare.class, name = "inspect-compare"),
         @JsonSubTypes.Type(value = Result.TraceStarted.class, name = "trace-started"),
         @JsonSubTypes.Type(value = Result.TraceStopped.class, name = "trace-stopped")
     })
     sealed interface Result permits Result.Sessions, Result.Capabilities, Result.Snapshot,
             Result.Query, Result.Action, Result.Wait, Result.Screenshot, Result.TraceStarted,
-            Result.TraceStopped {
+            Result.InspectCompare, Result.TraceStopped {
         /** Active session catalog. */
         record Sessions(List<SessionInfo> sessions) implements Result {
             /** Defensively copies the session catalog. */
@@ -221,6 +227,89 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             }
         }
 
+        /** Provenance-bound inspect-capture-compare result with bounded current PNG evidence. */
+        record InspectCompare(
+                String status,
+                String policy,
+                ReferenceVisualData reference,
+                CurrentVisualData current,
+                MetricsData metrics,
+                List<DifferenceData> differences,
+                List<ComparisonDiagnosticData> diagnostics,
+                int iterations,
+                long elapsedMillis,
+                String currentPngBase64) implements Result {
+            /** Validates the bounded wire projection. */
+            public InspectCompare {
+                ProtocolJson.requireIdentifier(status, "comparison status");
+                ProtocolJson.requireIdentifier(policy, "comparison policy");
+                differences = List.copyOf(
+                        Objects.requireNonNull(differences, "differences"));
+                diagnostics = List.copyOf(
+                        Objects.requireNonNull(diagnostics, "diagnostics"));
+                if (!Set.of("incomplete", "stale", "not-converged", "converged")
+                        .contains(status)
+                        || differences.size() > 1_024 || diagnostics.size() > 256
+                        || iterations < 0 || iterations > 64
+                        || elapsedMillis < 0 || elapsedMillis > 120_000) {
+                    throw new IllegalArgumentException(
+                            "comparison result is outside protocol bounds");
+                }
+                if ((current == null) != (currentPngBase64 == null)) {
+                    throw new IllegalArgumentException(
+                            "current metadata and PNG evidence must appear together");
+                }
+                if (("converged".equals(status) || "not-converged".equals(status))
+                        && (reference == null || current == null || metrics == null)) {
+                    throw new IllegalArgumentException(
+                            "completed comparison requires full evidence");
+                }
+                if (("incomplete".equals(status) || "stale".equals(status))
+                        && diagnostics.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "incomplete comparison requires diagnostics");
+                }
+                if (currentPngBase64 != null
+                        && currentPngBase64.length() > Screenshot.MAX_BASE64_LENGTH) {
+                    throw new IllegalArgumentException(
+                            "comparison PNG exceeds protocol response limit");
+                }
+                if (currentPngBase64 != null) {
+                    byte[] png;
+                    try {
+                        png = Base64.getDecoder().decode(currentPngBase64);
+                    } catch (IllegalArgumentException invalid) {
+                        throw new IllegalArgumentException(
+                                "comparison PNG is not valid base64", invalid);
+                    }
+                    if (!sha256(png).equals(current.sha256())) {
+                        throw new IllegalArgumentException(
+                                "comparison PNG hash does not match current metadata");
+                    }
+                }
+            }
+
+            static InspectCompare fromCore(VisualComparisonResult result) {
+                Objects.requireNonNull(result, "result");
+                String png = result.current() == null ? null
+                        : Base64.getEncoder().encodeToString(
+                                result.current().image().pngBytes());
+                return new InspectCompare(
+                        wire(result.status().name()), result.policy().wireName(),
+                        result.reference() == null ? null
+                                : ReferenceVisualData.fromCore(result.reference()),
+                        result.current() == null ? null
+                                : CurrentVisualData.fromCore(result.current()),
+                        result.metrics() == null ? null
+                                : MetricsData.fromCore(result.metrics()),
+                        result.differences().stream()
+                                .map(DifferenceData::fromCore).toList(),
+                        result.diagnostics().stream()
+                                .map(ComparisonDiagnosticData::fromCore).toList(),
+                        result.iterations(), result.elapsed().toMillis(), png);
+            }
+        }
+
         /** Successful trace start. */
         record TraceStarted(String traceId) implements Result {
             /** Validates trace identifier. */
@@ -311,6 +400,153 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             for (String childId : node.childIds()) {
                 appendDepthFirst(snapshot, childId, destination);
             }
+        }
+    }
+
+    /** Immutable reference identity and its complete inspected semantic state. */
+    record ReferenceVisualData(
+            String referenceId,
+            String applicationId,
+            String sourceSessionId,
+            String viewportId,
+            String sha256,
+            int width,
+            int height,
+            double scaleX,
+            double scaleY,
+            String capturedAt,
+            SnapshotData snapshot) {
+        public ReferenceVisualData {
+            ProtocolJson.requireIdentifier(referenceId, "referenceId");
+            ProtocolJson.requireIdentifier(applicationId, "applicationId");
+            ProtocolJson.requireIdentifier(sourceSessionId, "sourceSessionId");
+            ProtocolJson.requireIdentifier(viewportId, "viewportId");
+            ProtocolJson.requireText(sha256, "reference sha256");
+            ProtocolJson.requireText(capturedAt, "reference capturedAt");
+        }
+
+        static ReferenceVisualData fromCore(
+                dev.gdx.uiharness.core.visual.VisualReference reference) {
+            SnapshotData snapshot = reference.semanticSnapshot() == null
+                    ? null
+                    : reference.stateActionContract() == null
+                            ? SnapshotData.fromCore(reference.semanticSnapshot())
+                            : SnapshotData.fromCore(
+                                    reference.semanticSnapshot(),
+                                    reference.stateActionContract());
+            return new ReferenceVisualData(
+                    reference.referenceId(), reference.applicationId(),
+                    reference.sourceSessionId(), reference.viewportId(),
+                    reference.sha256(), reference.width(), reference.height(),
+                    reference.scale().x(), reference.scale().y(),
+                    reference.capturedAt().toString(), snapshot);
+        }
+    }
+
+    /** Accepted current capture identity and its complete inspected semantic state. */
+    record CurrentVisualData(
+            String sessionId,
+            String applicationId,
+            String viewportId,
+            String sha256,
+            long revision,
+            long frame,
+            int width,
+            int height,
+            double scaleX,
+            double scaleY,
+            String capturedAt,
+            SnapshotData snapshot) {
+        public CurrentVisualData {
+            ProtocolJson.requireIdentifier(sessionId, "current sessionId");
+            ProtocolJson.requireIdentifier(applicationId, "current applicationId");
+            ProtocolJson.requireIdentifier(viewportId, "current viewportId");
+            ProtocolJson.requireText(sha256, "current sha256");
+            ProtocolJson.requireText(capturedAt, "current capturedAt");
+            Objects.requireNonNull(snapshot, "snapshot");
+            if (revision != snapshot.revision() || frame != snapshot.frame()) {
+                throw new IllegalArgumentException(
+                        "current visual and semantic identities differ");
+            }
+        }
+
+        static CurrentVisualData fromCore(
+                dev.gdx.uiharness.core.visual.CurrentVisualEvidence current) {
+            SnapshotData snapshot = current.stateActionContract() == null
+                    ? SnapshotData.fromCore(current.semanticSnapshot())
+                    : SnapshotData.fromCore(
+                            current.semanticSnapshot(), current.stateActionContract());
+            return new CurrentVisualData(
+                    current.sessionId(), current.applicationId(), current.viewportId(),
+                    current.image().sha256(), current.image().revision(),
+                    current.image().frame(), current.image().width(),
+                    current.image().height(), current.image().scale().x(),
+                    current.image().scale().y(), current.capturedAt().toString(), snapshot);
+        }
+    }
+
+    /** Deterministic raster metrics retained separately from status. */
+    record MetricsData(
+            long differingPixels, double meanAbsoluteError, int maximumChannelDelta) {
+        public MetricsData {
+            if (differingPixels < 0 || differingPixels > 33_554_432L
+                    || !Double.isFinite(meanAbsoluteError)
+                    || meanAbsoluteError < 0 || meanAbsoluteError > 255
+                    || maximumChannelDelta < 0 || maximumChannelDelta > 255) {
+                throw new IllegalArgumentException("invalid comparison metrics");
+            }
+        }
+
+        static MetricsData fromCore(
+                dev.gdx.uiharness.core.visual.VisualMetrics metrics) {
+            return new MetricsData(
+                    metrics.differingPixels(), metrics.meanAbsoluteError(),
+                    metrics.maximumChannelDelta());
+        }
+    }
+
+    /** One ordered attributed or residual difference. */
+    record DifferenceData(
+            String category,
+            String controlId,
+            String path,
+            String expected,
+            String observed,
+            boolean blocking) {
+        public DifferenceData {
+            ProtocolJson.requireIdentifier(category, "difference category");
+            if (controlId != null) {
+                ProtocolJson.requireIdentifier(controlId, "difference controlId");
+            }
+            ProtocolJson.requireText(path, "difference path");
+            ProtocolJson.requireText(expected, "difference expected");
+            ProtocolJson.requireText(observed, "difference observed");
+        }
+
+        static DifferenceData fromCore(
+                dev.gdx.uiharness.core.visual.VisualDifference difference) {
+            return new DifferenceData(
+                    wire(difference.category().name()), difference.controlId(),
+                    difference.path(), difference.expected(), difference.observed(),
+                    difference.blocking());
+        }
+    }
+
+    /** One actionable comparison diagnostic. */
+    record ComparisonDiagnosticData(
+            String code, String path, String expected, String observed) {
+        public ComparisonDiagnosticData {
+            ProtocolJson.requireIdentifier(code, "comparison diagnostic code");
+            ProtocolJson.requireText(path, "comparison diagnostic path");
+            ProtocolJson.requireText(expected, "comparison diagnostic expected");
+            ProtocolJson.requireText(observed, "comparison diagnostic observed");
+        }
+
+        static ComparisonDiagnosticData fromCore(
+                dev.gdx.uiharness.core.visual.ComparisonDiagnostic diagnostic) {
+            return new ComparisonDiagnosticData(
+                    diagnostic.code(), diagnostic.path(),
+                    diagnostic.expected(), diagnostic.observed());
         }
     }
 
@@ -766,5 +1002,14 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             }
         }
         return Map.copyOf(source);
+    }
+
+    private static String sha256(byte[] content) {
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(content));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError("SHA-256 is unavailable", impossible);
+        }
     }
 }

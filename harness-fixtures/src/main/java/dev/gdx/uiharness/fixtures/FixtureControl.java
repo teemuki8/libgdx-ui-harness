@@ -8,6 +8,8 @@ import dev.gdx.uiharness.core.action.Harness;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
+import dev.gdx.uiharness.core.visual.VisualPolicy;
+import dev.gdx.uiharness.core.visual.VisualReference;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.locator.StrictResolution;
@@ -19,6 +21,7 @@ import dev.gdx.uiharness.core.trace.TraceRecorder;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3ScreenCapture;
+import dev.gdx.uiharness.lwjgl3.Lwjgl3VisualComparator;
 import dev.gdx.uiharness.mcp.ArtifactReference;
 import dev.gdx.uiharness.mcp.HarnessMcpServer;
 import dev.gdx.uiharness.protocol.ArtifactId;
@@ -29,6 +32,7 @@ import dev.gdx.uiharness.protocol.Command;
 import dev.gdx.uiharness.protocol.FileArtifactStore;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
 import dev.gdx.uiharness.protocol.HarnessResponse;
+import dev.gdx.uiharness.protocol.InspectCaptureCompareService;
 import dev.gdx.uiharness.scene2d.ControlledStageClock;
 import dev.gdx.uiharness.scene2d.RenderThreadScheduler;
 import dev.gdx.uiharness.scene2d.Scene2dHarness;
@@ -40,11 +44,15 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -61,11 +69,14 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class FixtureControl implements AutoCloseable {
     /** Stable protocol session selected by all reference workflows. */
     public static final String SESSION_ID = "reference-ui";
+    private static final String APPLICATION_ID = "reference-ui-app";
+    private static final String VIEWPORT_ID = "main";
+    private static final String REFERENCE_ID = "reference-screen";
 
     private static final Duration FIXED_STEP = Duration.ofMillis(16);
     private static final Duration ARTIFACT_LIFETIME = Duration.ofHours(1);
     private static final List<String> CAPABILITIES = List.of(
-            "action", "query", "screenshot", "snapshot", "trace", "wait");
+            "action", "compare", "query", "screenshot", "snapshot", "trace", "wait");
 
     private final Path processRoot;
     private final Path artifactRoot;
@@ -129,11 +140,21 @@ public final class FixtureControl implements AutoCloseable {
             throw new IllegalStateException("MCP server is already started");
         }
         CapabilitySet capabilities = new CapabilitySet(CAPABILITIES);
+        ScreenCapture tracingCapture = new TracingCapture(capture, traces);
         HarnessProtocolService.Session session = new HarnessProtocolService.Session(
-                tracingHarness, new StrictResolution(), waits, new TracingCapture(capture, traces),
+                tracingHarness, new StrictResolution(), waits, tracingCapture,
                 capabilities, traces);
+        VisualReference reference = reference();
+        VisualPolicy policy = new VisualPolicy(
+                "reference-smoke", 1, 1280L * 720, 0.125, true, true);
+        InspectCaptureCompareService comparison = new InspectCaptureCompareService(
+                SESSION_ID, APPLICATION_ID, VIEWPORT_ID, tracingHarness, tracingCapture,
+                null, id -> REFERENCE_ID.equals(id)
+                        ? java.util.Optional.of(reference) : java.util.Optional.empty(),
+                List.of(policy), new Lwjgl3VisualComparator(), clock, InstantSource.system());
         HarnessProtocolService protocol = new HarnessProtocolService(
-                Map.of(SESSION_ID, session), clock, protocolExecutor);
+                Map.of(SESSION_ID, session), Map.of(), Map.of(SESSION_ID, comparison),
+                clock, protocolExecutor);
         server = HarnessMcpServer.open(protocol, publisher, input, output);
         terminationTask = terminationExecutor.submit(() -> {
             server.awaitTermination();
@@ -145,8 +166,8 @@ public final class FixtureControl implements AutoCloseable {
 
     /** Executes exactly one deterministic Stage step and drains render-thread commands. */
     public void beforeDraw() {
-        clock.advance(FIXED_STEP);
         scheduler.drain();
+        clock.advance(FIXED_STEP);
     }
 
     /** Publishes identity for the framebuffer that was just rendered. */
@@ -206,6 +227,32 @@ public final class FixtureControl implements AutoCloseable {
                 .toCompletableFuture().join();
         traces.snapshot(snapshot, "wait");
         return snapshot;
+    }
+
+    private VisualReference reference() {
+        byte[] png;
+        try (InputStream input = FixtureControl.class.getResourceAsStream(
+                "/reference-ui/reference-screen.png")) {
+            if (input == null) {
+                throw new IllegalStateException("Reference screenshot resource is missing");
+            }
+            png = input.readAllBytes();
+        } catch (IOException failure) {
+            throw new IllegalStateException("Unable to read reference screenshot", failure);
+        }
+        return new VisualReference(
+                REFERENCE_ID, APPLICATION_ID, SESSION_ID, VIEWPORT_ID,
+                png, sha256(png), 1280, 720, new CapturedImage.Scale(1, 1),
+                Instant.EPOCH, null, null);
+    }
+
+    private static String sha256(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("JDK lacks SHA-256", impossible);
+        }
     }
     private RuntimeException deleteOwnedDirectories(RuntimeException failure) {
         try {

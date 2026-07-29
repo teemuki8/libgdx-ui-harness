@@ -7,8 +7,10 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import dev.gdx.uiharness.core.trace.TraceReplay;
 import dev.gdx.uiharness.core.trace.TraceReplayer;
+import dev.gdx.uiharness.protocol.ProtocolJson;
 
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
@@ -34,7 +36,9 @@ final class ReferenceApplicationSmokeTest {
                 processRoot = app.root();
                 try (HarnessMcpClient agent = HarnessMcpClient.connect(app)) {
                     assertEquals(List.of(SESSION_ID), agent.sessions());
-                    assertEquals(List.of("action", "query", "screenshot", "snapshot", "trace", "wait"),
+                    assertEquals(List.of(
+                                    "action", "compare", "query", "screenshot",
+                                    "snapshot", "trace", "wait"),
                             agent.capabilities(SESSION_ID));
                     agent.startTrace(SESSION_ID);
                     HarnessMcpClient.Snapshot snapshot = agent.snapshot(SESSION_ID);
@@ -59,6 +63,25 @@ final class ReferenceApplicationSmokeTest {
                     agent.clickByRoleAndName(SESSION_ID, "button", "Open dialog");
                     assertEquals("Reference dialog",
                             agent.singleTextByTestId(SESSION_ID, "reference-dialog"));
+
+                    HarnessMcpClient.Comparison comparison =
+                            agent.inspectCompare(SESSION_ID);
+                    assertEquals("converged", comparison.status(),
+                            comparison.differences() + " " + comparison.metrics());
+                    assertTrue(comparison.revision() >= snapshot.revision());
+                    assertTrue(comparison.frame() >= snapshot.frame());
+                    assertEquals(comparison.sha256(), comparison.current().sha256());
+                    assertEquals("image/png", comparison.current().mediaType());
+                    assertEquals("application/json", comparison.evidence().mediaType());
+                    byte[] comparedScreenshot = app.readArtifact(comparison.current());
+                    assertPngPixelsMatchGolden(expectedScreenshot, comparedScreenshot);
+                    JsonNode comparisonEvidence = ProtocolJson.mapper().readTree(
+                            app.readArtifact(comparison.evidence()));
+                    assertEquals("converged", comparisonEvidence.path("status").asText());
+                    assertEquals(SESSION_ID,
+                            comparisonEvidence.at("/current/sessionId").asText());
+                    assertEquals("reference-screen",
+                            comparisonEvidence.at("/reference/referenceId").asText());
 
                     HarnessMcpClient.Screenshot screenshot = agent.screenshot(SESSION_ID);
                     assertEquals(1280, screenshot.width());
@@ -91,7 +114,7 @@ final class ReferenceApplicationSmokeTest {
                     assertEquals(2, evidence.completedCausalChains("Fill"));
                     assertEquals(2, evidence.completedCausalChains("Click"));
                     assertEquals(1, evidence.completedCausalChains("Scroll"));
-                    assertEquals(1, evidence.completedCausalChains("screenshot"));
+                    assertEquals(2, evidence.completedCausalChains("screenshot"));
                     assertTrue(evidence.requestIds("Fill").stream()
                             .allMatch(id -> id.startsWith("fixture-fill-")));
                     assertTrue(evidence.requestIds("screenshot").stream()
