@@ -1,6 +1,6 @@
 # Agent tools and safe operation
 
-The MCP server exposes exactly nine V1 tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms. Deadlines include adapter work and backend queue time.
+The MCP server exposes exactly ten V1 tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms. Deadlines include adapter work and backend queue time.
 
 | Tool | Purpose | Tool-specific input | Result |
 |---|---|---|---|
@@ -10,6 +10,7 @@ The MCP server exposes exactly nine V1 tools. `tools/list` is the authority; unk
 | `ui_action` | Perform one allowlisted action | required `locator` and `action` | before/after revisions, observed state, evidence, optional artifact |
 | `ui_wait` | Wait on semantics | required `locator`; `condition` is `present` or `visible` | final revision/frame, matches/evidence, optional artifact |
 | `ui_screenshot` | Capture completed-frame PNG evidence | optional `locator`; required `maxWidth`, `maxHeight`, `maxPixels`, `maxPngBytes` | opaque artifact receipt plus frame/revision/dimensions/scales |
+| `ui_inspect_compare` | Inspect, capture, and compare one current full frame | required allowlisted reference/policy/viewport identities plus iteration, duration, pixel, and PNG bounds | explicit convergence status, bounded diagnostics, current PNG artifact, and full immutable evidence artifact |
 | `ui_trace_start` | Start bounded trace collection | required `maxDurationMillis` and `maxBytes` | trace ID |
 | `ui_trace_stop` | Stop and finalize the active trace | none | trace ID/reference, event count, bytes |
 | `ui_capabilities` | Discover one session's supported operations | none | bounded capability-name list |
@@ -35,6 +36,15 @@ When a session registers a state/action contract provider, `ui_snapshot` also re
 below the threshold and otherwise moves to the same immutable artifact channel. Consumers must
 reject unknown contract major versions and must not reinterpret absent or mistyped required
 fields as failed application assertions.
+
+`ui_inspect_compare` accepts only server-registered reference, policy, and viewport identities.
+It always requests a new full-frame capture; launcher-generated PNGs and earlier screenshot
+artifacts cannot satisfy the operation. The result keeps reference, current capture, comparison,
+and policy evidence separate. A `converged` result means the accepted current capture met the
+named policy with no blocking semantic difference. `stale`, `incomplete`, and `not-converged`
+remain distinct results. The current PNG and complete JSON evidence are immutable artifacts.
+Missing or invalid capture fields are reported together with their ranges, observed values, and
+a minimal valid request.
 
 Start a trace before the operation under diagnosis and stop it in all success/failure cleanup paths. Trace ZIPs contain a strict manifest, newline-delimited causal events, and claimed optional evidence. Replay validates sequence, causal parents, session identity, semantic revision/frame progression, limits, archive signatures, duplicate names, traversal names, and Windows drive-qualified names. Replay does not execute commands and does not promise byte-identical GPU output.
 

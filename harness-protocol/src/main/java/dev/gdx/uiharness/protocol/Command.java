@@ -19,12 +19,13 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.Action.class, name = "action"),
     @JsonSubTypes.Type(value = Command.Wait.class, name = "wait"),
     @JsonSubTypes.Type(value = Command.Screenshot.class, name = "screenshot"),
+    @JsonSubTypes.Type(value = Command.InspectCompare.class, name = "inspect-compare"),
     @JsonSubTypes.Type(value = Command.TraceStart.class, name = "trace-start"),
     @JsonSubTypes.Type(value = Command.TraceStop.class, name = "trace-stop")
 })
 public sealed interface Command permits Command.Sessions, Command.Capabilities, Command.Snapshot,
         Command.Query, Command.Action, Command.Wait, Command.Screenshot, Command.TraceStart,
-        Command.TraceStop {
+        Command.InspectCompare, Command.TraceStop {
     /** Lists active sessions. */
     record Sessions() implements Command {}
 
@@ -90,6 +91,48 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
                     ? CaptureRequest.fullWindow() : CaptureRequest.actor(locator.toCore());
             return request.withLimits(
                     new CaptureRequest.Limits(maxWidth, maxHeight, maxPixels, maxPngBytes));
+        }
+    }
+
+    /** Runs one bounded full-frame inspect-capture-reference comparison. */
+    record InspectCompare(
+            String referenceId,
+            String policyId,
+            int policyVersion,
+            String viewportId,
+            int maxIterations,
+            long maxDurationMillis,
+            int maxWidth,
+            int maxHeight,
+            long maxPixels,
+            int maxPngBytes) implements Command {
+        /** Validates discoverable identities and all operation/capture bounds. */
+        public InspectCompare {
+            ProtocolJson.requireIdentifier(referenceId, "referenceId");
+            ProtocolJson.requireIdentifier(policyId, "policyId");
+            ProtocolJson.requireIdentifier(viewportId, "viewportId");
+            if (policyId.length() > 240
+                    || policyVersion <= 0 || maxIterations <= 0 || maxIterations > 64
+                    || maxDurationMillis <= 0 || maxDurationMillis > 120_000) {
+                throw new IllegalArgumentException(
+                        "comparison policy, iteration, or duration bound is invalid");
+            }
+            new CaptureRequest.Limits(
+                    maxWidth, maxHeight, maxPixels, maxPngBytes);
+            if (maxWidth > 8_192 || maxHeight > 8_192
+                    || maxPixels > 33_554_432L
+                    || maxPngBytes > HarnessResponse.Result.Screenshot.MAX_PNG_BYTES) {
+                throw new IllegalArgumentException(
+                        "comparison capture bound exceeds protocol limit");
+            }
+        }
+
+        dev.gdx.uiharness.core.visual.InspectCaptureCompareRequest toCore() {
+            return new dev.gdx.uiharness.core.visual.InspectCaptureCompareRequest(
+                    referenceId, policyId, policyVersion, viewportId, maxIterations,
+                    java.time.Duration.ofMillis(maxDurationMillis),
+                    new CaptureRequest.Limits(
+                            maxWidth, maxHeight, maxPixels, maxPngBytes));
         }
     }
 

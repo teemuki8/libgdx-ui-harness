@@ -24,7 +24,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-/** NDJSON front end for exactly the nine bounded V1 MCP-equivalent operations. */
+/** NDJSON front end for exactly the ten bounded V1 MCP-equivalent operations. */
 public final class HarnessCli {
     private static final ObjectMapper JSON = ProtocolJson.mapper();
     private static final Set<String> OPERATIONS = new HarnessToolCatalog().toolNames();

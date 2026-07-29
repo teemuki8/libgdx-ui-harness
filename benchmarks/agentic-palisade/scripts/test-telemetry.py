@@ -43,6 +43,19 @@ class TelemetryTest(unittest.TestCase):
         self.assertEqual(result["launches"], 1)
         self.assertEqual(result["screenshots"], 1)
         self.assertEqual(
+            result["captureEvents"],
+            {
+                "attempted": 1,
+                "schemaRejected": 0,
+                "accepted": 0,
+                "inspected": 0,
+                "compared": 0,
+                "stale": 0,
+                "completionUsed": 0,
+                "launcherCaptures": 0,
+            },
+        )
+        self.assertEqual(
             result["failedOperations"],
             [{"toolCallId": "build-1", "name": "bash"}],
         )
@@ -64,6 +77,71 @@ class TelemetryTest(unittest.TestCase):
         self.assertEqual(result["tokens"]["input"]["value"], 150)
         self.assertEqual(result["toolCalls"], {"bash": 2, "edit": 1})
         self.assertEqual(result["screenshots"], 1)
+
+    def test_separates_capture_and_comparison_channels_from_launcher_pngs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            session = Path(temporary) / "session.jsonl"
+            events = [
+                {"type": "session", "version": 3, "id": "s"},
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "toolCall", "id": "rejected",
+                             "name": "ui_screenshot", "arguments": {}},
+                            {"type": "toolCall", "id": "compared",
+                             "name": "ui_inspect_compare", "arguments": {}},
+                            {"type": "toolCall", "id": "launcher", "name": "bash",
+                             "arguments": {"command": "./gradlew run capture"}},
+                        ],
+                    },
+                },
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "toolResult", "toolCallId": "rejected",
+                        "toolName": "ui_screenshot", "isError": True,
+                        "content": [{"code": "invalid-arguments",
+                                     "message": "schema rejected"}],
+                    },
+                },
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "toolResult", "toolCallId": "compared",
+                        "toolName": "ui_inspect_compare", "isError": False,
+                        "content": [{"kind": "inspect-compare-result",
+                                     "status": "converged",
+                                     "currentArtifact": {"reference": "artifact:1"},
+                                     "metrics": {"differingPixels": 0}}],
+                    },
+                },
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "toolResult", "toolCallId": "launcher",
+                        "toolName": "bash", "isError": False, "content": [],
+                    },
+                },
+            ]
+            session.write_text("".join(json.dumps(event) + "\n" for event in events))
+
+            result = self.telemetry.parse_omp_session(session)
+
+            self.assertEqual(
+                result["captureEvents"],
+                {
+                    "attempted": 2,
+                    "schemaRejected": 1,
+                    "accepted": 1,
+                    "inspected": 1,
+                    "compared": 1,
+                    "stale": 0,
+                    "completionUsed": 1,
+                    "launcherCaptures": 1,
+                },
+            )
 
     def test_rejects_malformed_and_truncated_jsonl(self):
         for fixture in ("session-malformed.jsonl", "session-truncated.jsonl"):

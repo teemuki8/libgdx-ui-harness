@@ -533,6 +533,16 @@ def _empty_telemetry():
         "builds": 0,
         "launches": 0,
         "screenshots": 0,
+        "captureEvents": {
+            "attempted": 0,
+            "schemaRejected": 0,
+            "accepted": 0,
+            "inspected": 0,
+            "compared": 0,
+            "stale": 0,
+            "completionUsed": 0,
+            "launcherCaptures": 0,
+        },
         "failedOperations": [],
     }
 

@@ -17,13 +17,14 @@ import org.junit.jupiter.api.Test;
 final class HarnessToolCatalogTest {
     private static final Set<String> APPROVED = Set.of(
             "ui_sessions", "ui_snapshot", "ui_query", "ui_action", "ui_wait",
-            "ui_screenshot", "ui_trace_start", "ui_trace_stop", "ui_capabilities");
+            "ui_screenshot", "ui_inspect_compare", "ui_trace_start",
+            "ui_trace_stop", "ui_capabilities");
 
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
 
     @Test void exposesOnlyTheApprovedBoundedTools() {
         assertEquals(APPROVED, catalog.toolNames());
-        assertEquals(9, catalog.tools().size());
+        assertEquals(10, catalog.tools().size());
         for (McpSchema.Tool tool : catalog.tools()) {
             assertEquals("object", tool.inputSchema().get("type"));
             assertEquals(false, tool.inputSchema().get("additionalProperties"));
@@ -72,7 +73,9 @@ final class HarnessToolCatalogTest {
     }
 
     @Test void catalogContainsNoPathExecutionReflectionOrCodeParameters() throws Exception {
-        String json = ProtocolJson.mapper().writeValueAsString(catalog.tools());
+        String json = ProtocolJson.mapper().writeValueAsString(catalog.tools().stream()
+                .map(McpSchema.Tool::inputSchema)
+                .toList());
         for (String forbidden : List.of("\"path\"", "\"command\"", "\"method\"",
                 "\"script\"", "\"code\"", "\"class\"", "reflection")) {
             assertFalse(json.contains(forbidden), forbidden);

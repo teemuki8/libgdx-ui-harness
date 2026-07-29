@@ -145,6 +145,69 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test void rejectedScreenshotShapesReportEveryFieldAndAValidMinimalExample() {
+        AtomicInteger calls = new AtomicInteger();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    calls.incrementAndGet();
+                    return CompletableFuture.failedFuture(new AssertionError());
+                }, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_screenshot",
+                    Map.of("sessionId", "game", "maxBytes", 1024)))
+                    .block(Duration.ofSeconds(10));
+            String message = String.valueOf(structured(result).get("message"));
+
+            assertTrue(result.isError());
+            assertTrue(message.contains("$.maxWidth"));
+            assertTrue(message.contains("$.maxHeight"));
+            assertTrue(message.contains("$.maxPixels"));
+            assertTrue(message.contains("$.maxPngBytes"));
+            assertTrue(message.contains("$.maxBytes"));
+            assertTrue(message.contains("minimalExample="));
+            assertEquals(0, calls.get());
+        }
+    }
+
+    @Test void rejectedCompareShapesReportRangesObservedValuesAndMinimalExample() {
+        AtomicInteger calls = new AtomicInteger();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    calls.incrementAndGet();
+                    return CompletableFuture.failedFuture(new AssertionError());
+                }, new RecordingArtifacts(), executor, 1024)) {
+            LinkedHashMap<String, Object> arguments = new LinkedHashMap<>();
+            arguments.put("sessionId", "");
+            arguments.put("referenceId", "main");
+            arguments.put("policyId", "pixel-exact");
+            arguments.put("policyVersion", 1.5);
+            arguments.put("viewportId", "main");
+            arguments.put("maxIterations", 0);
+            arguments.put("maxDurationMillis", 120_001);
+            arguments.put("maxWidth", 8_193);
+            arguments.put("maxHeight", 720);
+            arguments.put("maxPixelCount", 1280L * 720);
+            arguments.put("maxPixels", 0);
+            arguments.put("maxPngBytes", "large");
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_inspect_compare", arguments)).block(Duration.ofSeconds(10));
+            String message = String.valueOf(structured(result).get("message"));
+
+            assertTrue(result.isError());
+            assertTrue(message.contains("$.sessionId expected string length 1..256"));
+            assertTrue(message.contains("$.policyVersion expected integer in [1,"));
+            assertTrue(message.contains("$.maxIterations expected integer in [1,64]"));
+            assertTrue(message.contains("$.maxDurationMillis expected integer in [1,120000]"));
+            assertTrue(message.contains("$.maxWidth expected integer in [1,8192]"));
+            assertTrue(message.contains("$.maxPixels expected integer in [1,33554432]"));
+            assertTrue(message.contains("$.maxPngBytes expected integer in [1,"));
+            assertTrue(message.contains("$.maxPixelCount"));
+            assertTrue(message.contains("observed"));
+            assertTrue(message.contains("minimalExample="));
+            assertEquals(0, calls.get());
+        }
+    }
+
     @Test void cancellingToolCallCancelsTheProtocolStage() throws Exception {
         AtomicReference<HarnessRequest> observed = new AtomicReference<>();
         CompletableFuture<HarnessResponse> pending = new CompletableFuture<>();
@@ -302,7 +365,7 @@ final class HarnessMcpServerContractTest {
             send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}");
             JsonNode listed = read(reader);
-            assertEquals(9, listed.at("/result/tools").size());
+            assertEquals(10, listed.at("/result/tools").size());
 
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
                     + "\"params\":{\"name\":\"ui_action\",\"arguments\":{"

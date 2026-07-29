@@ -15,6 +15,7 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -78,6 +79,12 @@ public final class HarnessToolHandler implements AutoCloseable {
                 return Mono.just(localError(
                         "invalid-arguments", "Locator exceeds adapter complexity limits"));
             }
+            String actionableValidation =
+                    actionableCaptureValidation(call.name(), arguments);
+            if (actionableValidation != null) {
+                return Mono.just(localError(
+                        "invalid-arguments", actionableValidation));
+            }
             var validation = McpJsonDefaults.getSchemaValidator()
                     .validate(tool.inputSchema(), arguments);
             if (!validation.valid()) {
@@ -126,6 +133,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             case "ui_action" -> "action";
             case "ui_wait" -> "wait";
             case "ui_screenshot" -> "screenshot";
+            case "ui_inspect_compare" -> "inspect-compare";
             case "ui_trace_start" -> "trace-start";
             case "ui_trace_stop" -> "trace-stop";
             case "ui_capabilities" -> "capabilities";
@@ -230,6 +238,51 @@ public final class HarnessToolHandler implements AutoCloseable {
             content.put("scaleY", screenshot.scaleY());
             return Map.copyOf(content);
         }
+        if (result instanceof HarnessResponse.Result.InspectCompare comparison) {
+            LinkedHashMap<String, Object> content = content("inspect-compare-result");
+            content.put("status", comparison.status());
+            content.put("policy", comparison.policy());
+            content.put("iterations", comparison.iterations());
+            content.put("elapsedMillis", comparison.elapsedMillis());
+            content.put("differences", COMMAND_MAPPER.convertValue(
+                    comparison.differences(), List.class));
+            content.put("diagnostics", COMMAND_MAPPER.convertValue(
+                    comparison.diagnostics(), List.class));
+            if (comparison.reference() != null) {
+                content.put("referenceId", comparison.reference().referenceId());
+            }
+            if (comparison.metrics() != null) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> metrics = COMMAND_MAPPER.convertValue(
+                        comparison.metrics(), Map.class);
+                content.put("metrics", metrics);
+            }
+            if (comparison.current() != null) {
+                if (comparison.currentPngBase64() == null) {
+                    throw new IllegalArgumentException(
+                            "accepted current evidence is missing PNG bytes");
+                }
+                byte[] png = Base64.getDecoder().decode(
+                        comparison.currentPngBase64());
+                ArtifactReference current = artifacts.publish("image/png", png.clone());
+                if (!current.sha256().equals(comparison.current().sha256())) {
+                    throw new IllegalArgumentException(
+                            "published current capture hash changed");
+                }
+                content.put("currentArtifact", artifactMap(current));
+                content.put("revision", comparison.current().revision());
+                content.put("frame", comparison.current().frame());
+                content.put("width", comparison.current().width());
+                content.put("height", comparison.current().height());
+                content.put("scaleX", comparison.current().scaleX());
+                content.put("scaleY", comparison.current().scaleY());
+                content.put("sha256", comparison.current().sha256());
+            }
+            ArtifactReference evidence = artifacts.publish(
+                    "application/json", encoded.clone());
+            content.put("evidenceArtifact", artifactMap(evidence));
+            return Map.copyOf(content);
+        }
         if (result instanceof HarnessResponse.Result.TraceStarted started) {
             LinkedHashMap<String, Object> content = content("trace-started");
             content.put("traceId", started.traceId());
@@ -296,6 +349,106 @@ public final class HarnessToolHandler implements AutoCloseable {
             }
         }
         return true;
+    }
+
+    private static String actionableCaptureValidation(
+            String toolName, Map<String, Object> arguments) {
+        List<String> required;
+        Set<String> allowed;
+        String example;
+        if ("ui_screenshot".equals(toolName)) {
+            required = List.of("sessionId", "maxWidth", "maxHeight",
+                    "maxPixels", "maxPngBytes");
+            allowed = Set.of("sessionId", "deadlineMillis", "locator",
+                    "maxWidth", "maxHeight", "maxPixels", "maxPngBytes");
+            example = "{\"sessionId\":\"game\",\"maxWidth\":8192,"
+                    + "\"maxHeight\":8192,\"maxPixels\":33554432,"
+                    + "\"maxPngBytes\":12579840}";
+        } else if ("ui_inspect_compare".equals(toolName)) {
+            required = List.of(
+                    "sessionId", "referenceId", "policyId", "policyVersion",
+                    "viewportId", "maxIterations", "maxDurationMillis",
+                    "maxWidth", "maxHeight", "maxPixels", "maxPngBytes");
+            allowed = Set.of(
+                    "sessionId", "deadlineMillis", "referenceId", "policyId",
+                    "policyVersion", "viewportId", "maxIterations",
+                    "maxDurationMillis", "maxWidth", "maxHeight",
+                    "maxPixels", "maxPngBytes");
+            example = "{\"sessionId\":\"game\",\"referenceId\":\"main\","
+                    + "\"policyId\":\"pixel-exact\",\"policyVersion\":1,"
+                    + "\"viewportId\":\"main\",\"maxIterations\":1,"
+                    + "\"maxDurationMillis\":30000,\"maxWidth\":8192,"
+                    + "\"maxHeight\":8192,\"maxPixels\":33554432,"
+                    + "\"maxPngBytes\":12579840}";
+        } else {
+            return null;
+        }
+        java.util.ArrayList<String> problems = new java.util.ArrayList<>();
+        required.stream().filter(field -> !arguments.containsKey(field))
+                .forEach(field -> problems.add(
+                        "$." + field + " expected required field but observed absent"));
+        arguments.keySet().stream().filter(field -> !allowed.contains(field))
+                .sorted().forEach(field -> problems.add(
+                        "$." + field + " expected one of " + allowed
+                                + " but observed unexpected field"));
+        for (String field : List.of(
+                "sessionId", "referenceId", "viewportId")) {
+            Object value = arguments.get(field);
+            if (value != null && (!(value instanceof String text)
+                    || text.isEmpty() || text.length() > 256)) {
+                problems.add("$." + field
+                        + " expected string length 1..256 but observed "
+                        + boundedObserved(value));
+            }
+        }
+        Object policyId = arguments.get("policyId");
+        if (policyId != null && (!(policyId instanceof String text)
+                || text.isEmpty() || text.length() > 240)) {
+            problems.add("$.policyId expected string length 1..240 but observed "
+                    + boundedObserved(policyId));
+        }
+        validateInteger(arguments, problems, "deadlineMillis", 1, 120_000);
+        validateInteger(arguments, problems, "policyVersion", 1, Integer.MAX_VALUE);
+        validateInteger(arguments, problems, "maxIterations", 1, 64);
+        validateInteger(arguments, problems, "maxDurationMillis", 1, 120_000);
+        validateInteger(arguments, problems, "maxWidth", 1, 8_192);
+        validateInteger(arguments, problems, "maxHeight", 1, 8_192);
+        validateInteger(arguments, problems, "maxPixels", 1, 33_554_432);
+        validateInteger(
+                arguments, problems, "maxPngBytes", 1,
+                HarnessResponse.Result.Screenshot.MAX_PNG_BYTES);
+        if (problems.isEmpty()) {
+            return null;
+        }
+        return String.join("; ", problems) + "; minimalExample=" + example;
+    }
+
+    private static void validateInteger(
+            Map<String, Object> arguments,
+            List<String> problems,
+            String field,
+            long minimum,
+            long maximum) {
+        Object value = arguments.get(field);
+        if (value == null) {
+            return;
+        }
+        boolean valid = value instanceof Number number
+                && Double.isFinite(number.doubleValue())
+                && number.doubleValue() == Math.rint(number.doubleValue())
+                && number.doubleValue() >= minimum
+                && number.doubleValue() <= maximum;
+        if (!valid) {
+            problems.add("$." + field + " expected integer in ["
+                    + minimum + "," + maximum + "] but observed "
+                    + boundedObserved(value));
+        }
+    }
+
+    private static String boundedObserved(Object value) {
+        String observed = String.valueOf(value);
+        return observed.length() <= 128
+                ? observed : observed.substring(0, 128);
     }
 
     private static boolean push(
