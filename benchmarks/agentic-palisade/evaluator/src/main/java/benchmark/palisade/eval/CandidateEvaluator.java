@@ -1,0 +1,872 @@
+package benchmark.palisade.eval;
+
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.StreamReadConstraints;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
+
+/** Standalone hidden evaluator; it communicates with candidates only through CandidateLauncher files. */
+public final class CandidateEvaluator {
+    private static final Pattern CANDIDATE_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]{0,63}");
+    private static final int MAX_TREE_FILES = 20_000;
+    private static final long MAX_TREE_BYTES = 512L * 1024L * 1024L;
+    private static final long MAX_RESULT_BYTES = 16L * 1024L * 1024L;
+    private static final int MAX_RESULT_LINES = 512;
+    private static final Duration PROCESS_TIMEOUT = Duration.ofMinutes(3);
+    private static final ObjectMapper JSON = new ObjectMapper(JsonFactory.builder()
+            .streamReadConstraints(StreamReadConstraints.builder()
+                    .maxNestingDepth(32).maxStringLength(65_536).maxNumberLength(128)
+                    .maxDocumentLength(MAX_RESULT_BYTES).build()).build())
+            .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+            .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
+
+    private CandidateEvaluator() {
+    }
+
+    /** Evaluates a candidate copy and publishes exactly one atomic evaluation.json. */
+    public static EvaluationRecord evaluate(Request request) throws IOException, InterruptedException {
+        Objects.requireNonNull(request, "request");
+        validateCorpusLayout(request.corpusDirectory());
+        JsonNode corpus = readJson(request.corpusDirectory().resolve("spec.json"), 1_048_576L);
+        FunctionalContract contract = FunctionalContract.fromCorpus(corpus);
+        validateReferences(request.corpusDirectory(), corpus);
+        String candidateHash = treeSha256(request.candidateDirectory());
+        String corpusHash = treeSha256(request.corpusDirectory());
+        var candidateIdentity = new EvaluationRecord.CandidateIdentity(request.candidateId(), candidateHash);
+        var corpusIdentity = new EvaluationRecord.CorpusIdentity(corpus.path("schemaVersion").asText(), corpusHash);
+        FunctionalContract.Result noEvidence = contract.evaluate(JSON.createObjectNode());
+
+        Path workspace = Files.createTempDirectory("palisade-candidate-");
+        try {
+            Path candidateCopy = workspace.resolve("candidate");
+            copyTree(request.candidateDirectory(), candidateCopy);
+            ProcessResult compilation = runProcess(List.of(request.gradleExecutable().toString(), "-p",
+                    candidateCopy.toString(), "classes", "--no-daemon", "--console=plain"), workspace);
+            if (compilation.exitCode() != 0) {
+                EvaluationRecord failed = record("compile-failed", candidateIdentity, corpusIdentity,
+                        noEvidence, List.of(), List.of(),
+                        List.of("candidate compilation failed; exit=" + compilation.exitCode()));
+                publishAfterIdentityCheck(
+                        request.candidateDirectory(), candidateHash, request.outputDirectory(), failed);
+                return failed;
+            }
+            try {
+                String runtimeClasspath = resolveRuntimeClasspath(
+                        request.gradleExecutable(), candidateCopy, workspace);
+                EvaluationData data = evaluateLaunches(
+                        request, candidateCopy, corpus, contract, workspace, runtimeClasspath);
+                EvaluationRecord complete = record("complete", candidateIdentity, corpusIdentity,
+                        data.functional(), data.visual(), data.artifacts(), List.of());
+                publishAfterIdentityCheck(
+                        request.candidateDirectory(), candidateHash, request.outputDirectory(), complete);
+                return complete;
+            } catch (RuntimeException | IOException launchFailure) {
+                EvaluationRecord failed = record("runtime-failed", candidateIdentity, corpusIdentity,
+                        noEvidence, List.of(), List.of(), List.of(boundDiagnostic(launchFailure)));
+                publishAfterIdentityCheck(
+                        request.candidateDirectory(), candidateHash, request.outputDirectory(), failed);
+                return failed;
+            }
+        } finally {
+            deleteTree(workspace);
+        }
+    }
+
+    /** CLI: evaluate, or emit the fixed candidate-visible benchmark-feedback projection. */
+    public static void main(String[] args) throws Exception {
+        if (args.length == 2 && PublicFeedback.COMMAND.equals(args[0])) {
+            JsonNode root = readJson(Path.of(args[1]), MAX_RESULT_BYTES);
+            PublicFeedback.validateEvaluationJson(root);
+            System.out.println(PublicFeedback.toJson(JSON.treeToValue(root, EvaluationRecord.class)));
+            return;
+        }
+        if (args.length != 9 || !"evaluate".equals(args[0])) {
+            throw new IllegalArgumentException("Expected evaluate --candidate <dir> --corpus <dir> --output <new-dir> --candidate-id <id>");
+        }
+        Map<String, String> options = parseOptions(args, 1);
+        String gradle = System.getenv().getOrDefault("PALISADE_GRADLE", "gradle");
+        EvaluationRecord record = evaluate(new Request(Path.of(required(options, "--candidate")),
+                Path.of(required(options, "--corpus")), Path.of(required(options, "--output")),
+                required(options, "--candidate-id"), Path.of(gradle)));
+        System.out.println(record.status());
+    }
+
+    private static EvaluationData evaluateLaunches(Request request, Path candidateCopy, JsonNode corpus,
+            FunctionalContract contract, Path workspace, String runtimeClasspath)
+            throws IOException, InterruptedException {
+        Path evidence1920 = workspace.resolve("evidence-1920");
+        List<ObjectNode> commands1920 = new ArrayList<>();
+        commands1920.add(command("resize").put("width", 1920).put("height", 1080));
+        addCaptures(commands1920, "initial-1920x1080");
+        for (int index = 0; index < 24; index++) {
+            commands1920.add(command("pointer").put("action", "scroll").put("amountX", 0).put("amountY", 100));
+        }
+        addCaptures(commands1920, "bottom-1920x1080");
+        commands1920.add(command("close"));
+        runLauncher(runtimeClasspath, candidateCopy, workspace, commands1920, evidence1920);
+        validateEvidenceLayout(evidence1920, captureNames("initial-1920x1080", "bottom-1920x1080"));
+        List<ResultLine> results1920 = readResults(
+                evidence1920.resolve("results.ndjson"), commands1920);
+
+        Path evidence1280 = workspace.resolve("evidence-1280");
+        List<ObjectNode> commands1280 = new ArrayList<>();
+        commands1280.add(command("resize").put("width", 1280).put("height", 720));
+        addCaptures(commands1280, "initial-1280x720");
+        commands1280.add(command("close"));
+        runLauncher(runtimeClasspath, candidateCopy, workspace, commands1280, evidence1280);
+        validateEvidenceLayout(evidence1280, captureNames("initial-1280x720"));
+        List<ResultLine> results1280 = readResults(
+                evidence1280.resolve("results.ndjson"), commands1280);
+
+        List<EvaluationRecord.Artifact> artifacts = new ArrayList<>();
+        ObjectNode functionalEvidence = runFunctionalScenarios(
+                runtimeClasspath, candidateCopy, workspace);
+        addFunctionalArtifacts(workspace, artifacts);
+        ObjectNode checkpoints = functionalEvidence.withObject("checkpoints");
+        ObjectNode initialState = stateForCapture(results1920, "captures/initial-1920x1080-0.png");
+        ObjectNode bottomState = stateForCapture(results1920, "captures/bottom-1920x1080-0.png");
+        copyCheckpointIfAbsent(checkpoints, "initial", initialState);
+        copyObservedCheckpoint(checkpoints, "bottom", bottomState);
+        FunctionalContract.Result functional = contract.evaluate(functionalEvidence);
+
+        List<EvaluationRecord.VisualOutcome> visual = new ArrayList<>();
+        for (JsonNode reference : corpus.path("references")) {
+            String referenceId = reference.path("id").asText();
+            Path evidence = referenceId.endsWith("1280x720") ? evidence1280 : evidence1920;
+            List<Path> captures = capturePaths(evidence, referenceId);
+            Path referencePath = request.corpusDirectory().resolve(reference.path("file").asText()).normalize();
+            VisualMetrics.Result metrics =
+                    VisualMetrics.compare(referencePath, captures);
+            List<String> captureHashes = new ArrayList<>();
+            for (Path capture : captures) {
+                String hash = fileSha256(capture);
+                captureHashes.add(hash);
+                artifacts.add(new EvaluationRecord.Artifact("captures/" + capture.getFileName(),
+                        Files.size(capture), hash));
+            }
+            visual.add(new EvaluationRecord.VisualOutcome(
+                    referenceId, reference.path("viewportId").asText(),
+                    reference.path("sha256").asText(), captureHashes, metrics));
+        }
+        artifacts.add(artifact("evidence/1920/results.ndjson", evidence1920.resolve("results.ndjson")));
+        artifacts.add(artifact("evidence/1280/results.ndjson", evidence1280.resolve("results.ndjson")));
+        return new EvaluationData(functional, visual, artifacts);
+    }
+
+    private static String resolveRuntimeClasspath(
+            Path gradle, Path candidateCopy, Path workspace)
+            throws IOException, InterruptedException {
+        Path initScript = workspace.resolve("runtime-classpath.init.gradle");
+        Path output = workspace.resolve("runtime-classpath.txt");
+        String script = """
+                gradle.projectsEvaluated {
+                    rootProject.tasks.register("palisadeRuntimeClasspath") {
+                        doLast {
+                            def sets = rootProject.extensions.getByType(
+                                org.gradle.api.tasks.SourceSetContainer)
+                            file(System.getProperty("palisade.classpath.output")).text =
+                                sets.getByName("main").runtimeClasspath.asPath
+                        }
+                    }
+                }
+                """;
+        Files.writeString(initScript, script, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
+        ProcessResult result = runProcess(List.of(
+                gradle.toString(), "-p", candidateCopy.toString(), "-I", initScript.toString(),
+                "-Dpalisade.classpath.output=" + output,
+                "palisadeRuntimeClasspath", "--no-daemon", "--console=plain"), workspace);
+        if (result.exitCode() != 0 || !Files.isRegularFile(output, LinkOption.NOFOLLOW_LINKS)
+                || Files.size(output) > 1_048_576L) {
+            throw new IllegalArgumentException("Could not resolve candidate runtime classpath");
+        }
+        return validateRuntimeClasspath(
+                Files.readString(output, StandardCharsets.UTF_8), candidateCopy);
+    }
+
+    static String validateRuntimeClasspath(String classpath, Path candidateCopy) {
+        if (classpath.isBlank() || classpath.indexOf('\n') >= 0 || classpath.indexOf('\r') >= 0) {
+            throw new IllegalArgumentException("Invalid candidate runtime classpath");
+        }
+        Path classes = candidateCopy.resolve("build/classes/java/main")
+                .toAbsolutePath().normalize();
+        Path candidateBuild = candidateCopy.resolve("build").toAbsolutePath().normalize();
+        boolean hasCandidateClasses = false;
+        for (String entry : classpath.split(
+                Pattern.quote(java.io.File.pathSeparator), -1)) {
+            Path path = Path.of(entry).toAbsolutePath().normalize();
+            boolean missingCandidateOutput =
+                    !Files.exists(path, LinkOption.NOFOLLOW_LINKS)
+                    && path.startsWith(candidateBuild);
+            if (entry.isBlank()
+                    || (!missingCandidateOutput
+                            && !Files.exists(path, LinkOption.NOFOLLOW_LINKS))
+                    || Files.isSymbolicLink(path)) {
+                throw new IllegalArgumentException(
+                        "Invalid candidate runtime classpath entry");
+            }
+            if (path.equals(classes)
+                    && Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+                hasCandidateClasses = true;
+            }
+        }
+        if (!hasCandidateClasses) {
+            throw new IllegalArgumentException(
+                    "Candidate classes are absent from runtime classpath");
+        }
+        return classpath;
+    }
+
+    static List<String> launchCommand(
+            Path java, String runtimeClasspath, Path commands, Path evidence) {
+        List<String> command = new ArrayList<>();
+        command.add(java.toString());
+        command.add("--enable-native-access=ALL-UNNAMED");
+        if (System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("mac")) {
+            command.add("-XstartOnFirstThread");
+        }
+        command.add("-cp");
+        command.add(runtimeClasspath);
+        command.add("benchmark.palisade.CandidateLauncher");
+        command.add("--commands");
+        command.add(commands.toString());
+        command.add("--evidence");
+        command.add(evidence.toString());
+        return List.copyOf(command);
+    }
+
+    private static Path javaExecutable() {
+        String executable = System.getProperty("os.name").toLowerCase(Locale.ROOT)
+                .contains("win") ? "java.exe" : "java";
+        Path java = Path.of(System.getProperty("java.home"), "bin", executable)
+                .toAbsolutePath().normalize();
+        if (!Files.isRegularFile(java, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalStateException("Current Java executable is unavailable");
+        }
+        return java;
+    }
+
+    private static void runLauncher(String runtimeClasspath, Path candidateCopy, Path workspace,
+            List<ObjectNode> commands, Path evidence) throws IOException, InterruptedException {
+        Files.createDirectories(evidence);
+        Path commandsFile = workspace.resolve("commands-" + evidence.getFileName() + ".ndjson");
+        StringBuilder content = new StringBuilder();
+        for (ObjectNode command : commands) {
+            content.append(JSON.writeValueAsString(command)).append('\n');
+        }
+        Files.writeString(commandsFile, content, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
+        ProcessResult result = runProcess(
+                launchCommand(javaExecutable(), runtimeClasspath, commandsFile, evidence), workspace);
+        if (result.exitCode() != 0) {
+            throw new IllegalStateException("Candidate launcher failed; exit=" + result.exitCode());
+        }
+    }
+
+    private static ObjectNode runFunctionalScenarios(String runtimeClasspath, Path candidateCopy, Path workspace)
+            throws IOException, InterruptedException {
+        ObjectNode evidence = JSON.createObjectNode();
+        ObjectNode checkpoints = evidence.putObject("checkpoints");
+
+        List<ObjectNode> focusCommands = tabs(18);
+        List<ResultLine> focusResults = runFunctionalScenario(
+                runtimeClasspath, candidateCopy, workspace, "focus", focusCommands);
+        ObjectNode initial = focusResults.get(0).state().deepCopy();
+        ArrayNode observedFocusOrder = initial.putArray("focusOrder");
+        ArrayNode observedControlOrder = initial.putArray("controlOrder");
+        ArrayNode observedControls = initial.putArray("controls");
+        for (ResultLine line : focusResults.subList(0, focusCommands.size())) {
+            String focused = observableText(
+                    line.state(), "focusedControlId", "focusId");
+            if (focused != null) {
+                observedFocusOrder.add(focused);
+                observedControlOrder.add(focused);
+                addFocusedControl(observedControls, line.state(), focused, -1);
+            }
+        }
+
+        List<ObjectNode> conditional = new ArrayList<>();
+        conditional.addAll(tabs(6));
+        conditional.add(key("ENTER", false));
+        conditional.add(key("DOWN", false));
+        conditional.add(key("ENTER", false));
+        int visibleIndex = conditional.size() - 1;
+        conditional.add(key("TAB", false));
+        conditional.add(key("TAB", true));
+        conditional.add(key("ENTER", false));
+        conditional.add(key("UP", false));
+        conditional.add(key("ENTER", false));
+        List<ResultLine> conditionalResults = runFunctionalScenario(
+                runtimeClasspath, candidateCopy, workspace, "conditional", conditional);
+        ObjectNode targetState = conditionalResults.get(visibleIndex + 1).state();
+        String targetFocus = observableText(
+                targetState, "focusedControlId", "focusId");
+        if (targetFocus != null) {
+            observedControlOrder.insert(6, targetFocus);
+            addFocusedControl(observedControls, targetState, targetFocus, 6);
+        }
+        copyObservedCheckpoint(checkpoints, "initial", initial);
+        copyObservedCheckpoint(checkpoints, "conditionalVisible", conditionalResults.get(visibleIndex).state());
+        copyObservedCheckpoint(checkpoints, "conditionalHidden", conditionalResults.get(conditional.size() - 1).state());
+
+        copyObservedCheckpoint(checkpoints, "minimumSeed", runSeedScenario(
+                runtimeClasspath, candidateCopy, workspace, "seed-minimum", "0", false));
+        copyObservedCheckpoint(checkpoints, "maximumSeed", runSeedScenario(
+                runtimeClasspath, candidateCopy, workspace, "seed-maximum", "4294967295", false));
+        copyObservedCheckpoint(checkpoints, "belowMinimumSeed", runSeedScenario(
+                runtimeClasspath, candidateCopy, workspace, "seed-below", "-1", false));
+        copyObservedCheckpoint(checkpoints, "aboveMaximumSeed", runSeedScenario(
+                runtimeClasspath, candidateCopy, workspace, "seed-above", "4294967296", false));
+        copyObservedCheckpoint(checkpoints, "invalidStart", runSeedScenario(
+                runtimeClasspath, candidateCopy, workspace, "invalid-start", "-1", true));
+
+        copyObservedCheckpoint(checkpoints, "copySeed", runActionScenario(
+                runtimeClasspath, candidateCopy, workspace, "copy-seed", 16));
+        copyObservedCheckpoint(checkpoints, "randomSeed", runRandomSeedScenario(
+                runtimeClasspath, candidateCopy, workspace));
+        copyObservedCheckpoint(checkpoints, "cancel", runActionScenario(
+                runtimeClasspath, candidateCopy, workspace, "cancel", 18));
+        copyObservedCheckpoint(checkpoints, "confirmation", runActionScenario(
+                runtimeClasspath, candidateCopy, workspace, "start-battle", 19));
+        copyObservedCheckpoint(checkpoints, "escape", runEscapeScenario(
+                runtimeClasspath, candidateCopy, workspace));
+        return evidence;
+    }
+
+    private static void addFunctionalArtifacts(
+            Path workspace, List<EvaluationRecord.Artifact> artifacts)
+            throws IOException {
+        for (String name : List.of(
+                "focus", "conditional", "seed-minimum", "seed-maximum",
+                "seed-below", "seed-above", "invalid-start", "copy-seed",
+                "random-seed", "cancel", "start-battle", "escape")) {
+            Path results = workspace.resolve("functional-" + name)
+                    .resolve("results.ndjson");
+            artifacts.add(artifact(
+                    "evidence/functional/" + name + "/results.ndjson", results));
+        }
+    }
+
+    private static ObjectNode runSeedScenario(String runtimeClasspath, Path candidateCopy, Path workspace,
+            String name, String seed, boolean activateStart) throws IOException, InterruptedException {
+        List<ObjectNode> commands = new ArrayList<>(tabs(15));
+        commands.add(key("A", false).put("control", true));
+        for (int index = 0; index < seed.length(); index++) {
+            commands.add(command("key").put("action", "type")
+                    .put("character", String.valueOf(seed.charAt(index))));
+        }
+        if (activateStart) {
+            commands.addAll(tabs(4));
+            commands.add(key("ENTER", false));
+        }
+        List<ResultLine> results = runFunctionalScenario(
+                runtimeClasspath, candidateCopy, workspace, name, commands);
+        return results.get(commands.size() - 1).state();
+    }
+
+    private static ObjectNode runRandomSeedScenario(
+            String runtimeClasspath, Path candidateCopy, Path workspace)
+            throws IOException, InterruptedException {
+        List<ObjectNode> commands = new ArrayList<>(tabs(15));
+        commands.add(key("A", false).put("control", true));
+        commands.add(command("key").put("action", "type").put("character", "1"));
+        int previousIndex = commands.size() - 1;
+        commands.addAll(tabs(2));
+        commands.add(key("ENTER", false));
+        List<ResultLine> results = runFunctionalScenario(
+                runtimeClasspath, candidateCopy, workspace,
+                "random-seed", commands);
+        ObjectNode outcome = results.get(commands.size() - 1).state().deepCopy();
+        JsonNode previousState = results.get(previousIndex).state();
+        JsonNode previousSeed = previousState.path("seed");
+        if (!previousSeed.isIntegralNumber()) {
+            previousSeed = previousState.path("values").path("seed");
+        }
+        if (previousSeed.isIntegralNumber()) {
+            outcome.put("previousSeed", previousSeed.longValue());
+        }
+        return outcome;
+    }
+
+    private static ObjectNode runActionScenario(String runtimeClasspath, Path candidateCopy, Path workspace,
+            String name, int tabs) throws IOException, InterruptedException {
+        List<ObjectNode> commands = new ArrayList<>(tabs(tabs));
+        commands.add(key("ENTER", false));
+        List<ResultLine> results = runFunctionalScenario(
+                runtimeClasspath, candidateCopy, workspace, name, commands);
+        return results.get(commands.size() - 1).state();
+    }
+
+    private static ObjectNode runEscapeScenario(String runtimeClasspath, Path candidateCopy, Path workspace)
+            throws IOException, InterruptedException {
+        List<ObjectNode> commands = List.of(key("ESCAPE", false));
+        return runFunctionalScenario(runtimeClasspath, candidateCopy, workspace, "escape", commands)
+                .get(0).state();
+    }
+
+    private static List<ResultLine> runFunctionalScenario(String runtimeClasspath, Path candidateCopy,
+            Path workspace, String name, List<ObjectNode> actions)
+            throws IOException, InterruptedException {
+        List<ObjectNode> commands = new ArrayList<>(actions);
+        commands.add(command("close"));
+        Path scenarioEvidence = workspace.resolve("functional-" + name);
+        runLauncher(runtimeClasspath, candidateCopy, workspace, commands, scenarioEvidence);
+        validateEvidenceLayout(scenarioEvidence, Set.of());
+        return readResults(
+                scenarioEvidence.resolve("results.ndjson"), commands, false);
+    }
+
+    private static List<ObjectNode> tabs(int count) {
+        List<ObjectNode> commands = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            commands.add(key("TAB", false));
+        }
+        return commands;
+    }
+
+    private static ObjectNode key(String key, boolean shift) {
+        ObjectNode command = command("key").put("action", "press").put("key", key);
+        if (shift) {
+            command.put("shift", true);
+        }
+        return command;
+    }
+
+    private static String observableText(ObjectNode state, String primary, String alternate) {
+        String value = state.path(primary).textValue();
+        return value != null ? value : state.path(alternate).textValue();
+    }
+
+    private static void addFocusedControl(
+            ArrayNode controls, ObjectNode state, String focused, int index) {
+        JsonNode metadata = state.path("focusedControl");
+        if (!metadata.isObject()
+                || !focused.equals(metadata.path("id").textValue())) {
+            return;
+        }
+        if (index < 0) {
+            controls.add(metadata.deepCopy());
+        } else {
+            controls.insert(index, metadata.deepCopy());
+        }
+    }
+
+    private static void addCaptures(List<ObjectNode> commands, String referenceId) {
+        for (int index = 0; index < 5; index++) {
+            commands.add(command("capture").put("id", referenceId + "-" + index));
+        }
+    }
+
+    private static ObjectNode command(String name) {
+        return JSON.createObjectNode().put("command", name);
+    }
+
+    private static Set<String> captureNames(String... referenceIds) {
+        Set<String> names = new LinkedHashSet<>();
+        for (String referenceId : referenceIds) {
+            for (int index = 0; index < 5; index++) {
+                names.add(referenceId + "-" + index + ".png");
+            }
+        }
+        return names;
+    }
+
+    private static List<Path> capturePaths(Path evidence, String referenceId) {
+        List<Path> paths = new ArrayList<>(5);
+        for (int index = 0; index < 5; index++) {
+            paths.add(evidence.resolve("captures").resolve(referenceId + "-" + index + ".png"));
+        }
+        return paths;
+    }
+
+    private static List<ResultLine> readResults(
+            Path results, List<ObjectNode> expectedCommands) throws IOException {
+        return readResults(results, expectedCommands, true);
+    }
+
+    private static List<ResultLine> readResults(
+            Path results, List<ObjectNode> expectedCommands,
+            boolean requireSuccess) throws IOException {
+        if (Files.size(results) > MAX_RESULT_BYTES) {
+            throw new IllegalArgumentException("Result evidence exceeds byte limit");
+        }
+        List<String> lines = Files.readAllLines(results, StandardCharsets.UTF_8);
+        if (lines.size() != expectedCommands.size()
+                || lines.size() > MAX_RESULT_LINES) {
+            throw new IllegalArgumentException(
+                    "Result evidence has the wrong command count");
+        }
+        List<ResultLine> parsed = new ArrayList<>(lines.size());
+        for (int sequence = 0; sequence < lines.size(); sequence++) {
+            JsonNode node = JSON.readTree(lines.get(sequence));
+            requireFields(node, Set.of(
+                    "sequence", "command", "ok", "error", "artifact", "state"));
+            String expectedCommand =
+                    expectedCommands.get(sequence).path("command").textValue();
+            boolean ok = node.path("ok").isBoolean()
+                    && node.path("ok").booleanValue();
+            JsonNode error = node.get("error");
+            JsonNode artifact = node.get("artifact");
+            String expectedArtifact = "capture".equals(expectedCommand)
+                    ? "captures/"
+                            + expectedCommands.get(sequence).path("id").asText()
+                            + ".png"
+                    : null;
+            if (!node.path("sequence").isIntegralNumber()
+                    || node.path("sequence").intValue() != sequence
+                    || !expectedCommand.equals(node.path("command").textValue())
+                    || !node.path("ok").isBoolean()
+                    || (requireSuccess && !ok)
+                    || (ok && error != null)
+                    || (!ok && (error == null || !error.isTextual()))
+                    || (artifact != null && !artifact.isTextual())
+                    || !Objects.equals(
+                            expectedArtifact,
+                            artifact == null ? null : artifact.textValue())
+                    || !node.path("state").isObject()) {
+                throw new IllegalArgumentException(
+                        "Invalid launcher result identity");
+            }
+            parsed.add(new ResultLine(
+                    expectedCommand, expectedArtifact,
+                    (ObjectNode) node.path("state")));
+        }
+        return parsed;
+    }
+
+    private static ObjectNode stateForCapture(List<ResultLine> lines, String artifact) {
+        return lines.stream().filter(line -> artifact.equals(line.artifact())).map(ResultLine::state)
+                .findFirst().orElseThrow(() -> new IllegalArgumentException("Missing capture result " + artifact));
+    }
+
+
+    static void copyObservedCheckpoint(
+            ObjectNode destination, String name, ObjectNode state) {
+        destination.set(name, state.deepCopy());
+    }
+
+    private static void copyCheckpointIfAbsent(
+            ObjectNode destination, String name, ObjectNode state) {
+        if (!destination.has(name)) {
+            copyObservedCheckpoint(destination, name, state);
+        }
+    }
+
+    /** Rejects any symlink, unexpected root entry, or unexpected capture. */
+    public static void validateEvidenceLayout(Path evidenceDirectory, Set<String> expectedCaptureFiles)
+            throws IOException {
+        Objects.requireNonNull(expectedCaptureFiles, "expectedCaptureFiles");
+        Path root = evidenceDirectory.toAbsolutePath().normalize();
+        if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("Evidence root is not a local directory");
+        }
+        if (!names(root).equals(Set.of("captures", "results.ndjson"))) {
+            throw new IllegalArgumentException("Evidence contains missing or extra root entries");
+        }
+        Path results = root.resolve("results.ndjson");
+        Path captures = root.resolve("captures");
+        if (!Files.isRegularFile(results, LinkOption.NOFOLLOW_LINKS)
+                || !Files.isDirectory(captures, LinkOption.NOFOLLOW_LINKS)
+                || !names(captures).equals(expectedCaptureFiles)) {
+            throw new IllegalArgumentException("Evidence capture identity mismatch");
+        }
+        for (String name : expectedCaptureFiles) {
+            if (!name.matches("[A-Za-z0-9][A-Za-z0-9_-]{0,127}\\.png")
+                    || !Files.isRegularFile(captures.resolve(name), LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException("Invalid capture evidence");
+            }
+        }
+    }
+
+    /** Computes a deterministic SHA-256 over relative paths and file bytes without following links. */
+    public static String treeSha256(Path root) throws IOException {
+        Path normalized = root.toAbsolutePath().normalize();
+        if (!Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("Tree root must be a local directory");
+        }
+        List<Path> paths;
+        try (var stream = Files.walk(normalized)) {
+            paths = stream.filter(path -> !path.equals(normalized))
+                    .sorted(Comparator.comparing(path -> unixRelative(normalized, path))).toList();
+        }
+        if (paths.size() > MAX_TREE_FILES) {
+            throw new IllegalArgumentException("Tree has too many entries");
+        }
+        MessageDigest digest = sha256Digest();
+        long totalBytes = 0;
+        for (Path path : paths) {
+            if (Files.isSymbolicLink(path)) {
+                throw new IllegalArgumentException("Symbolic links are not accepted");
+            }
+            String relative = unixRelative(normalized, path);
+            if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+                update(digest, "D\0" + relative + "\0");
+            } else if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+                long bytes = Files.size(path);
+                totalBytes += bytes;
+                if (totalBytes > MAX_TREE_BYTES) {
+                    throw new IllegalArgumentException("Tree exceeds byte limit");
+                }
+                update(digest, "F\0" + relative + "\0" + bytes + "\0");
+                try (InputStream input = Files.newInputStream(path)) {
+                    input.transferTo(new java.security.DigestOutputStream(java.io.OutputStream.nullOutputStream(), digest));
+                }
+            } else {
+                throw new IllegalArgumentException("Unsupported tree entry");
+            }
+        }
+        return hex(digest.digest());
+    }
+
+    private static void validateCorpusLayout(Path corpus) throws IOException {
+        Set<String> expected = Set.of("spec.json", "schema/spec.schema.json",
+                "reference/initial-1920x1080.png", "reference/bottom-1920x1080.png",
+                "reference/initial-1280x720.png");
+        Set<String> actual = new HashSet<>();
+        try (var paths = Files.walk(corpus)) {
+            for (Path path : paths.toList()) {
+                if (path.equals(corpus)) continue;
+                if (Files.isSymbolicLink(path)) throw new IllegalArgumentException("Corpus links are forbidden");
+                if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) actual.add(unixRelative(corpus, path));
+            }
+        }
+        if (!actual.equals(expected)) throw new IllegalArgumentException("Corpus contains missing or extra files");
+    }
+
+    private static void validateReferences(Path corpusDirectory, JsonNode corpus) throws IOException {
+        Set<String> ids = new HashSet<>();
+        for (JsonNode reference : corpus.path("references")) {
+            requireFields(reference, Set.of("id", "stateId", "viewportId", "file", "width", "height", "bytes", "sha256"));
+            if (!ids.add(reference.path("id").asText())) throw new IllegalArgumentException("Duplicate reference identity");
+            Path path = corpusDirectory.resolve(reference.path("file").asText()).normalize();
+            if (!path.startsWith(corpusDirectory.toAbsolutePath().normalize())) {
+                throw new IllegalArgumentException("Reference path escapes corpus");
+            }
+            var image = VisualMetrics.readBoundedPng(path);
+            if (Files.size(path) != reference.path("bytes").longValue()
+                    || !fileSha256(path).equals(reference.path("sha256").asText())) {
+                throw new IllegalArgumentException("Reference artifact identity mismatch");
+            }
+            if (image == null || image.getWidth() != reference.path("width").intValue()
+                    || image.getHeight() != reference.path("height").intValue()) {
+                throw new IllegalArgumentException("Reference viewport identity mismatch");
+            }
+        }
+    }
+
+
+    private static JsonNode readJson(Path path, long maxBytes) throws IOException {
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) || Files.size(path) > maxBytes) {
+            throw new IllegalArgumentException("JSON evidence is missing or oversized");
+        }
+        return JSON.readTree(path.toFile());
+    }
+
+    private static void requireFields(JsonNode object, Set<String> allowed) {
+        if (!object.isObject()) throw new IllegalArgumentException("Expected JSON object");
+        object.fieldNames().forEachRemaining(field -> {
+            if (!allowed.contains(field)) throw new IllegalArgumentException("Unexpected JSON field " + field);
+        });
+    }
+
+    private static EvaluationRecord record(String status, EvaluationRecord.CandidateIdentity candidate,
+            EvaluationRecord.CorpusIdentity corpus, FunctionalContract.Result functional,
+            List<EvaluationRecord.VisualOutcome> visual, List<EvaluationRecord.Artifact> artifacts,
+            List<String> diagnostics) {
+        return new EvaluationRecord(EvaluationRecord.SCHEMA_VERSION, status, candidate, corpus,
+                EvaluationRecord.FunctionalOutcome.from(functional), visual, artifacts, diagnostics);
+    }
+
+    static void publishAfterIdentityCheck(
+            Path candidate, String expectedIdentity, Path output, EvaluationRecord record)
+            throws IOException {
+        verifyCandidateIdentity(candidate, expectedIdentity);
+        publish(output, record);
+    }
+
+    private static void publish(Path outputDirectory, EvaluationRecord record) throws IOException {
+        Path output = outputDirectory.toAbsolutePath().normalize();
+        if (Files.exists(output, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("Evaluation output must not already exist");
+        }
+        Files.createDirectory(output);
+        Path destination = output.resolve("evaluation.json");
+        Path temporary = Files.createTempFile(output, ".evaluation.tmp-", ".json");
+        boolean moved = false;
+        try {
+            byte[] bytes = JSON.writeValueAsBytes(record);
+            try (var channel = java.nio.channels.FileChannel.open(temporary,
+                    StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                channel.write(java.nio.ByteBuffer.wrap(bytes));
+                channel.force(true);
+            }
+            try {
+                Files.move(temporary, destination, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException unsupported) {
+                throw new IOException("Evaluation filesystem does not support atomic publication", unsupported);
+            }
+            moved = true;
+        } finally {
+            if (!moved) {
+                Files.deleteIfExists(temporary);
+                Files.deleteIfExists(output);
+            }
+        }
+    }
+
+    private static ProcessResult runProcess(List<String> command, Path directory)
+            throws IOException, InterruptedException {
+        Process process = new ProcessBuilder(command).directory(directory.toFile()).redirectErrorStream(true).start();
+        Thread drain = Thread.ofVirtual().start(() -> {
+            try (InputStream input = process.getInputStream()) {
+                input.transferTo(java.io.OutputStream.nullOutputStream());
+            } catch (IOException ignored) {
+                // Process exit remains authoritative.
+            }
+        });
+        if (!process.waitFor(PROCESS_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)) {
+            process.destroyForcibly();
+            process.waitFor();
+        }
+        drain.join();
+        return new ProcessResult(process.exitValue());
+    }
+
+    private static void copyTree(Path source, Path destination) throws IOException {
+        Files.walkFileTree(source, new SimpleFileVisitor<>() {
+            @Override public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes) throws IOException {
+                if (Files.isSymbolicLink(directory)) throw new IllegalArgumentException("Candidate links are forbidden");
+                Files.createDirectories(destination.resolve(source.relativize(directory).toString()));
+                return FileVisitResult.CONTINUE;
+            }
+            @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) throws IOException {
+                if (!attributes.isRegularFile() || Files.isSymbolicLink(file)) throw new IllegalArgumentException("Candidate contains unsupported entries");
+                Files.copy(file, destination.resolve(source.relativize(file).toString()), StandardCopyOption.COPY_ATTRIBUTES);
+                return FileVisitResult.CONTINUE;
+            }
+        });
+    }
+
+    private static void deleteTree(Path root) throws IOException {
+        if (!Files.exists(root)) return;
+        try (var paths = Files.walk(root)) {
+            for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
+        }
+    }
+
+    private static void verifyCandidateIdentity(Path candidate, String expected) throws IOException {
+        if (!expected.equals(treeSha256(candidate))) throw new IllegalStateException("Candidate changed during evaluation");
+    }
+
+    private static Set<String> names(Path directory) throws IOException {
+        try (var entries = Files.list(directory)) {
+            Set<String> names = new HashSet<>();
+            for (Path entry : entries.toList()) names.add(entry.getFileName().toString());
+            return names;
+        }
+    }
+
+    private static EvaluationRecord.Artifact artifact(String logicalPath, Path path) throws IOException {
+        return new EvaluationRecord.Artifact(logicalPath, Files.size(path), fileSha256(path));
+    }
+
+    private static String fileSha256(Path path) throws IOException {
+        MessageDigest digest = sha256Digest();
+        try (InputStream input = Files.newInputStream(path)) {
+            input.transferTo(new java.security.DigestOutputStream(java.io.OutputStream.nullOutputStream(), digest));
+        }
+        return hex(digest.digest());
+    }
+
+    private static MessageDigest sha256Digest() {
+        try { return MessageDigest.getInstance("SHA-256"); }
+        catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException("SHA-256 unavailable", impossible); }
+    }
+
+    private static void update(MessageDigest digest, String value) { digest.update(value.getBytes(StandardCharsets.UTF_8)); }
+    private static String hex(byte[] bytes) { return java.util.HexFormat.of().formatHex(bytes); }
+    private static String unixRelative(Path root, Path path) {
+        return root.toAbsolutePath().normalize().relativize(path.toAbsolutePath().normalize())
+                .toString().replace(path.getFileSystem().getSeparator(), "/");
+    }
+    private static String boundDiagnostic(Throwable failure) {
+        String message = failure.getMessage();
+        String safe = failure.getClass().getSimpleName() + (message == null ? "" : ":" + message);
+        return safe.length() <= 512 ? safe : safe.substring(0, 512);
+    }
+
+    private static Map<String, String> parseOptions(String[] args, int start) {
+        Map<String, String> options = new LinkedHashMap<>();
+        for (int index = start; index < args.length; index += 2) {
+            if (index + 1 >= args.length || options.put(args[index], args[index + 1]) != null) {
+                throw new IllegalArgumentException("Invalid evaluator options");
+            }
+        }
+        if (!options.keySet().equals(Set.of("--candidate", "--corpus", "--output", "--candidate-id"))) {
+            throw new IllegalArgumentException("Invalid evaluator options");
+        }
+        return options;
+    }
+    private static String required(Map<String, String> options, String key) {
+        String value = options.get(key);
+        if (value == null || value.isBlank()) throw new IllegalArgumentException("Missing " + key);
+        return value;
+    }
+
+    /** Validated immutable evaluator inputs. */
+    public record Request(Path candidateDirectory, Path corpusDirectory, Path outputDirectory,
+            String candidateId, Path gradleExecutable) {
+        public Request {
+            candidateDirectory = normalizeDirectory(candidateDirectory, "candidate");
+            corpusDirectory = normalizeDirectory(corpusDirectory, "corpus");
+            outputDirectory = Objects.requireNonNull(outputDirectory, "outputDirectory").toAbsolutePath().normalize();
+            gradleExecutable = Objects.requireNonNull(gradleExecutable, "gradleExecutable").toAbsolutePath().normalize();
+            if (!CANDIDATE_ID.matcher(Objects.requireNonNull(candidateId, "candidateId")).matches()) {
+                throw new IllegalArgumentException("Invalid candidate identity");
+            }
+            if (outputDirectory.startsWith(candidateDirectory) || outputDirectory.startsWith(corpusDirectory)
+                    || !Files.isRegularFile(gradleExecutable, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException("Unsafe evaluator path identity");
+            }
+        }
+        private static Path normalizeDirectory(Path path, String name) {
+            Path normalized = Objects.requireNonNull(path, name).toAbsolutePath().normalize();
+            if (!Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS)) throw new IllegalArgumentException(name + " must be a local directory");
+            return normalized;
+        }
+    }
+
+    private record EvaluationData(FunctionalContract.Result functional,
+            List<EvaluationRecord.VisualOutcome> visual, List<EvaluationRecord.Artifact> artifacts) {}
+    private record ResultLine(String command, String artifact, ObjectNode state) {}
+    private record ProcessResult(int exitCode) {}
+}
