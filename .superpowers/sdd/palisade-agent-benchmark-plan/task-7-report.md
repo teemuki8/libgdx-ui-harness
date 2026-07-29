@@ -7,6 +7,7 @@ Qualified. No model call or human review was executed. The deterministic fixture
 ## Implementation commit
 
 - `15818ad` — `test: qualify agentic palisade pipeline`
+- `146d2be` — `test: retain all qualification channels`
 
 ## Qualification command and exact output
 
@@ -148,6 +149,8 @@ The last command produced no output and exited `0`.
 4. Deep output paths exceeded the AF_UNIX path limit. Round sockets now use a bounded UUID path in the platform temporary directory; a deep-output supervision regression covers it.
 5. Blind packaging, review locking, and visual aggregation assumed every evaluation had fifteen captures. Failed evaluations now remain as capture-free blinded candidates, validate and lock normally, and contribute explicit empty visual outcomes without breaking arm summaries. Complete evaluations remain strictly required to provide all canonical captures.
 6. The corpus leakage check attempted to decode generated Gradle class files after focused builds. It now excludes only the established generated directory names while continuing to scan all committed benchmark inputs.
+7. Final-channel continuity originally checked only the functional raw row count. Qualification now requires the exact same six unique run IDs in `functional`, `automatedVisual`, `humanVisual`, and `telemetryTreatment`; unavailable token categories remain explicit `null` raw metrics, and independent drop mutations for all four channels must be rejected without modifying their bytes.
+8. Response-tamper retention originally compared the untouched primary response. Qualification now hashes and reads the actual tampered `human-ratings.json` before invoking rejection and requires those exact bytes afterward. A destructive deletion regression proves the guard fails if rejected-input handling removes the evidence.
 
 ## Self-review
 
@@ -157,6 +160,34 @@ The last command produced no output and exited `0`.
 - Confirmed deterministic public package hashes match for two builds from the same frozen input and seed.
 - Confirmed CI invokes only fixed fixtures, pins every added action by full SHA, and contains no measured OMP command.
 - Confirmed frozen `PROTOCOL.md`, corpus, schema, and reference images were not modified.
+- Confirmed each final channel contains the exact same six run IDs, including empty visual outcomes and explicit null token metrics for unavailable evidence.
+- Confirmed each of four channel-drop mutations is rejected and the exact mutated report bytes remain present.
+- Confirmed response rejection preserves the exact tampered ratings bytes rather than merely preserving the original response.
+
+## Fix-round focused evidence
+
+```text
+$ python3 scripts/test-qualification.py
+...
+----------------------------------------------------------------------
+Ran 3 tests in 128.405s
+
+OK
+```
+
+```text
+$ python3 scripts/test-blinding.py
+............
+----------------------------------------------------------------------
+Ran 12 tests in 13.837s
+
+OK
+```
+
+```text
+$ python3 scripts/validate-workflows.py
+workflow security invariants: PASS
+```
 
 ## Concerns
 
