@@ -85,6 +85,11 @@ for marker in (
     require(marker in ci, f"benchmark qualification prerequisite missing: {marker}")
 require("omp --model" not in ci and "run-benchmark.py --output" not in ci,
         "CI must never invoke measured OMP agents")
+require(
+    "if: github.event_name == 'pull_request' && "
+    "github.event.repository.private == false" in ci,
+    "dependency review must skip unsupported private repositories",
+)
 
 
 for path, text in (("ci.yml", ci), ("release.yml", release)):
