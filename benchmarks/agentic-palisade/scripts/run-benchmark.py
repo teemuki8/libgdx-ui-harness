@@ -51,6 +51,10 @@ SAFE_PARENT_ENV = {
     "JAVA_HOME", "JDK_HOME", "LANG", "LC_ALL", "LC_CTYPE", "LD_LIBRARY_PATH",
     "PATH", "SHELL", "TERM", "TZ",
 }
+BROKER_OWNER_ENV = SAFE_PARENT_ENV | {
+    "HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+}
 
 AUTH_PREFLIGHT_SECONDS = 180
 
@@ -825,7 +829,7 @@ class BrokerRelay:
     def __init__(self, upstream_url, bearer_token, config_path):
         upstream = urllib.parse.urlsplit(upstream_url)
         if (upstream.scheme != "http" or upstream.hostname != "127.0.0.1"
-                or upstream.port != 9000 or upstream.path not in ("", "/")):
+                or upstream.port is None or upstream.path not in ("", "/")):
             raise ValueError("authentication preflight failed: invalid broker endpoint")
         self._upstream = upstream
         self._bearer_token = bearer_token
@@ -836,9 +840,18 @@ class BrokerRelay:
         self._claimed = False
         self._retired = False
         self.served = False
+        self._handler_condition = threading.Condition()
+        self._active_handlers = 0
         relay = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
+            def handle(self):
+                relay._handler_started()
+                try:
+                    super().handle()
+                finally:
+                    relay._handler_stopped()
+
             def do_GET(self):
                 relay._forward(self)
 
@@ -868,6 +881,15 @@ class BrokerRelay:
 
     def start(self):
         self._thread.start()
+
+    def _handler_started(self):
+        with self._handler_condition:
+            self._active_handlers += 1
+
+    def _handler_stopped(self):
+        with self._handler_condition:
+            self._active_handlers -= 1
+            self._handler_condition.notify_all()
 
     def _forward(self, request):
         expected = "Bearer " + self._client_token
@@ -948,8 +970,13 @@ class BrokerRelay:
     def stop(self):
         self.retire()
         self._thread.join(timeout=2)
+        deadline = time.monotonic() + 12
+        with self._handler_condition:
+            while self._active_handlers and time.monotonic() < deadline:
+                self._handler_condition.wait(deadline - time.monotonic())
+            active_handlers = self._active_handlers
         self._server.server_close()
-        if self._thread.is_alive():
+        if self._thread.is_alive() or active_handlers:
             raise RuntimeError("authentication relay did not stop")
 
 
@@ -994,10 +1021,18 @@ def _preflight_environment(root):
     return environment
 
 
+def _broker_owner_environment():
+    return {
+        key: value for key, value in os.environ.items()
+        if key in BROKER_OWNER_ENV
+    }
+
+
 def _load_broker_token(omp):
     try:
         completed = subprocess.run(
             [omp, "auth-broker", "token"],
+            env=_broker_owner_environment(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -1060,6 +1095,7 @@ def _run_auth_preflight(omp, model, broker_url, bearer_token):
         try:
             try:
                 stdout, _ = process.communicate(timeout=AUTH_PREFLIGHT_SECONDS)
+                quiescence_error = quiesce_process_group(process.pid)
             except subprocess.TimeoutExpired as error:
                 terminate_process_group(process)
                 process.communicate()
@@ -1068,6 +1104,9 @@ def _run_auth_preflight(omp, model, broker_url, bearer_token):
                 ) from error
         finally:
             relay.stop()
+        if quiescence_error:
+            raise ValueError(
+                "authentication preflight failed: process group did not quiesce")
         if not relay.served:
             raise ValueError(
                 "authentication preflight failed: broker relay was not accepted")

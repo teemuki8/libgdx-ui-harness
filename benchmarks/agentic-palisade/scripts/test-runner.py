@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """End-to-end fixture tests for isolated benchmark preparation and supervision."""
 
+import contextlib
 import importlib.util
 import hashlib
+import http.server
+import io
 import json
 import os
 from pathlib import Path
 import signal
 import stat
+import socket
 from unittest import mock
 import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 
@@ -73,7 +78,15 @@ def write_fake_omp(path):
         import urllib.request
 
         broker_token = "test-broker-bearer"
+        credential_keys = [
+            key for key in os.environ
+            if key.endswith("_API_KEY") or key in {
+                "OPENAI_API_KEY", "AUTH_BROKER_TOKEN", "OMP_AUTH_TOKEN",
+            }
+        ]
         if sys.argv[1:] == ["auth-broker", "token"]:
+            if credential_keys:
+                sys.exit(9)
             print(broker_token)
             sys.exit(0)
 
@@ -109,6 +122,18 @@ def write_fake_omp(path):
             and config_retired
         )
         if "--no-tools" in sys.argv:
+            child_marker = Path(sys.argv[0]).with_suffix(".spawn-preflight-child")
+            if child_marker.exists():
+                child = subprocess.Popen(
+                    [sys.executable, "-c", "import time; time.sleep(60)"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                )
+                Path(sys.argv[0]).with_suffix(".preflight-child.pid").write_text(
+                    str(child.pid)
+                )
             proof = {
                 "argv": sys.argv[1:],
                 "authenticated": authenticated,
@@ -446,6 +471,10 @@ class DryRunTest(unittest.TestCase):
 
 
 class AuthPreflightTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.runner = load_runner()
+
     def test_missing_broker_aborts_before_measured_output_allocation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -473,6 +502,115 @@ class AuthPreflightTest(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertIn("authentication preflight failed", completed.stderr)
             self.assertNotIn(BROKER_TOKEN, completed.stderr)
+
+    def test_preflight_rejects_and_cleans_descendants(self):
+        class BrokerHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                content = b"{}\n"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+
+            def log_message(self, *_):
+                pass
+
+        with tempfile.TemporaryDirectory() as temporary:
+            fake = Path(temporary) / "fake-omp"
+            write_fake_omp(fake)
+            fake.with_suffix(".spawn-preflight-child").touch()
+            broker = http.server.ThreadingHTTPServer(
+                ("127.0.0.1", 0), BrokerHandler)
+            broker_thread = threading.Thread(
+                target=broker.serve_forever, daemon=True)
+            broker_thread.start()
+            broker_url = f"http://127.0.0.1:{broker.server_port}"
+            try:
+                token = self.runner._load_broker_token(str(fake))
+                with self.assertRaisesRegex(ValueError, "did not quiesce"):
+                    self.runner._run_auth_preflight(
+                        str(fake), MODEL, broker_url, token)
+            finally:
+                broker.shutdown()
+                broker.server_close()
+                broker_thread.join(timeout=2)
+
+            child_pid = int(fake.with_suffix(".preflight-child.pid").read_text())
+            deadline = time.time() + 2
+            state = "running"
+            while time.time() < deadline:
+                try:
+                    state = Path(f"/proc/{child_pid}/stat").read_text().split()[2]
+                except FileNotFoundError:
+                    state = None
+                if state in (None, "Z"):
+                    break
+                time.sleep(0.02)
+            if state not in (None, "Z"):
+                os.kill(child_pid, signal.SIGKILL)
+            self.assertIn(state, (None, "Z"))
+
+    def test_relay_stop_waits_for_active_handler(self):
+        started = threading.Event()
+
+        class SlowResponse:
+            status = 200
+
+            def read(self, _):
+                started.set()
+                time.sleep(1)
+                return b"{}\n"
+
+            def getheaders(self):
+                return []
+
+        class SlowConnection:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def request(self, *_args, **_kwargs):
+                pass
+
+            def getresponse(self):
+                return SlowResponse()
+
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / "config.yml"
+            config_path.write_text("{}\n")
+            relay = self.runner.BrokerRelay(
+                BROKER_URL, BROKER_TOKEN, config_path)
+            relay.start()
+            client_token = relay.config["token"]
+
+            def request():
+                with socket.create_connection(
+                    ("127.0.0.1", relay._server.server_port), timeout=2
+                ) as connection:
+                    connection.sendall((
+                        "GET / HTTP/1.1\r\n"
+                        "Host: 127.0.0.1\r\n"
+                        f"Authorization: Bearer {client_token}\r\n"
+                        "Connection: close\r\n\r\n"
+                    ).encode())
+                    while connection.recv(4096):
+                        pass
+
+            with mock.patch.object(
+                self.runner.http.client, "HTTPConnection", SlowConnection
+            ):
+                client = threading.Thread(target=request)
+                client.start()
+                self.assertTrue(started.wait(timeout=2))
+                before = time.monotonic()
+                relay.stop()
+                elapsed = time.monotonic() - before
+                client.join(timeout=2)
+            self.assertFalse(client.is_alive())
+            self.assertGreaterEqual(elapsed, 0.9)
+
 
 
 class SupervisionTest(unittest.TestCase):
@@ -502,17 +640,45 @@ class SupervisionTest(unittest.TestCase):
             fake = root / "fake-omp"
             write_fake_omp(fake)
             output = root / "outcomes"
-            completed = subprocess.run(
-                [sys.executable, str(RUNNER_PATH), "--output", str(output),
-                 "--model", MODEL, "--max-time", "45m", "--pairs", "3",
-                 "--omp", str(fake), "--auth-broker-url", BROKER_URL],
-                cwd=BENCHMARK_ROOT,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=15,
-            )
-            self.assertNotEqual(completed.returncode, 0)
+            class BrokerHandler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    content = b"{}\n"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(content)))
+                    self.end_headers()
+                    self.wfile.write(content)
+
+                def log_message(self, *_):
+                    pass
+
+            broker = http.server.ThreadingHTTPServer(("127.0.0.1", 0), BrokerHandler)
+            broker_thread = threading.Thread(target=broker.serve_forever, daemon=True)
+            broker_thread.start()
+            broker_url = f"http://127.0.0.1:{broker.server_port}"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            try:
+                with mock.patch.object(self.runner, "FIXED_BROKER_URL", broker_url):
+                    with mock.patch.dict(
+                        os.environ, {"OPENAI_API_KEY": "must-not-inherit"}
+                    ):
+                        with contextlib.redirect_stdout(stdout):
+                            with contextlib.redirect_stderr(stderr):
+                                return_code = self.runner.main([
+                                    "--output", str(output),
+                                    "--model", MODEL,
+                                    "--max-time", "45m",
+                                    "--pairs", "3",
+                                    "--omp", str(fake),
+                                    "--auth-broker-url", broker_url,
+                                ])
+            finally:
+                broker.shutdown()
+                broker.server_close()
+                broker_thread.join(timeout=2)
+            self.assertNotEqual(return_code, 0, stderr.getvalue())
+            self.assertTrue(output.exists(), stderr.getvalue())
 
             manifest = read_json(output / "benchmark-manifest.json")
             self.assertEqual(
