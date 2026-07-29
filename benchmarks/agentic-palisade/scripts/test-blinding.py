@@ -241,6 +241,34 @@ class BlindingTest(unittest.TestCase):
             self.input, self.review, self.mapping, ratings_path, lock_path)
 
 
+    def test_unavailable_token_categories_remain_explicit_null_metrics(self):
+        unavailable = {"status": "unavailable", "value": None}
+        record = {
+            "wallTimeSeconds": 1.0,
+            "failures": [],
+            "telemetry": {
+                "tokens": {
+                    "input": {"status": "available", "value": 10},
+                    "output": unavailable,
+                    "cacheRead": unavailable,
+                    "cacheWrite": unavailable,
+                    "reasoning": unavailable,
+                },
+                "toolCalls": {},
+                "edits": 0,
+                "builds": 0,
+                "launches": 0,
+                "screenshots": 0,
+                "failedOperations": [],
+            },
+        }
+
+        metrics = UNBLIND._telemetry_values(record)
+
+        self.assertEqual(10, metrics["tokens.input"])
+        for name in ("output", "cacheRead", "cacheWrite", "reasoning"):
+            self.assertIsNone(metrics[f"tokens.{name}"])
+
     def test_seeded_fisher_yates_is_deterministic_balanced_and_private(self):
         self.build()
         second_review = self.root / "blind-review-second"

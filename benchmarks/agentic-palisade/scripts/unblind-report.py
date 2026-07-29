@@ -454,12 +454,26 @@ def _telemetry_values(record):
         "failedOperations": len(telemetry["failedOperations"]), "failureCount": len(record.get("failures", [])),
     }
     for name, category in telemetry["tokens"].items():
-        if category.get("status") == "available" and _number(category.get("value")):
-            result[f"tokens.{name}"] = category["value"]
+        value = category.get("value")
+        result[f"tokens.{name}"] = (
+            value
+            if category.get("status") == "available" and _number(value)
+            else None)
     for name, count in telemetry.get("toolCalls", {}).items():
         if _number(count):
             result[f"toolCalls.{name}"] = count
     return result
+
+
+def _telemetry_arm_range(values, label_runs, name, treatment):
+    observed = [
+        values[label][name]
+        for label, run in label_runs.items()
+        if run["treatment"] == treatment
+        and name in values[label]
+        and _number(values[label][name])
+    ]
+    return _range(observed) if observed else None
 
 
 def _telemetry_channel(label_runs):
@@ -468,13 +482,11 @@ def _telemetry_channel(label_runs):
         "label": label, "runId": run["runId"], "pair": run["pair"],
         "treatment": run["treatment"], "metrics": values[label],
     } for label, run in label_runs.items()]
-    names = sorted(set.intersection(*(set(item) for item in values.values())))
+    names = sorted(set().union(*(set(item) for item in values.values())))
     summaries = {
         name: {
-            arm: _range(
-                values[label][name]
-                for label, run in label_runs.items()
-                if run["treatment"] == arm)
+            arm: _telemetry_arm_range(
+                values, label_runs, name, arm)
             for arm in ("baseline", "harness")
         }
         for name in names
@@ -487,7 +499,10 @@ def _telemetry_channel(label_runs):
         harness_label = next(
             label for label, run in label_runs.items()
             if run["pair"] == pair and run["treatment"] == "harness")
-        shared = sorted(set(values[baseline_label]) & set(values[harness_label]))
+        shared = sorted(
+            name for name in set(values[baseline_label]) & set(values[harness_label])
+            if _number(values[baseline_label][name])
+            and _number(values[harness_label][name]))
         item = {"pair": pair, "baselineLabel": baseline_label, "harnessLabel": harness_label}
         item.update({
             name: _delta(values[baseline_label][name], values[harness_label][name])

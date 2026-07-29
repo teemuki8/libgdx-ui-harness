@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Qualify every production benchmark stage with deterministic fixtures only."""
 
+import copy
 import argparse
 import hashlib
 import importlib.util
@@ -25,6 +26,11 @@ CASES = {
     (3, "harness"): ("leaked-child", "round_supervisor_failure", "complete"),
 }
 GENERATED = {".gradle", "build", "__pycache__"}
+FINAL_CHANNELS = (
+    "functional", "automatedVisual", "humanVisual", "telemetryTreatment")
+TOKEN_METRICS = (
+    "tokens.input", "tokens.output", "tokens.cacheRead",
+    "tokens.cacheWrite", "tokens.reasoning")
 
 
 def load_script(filename, name):
@@ -63,6 +69,45 @@ def run_command(name, command, logs, expected, cwd=BENCHMARK_ROOT, env=None):
             f"{name} exited {completed.returncode}, expected {expected}: "
             f"{completed.stderr.strip() or completed.stdout.strip()}")
     return completed
+
+def rejected_input_retained(path, before, completed, error_fragment):
+    if completed.returncode == 0 or error_fragment.lower() not in completed.stderr.lower():
+        return False
+    try:
+        return Path(path).read_bytes() == before
+    except OSError:
+        return False
+
+
+def validate_final_channels(report, expected_run_ids):
+    expected = set(expected_run_ids)
+    if len(expected) != 6:
+        raise ValueError("final channel continuity requires six run IDs")
+    channels = report.get("channels")
+    if not isinstance(channels, dict):
+        raise ValueError("final report channels are missing")
+    for channel in FINAL_CHANNELS:
+        value = channels.get(channel)
+        raw = value.get("raw") if isinstance(value, dict) else None
+        ids = [
+            item.get("runId") for item in raw
+            if isinstance(item, dict)
+        ] if isinstance(raw, list) else []
+        if len(ids) != 6 or len(set(ids)) != 6 or set(ids) != expected:
+            raise ValueError(
+                f"{channel} channel dropped or duplicated a run identity")
+        if channel == "automatedVisual" and any(
+                not isinstance(item.get("outcomes"), list) for item in raw):
+            raise ValueError(
+                "automatedVisual channel dropped unavailable outcomes")
+        if channel == "telemetryTreatment":
+            for item in raw:
+                metrics = item.get("metrics")
+                if not isinstance(metrics, dict) or any(
+                        name not in metrics for name in TOKEN_METRICS):
+                    raise ValueError(
+                        "telemetryTreatment channel dropped unavailable token data")
+    return sorted(expected)
 
 
 def json_file(path):
@@ -322,14 +367,15 @@ def qualify(output):
     tampered_value = json_file(tampered_ratings)
     tampered_value["packageManifestSha256"] = "0" * 64
     tampered_ratings.write_bytes(canonical_bytes(tampered_value))
+    tampered_ratings_before = tampered_ratings.read_bytes()
     response_result = run_command(
         "mutation-response", [python, unblind_cli, "lock", "--run-root", run_root,
          "--review-dir", response_review, "--mapping", mapping,
          "--ratings", tampered_ratings, "--lock", mutations / "response.lock"],
         logs, 2)
-    response_retained = (
-        ratings.read_bytes() == ratings_before and tampered_ratings.is_file()
-        and "manifest hash" in response_result.stderr.lower())
+    response_retained = rejected_input_retained(
+        tampered_ratings, tampered_ratings_before, response_result,
+        "manifest hash")
 
     lock = output / "review-lock.json"
     final_report = output / "final-report.json"
@@ -343,11 +389,27 @@ def qualify(output):
     report = json_file(final_report)
     if report["schemaVersion"] != "agentic-palisade/final-report-v1":
         raise ValueError("final report schema drifted")
-    if len(report["channels"]["functional"]["raw"]) != 6:
-        raise ValueError("final analysis dropped failed runs")
+    expected_run_ids = set(records)
+    final_channel_run_ids = validate_final_channels(
+        report, expected_run_ids)
+    channel_drop_rejected = True
+    channel_drop_retained = True
+    for channel in FINAL_CHANNELS:
+        mutated = copy.deepcopy(report)
+        mutated["channels"][channel]["raw"].pop()
+        mutation_path = mutations / f"final-report-drop-{channel}.json"
+        mutation_path.write_bytes(canonical_bytes(mutated))
+        mutation_before = mutation_path.read_bytes()
+        try:
+            validate_final_channels(mutated, expected_run_ids)
+            channel_drop_rejected = False
+        except ValueError:
+            pass
+        channel_drop_retained &= mutation_path.read_bytes() == mutation_before
 
     cases = {
         case_name: {
+            "runId": item["record"]["runId"],
             "pair": item["record"]["pair"],
             "treatment": item["record"]["treatment"],
             "runClassification": item["record"]["exit"]["classification"],
@@ -362,6 +424,7 @@ def qualify(output):
         "runCount": len(manifest["runs"]),
         "retainedRunRecords": len(records),
         "cases": cases,
+        "finalChannelRunIds": final_channel_run_ids,
         "identityContinuity": identity_continuity,
         "treatmentSymmetry": treatment_symmetry,
         "noProcessLeaks": no_process_leaks,
@@ -376,6 +439,9 @@ def qualify(output):
                                "dataRetained": mapping_retained},
             "response-tamper": {"rejected": response_result.returncode != 0,
                                 "dataRetained": response_retained},
+            "final-channel-drop": {
+                "rejected": channel_drop_rejected,
+                "dataRetained": channel_drop_retained},
         },
         "finalReportSha256": sha256_file(final_report),
     }
