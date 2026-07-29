@@ -45,10 +45,10 @@ def png_chunk(kind, data):
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
 
 
-def png(width, height):
+def png(width, height, color):
     signature = b"\x89PNG\r\n\x1a\n"
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    row = b"\x00" + b"\x20\x30\x40" * width
+    row = b"\x00" + bytes(color) * width
     return signature + png_chunk(b"IHDR", ihdr) + png_chunk(b"IDAT", zlib.compress(row * height, 9)) + png_chunk(b"IEND", b"")
 
 
@@ -66,10 +66,13 @@ def token(value):
 def create_fixture(root):
     corpus = root / "corpus"
     (corpus / "reference").mkdir(parents=True)
-    pngs = {(1920, 1080): png(1920, 1080), (1280, 720): png(1280, 720)}
+    pngs = {
+        reference_id: png(width, height, (8 + reference_index, 16 + reference_index, 24 + reference_index))
+        for reference_index, (reference_id, _state, _viewport, width, height) in enumerate(REFERENCES)
+    }
     references = []
     for reference_id, state_id, viewport_id, width, height in REFERENCES:
-        payload = pngs[(width, height)]
+        payload = pngs[reference_id]
         relative = f"reference/{reference_id}.png"
         (corpus / relative).write_bytes(payload)
         references.append({
@@ -125,10 +128,11 @@ def create_fixture(root):
         artifacts = []
         capture_dir = run_dir / "evaluation" / "captures"
         capture_dir.mkdir(parents=True)
-        for reference_id, _state, viewport_id, width, height in REFERENCES:
-            payload = pngs[(width, height)]
+        for reference_index, (reference_id, _state, viewport_id, width, height) in enumerate(REFERENCES):
             capture_hashes = []
             for repeat in range(5):
+                color_index = index * 15 + reference_index * 5 + repeat
+                payload = png(width, height, (32 + color_index, 64 + color_index, 96 + color_index))
                 filename = f"{reference_id}-{repeat}.png"
                 (capture_dir / filename).write_bytes(payload)
                 digest = sha256(payload)
@@ -193,7 +197,7 @@ def reference_shuffle(seed, identities):
     return result
 
 
-def valid_response(review_dir):
+def valid_response(review_dir, include_comments=True):
     manifest = json.loads((review_dir / "manifest.json").read_text())
     response = {
         "schemaVersion": "agentic-palisade/human-ratings-v1",
@@ -201,8 +205,9 @@ def valid_response(review_dir):
         "fidelity": {label: index + 2 for index, label in enumerate(LABELS)},
         "ranking": {label: index + 1 for index, label in enumerate(LABELS)},
         "preferred": {pair["id"]: pair["candidates"][0] for pair in manifest["matchedPairs"]},
-        "comments": {"A": "Strong hierarchy", "overall": "Fixture review"},
     }
+    if include_comments:
+        response["comments"] = {"A": "Strong hierarchy", "overall": "Fixture review"}
     path = review_dir / "human-ratings.json"
     path.write_bytes(canonical_bytes(response))
     return path, response
@@ -231,6 +236,10 @@ class BlindingTest(unittest.TestCase):
     def build(self, review=None, mapping=None):
         return BLIND.build_package(
             self.input, review or self.review, mapping or self.mapping, seed=self.seed)
+    def lock(self, ratings_path, lock_path):
+        return UNBLIND.lock_response(
+            self.input, self.review, self.mapping, ratings_path, lock_path)
+
 
     def test_seeded_fisher_yates_is_deterministic_balanced_and_private(self):
         self.build()
@@ -255,6 +264,7 @@ class BlindingTest(unittest.TestCase):
         self.build()
         public = json.loads((self.review / "manifest.json").read_text())
         private = json.loads(self.mapping.read_text())
+        capture_hashes = set()
         for candidate in public["candidates"]:
             self.assertEqual(15, len(candidate["captures"]))
             source_run = private["labels"][candidate["label"]]["runId"]
@@ -263,7 +273,9 @@ class BlindingTest(unittest.TestCase):
                 source_name = f'{capture["referenceId"]}-{capture["repeat"]}.png'
                 source = self.input / "runs" / source_run / "evaluation" / "captures" / source_name
                 self.assertEqual(source.read_bytes(), packaged.read_bytes())
+                capture_hashes.add(capture["sha256"])
                 self.assertEqual((capture["width"], capture["height"]), BLIND.png_dimensions(packaged))
+        self.assertEqual(90, len(capture_hashes))
         self.assertEqual(3, len(public["references"]))
         BLIND.scan_package(self.review)
         package_text = "\n".join(path.read_text(errors="ignore") for path in self.review.rglob("*.json"))
@@ -316,6 +328,10 @@ class BlindingTest(unittest.TestCase):
         self.build()
         ratings_path, response = valid_response(self.review)
         UNBLIND.validate_response(self.review, ratings_path)
+        without_comments = copy.deepcopy(response)
+        without_comments.pop("comments")
+        ratings_path.write_bytes(canonical_bytes(without_comments))
+        UNBLIND.validate_response(self.review, ratings_path)
         mutations = []
         missing = copy.deepcopy(response)
         missing["fidelity"].pop("F")
@@ -338,6 +354,74 @@ class BlindingTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     UNBLIND.validate_response(self.review, ratings_path)
 
+    def test_lock_rejects_mapping_swap_and_public_capture_mix_up(self):
+        self.build()
+        ratings_path, response = valid_response(self.review)
+        lock_path = self.root / "private" / "review.lock.json"
+        private = json.loads(self.mapping.read_text())
+        private["labels"]["A"], private["labels"]["B"] = private["labels"]["B"], private["labels"]["A"]
+        self.mapping.write_bytes(canonical_bytes(private))
+        with self.assertRaisesRegex(ValueError, "mapping"):
+            self.lock(ratings_path, lock_path)
+
+        private["labels"]["A"], private["labels"]["B"] = private["labels"]["B"], private["labels"]["A"]
+        self.mapping.write_bytes(canonical_bytes(private))
+        original_manifest = json.loads((self.review / "manifest.json").read_text())
+        first_file = self.review / next(
+            candidate for candidate in original_manifest["candidates"]
+            if candidate["label"] == "A")["captures"][0]["file"]
+        second_file = self.review / next(
+            candidate for candidate in original_manifest["candidates"]
+            if candidate["label"] == "B")["captures"][0]["file"]
+        first_bytes, second_bytes = first_file.read_bytes(), second_file.read_bytes()
+        first_file.write_bytes(second_bytes)
+        second_file.write_bytes(first_bytes)
+        with self.assertRaisesRegex(ValueError, "capture hash"):
+            self.lock(ratings_path, lock_path)
+        first_file.write_bytes(first_bytes)
+        second_file.write_bytes(second_bytes)
+        manifest_path = self.review / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        first = next(candidate for candidate in manifest["candidates"] if candidate["label"] == "A")
+        second = next(candidate for candidate in manifest["candidates"] if candidate["label"] == "B")
+        first["captures"], second["captures"] = second["captures"], first["captures"]
+        first["automatedVisual"], second["automatedVisual"] = second["automatedVisual"], first["automatedVisual"]
+        manifest_path.write_bytes(canonical_bytes(manifest))
+        private["packageManifestSha256"] = sha256(manifest_path.read_bytes())
+        self.mapping.write_bytes(canonical_bytes(private))
+        response["packageManifestSha256"] = private["packageManifestSha256"]
+        ratings_path.write_bytes(canonical_bytes(response))
+        with self.assertRaisesRegex(ValueError, "capture binding"):
+            self.lock(ratings_path, lock_path)
+
+    def test_lock_binds_review_form_and_response_schema_bytes(self):
+        self.build()
+        ratings_path, _response = valid_response(self.review)
+        lock_path = self.root / "private" / "review.lock.json"
+        form_path = self.review / "review-form.json"
+        original_form = form_path.read_bytes()
+        form = json.loads(original_form)
+        form["unexpected"] = True
+        form_path.write_bytes(canonical_bytes(form))
+        with self.assertRaisesRegex(ValueError, "support file hash"):
+            self.lock(ratings_path, lock_path)
+        form_path.write_bytes(original_form)
+        schema_path = self.review / "human-ratings.schema.json"
+        schema_path.write_bytes(schema_path.read_bytes() + b" ")
+        with self.assertRaisesRegex(ValueError, "support file hash"):
+            self.lock(ratings_path, lock_path)
+
+    def test_no_comments_response_locks_and_unblinds(self):
+        self.build()
+        ratings_path, _response = valid_response(self.review, include_comments=False)
+        lock_path = self.root / "private" / "review.lock.json"
+        output = self.root / "final-report.json"
+        self.lock(ratings_path, lock_path)
+        UNBLIND.unblind(self.input, self.review, self.mapping, ratings_path, lock_path, output)
+        qualitative = json.loads(output.read_text())["qualitativeAssociations"]
+        self.assertEqual([], qualitative["candidateComments"])
+        self.assertIsNone(qualitative["overall"])
+
     def test_unblind_refuses_before_lock_and_detects_response_or_manifest_tampering(self):
         self.build()
         ratings_path, response = valid_response(self.review)
@@ -345,14 +429,27 @@ class BlindingTest(unittest.TestCase):
         output = self.root / "final-report.json"
         with self.assertRaisesRegex(ValueError, "lock"):
             UNBLIND.unblind(self.input, self.review, self.mapping, ratings_path, lock_path, output)
-        UNBLIND.lock_response(self.review, ratings_path, lock_path)
+        self.lock(ratings_path, lock_path)
         self.assertEqual(0o600, os.stat(lock_path).st_mode & 0o777)
+        locked = json.loads(lock_path.read_text())
+        self.assertEqual(
+            {"packageManifestSha256", "reviewFormSha256", "responseSchemaSha256", "responseSha256"},
+            set(locked) - {"schemaVersion"})
         mutated = copy.deepcopy(response)
         mutated["comments"]["A"] = "changed after lock"
         ratings_path.write_bytes(canonical_bytes(mutated))
         with self.assertRaisesRegex(ValueError, "hash"):
             UNBLIND.unblind(self.input, self.review, self.mapping, ratings_path, lock_path, output)
         ratings_path.write_bytes(canonical_bytes(response))
+        for support_name in ("review-form.json", "human-ratings.schema.json"):
+            support_path = self.review / support_name
+            support_bytes = support_path.read_bytes()
+            support_path.write_bytes(support_bytes + b" ")
+            with self.subTest(support=support_name):
+                with self.assertRaisesRegex(ValueError, "support file hash"):
+                    UNBLIND.unblind(
+                        self.input, self.review, self.mapping, ratings_path, lock_path, output)
+            support_path.write_bytes(support_bytes)
         manifest_path = self.review / "manifest.json"
         manifest_path.write_bytes(manifest_path.read_bytes() + b" ")
         with self.assertRaisesRegex(ValueError, "hash"):
@@ -363,7 +460,7 @@ class BlindingTest(unittest.TestCase):
         ratings_path, response = valid_response(self.review)
         lock_path = self.root / "private" / "review.lock.json"
         output = self.root / "final-report.json"
-        UNBLIND.lock_response(self.review, ratings_path, lock_path)
+        self.lock(ratings_path, lock_path)
         UNBLIND.unblind(self.input, self.review, self.mapping, ratings_path, lock_path, output)
         report = json.loads(output.read_text())
         self.assertEqual({"functional", "automatedVisual", "humanVisual", "telemetryTreatment"}, set(report["channels"]))

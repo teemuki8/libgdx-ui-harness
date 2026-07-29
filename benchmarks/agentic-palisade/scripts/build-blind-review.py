@@ -375,6 +375,15 @@ def _atomic_private_json(path, value):
             temporary.unlink()
 
 
+def canonical_run_ids(runs):
+    """Return the precommitted pair/arm order used as shuffle input."""
+    ordered = sorted(
+        runs,
+        key=lambda run: (run["pair"], 0 if run["treatment"] == "baseline" else 1),
+    )
+    return [run["runId"] for run in ordered]
+
+
 def build_package(run_root, review_dir, mapping_path, seed=None):
     """Validate six frozen inputs and publish a deterministic blind package."""
     run_root = Path(run_root).resolve()
@@ -388,7 +397,7 @@ def build_package(run_root, review_dir, mapping_path, seed=None):
         raise ValueError("review package and frozen input root must be separate")
     private_seed = secrets.token_bytes(32) if seed is None else seed
     manifest, references, runs, input_hashes = _load_inputs(run_root)
-    shuffled_ids = fisher_yates(private_seed, [run["runId"] for run in runs])
+    shuffled_ids = fisher_yates(private_seed, canonical_run_ids(runs))
     by_id = {run["runId"]: run for run in runs}
     label_runs = {label: by_id[run_id] for label, run_id in zip(LABELS, shuffled_ids)}
 
@@ -434,23 +443,9 @@ def build_package(run_root, review_dir, mapping_path, seed=None):
         for pair in (1, 2, 3):
             labels = sorted(label for label, run in label_runs.items() if run["pair"] == pair)
             public_pairs.append({"id": f"pair-{pair}", "candidates": labels})
-        public_manifest = {
-            "schemaVersion": SCHEMA_VERSION,
-            "hashAlgorithm": "SHA-256",
-            "labels": list(LABELS),
-            "references": public_references,
-            "candidates": public_candidates,
-            "matchedPairs": public_pairs,
-            "reviewForm": "review-form.json",
-            "responseFile": "human-ratings.json",
-            "responseSchema": "human-ratings.schema.json",
-        }
-        manifest_bytes = canonical_bytes(public_manifest)
-        (temporary / "manifest.json").write_bytes(manifest_bytes)
-        manifest_hash = sha256_bytes(manifest_bytes)
         form = {
             "schemaVersion": "agentic-palisade/review-form-v1",
-            "packageManifestSha256": manifest_hash,
+            "manifestFile": "manifest.json",
             "responseFile": "human-ratings.json",
             "instructions": [
                 "Review every reference and all five repeated captures for each canonical state.",
@@ -468,11 +463,26 @@ def build_package(run_root, review_dir, mapping_path, seed=None):
                 "comments": {"optional": True, "maximumLength": 2000},
             },
         }
-        (temporary / "review-form.json").write_bytes(canonical_bytes(form))
+        form_path = temporary / "review-form.json"
+        form_path.write_bytes(canonical_bytes(form))
         schema_source = Path(__file__).resolve().parent / "schemas" / "human-ratings.schema.json"
         if not schema_source.is_file():
             raise ValueError("human ratings schema is missing")
-        (temporary / "human-ratings.schema.json").write_bytes(schema_source.read_bytes())
+        schema_path = temporary / "human-ratings.schema.json"
+        schema_path.write_bytes(schema_source.read_bytes())
+        public_manifest = {
+            "schemaVersion": SCHEMA_VERSION,
+            "hashAlgorithm": "SHA-256",
+            "labels": list(LABELS),
+            "references": public_references,
+            "candidates": public_candidates,
+            "matchedPairs": public_pairs,
+            "reviewForm": {"file": "review-form.json", "sha256": sha256_file(form_path)},
+            "responseFile": "human-ratings.json",
+            "responseSchema": {"file": "human-ratings.schema.json", "sha256": sha256_file(schema_path)},
+        }
+        manifest_bytes = canonical_bytes(public_manifest)
+        (temporary / "manifest.json").write_bytes(manifest_bytes)
         scan_package(temporary)
         os.replace(temporary, review_dir)
     finally:

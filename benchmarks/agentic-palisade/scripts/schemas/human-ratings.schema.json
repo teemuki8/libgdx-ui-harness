@@ -9,8 +9,7 @@
     "packageManifestSha256",
     "fidelity",
     "ranking",
-    "preferred",
-    "comments"
+    "preferred"
   ],
   "properties": {
     "schemaVersion": {"const": "agentic-palisade/human-ratings-v1"},

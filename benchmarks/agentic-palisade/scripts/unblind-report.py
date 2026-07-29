@@ -42,7 +42,21 @@ def _integer(value, minimum, maximum, name):
 
 
 def _verify_public_files(review_dir, manifest):
-    expected_files = {"manifest.json", "review-form.json", "human-ratings.schema.json"}
+    expected_files = {"manifest.json"}
+    for field, expected_name in (
+            ("reviewForm", "review-form.json"),
+            ("responseSchema", "human-ratings.schema.json")):
+        identity = manifest[field]
+        if not isinstance(identity, dict) or set(identity) != {"file", "sha256"}:
+            raise ValueError(f"invalid {field} identity")
+        if identity["file"] != expected_name or not SHA256.fullmatch(identity["sha256"]):
+            raise ValueError(f"invalid {field} identity")
+        support_path = (review_dir / identity["file"]).resolve()
+        if (not BLIND._inside(support_path, review_dir)
+                or not support_path.is_file()
+                or BLIND.sha256_file(support_path) != identity["sha256"]):
+            raise ValueError(f"support file hash mismatch: {expected_name}")
+        expected_files.add(expected_name)
     for reference in manifest["references"]:
         if not isinstance(reference, dict):
             raise ValueError("invalid public reference")
@@ -119,8 +133,10 @@ def validate_response(review_dir, ratings_path):
         raise ValueError("ratings must use the review package human-ratings.json path")
     manifest, manifest_hash = _load_public_manifest(review_dir)
     response = _json(ratings_path, "human ratings")
-    required = ("schemaVersion", "packageManifestSha256", "fidelity", "ranking", "preferred", "comments")
-    _strict_keys(response, required, "human ratings")
+    required = {"schemaVersion", "packageManifestSha256", "fidelity", "ranking", "preferred"}
+    allowed = required | {"comments"}
+    if not isinstance(response, dict) or not required.issubset(response) or not set(response).issubset(allowed):
+        raise ValueError("human ratings contains missing or unknown fields")
     if response["schemaVersion"] != RATINGS_VERSION:
         raise ValueError("unsupported human ratings schema")
     if response["packageManifestSha256"] != manifest_hash:
@@ -136,7 +152,7 @@ def validate_response(review_dir, ratings_path):
     for pair_id, selected in response["preferred"].items():
         if selected not in expected_pairs[pair_id]:
             raise ValueError(f"preferred.{pair_id} must select one candidate from that matched pair")
-    comments = response["comments"]
+    comments = response.get("comments", {})
     if not isinstance(comments, dict) or not set(comments).issubset(set(LABELS) | {"overall"}):
         raise ValueError("comments contains an unknown entry")
     for key, comment in comments.items():
@@ -164,44 +180,18 @@ def _atomic_private_json(path, value):
             temporary.unlink()
 
 
-def lock_response(review_dir, ratings_path, lock_path):
-    """Validate a complete response and atomically bind its bytes to the package manifest."""
-    review_dir = Path(review_dir).resolve()
-    lock_path = Path(lock_path).resolve()
-    if BLIND._inside(lock_path, review_dir):
-        raise ValueError("private lock must be outside the review package")
-    validate_response(review_dir, ratings_path)
-    lock = {
-        "schemaVersion": LOCK_VERSION,
-        "packageManifestSha256": BLIND.sha256_file(review_dir / "manifest.json"),
-        "responseSha256": BLIND.sha256_file(ratings_path),
-    }
-    _atomic_private_json(lock_path, lock)
-    return lock
-
-
-def _mode_is_private(path):
-    return Path(path).stat().st_mode & 0o077 == 0
-
-
-def _load_sealed(run_root, review_dir, mapping_path, ratings_path, lock_path):
-    for private_path in (mapping_path, lock_path):
-        if not Path(private_path).is_file() or not _mode_is_private(private_path):
-            raise ValueError("private mapping and lock must exist with restricted permissions")
-    manifest, manifest_hash = _load_public_manifest(review_dir)
-    response = validate_response(review_dir, ratings_path)
-    lock = _json(lock_path, "review lock")
-    _strict_keys(lock, ("schemaVersion", "packageManifestSha256", "responseSha256"), "review lock")
-    if lock["schemaVersion"] != LOCK_VERSION:
-        raise ValueError("unsupported review lock")
-    if lock["packageManifestSha256"] != manifest_hash or lock["responseSha256"] != BLIND.sha256_file(ratings_path):
-        raise ValueError("review lock hash mismatch")
+def _validate_private_mapping(run_root, review_dir, manifest, manifest_hash, mapping_path):
+    mapping_path = Path(mapping_path)
+    if not mapping_path.is_file() or not _mode_is_private(mapping_path):
+        raise ValueError("private mapping must exist with restricted permissions")
     mapping = _json(mapping_path, "private mapping")
     required_mapping = {
         "schemaVersion", "seedHex", "seedSha256", "packageManifestSha256",
         "benchmarkManifestSha256", "labels", "inputHashes",
     }
-    if not isinstance(mapping, dict) or set(mapping) != required_mapping or mapping["schemaVersion"] != BLIND.MAPPING_VERSION:
+    if (not isinstance(mapping, dict)
+            or set(mapping) != required_mapping
+            or mapping["schemaVersion"] != BLIND.MAPPING_VERSION):
         raise ValueError("invalid private mapping")
     if mapping["packageManifestSha256"] != manifest_hash:
         raise ValueError("private mapping package hash mismatch")
@@ -220,20 +210,98 @@ def _load_sealed(run_root, review_dir, mapping_path, ratings_path, lock_path):
     if current_hashes != mapping["inputHashes"]:
         raise ValueError("frozen run or evaluation input hash mismatch")
     by_id = {run["runId"]: run for run in runs}
-    mapped_ids = []
+    expected_ids = BLIND.fisher_yates(seed, BLIND.canonical_run_ids(runs))
+    expected_by_label = dict(zip(LABELS, expected_ids))
+    label_runs = {}
     for label in LABELS:
         entry = mapping["labels"][label]
-        if not isinstance(entry, dict) or set(entry) != {"runId", "pair", "treatment", "runRecordSha256", "evaluationSha256"}:
+        if (not isinstance(entry, dict)
+                or set(entry) != {"runId", "pair", "treatment", "runRecordSha256", "evaluationSha256"}):
             raise ValueError("private mapping entry is invalid")
+        if entry["runId"] != expected_by_label[label]:
+            raise ValueError("private mapping deterministic assignment mismatch")
         run = by_id.get(entry["runId"])
         if run is None or entry["pair"] != run["pair"] or entry["treatment"] != run["treatment"]:
             raise ValueError("private mapping no longer matches frozen runs")
         if entry["runRecordSha256"] != run["runRecordHash"] or entry["evaluationSha256"] != run["evaluationHash"]:
             raise ValueError("private mapping input hash mismatch")
-        mapped_ids.append(entry["runId"])
-    if len(set(mapped_ids)) != 6:
-        raise ValueError("private mapping is not bijective")
-    return manifest, response, mapping, {label: by_id[mapping["labels"][label]["runId"]] for label in LABELS}, lock
+        label_runs[label] = run
+
+    expected_pairs = {
+        f"pair-{pair}": sorted(label for label, run in label_runs.items() if run["pair"] == pair)
+        for pair in (1, 2, 3)
+    }
+    if {pair["id"]: pair["candidates"] for pair in manifest["matchedPairs"]} != expected_pairs:
+        raise ValueError("public matched pairs do not match private mapping")
+    public_by_label = {candidate["label"]: candidate for candidate in manifest["candidates"]}
+    for label in LABELS:
+        public = public_by_label[label]
+        run = label_runs[label]
+        if set(public) != {"label", "captures", "automatedVisual"} or public["automatedVisual"] != run["automatedVisual"]:
+            raise ValueError("public label capture binding mismatch")
+        if len(public["captures"]) != len(run["captures"]):
+            raise ValueError("public label capture binding mismatch")
+        for number, (packaged, source) in enumerate(zip(public["captures"], run["captures"]), 1):
+            expected = {
+                "referenceId": source["referenceId"], "stateId": source["stateId"],
+                "viewportId": source["viewportId"], "width": source["width"],
+                "height": source["height"], "repeat": source["repeat"],
+                "file": f"candidates/{label}/capture-{number:02d}.png",
+                "bytes": source["bytes"], "sha256": source["sha256"],
+            }
+            if packaged != expected:
+                raise ValueError("public label capture binding mismatch")
+    return mapping, label_runs
+
+
+def lock_response(run_root, review_dir, mapping_path, ratings_path, lock_path):
+    """Validate a complete response and atomically bind every reviewed public byte."""
+    review_dir = Path(review_dir).resolve()
+    lock_path = Path(lock_path).resolve()
+    if BLIND._inside(lock_path, review_dir):
+        raise ValueError("private lock must be outside the review package")
+    validate_response(review_dir, ratings_path)
+    manifest, manifest_hash = _load_public_manifest(review_dir)
+    _validate_private_mapping(run_root, review_dir, manifest, manifest_hash, mapping_path)
+    lock = {
+        "schemaVersion": LOCK_VERSION,
+        "packageManifestSha256": manifest_hash,
+        "reviewFormSha256": manifest["reviewForm"]["sha256"],
+        "responseSchemaSha256": manifest["responseSchema"]["sha256"],
+        "responseSha256": BLIND.sha256_file(ratings_path),
+    }
+    _atomic_private_json(lock_path, lock)
+    return lock
+
+
+def _mode_is_private(path):
+    return Path(path).stat().st_mode & 0o077 == 0
+
+
+def _load_sealed(run_root, review_dir, mapping_path, ratings_path, lock_path):
+    if not Path(lock_path).is_file() or not _mode_is_private(lock_path):
+        raise ValueError("private lock must exist with restricted permissions")
+    manifest, manifest_hash = _load_public_manifest(review_dir)
+    response = validate_response(review_dir, ratings_path)
+    lock = _json(lock_path, "review lock")
+    lock_fields = (
+        "schemaVersion", "packageManifestSha256", "reviewFormSha256",
+        "responseSchemaSha256", "responseSha256",
+    )
+    _strict_keys(lock, lock_fields, "review lock")
+    if lock["schemaVersion"] != LOCK_VERSION:
+        raise ValueError("unsupported review lock")
+    expected_lock_hashes = {
+        "packageManifestSha256": manifest_hash,
+        "reviewFormSha256": manifest["reviewForm"]["sha256"],
+        "responseSchemaSha256": manifest["responseSchema"]["sha256"],
+        "responseSha256": BLIND.sha256_file(ratings_path),
+    }
+    if any(lock[name] != digest for name, digest in expected_lock_hashes.items()):
+        raise ValueError("review lock hash mismatch")
+    mapping, label_runs = _validate_private_mapping(
+        run_root, review_dir, manifest, manifest_hash, mapping_path)
+    return manifest, response, mapping, label_runs, lock
 
 
 def _number(value):
@@ -299,25 +367,51 @@ def _automated_visual_channel(label_runs):
             outcomes.append({"referenceId": visual["referenceId"], "metrics": metrics})
             for metric, value in _flatten_numbers(metrics).items():
                 values[(label, visual["referenceId"], metric)] = value
-        raw.append({"label": label, "runId": run["runId"], "pair": run["pair"], "treatment": run["treatment"], "outcomes": outcomes})
+        raw.append({"label": label, "runId": run["runId"], "pair": run["pair"],
+                    "treatment": run["treatment"], "outcomes": outcomes})
     summaries = []
     for reference_id in BLIND.REQUIRED_REFERENCES:
-        metric_names = sorted({metric for _label, reference, metric in values if reference == reference_id})
+        metric_names = sorted({
+            metric for _label, reference, metric in values if reference == reference_id
+        })
         for metric in metric_names:
             summaries.append({
-                "referenceId": reference_id, "metric": metric,
-                "baseline": _range(values[(label, reference_id, metric)] for label, run in label_runs.items() if run["treatment"] == "baseline"),
-                "harness": _range(values[(label, reference_id, metric)] for label, run in label_runs.items() if run["treatment"] == "harness"),
+                "referenceId": reference_id,
+                "metric": metric,
+                "baseline": _range(
+                    values[(label, reference_id, metric)]
+                    for label, run in label_runs.items()
+                    if run["treatment"] == "baseline"),
+                "harness": _range(
+                    values[(label, reference_id, metric)]
+                    for label, run in label_runs.items()
+                    if run["treatment"] == "harness"),
             })
     paired = []
     for pair in (1, 2, 3):
-        baseline_label = next(label for label, run in label_runs.items() if run["pair"] == pair and run["treatment"] == "baseline")
-        harness_label = next(label for label, run in label_runs.items() if run["pair"] == pair and run["treatment"] == "harness")
+        baseline_label = next(
+            label for label, run in label_runs.items()
+            if run["pair"] == pair and run["treatment"] == "baseline")
+        harness_label = next(
+            label for label, run in label_runs.items()
+            if run["pair"] == pair and run["treatment"] == "harness")
         for reference_id in BLIND.REQUIRED_REFERENCES:
-            names = sorted(metric for label, reference, metric in values if label == baseline_label and reference == reference_id and (harness_label, reference_id, metric) in values)
+            names = sorted(
+                metric for label, reference, metric in values
+                if label == baseline_label
+                and reference == reference_id
+                and (harness_label, reference_id, metric) in values)
             paired.append({
-                "pair": pair, "referenceId": reference_id, "baselineLabel": baseline_label, "harnessLabel": harness_label,
-                "metrics": {metric: _delta(values[(baseline_label, reference_id, metric)], values[(harness_label, reference_id, metric)]) for metric in names},
+                "pair": pair,
+                "referenceId": reference_id,
+                "baselineLabel": baseline_label,
+                "harnessLabel": harness_label,
+                "metrics": {
+                    metric: _delta(
+                        values[(baseline_label, reference_id, metric)],
+                        values[(harness_label, reference_id, metric)])
+                    for metric in names
+                },
             })
     return {"raw": raw, "armSummaries": summaries, "pairedDeltas": paired}
 
@@ -358,30 +452,50 @@ def _telemetry_values(record):
 
 def _telemetry_channel(label_runs):
     values = {label: _telemetry_values(run["record"]) for label, run in label_runs.items()}
-    raw = [{"label": label, "runId": run["runId"], "pair": run["pair"], "treatment": run["treatment"], "metrics": values[label]}
-           for label, run in label_runs.items()]
+    raw = [{
+        "label": label, "runId": run["runId"], "pair": run["pair"],
+        "treatment": run["treatment"], "metrics": values[label],
+    } for label, run in label_runs.items()]
     names = sorted(set.intersection(*(set(item) for item in values.values())))
-    summaries = {name: {arm: _range(values[label][name] for label, run in label_runs.items() if run["treatment"] == arm)
-                        for arm in ("baseline", "harness")} for name in names}
+    summaries = {
+        name: {
+            arm: _range(
+                values[label][name]
+                for label, run in label_runs.items()
+                if run["treatment"] == arm)
+            for arm in ("baseline", "harness")
+        }
+        for name in names
+    }
     paired = []
     for pair in (1, 2, 3):
-        baseline_label = next(label for label, run in label_runs.items() if run["pair"] == pair and run["treatment"] == "baseline")
-        harness_label = next(label for label, run in label_runs.items() if run["pair"] == pair and run["treatment"] == "harness")
+        baseline_label = next(
+            label for label, run in label_runs.items()
+            if run["pair"] == pair and run["treatment"] == "baseline")
+        harness_label = next(
+            label for label, run in label_runs.items()
+            if run["pair"] == pair and run["treatment"] == "harness")
         shared = sorted(set(values[baseline_label]) & set(values[harness_label]))
         item = {"pair": pair, "baselineLabel": baseline_label, "harnessLabel": harness_label}
-        item.update({name: _delta(values[baseline_label][name], values[harness_label][name]) for name in shared})
+        item.update({
+            name: _delta(values[baseline_label][name], values[harness_label][name])
+            for name in shared
+        })
         paired.append(item)
     return {"raw": raw, "armSummaries": summaries, "pairedDeltas": paired}
 
 
 def _qualitative(label_runs, response):
+    comments = response.get("comments", {})
     associated = []
     for label in LABELS:
-        if label in response["comments"]:
+        if label in comments:
             run = label_runs[label]
-            associated.append({"label": label, "runId": run["runId"], "pair": run["pair"],
-                               "treatment": run["treatment"], "comment": response["comments"][label]})
-    return {"candidateComments": associated, "overall": response["comments"].get("overall")}
+            associated.append({
+                "label": label, "runId": run["runId"], "pair": run["pair"],
+                "treatment": run["treatment"], "comment": comments[label],
+            })
+    return {"candidateComments": associated, "overall": comments.get("overall")}
 
 
 def _atomic_public_json(path, value):
@@ -431,11 +545,15 @@ def unblind(run_root, review_dir, mapping_path, ratings_path, lock_path, output_
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    lock_parser = subparsers.add_parser("lock", help="validate and atomically seal a complete response")
+    lock_parser = subparsers.add_parser(
+        "lock", help="validate and atomically seal a complete response")
+    lock_parser.add_argument("--run-root", required=True, type=Path)
     lock_parser.add_argument("--review-dir", required=True, type=Path)
+    lock_parser.add_argument("--mapping", required=True, type=Path)
     lock_parser.add_argument("--ratings", required=True, type=Path)
     lock_parser.add_argument("--lock", required=True, type=Path)
-    report_parser = subparsers.add_parser("unblind", help="verify the seal and create the final report")
+    report_parser = subparsers.add_parser(
+        "unblind", help="verify the seal and create the final report")
     report_parser.add_argument("--run-root", required=True, type=Path)
     report_parser.add_argument("--review-dir", required=True, type=Path)
     report_parser.add_argument("--mapping", required=True, type=Path)
@@ -445,11 +563,14 @@ def main(argv=None):
     arguments = parser.parse_args(argv)
     try:
         if arguments.command == "lock":
-            lock_response(arguments.review_dir, arguments.ratings, arguments.lock)
+            lock_response(
+                arguments.run_root, arguments.review_dir, arguments.mapping,
+                arguments.ratings, arguments.lock)
             print(json.dumps({"status": "locked", "lock": str(arguments.lock)}))
         else:
-            unblind(arguments.run_root, arguments.review_dir, arguments.mapping,
-                    arguments.ratings, arguments.lock, arguments.output)
+            unblind(
+                arguments.run_root, arguments.review_dir, arguments.mapping,
+                arguments.ratings, arguments.lock, arguments.output)
             print(json.dumps({"status": "unblinded", "report": str(arguments.output)}))
         return 0
     except (OSError, ValueError) as error:
