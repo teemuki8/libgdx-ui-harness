@@ -14,7 +14,6 @@ import unittest
 import zlib
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
-REPOSITORY_ROOT = SCRIPT_ROOT.parents[2]
 PROTOCOL_AMENDMENT = "agentic-palisade/task-8-auth-broker-amendment-v1"
 LABELS = tuple("ABCDEF")
 REFERENCES = (
@@ -177,6 +176,30 @@ def create_fixture(root):
         "runs": manifest_runs,
     }
     (root / "benchmark-manifest.json").write_bytes(canonical_bytes(benchmark_manifest))
+    return root
+
+
+def create_pre_amendment_abort_fixture(root, amendment=None):
+    root.mkdir(parents=True)
+    runs = []
+    for index in range(6):
+        run_id = f"10000000-0000-4000-8000-{index + 1:012d}"
+        runs.append({
+            "runId": run_id,
+            "pair": index // 2 + 1,
+            "treatment": "baseline" if index % 2 == 0 else "harness",
+            "runRecord": f"runs/{run_id}/run-record.json",
+            "runRecordHash": f"runs/{run_id}/run-record.sha256",
+        })
+    manifest = {
+        "schemaVersion": "agentic-palisade/benchmark-manifest-v1",
+        "model": "openai-codex/gpt-5.6-sol:medium",
+        "pairs": 3,
+        "runs": runs,
+    }
+    if amendment is not None:
+        manifest["protocolAmendment"] = amendment
+    (root / "benchmark-manifest.json").write_bytes(canonical_bytes(manifest))
     return root
 
 
@@ -392,26 +415,15 @@ class BlindingTest(unittest.TestCase):
 
         for value in (None, "agentic-palisade/wrong-amendment"):
             with self.subTest(value=value):
-                source = create_fixture(
-                    self.root / ("missing-amendment" if value is None else "wrong-amendment"))
-                manifest_path = source / "benchmark-manifest.json"
-                manifest = json.loads(manifest_path.read_text())
-                if value is None:
-                    manifest.pop("protocolAmendment")
-                else:
-                    manifest["protocolAmendment"] = value
-                manifest_path.write_bytes(canonical_bytes(manifest))
-                first = manifest["runs"][0]
-                (source / "runs" / first["runId"] / "evaluation" / "evaluation.json").unlink()
+                source = create_pre_amendment_abort_fixture(
+                    self.root / (
+                        "pre-amendment-abort" if value is None
+                        else "wrong-amendment-abort"
+                    ),
+                    value,
+                )
                 with self.assertRaisesRegex(ValueError, "protocol amendment"):
                     BLIND._load_inputs(source)
-
-        aborted = (
-            REPOSITORY_ROOT / "build/reports/agentic-palisade/20260729T173223Z"
-        )
-        self.assertTrue((aborted / "benchmark-manifest.json").is_file())
-        with self.assertRaisesRegex(ValueError, "protocol amendment"):
-            BLIND._load_inputs(aborted)
 
     def test_requires_exactly_six_hash_bound_run_and_evaluation_inputs(self):
         manifest_path = self.input / "benchmark-manifest.json"

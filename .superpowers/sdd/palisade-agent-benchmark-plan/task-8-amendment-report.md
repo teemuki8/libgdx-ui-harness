@@ -163,3 +163,38 @@ BUILD SUCCESSFUL in 6s
 The valid amended six-run fixture passes the same loader. Missing, wrong, and
 the real preserved-abort identity are rejected before evaluation reads. This
 review round ran no model, measured agent, candidate, or evaluator scenario.
+
+## Clean-checkout regression hardening
+
+A second review found that the first boundary regression directly opened the
+ignored local `build/reports/.../20260729T173223Z` evidence directory. That made
+the suite depend on operator-local retained evidence despite the production gate
+itself being portable.
+
+The regression now synthesizes, entirely under its temporary directory, a
+minimal six-run pre-amendment infrastructure-abort-class manifest. It has the
+same benchmark schema, model, three symmetric pairs, and six run-record
+identities, but no `protocolAmendment` and no evaluation files. A second
+synthetic abort-class manifest carries a wrong amendment. Both are rejected by
+the amendment gate before the loader attempts any run-record or evaluation
+read. The valid amended six-run fixture continues through the full loader.
+
+The test source contains no `build/reports`, retained batch ID, or repository
+root dependency. The real abort path and immutable hashes remain report evidence
+only. Post-change portable suite evidence:
+
+```text
+python3 -m unittest \
+  scripts.test-blinding.BlindingTest.test_protocol_amendment_gate_precedes_evaluation_reads
+.
+Ran 1 test in 0.995s
+OK
+
+python3 scripts/test-blinding.py
+.............
+Ran 13 tests in 15.224s
+OK
+```
+
+No model, measured agent, candidate, or evaluator scenario ran in this review
+round.
