@@ -162,6 +162,9 @@ def parse_omp_session(path):
             raise TelemetryError(f"tool result error flag at record {record_number} is not boolean")
         if is_error:
             failed_operations.append({"toolCallId": call_id, "name": name})
+    unfinished = sorted(set(tool_calls) - seen_results)
+    if unfinished:
+        raise TelemetryError(f"unfinished tool calls: {', '.join(unfinished)}")
 
     tokens = {}
     for public_name, provider_name in TOKEN_FIELDS.items():

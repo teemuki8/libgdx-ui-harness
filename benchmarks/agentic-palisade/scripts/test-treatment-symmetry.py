@@ -11,7 +11,7 @@ APPENDIX_MARKER = b"## Treatment appendix\n"
 IGNORED_DIRECTORIES = {".gradle", "build", "__pycache__"}
 EXPECTED_SHARED_HASHES = {
     "PROTOCOL.md": "d9113cfd7d8118a1d268f9a2655da1d7f647951f1d0ac898045f2c88161465e4",
-    "template": "4f165a8e7837cfe70a10faaf78f9c1c42067c0993708c7cabd9c92c59cf1bfce",
+    "template": "137777c7c69bda2865e889df7b9f74cbf76d8060e2deb7e783dcbc12b39501c4",
     "corpus": "d9d973fc53ba753fc665d64d299647444f51d26d42f87d21f14a162ac680065b",
 }
 EXPECTED_COMMON_HASH = (

@@ -103,6 +103,60 @@ def hash_candidate(workspace):
         digest.update(content)
     return digest.hexdigest()
 
+def verify_protected_inputs(workspace, expected_hashes):
+    workspace = Path(workspace)
+    checks = (
+        ("INSTRUCTIONS.md", lambda: sha256_bytes((workspace / "INSTRUCTIONS.md").read_bytes()),
+         expected_hashes.get("instructions")),
+        ("PROTOCOL.md", lambda: sha256_bytes((workspace / "PROTOCOL.md").read_bytes()),
+         expected_hashes.get("protocol")),
+        ("corpus/", lambda: hash_tree(workspace / "corpus", ignored_names=frozenset()),
+         expected_hashes.get("corpus")),
+    )
+    drift = []
+    for name, observe, expected in checks:
+        try:
+            observed = observe()
+        except (OSError, ValueError) as error:
+            drift.append({"path": name, "message": str(error)})
+            continue
+        if expected is None or observed != expected:
+            drift.append({
+                "path": name,
+                "message": f"expected {expected or 'missing manifest hash'}, observed {observed}",
+            })
+    overlay = workspace.parent / "treatments/harness"
+    expected_overlay = expected_hashes.get("treatmentOverlay")
+    if overlay.exists():
+        try:
+            observed_overlay = hash_tree(overlay, ignored_names=frozenset())
+        except (OSError, ValueError) as error:
+            drift.append({"path": "treatments/harness/", "message": str(error)})
+        else:
+            if observed_overlay != expected_overlay:
+                drift.append({
+                    "path": "treatments/harness/",
+                    "message": (
+                        f"expected {expected_overlay or 'absent overlay'}, "
+                        f"observed {observed_overlay}"
+                    ),
+                })
+    elif expected_overlay is not None:
+        drift.append({"path": "treatments/harness/", "message": "overlay is missing"})
+    return drift
+
+
+def _make_read_only(path):
+    path = Path(path)
+    if path.is_dir():
+        for item in path.rglob("*"):
+            item.chmod(0o555 if item.is_dir() else 0o444)
+        path.chmod(0o555)
+    else:
+        path.chmod(0o444)
+
+
+
 
 def parse_duration(value):
     match = DURATION.fullmatch(value)
@@ -285,8 +339,16 @@ def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
     _copy_tree(BENCHMARK_ROOT / "corpus", workspace / "corpus")
     (workspace / "INSTRUCTIONS.md").write_text(
         treatment_inputs[treatment]["instructions"], encoding="utf-8")
+    instructions_hash = sha256_bytes((workspace / "INSTRUCTIONS.md").read_bytes())
+    _make_read_only(workspace / "INSTRUCTIONS.md")
+    _make_read_only(workspace / "PROTOCOL.md")
+    _make_read_only(workspace / "corpus")
+    treatment_overlay_hash = None
     if treatment == "harness":
         _copy_tree(BENCHMARK_ROOT / "treatments/harness", benchmark / "treatments/harness")
+        treatment_overlay_hash = hash_tree(
+            benchmark / "treatments/harness", ignored_names=frozenset())
+        _make_read_only(benchmark / "treatments/harness")
 
     prompt_path = run_dir / "task.md"
     shutil.copy2(BENCHMARK_ROOT / "prompts/task.md", prompt_path)
@@ -295,6 +357,8 @@ def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
     gate_path = binary_root / "benchmark-feedback"
     gate_path.write_text(ROUND_GATE, encoding="utf-8")
     gate_path.chmod(0o555)
+    prompt_path.chmod(0o444)
+    config_path.chmod(0o444)
     round_log = artifact_root / "rounds.jsonl"
     initial_candidate_hash = hash_candidate(workspace)
 
@@ -312,6 +376,8 @@ def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
         "runRecord": _relative(output, run_dir / "run-record.json"),
         "initialCandidateHash": initial_candidate_hash,
         "treatmentAppendixHash": treatment_inputs[treatment]["appendixHash"],
+        "instructionsHash": instructions_hash,
+        "treatmentOverlayHash": treatment_overlay_hash,
     }
     input_manifest = {
         "schemaVersion": "agentic-palisade/input-manifest-v1",
@@ -327,6 +393,8 @@ def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
             **hashes,
             "initialCandidate": initial_candidate_hash,
             "treatmentAppendix": treatment_inputs[treatment]["appendixHash"],
+            "instructions": instructions_hash,
+            "treatmentOverlay": treatment_overlay_hash,
         },
         "paths": {key: item[key] for key in (
             "workspace", "profileRoot", "cacheRoot", "sessionRoot", "artifactRoot")},
@@ -515,16 +583,39 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
         round_error = str(error)
         failures.append({"phase": "round_protocol", "message": round_error})
 
+    protected_drift = verify_protected_inputs(
+        runtime["workspace"],
+        {
+            **hashes,
+            "instructions": item["instructionsHash"],
+            "treatmentOverlay": item["treatmentOverlayHash"],
+        },
+    )
+    for drift in protected_drift:
+        failures.append({"phase": "protected_input_integrity", **drift})
+
+    final_candidate_hash = None
+    final_hash_error = None
+    try:
+        final_candidate_hash = hash_candidate(runtime["workspace"])
+    except (OSError, ValueError) as error:
+        final_hash_error = str(error)
+        failures.append({"phase": "final_candidate_hash", "message": final_hash_error})
+
     for operation in telemetry["failedOperations"]:
         failures.append({"phase": "tool", **operation})
 
     classification = classify_process_exit(return_code, timed_out)
     if launch_error:
         classification = "crashed"
+    elif classification == "success" and protected_drift:
+        classification = "input_integrity_failure"
     elif classification == "success" and telemetry_error:
         classification = "telemetry_failure"
     elif classification == "success" and round_error:
         classification = "round_protocol_failure"
+    elif classification == "success" and final_hash_error:
+        classification = "candidate_integrity_failure"
 
     record = {
         "schemaVersion": "agentic-palisade/run-record-v1",
@@ -545,8 +636,10 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes):
             **hashes,
             "inputManifest": item["inputManifestHash"],
             "treatmentAppendix": item["treatmentAppendixHash"],
+            "instructions": item["instructionsHash"],
+            "treatmentOverlay": item["treatmentOverlayHash"],
             "initialCandidate": item["initialCandidateHash"],
-            "finalCandidate": hash_candidate(runtime["workspace"]),
+            "finalCandidate": final_candidate_hash,
         },
         "paths": {
             "workspace": item["workspace"],
@@ -571,7 +664,7 @@ def _validate_arguments(arguments, max_seconds):
         raise ValueError(f"model must be exactly {FIXED_MODEL}")
     if arguments.pairs != FIXED_PAIRS:
         raise ValueError(f"pairs must be exactly {FIXED_PAIRS}")
-    if arguments.omp == "omp" and max_seconds != FIXED_SECONDS:
+    if max_seconds != FIXED_SECONDS:
         raise ValueError("measured runs must use exactly --max-time 45m")
 
 

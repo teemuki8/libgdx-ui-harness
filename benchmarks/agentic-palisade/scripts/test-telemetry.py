@@ -71,6 +71,30 @@ class TelemetryTest(unittest.TestCase):
                 with self.assertRaises(self.telemetry.TelemetryError):
                     self.telemetry.parse_omp_session(FIXTURES / fixture)
 
+    def test_rejects_a_complete_export_with_an_unfinished_tool_call(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            session = Path(temporary) / "session.jsonl"
+            events = [
+                {"type": "session", "version": 3, "id": "s"},
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{
+                            "type": "toolCall",
+                            "id": "unfinished",
+                            "name": "bash",
+                            "arguments": {"command": "./gradlew build"},
+                        }],
+                        "usage": {"input": 4, "output": 2},
+                    },
+                },
+            ]
+            session.write_text("".join(json.dumps(event) + "\n" for event in events))
+
+            with self.assertRaisesRegex(self.telemetry.TelemetryError, "unfinished tool calls"):
+                self.telemetry.parse_omp_session(session)
+
     def test_rejects_partial_token_categories_instead_of_under_counting(self):
         with tempfile.TemporaryDirectory() as temporary:
             session = Path(temporary) / "session.jsonl"

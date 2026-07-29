@@ -95,11 +95,6 @@ def write_fake_omp(path):
         def mark(number):
             subprocess.run([gate, str(number)], cwd=os.getcwd(), check=False)
 
-        if pair == 3 and treatment == "baseline":
-            child = subprocess.Popen([sys.executable, "-c",
-                "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"])
-            (artifacts / "child.pid").write_text(str(child.pid))
-            time.sleep(60)
 
         rounds = [1, 2, 3]
         if pair == 1 and treatment == "harness":
@@ -123,6 +118,12 @@ def write_fake_omp(path):
                 "role": "toolResult", "toolCallId": "edit", "toolName": "edit",
                 "isError": False, "content": []}},
         ]
+        if pair == 1 and treatment == "baseline":
+            protocol = Path.cwd() / "PROTOCOL.md"
+            protocol.chmod(0o644)
+            protocol.write_text(protocol.read_text() + "\nmutated\n")
+        if pair == 3 and treatment == "harness":
+            (Path.cwd() / "broken-candidate-link").symlink_to("missing-target")
         if pair == 3 and treatment == "harness":
             session.write_text(json.dumps(events[0]) + "\n{\"type\":\"message\"")
         else:
@@ -217,6 +218,60 @@ class DryRunTest(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("already exists", completed.stderr)
 
+    def test_detects_any_protected_input_drift(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "prepared"
+            completed = run_cli(output, "--dry-run")
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            manifest = read_json(output / "benchmark-manifest.json")
+            run = manifest["runs"][0]
+            workspace = output / run["workspace"]
+            expected = read_json(output / run["inputManifest"])["hashes"]
+            protected_paths = (
+                workspace / "INSTRUCTIONS.md",
+                workspace / "PROTOCOL.md",
+                workspace / "corpus/spec.json",
+            )
+            for protected in protected_paths:
+                with self.subTest(path=protected.name):
+                    original = protected.read_bytes()
+                    protected.chmod(0o644)
+                    protected.write_bytes(original + b"\n")
+                    self.assertTrue(self.runner.verify_protected_inputs(workspace, expected))
+                    protected.write_bytes(original)
+
+            harness_run = next(
+                item for item in manifest["runs"]
+                if item["pair"] == 1 and item["treatment"] == "harness"
+            )
+            harness_workspace = output / harness_run["workspace"]
+            harness_expected = read_json(output / harness_run["inputManifest"])["hashes"]
+            overlay = harness_workspace.parent / "treatments/harness/build-overlay.gradle.kts"
+            original_overlay = overlay.read_bytes()
+            overlay.chmod(0o644)
+            overlay.write_bytes(original_overlay + b"\n")
+            self.assertTrue(
+                self.runner.verify_protected_inputs(harness_workspace, harness_expected)
+            )
+
+    def test_rejects_short_deadline_even_with_a_custom_omp_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake = root / "fake-omp"
+            write_fake_omp(fake)
+            completed = subprocess.run(
+                [sys.executable, str(RUNNER_PATH), "--output", str(root / "out"),
+                 "--model", MODEL, "--max-time", "500ms", "--pairs", "3",
+                 "--omp", str(fake), "--dry-run"],
+                cwd=BENCHMARK_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("exactly --max-time 45m", completed.stderr)
+
 
 class SupervisionTest(unittest.TestCase):
     @classmethod
@@ -231,7 +286,7 @@ class SupervisionTest(unittest.TestCase):
             output = root / "outcomes"
             completed = subprocess.run(
                 [sys.executable, str(RUNNER_PATH), "--output", str(output),
-                 "--model", MODEL, "--max-time", "500ms", "--pairs", "3",
+                 "--model", MODEL, "--max-time", "45m", "--pairs", "3",
                  "--omp", str(fake)],
                 cwd=BENCHMARK_ROOT,
                 text=True,
@@ -246,11 +301,11 @@ class SupervisionTest(unittest.TestCase):
             self.assertEqual(len(records), 6)
             classifications = {(record["pair"], record["treatment"]):
                                record["exit"]["classification"] for record in records}
-            self.assertEqual(classifications[(1, "baseline")], "success")
+            self.assertEqual(classifications[(1, "baseline")], "input_integrity_failure")
             self.assertEqual(classifications[(1, "harness")], "round_protocol_failure")
             self.assertEqual(classifications[(2, "baseline")], "round_protocol_failure")
             self.assertEqual(classifications[(2, "harness")], "nonzero_exit")
-            self.assertEqual(classifications[(3, "baseline")], "timed_out")
+            self.assertEqual(classifications[(3, "baseline")], "success")
             self.assertEqual(classifications[(3, "harness")], "telemetry_failure")
 
             invocations = [read_json(output / Path(run["artifactRoot"]) / "invocation.json")
@@ -270,7 +325,7 @@ class SupervisionTest(unittest.TestCase):
                 self.assertIn("--approval-mode", args)
                 self.assertIn("yolo", args)
                 self.assertIn("--max-time", args)
-                self.assertIn("500ms", args)
+                self.assertIn("45m", args)
                 self.assertIn("--cwd", args)
                 self.assertIn("--session-dir", args)
                 self.assertIn("--profile", args)
@@ -281,28 +336,56 @@ class SupervisionTest(unittest.TestCase):
             self.assertEqual(len(starts), 6)
             self.assertLess(max(starts) - min(starts), 0.25)
 
-            timeout_record = next(record for record in records
-                                  if record["exit"]["classification"] == "timed_out")
-            timeout_run = next(run for run in manifest["runs"]
-                               if run["runId"] == timeout_record["runId"])
-            pid = int((output / Path(timeout_run["artifactRoot"]) / "child.pid").read_text())
-            deadline = time.time() + 2
-            while time.time() < deadline and Path(f"/proc/{pid}/stat").exists():
-                state = Path(f"/proc/{pid}/stat").read_text().split()[2]
-                if state == "Z":
-                    break
-                time.sleep(0.02)
-            if Path(f"/proc/{pid}/stat").exists():
-                self.assertEqual(Path(f"/proc/{pid}/stat").read_text().split()[2], "Z")
 
             malformed_run = next(run for run in manifest["runs"]
                                  if run["pair"] == 3 and run["treatment"] == "harness")
             raw_session = output / Path(malformed_run["sessionRoot"]) / "session.jsonl"
             self.assertTrue(raw_session.read_bytes().endswith(b'"message"'))
             self.assertTrue((output / malformed_run["runRecord"]).is_file())
+            malformed_record = read_json(output / malformed_run["runRecord"])
+            self.assertIsNone(malformed_record["hashes"]["finalCandidate"])
+            self.assertTrue(any(
+                failure["phase"] == "final_candidate_hash"
+                for failure in malformed_record["failures"]
+            ))
 
             self.assertEqual(len(invocations), 6)
             self.assertTrue(all(len(record["rounds"]) <= 3 for record in records))
+
+    def test_terminates_the_entire_process_group_after_timeout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            pid_path = Path(temporary) / "child.pid"
+            program = (
+                "import pathlib,signal,subprocess,sys,time;"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+                "child=subprocess.Popen([sys.executable,'-c',"
+                "'import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)']);"
+                f"pathlib.Path({str(pid_path)!r}).write_text(str(child.pid));"
+                "time.sleep(60)"
+            )
+            process = subprocess.Popen(
+                [sys.executable, "-c", program],
+                start_new_session=True,
+            )
+            deadline = time.time() + 2
+            while time.time() < deadline and not pid_path.exists():
+                time.sleep(0.01)
+            self.assertTrue(pid_path.exists())
+            child_pid = int(pid_path.read_text())
+
+            self.runner.terminate_process_group(process, grace_seconds=0.05)
+
+            deadline = time.time() + 2
+            state = "running"
+            while time.time() < deadline:
+                try:
+                    state = Path(f"/proc/{child_pid}/stat").read_text().split()[2]
+                except FileNotFoundError:
+                    state = None
+                if state in (None, "Z"):
+                    break
+                time.sleep(0.02)
+            self.assertIn(state, (None, "Z"))
 
     def test_classifies_signal_termination_as_crash(self):
         self.assertEqual(self.runner.classify_process_exit(-signal.SIGSEGV, False), "crashed")

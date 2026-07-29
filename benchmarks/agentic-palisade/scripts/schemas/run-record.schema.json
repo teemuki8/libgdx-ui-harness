@@ -49,7 +49,9 @@
             "nonzero_exit",
             "crashed",
             "telemetry_failure",
-            "round_protocol_failure"
+            "round_protocol_failure",
+            "input_integrity_failure",
+            "candidate_integrity_failure"
           ]
         },
         "code": {"type": ["integer", "null"], "minimum": 0},
@@ -65,8 +67,10 @@
         "corpus",
         "template",
         "protocol",
+        "instructions",
         "inputManifest",
         "treatmentAppendix",
+        "treatmentOverlay",
         "initialCandidate",
         "finalCandidate"
       ],
@@ -75,10 +79,22 @@
         "corpus": {"$ref": "#/$defs/sha256"},
         "template": {"$ref": "#/$defs/sha256"},
         "protocol": {"$ref": "#/$defs/sha256"},
+        "instructions": {"$ref": "#/$defs/sha256"},
         "inputManifest": {"$ref": "#/$defs/sha256"},
         "treatmentAppendix": {"$ref": "#/$defs/sha256"},
+        "treatmentOverlay": {
+          "anyOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        },
         "initialCandidate": {"$ref": "#/$defs/sha256"},
-        "finalCandidate": {"$ref": "#/$defs/sha256"}
+        "finalCandidate": {
+          "anyOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        }
       }
     },
     "paths": {
