@@ -69,6 +69,11 @@ require(qualification_command in ci,
         "CI must execute the deterministic Agentic Palisade qualification under Xvfb")
 require(ci.count(qualification_command) == 1,
         "CI must execute the paid-agent-free qualification exactly once")
+template_native_test = (
+    "xvfb-run -a ./gradlew -p benchmarks/agentic-palisade/template test"
+)
+require(template_native_test in ci,
+        "CI must execute the LWJGL3 candidate-template tests under Xvfb")
 for marker in (
         "python3 benchmarks/agentic-palisade/scripts/test-corpus.py",
         "python3 benchmarks/agentic-palisade/scripts/test-treatment-symmetry.py",

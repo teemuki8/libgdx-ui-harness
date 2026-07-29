@@ -129,7 +129,7 @@ jobs:
           python3 benchmarks/agentic-palisade/scripts/test-runner.py
           python3 benchmarks/agentic-palisade/scripts/test-blinding.py
           ./gradlew -p benchmarks/agentic-palisade/evaluator test --no-daemon --console=plain --warning-mode=fail
-          ./gradlew -p benchmarks/agentic-palisade/template test --no-daemon --console=plain --warning-mode=fail
+          xvfb-run -a ./gradlew -p benchmarks/agentic-palisade/template test --no-daemon --console=plain --warning-mode=fail
       - name: Qualify the full synthetic pipeline
         run: xvfb-run -a python3 benchmarks/agentic-palisade/scripts/qualify-pipeline.py --output "$RUNNER_TEMP/agentic-palisade-qualification"
       - name: Retain failed qualification evidence
