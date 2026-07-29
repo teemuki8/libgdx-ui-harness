@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentic-palisade:final-report:v1",
+  "title": "Agentic Palisade separated outcome report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "packageManifestSha256",
+    "responseSha256",
+    "channels",
+    "qualitativeAssociations",
+    "interpretation"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "agentic-palisade/final-report-v1"},
+    "packageManifestSha256": {"$ref": "#/$defs/sha256"},
+    "responseSha256": {"$ref": "#/$defs/sha256"},
+    "channels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["functional", "automatedVisual", "humanVisual", "telemetryTreatment"],
+      "properties": {
+        "functional": {"$ref": "#/$defs/channel"},
+        "automatedVisual": {"$ref": "#/$defs/channel"},
+        "humanVisual": {"$ref": "#/$defs/channel"},
+        "telemetryTreatment": {"$ref": "#/$defs/channel"}
+      }
+    },
+    "qualitativeAssociations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidateComments", "overall"],
+      "properties": {
+        "candidateComments": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["label", "runId", "pair", "treatment", "comment"],
+            "properties": {
+              "label": {"$ref": "#/$defs/label"},
+              "runId": {"type": "string", "format": "uuid"},
+              "pair": {"type": "integer", "minimum": 1, "maximum": 3},
+              "treatment": {"enum": ["baseline", "harness"]},
+              "comment": {"type": "string", "maxLength": 2000}
+            }
+          }
+        },
+        "overall": {"type": ["string", "null"], "maxLength": 2000}
+      }
+    },
+    "interpretation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sampleSizePerTreatment", "pairedDeltaConvention", "conclusions"],
+      "properties": {
+        "sampleSizePerTreatment": {"const": 3},
+        "pairedDeltaConvention": {"const": "harness minus baseline"},
+        "conclusions": {"type": "string", "minLength": 1}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "label": {"enum": ["A", "B", "C", "D", "E", "F"]},
+    "channel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw", "armSummaries", "pairedDeltas"],
+      "properties": {
+        "raw": {"type": "array", "minItems": 6},
+        "armSummaries": {"type": ["object", "array"]},
+        "pairedDeltas": {"type": "array", "minItems": 3}
+      }
+    }
+  }
+}
