@@ -74,8 +74,8 @@ Every control object has exactly these members: `id`, `role`, `kind`, `accessibl
 `focused`, `validationRule`, and `validationStatus`. Control IDs, option order, labels, default
 values, validation constraints and current values come from `corpus/spec.json` and the live UI.
 The closed `kind` values are `button`, `checkbox`, `number`, `range`, `select`, and `text`.
-Use the matching accessible role name, such as `button`, `checkbox`, `slider`, `combobox`, or
-`textbox`.
+The closed accessible `role` values are `button`, `checkbox`, `slider`, `combobox`, `textbox`,
+and `spinbutton`; use the role matching each control's interaction semantics.
 
 All domain values are typed objects:
 
@@ -108,6 +108,18 @@ The viewport object has exactly `id`, `width`, `height`, `scrollX`, `scrollY`, `
 `maxScrollY`, and `visibleControlIds`. At the bottom observation, `scrollY` equals
 `maxScrollY`; at the initial observation it is zero.
 
+A functional scenario starts from a fresh candidate instance in the corpus default state with no
+control focused. The evaluator dispatches real Scene2D keyboard input. It reaches a control by
+pressing TAB from that unfocused state according to the declared `focusOrder`, and validates the
+focus IDs observed after dispatch. Select controls open with ENTER, move with DOWN or UP, and
+commit with ENTER. Seed scenarios focus `seed`, dispatch Ctrl+A, and type the decimal characters
+for `0`, `4294967295`, `-1`, or `4294967296`; invalid START then reaches `startBattle` by TAB and
+presses ENTER. RANDOM SEED first replaces the seed with `1`, reaches `randomSeed` by TAB, and
+presses ENTER. COPY SEED, CANCEL, and START BATTLE are reached by TAB and activated with ENTER.
+Escape dismissal is dispatched as ESCAPE without first focusing a control. Conditional visibility
+is exercised by selecting the rival-target option, TAB and Shift+TAB focus traversal, then
+selecting the preceding option again.
+
 A transition object has `actionId`, `accepted`, optional `rejectionReason`,
 `resultingStateId`, `resultingRevision`, `validation`, `kind`, optional `clipboardText`, and
 `acceptedPayload`. The closed kinds are `none`, `dismissed`, and `confirmation`. Values inside
@@ -132,18 +144,37 @@ channel. It contains:
   deterministically from the candidate's current semantic, layout, and visible-region
   observations;
 - `panelBounds` in top-left framebuffer pixels; and
-- bounded `controls` attributed by the stable corpus control IDs.
+- bounded `controls` attributed by the stable corpus control IDs. Include every control whose
+  matching `stateAction` control has `visible: true`, even when scrolling places it outside the
+  viewport; omit controls whose semantic `visible` value is false.
 
 Each rectangle is `{"x":0,"y":0,"width":0,"height":0}` in top-left framebuffer pixels.
+Width and height are non-negative. Coordinates are finite but may be negative when an actor lies
+above or to the left of the current clipped viewport; do not clamp off-viewport coordinates.
 Each structural control contains exactly `controlId`, `role`, optional `labelControlId`,
 optional `labelledControlId`, `enabled`, `focusable`, `hitBounds`, `visualBounds`, `occluded`,
 `fontPixels`, `rasterResidual`, `contrastRatio`, `glyphClipped`, `hierarchyRole`,
 `parentControlId`, optional `scrollOwnerId`, optional `clipOwnerId`, and `visibleBounds`.
 Report actual completed-frame measurements, not desired values. Stable unchanged captures must
-retain the same semantic, layout, and region hashes and revisions. The structural release
-thresholds are at least 12 font pixels, at most 0.5 raster residual, at least 4.5 contrast,
+retain the same semantic, layout, and region hashes and revisions. The structural role vocabulary
+is exactly `button`, `checkbox`, `slider`, `combobox`, `textbox`, and
+`spinbutton`, matching `stateAction`. Buttons and checkboxes are self-labelled when both label
+IDs are absent. Every other role requires `labelControlId` to identify its external label and
+`labelledControlId` to equal its own `controlId`; partial or non-reciprocal associations fail.
+An externally labelled button or checkbox uses the same reciprocal rule.
+The structural release thresholds are at least 12 font pixels, at most 0.5 raster residual,
+at least 4.5 contrast,
 at least 34 × 34 hit bounds, no glyph or frame-edge clipping, no occlusion, correct label/control
 association, form-row ownership under `form`, and scroll/clip ownership under `scroll`.
+
+The frozen geometry predicates below use the same top-left framebuffer coordinate space. The
+target control's `visualBounds` and `visibleBounds` must both equal the declared target rectangle.
+
+| Reference | `panelBounds` | Target control | Target rectangle |
+| --- | --- | --- | --- |
+| `initial-1920x1080` | `{"x":620,"y":24,"width":680,"height":1032}` | `majorRivalCount` | `{"x":1075,"y":229,"width":180,"height":34}` |
+| `bottom-1920x1080` | `{"x":620,"y":24,"width":680,"height":1032}` | `costlyCavalry` | `{"x":1075,"y":121,"width":180,"height":34}` |
+| `initial-1280x720` | `{"x":300,"y":24,"width":680,"height":672}` | `majorRivalCount` | `{"x":755,"y":229,"width":180,"height":34}` |
 
 ## Outcomes
 

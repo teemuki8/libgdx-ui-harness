@@ -16,7 +16,9 @@ import java.util.regex.Pattern;
 public final class StructuralUsability {
     private static final Pattern SHA_256 = Pattern.compile("[0-9a-f]{64}");
     private static final List<String> CONTROL_ROLES = List.of(
-            "button", "checkbox", "slider", "select", "text", "number");
+            "button", "checkbox", "slider", "combobox", "textbox", "spinbutton");
+    private static final List<String> SELF_LABELLING_ROLES = List.of(
+            "button", "checkbox");
     private static final List<String> SIGNALS = List.of(
             "legibility",
             "affordance",
@@ -141,12 +143,11 @@ public final class StructuralUsability {
                         "GLYPH_BOUNDS_CLIPPED", control.controlId(), "glyphClipped",
                         "false", "true"));
             }
-            if (control.labelControlId() == null
-                    || !control.controlId().equals(control.labelledControlId())) {
+            if (!hasValidLabelAssociation(control)) {
                 diagnostics.add(diagnostic(
                         "LABEL_ASSOCIATION_MISSING", control.controlId(), "labelControlId",
-                        "reciprocal stable label/control IDs",
-                        control.labelControlId() == null ? "absent" : "not reciprocal"));
+                        "intrinsic self-label or reciprocal stable label/control IDs",
+                        observedLabelAssociation(control)));
             }
         }
         return signal("legibility", diagnostics);
@@ -164,14 +165,13 @@ public final class StructuralUsability {
                         "CONTROL_ROLE_AMBIGUOUS", control.controlId(), "role",
                         CONTROL_ROLES.toString(), control.role()));
             }
-            if (control.labelControlId() == null
-                    || !control.controlId().equals(control.labelledControlId())) {
+            if (!hasValidLabelAssociation(control)) {
                 diagnostics.add(diagnostic(
                         "CONTROL_LABEL_ASSOCIATION_MISSING",
                         control.controlId(),
                         "labelControlId",
-                        "reciprocal stable label/control IDs",
-                        control.labelControlId() == null ? "absent" : "not reciprocal"));
+                        "intrinsic self-label or reciprocal stable label/control IDs",
+                        observedLabelAssociation(control)));
             }
             if (!control.enabled()) {
                 diagnostics.add(diagnostic(
@@ -337,6 +337,26 @@ public final class StructuralUsability {
                 .filter(value -> value.controlId().equals(id))
                 .findFirst()
                 .orElse(null);
+    }
+
+    private static boolean hasValidLabelAssociation(ControlEvidence control) {
+        boolean intrinsic = control.role() != null
+                && SELF_LABELLING_ROLES.contains(control.role())
+                && control.labelControlId() == null
+                && control.labelledControlId() == null;
+        boolean external = control.labelControlId() != null
+                && control.controlId().equals(control.labelledControlId());
+        return intrinsic || external;
+    }
+
+    private static String observedLabelAssociation(ControlEvidence control) {
+        if (control.labelControlId() == null && control.labelledControlId() == null) {
+            return "absent";
+        }
+        if (control.labelControlId() == null || control.labelledControlId() == null) {
+            return "partial";
+        }
+        return "not reciprocal";
     }
 
     private static Result terminal(
@@ -772,15 +792,15 @@ public final class StructuralUsability {
         }
     }
 
-    /** One framebuffer rectangle using top-left coordinates and pixels. */
+    /** One framebuffer rectangle; positions may fall outside the viewport. */
     public record Rect(double x, double y, double width, double height) {
-        /** Requires finite non-negative geometry. */
+        /** Requires finite coordinates and non-negative extents. */
         public Rect {
-            for (double value : new double[] {x, y, width, height}) {
-                if (!Double.isFinite(value) || value < 0) {
-                    throw new IllegalArgumentException(
-                            "rectangle values must be finite and non-negative");
-                }
+            if (!Double.isFinite(x) || !Double.isFinite(y)
+                    || !Double.isFinite(width) || !Double.isFinite(height)
+                    || width < 0 || height < 0) {
+                throw new IllegalArgumentException(
+                        "rectangle coordinates must be finite and extents non-negative");
             }
         }
     }
