@@ -64,6 +64,33 @@ strata, and the complete matched-pair schedule. Compute
 `precommitmentSha256` over canonical JSON with that field omitted. Every
 recorded `startedAt` must be later than the precommitment's `sealedAt`.
 
+Prepare the ten immutable arm identities without starting OMP:
+
+```bash
+python3 benchmarks/agentic-palisade/scripts/run-benchmark.py \
+  --output QUALIFICATION_ROOT \
+  --model openai-codex/gpt-5.6-sol:medium \
+  --max-time 45m --pairs 5 --release-candidate --prepare-only
+```
+
+Build and seal `precommitment.json` from
+`QUALIFICATION_ROOT/benchmark-manifest.json` before continuing. After
+independently verifying the seal and schedule, execute those exact prepared
+identities:
+
+```bash
+python3 benchmarks/agentic-palisade/scripts/run-benchmark.py \
+  --output QUALIFICATION_ROOT \
+  --model openai-codex/gpt-5.6-sol:medium \
+  --max-time 45m --pairs 5 --release-candidate --execute-prepared \
+  --auth-broker-url http://127.0.0.1:9000
+```
+
+`--execute-prepared` rejects changed manifests, protected inputs, candidate
+templates, run identities, or pre-existing outcome files. The historical
+three-pair benchmark remains fixed and does not accept release-candidate pair
+counts.
+
 After all scheduled runs and blind reviews are complete, create
 `manifest.json` with the outcomes and the exact `precommitmentSha256`, then
 generate the sealed decision:

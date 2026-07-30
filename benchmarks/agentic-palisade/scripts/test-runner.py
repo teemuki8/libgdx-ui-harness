@@ -63,6 +63,19 @@ def run_cli(output, *extra):
     )
 
 
+def run_release_cli(output, omp, *extra):
+    return subprocess.run(
+        [sys.executable, str(RUNNER_PATH), "--output", str(output),
+         "--model", MODEL, "--max-time", "45m", "--pairs", "5",
+         "--release-candidate", "--omp", str(omp), "--qualification", *extra],
+        cwd=BENCHMARK_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+
+
 def write_fake_omp(path):
     path.write_text(textwrap.dedent(r'''
         #!/usr/bin/env python3
@@ -404,6 +417,47 @@ class DryRunTest(unittest.TestCase):
             completed = run_cli(output, "--dry-run")
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("already exists", completed.stderr)
+
+    def test_executes_the_exact_five_pair_release_schedule_after_preparation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "release"
+            prepared = run_release_cli(
+                output, self.runner.QUALIFICATION_OMP, "--prepare-only")
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
+            before = read_json(output / "benchmark-manifest.json")
+            scheduled_ids = [run["runId"] for run in before["runs"]]
+            self.assertEqual(len(scheduled_ids), 10)
+
+            executed = run_release_cli(
+                output, self.runner.QUALIFICATION_OMP, "--execute-prepared")
+            self.assertIn(executed.returncode, (0, 1), executed.stderr)
+            self.assertNotEqual(executed.returncode, 2, executed.stderr)
+            after = read_json(output / "benchmark-manifest.json")
+            self.assertEqual(
+                [run["runId"] for run in after["runs"]], scheduled_ids)
+            self.assertEqual(
+                (output / "benchmark-manifest.json").read_bytes(),
+                json.dumps(before, indent=2, sort_keys=True).encode() + b"\n",
+            )
+            self.assertTrue(all(
+                (output / run["runRecord"]).is_file()
+                for run in after["runs"]
+            ))
+
+    def test_rejects_a_candidate_change_between_preparation_and_execution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "release"
+            prepared = run_release_cli(
+                output, self.runner.QUALIFICATION_OMP, "--prepare-only")
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
+            manifest = read_json(output / "benchmark-manifest.json")
+            workspace = output / manifest["runs"][0]["workspace"]
+            (workspace / "changed-after-seal.txt").write_text("changed\n")
+
+            executed = run_release_cli(
+                output, self.runner.QUALIFICATION_OMP, "--execute-prepared")
+            self.assertEqual(executed.returncode, 2)
+            self.assertIn("prepared candidate changed", executed.stderr)
 
     def test_detects_any_protected_input_drift(self):
         with tempfile.TemporaryDirectory() as temporary:
