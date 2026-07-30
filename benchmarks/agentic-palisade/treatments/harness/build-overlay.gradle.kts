@@ -1,4 +1,5 @@
 import org.gradle.api.tasks.SourceSetContainer
+import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.testing.Test
 import org.gradle.kotlin.dsl.configure
 import org.gradle.kotlin.dsl.getByType
@@ -67,6 +68,9 @@ gradle.beforeProject {
         afterEvaluate {
             extensions.getByType<org.gradle.api.plugins.JavaApplication>()
                 .mainClass.set("benchmark.palisade.HarnessCli")
+            tasks.named<JavaExec>("run") {
+                standardInput = System.`in`
+            }
         }
     }
 }
