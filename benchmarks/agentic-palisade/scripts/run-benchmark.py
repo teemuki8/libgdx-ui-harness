@@ -524,7 +524,15 @@ def _authoritative_json_bytes(value):
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
-def _empty_telemetry():
+def _trace_batch_id(hashes):
+    shared = {
+        name: hashes[name]
+        for name in ("prompt", "corpus", "template", "protocol")
+    }
+    return sha256_bytes(_authoritative_json_bytes(shared))
+
+
+def _empty_telemetry(batch_id="unavailable", run_id="unavailable"):
     return {
         "tokens": {name: {"status": "unavailable", "value": None}
                    for name in ("input", "output", "cacheRead", "cacheWrite", "reasoning")},
@@ -544,6 +552,35 @@ def _empty_telemetry():
             "launcherCaptures": 0,
         },
         "failedOperations": [],
+        "traceTaxonomy": {
+            "schemaVersion": "agentic-palisade/trace-taxonomy-v1",
+            "availability": "unavailable",
+            "parserVersion": "unavailable",
+            "batchId": batch_id,
+            "runId": run_id,
+            "sessionId": None,
+            "inputSha256": None,
+            "sequenceBasis": "unavailable",
+            "knownExclusions": [
+                "session export unavailable",
+                "hidden reasoning",
+                "causal inference from association",
+            ],
+            "events": [],
+            "captureAttempts": [],
+            "captureLifecycle": {},
+            "attributions": {
+                "capture": [],
+                "semantic": [],
+                "rendering": [],
+                "workflow-loop": [],
+            },
+            "joins": {
+                "process": {"status": "unavailable", "identity": None},
+                "rounds": {"status": "unavailable", "identities": []},
+                "evaluation": {"status": "unavailable", "identity": None},
+            },
+        },
     }
 
 
@@ -1220,12 +1257,17 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes,
     elif return_code not in (0, None):
         failures.append({"phase": "omp_exit", "message": f"exit status {return_code}"})
 
-    telemetry = _empty_telemetry()
+    batch_id = _trace_batch_id(hashes)
+    telemetry = _empty_telemetry(batch_id, item["runId"])
     telemetry_error = None
     session_path = None
     try:
         session_path = _discover_session(runtime["sessionRoot"])
-        telemetry = TELEMETRY.parse_omp_session(session_path)
+        telemetry = TELEMETRY.parse_omp_session(
+            session_path,
+            runtime["workspace"],
+            {"batchId": batch_id, "runId": item["runId"]},
+        )
     except TELEMETRY.TelemetryError as error:
         telemetry_error = str(error)
         failures.append({"phase": "telemetry", "message": telemetry_error})
@@ -1274,6 +1316,35 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes,
         classification = "round_protocol_failure"
     elif classification == "success" and final_hash_error:
         classification = "candidate_integrity_failure"
+
+    process_identity = {
+        "runId": item["runId"],
+        "startedAt": started_at,
+        "finishedAt": finished_at,
+        "classification": classification,
+        "code": return_code if return_code is not None and return_code >= 0 else None,
+        "signal": -return_code if return_code is not None and return_code < 0 else None,
+        "timedOut": timed_out,
+    }
+    trace_joins = telemetry["traceTaxonomy"]["joins"]
+    trace_joins["process"] = {
+        "status": "available",
+        "identity": {
+            **process_identity,
+            "sha256": sha256_bytes(
+                _authoritative_json_bytes(process_identity)),
+        },
+    }
+    round_identities = [{
+        "round": marker["round"],
+        "requestId": marker.get("requestId"),
+        "gateDigest": marker.get("gateDigest"),
+        "candidateHash": marker["candidateHash"],
+    } for marker in rounds]
+    trace_joins["rounds"] = {
+        "status": "available" if round_error is None else "partial",
+        "identities": round_identities,
+    }
 
     record = {
         "schemaVersion": "agentic-palisade/run-record-v1",

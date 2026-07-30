@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import hmac
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,18 @@ STRUCTURAL_FORBIDDEN_TEXT = re.compile(
     re.IGNORECASE,
 )
 FORBIDDEN_PNG_CHUNKS = {b"tEXt", b"zTXt", b"iTXt", b"eXIf", b"tIME"}
+
+
+def _load_trace_module():
+    path = Path(__file__).resolve().parent / "trace-taxonomy.py"
+    spec = importlib.util.spec_from_file_location(
+        "agentic_palisade_blind_trace", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+TRACE = _load_trace_module()
 
 
 def canonical_bytes(value):
@@ -337,6 +350,12 @@ def _load_inputs(root):
             raise ValueError("structural usability outcomes contain leakage")
         if structural and len(structural) != len(REQUIRED_REFERENCES):
             raise ValueError("structural outcomes must cover every reference or be unavailable")
+        trace = record.get("telemetry", {}).get("traceTaxonomy")
+        if not isinstance(trace, dict):
+            raise ValueError("run trace taxonomy is missing")
+        public_trace = TRACE.public_trace(trace, evaluation, evaluation_hash)
+        if FORBIDDEN_TEXT.search(json.dumps(public_trace, sort_keys=True)):
+            raise ValueError("trace taxonomy contains leakage")
         for visual in sorted(visuals, key=lambda item: REQUIRED_REFERENCES.index(item["referenceId"])):
             reference = references[visual["referenceId"]]["entry"]
             if visual.get("viewportId") != reference["viewportId"] or visual.get("referenceSha256") != reference["sha256"]:
@@ -381,6 +400,7 @@ def _load_inputs(root):
             "record": record, "evaluation": evaluation, "runRecordHash": run_hash,
             "evaluationHash": evaluation_hash, "captures": captures,
             "automatedVisual": public_visual, "structuralUsability": structural,
+            "traceTaxonomy": public_trace,
         })
     if pair_arms != {(pair, arm) for pair in (1, 2, 3) for arm in ("baseline", "harness")}:
         raise ValueError("every matched pair must contain one run from each arm")
@@ -469,6 +489,7 @@ def build_package(run_root, review_dir, mapping_path, seed=None):
                 "captures": public_captures,
                 "automatedVisual": run["automatedVisual"],
                 "structuralUsability": run["structuralUsability"],
+                "traceTaxonomy": run["traceTaxonomy"],
             })
 
         public_pairs = []
