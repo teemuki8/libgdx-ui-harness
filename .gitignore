@@ -1,4 +1,5 @@
 .worktress/
+.worktrees/
 .superpowers/
 docs/superpowers/
 .gradle/

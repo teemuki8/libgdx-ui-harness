@@ -14,6 +14,9 @@ Before preparing a tag:
 4. Verify the latest `main` CI run is green.
 5. Confirm the release notes describe the exact version being published.
 6. Complete the repeatability qualification for the exact candidate commit.
+7. Review the
+   [Maven Central compliance checklist](maven-central-compliance.md), including
+   the maintainer attestations that automation cannot make.
 
 Account enrollment, namespace ownership challenges, and recovery credentials are private administrative records. Do not commit them to this repository.
 
