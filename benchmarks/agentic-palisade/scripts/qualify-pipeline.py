@@ -28,7 +28,8 @@ CASES = {
 }
 GENERATED = {".gradle", "build", "__pycache__"}
 FINAL_CHANNELS = (
-    "functional", "automatedVisual", "humanVisual", "telemetryTreatment")
+    "functional", "automatedVisual", "structuralUsability",
+    "humanVisual", "telemetryTreatment")
 TOKEN_METRICS = (
     "tokens.input", "tokens.output", "tokens.cacheRead",
     "tokens.cacheWrite", "tokens.reasoning")
@@ -101,6 +102,10 @@ def validate_final_channels(report, expected_run_ids):
                 not isinstance(item.get("outcomes"), list) for item in raw):
             raise ValueError(
                 "automatedVisual channel dropped unavailable outcomes")
+        if channel == "structuralUsability" and any(
+                not isinstance(item.get("outcomes"), list) for item in raw):
+            raise ValueError(
+                "structuralUsability channel dropped unavailable outcomes")
         if channel == "telemetryTreatment":
             for item in raw:
                 metrics = item.get("metrics")

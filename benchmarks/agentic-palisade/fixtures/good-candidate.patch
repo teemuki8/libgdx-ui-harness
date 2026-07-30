@@ -2,7 +2,7 @@ diff --git a/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java b/src
 new file mode 100644
 --- /dev/null
 +++ b/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java
-@@ -0,0 +1,367 @@
+@@ -0,0 +1,417 @@
 +package benchmark.palisade;
 +
 +import com.badlogic.gdx.Gdx;
@@ -104,6 +104,7 @@ new file mode 100644
 +        state.put("visibleControls", visible());
 +        state.put("values", values());
 +        state.put("scrollPosition", bottom ? "bottom" : "top");
++        state.put("structuralUsability", structuralUsability());
 +        String focused = focused();
 +        if (focused != null) {
 +            state.put("focusedControlId", focused);
@@ -206,6 +207,55 @@ new file mode 100644
 +        } catch (NumberFormatException ignored) {
 +            return false;
 +        }
++    }
++
++    private Map<String, Object> structuralUsability() {
++        double width = stage.getViewport().getWorldWidth();
++        double height = stage.getViewport().getWorldHeight();
++        double panelX = (width - 680) / 2;
++        String id = bottom ? "costlyCavalry" : "majorRivalCount";
++        double controlY = bottom ? 121 : 229;
++        Map<String, Object> control = new LinkedHashMap<>();
++        control.put("controlId", id);
++        control.put("role", bottom ? "checkbox" : "slider");
++        control.put("labelControlId", id + "Label");
++        control.put("labelledControlId", id);
++        control.put("enabled", true);
++        control.put("focusable", true);
++        control.put("hitBounds", rect(panelX + 455, controlY, 180, 34));
++        control.put("visualBounds", rect(panelX + 455, controlY, 180, 34));
++        control.put("occluded", false);
++        control.put("fontPixels", 15);
++        control.put("rasterResidual", 0.1);
++        control.put("contrastRatio", 7);
++        control.put("glyphClipped", false);
++        control.put("hierarchyRole", "form-row");
++        control.put("parentControlId", "form");
++        control.put("scrollOwnerId", "scroll");
++        control.put("clipOwnerId", "scroll");
++        control.put("visibleBounds", rect(panelX + 455, controlY, 180, 34));
++        Map<String, Object> evidence = new LinkedHashMap<>();
++        evidence.put("schemaVersion", "structural-observation/v1");
++        evidence.put("semanticRevision", 1);
++        evidence.put("layoutRevision", 1);
++        evidence.put("frameEdgeClipped", false);
++        evidence.put("scrollY", bottom ? 1 : 0);
++        evidence.put("semanticSha256", "1".repeat(64));
++        evidence.put("layoutSha256", "2".repeat(64));
++        evidence.put("regionSha256", "3".repeat(64));
++        evidence.put("panelBounds", rect(panelX, 24, 680, height - 48));
++        evidence.put("controls", List.of(control));
++        return evidence;
++    }
++
++    private static Map<String, Object> rect(
++            double x, double y, double width, double height) {
++        Map<String, Object> result = new LinkedHashMap<>();
++        result.put("x", x);
++        result.put("y", y);
++        result.put("width", width);
++        result.put("height", height);
++        return result;
 +    }
 +
 +    private Map<String, Object> values() {

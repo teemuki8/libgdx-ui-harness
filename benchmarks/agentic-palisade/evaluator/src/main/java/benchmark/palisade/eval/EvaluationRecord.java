@@ -11,6 +11,7 @@ public record EvaluationRecord(
         CorpusIdentity corpus,
         FunctionalOutcome functional,
         List<VisualOutcome> visual,
+        List<StructuralUsability.Result> structural,
         List<Artifact> artifacts,
         List<String> diagnostics) {
     public static final String SCHEMA_VERSION = "agentic-palisade-evaluation/v1";
@@ -23,7 +24,8 @@ public record EvaluationRecord(
         Objects.requireNonNull(candidate, "candidate");
         Objects.requireNonNull(corpus, "corpus");
         Objects.requireNonNull(functional, "functional");
-        visual = List.copyOf(visual);
+        visual = visual == null ? List.of() : List.copyOf(visual);
+        structural = structural == null ? List.of() : List.copyOf(structural);
         artifacts = List.copyOf(artifacts);
         diagnostics = List.copyOf(diagnostics);
     }
@@ -32,7 +34,7 @@ public record EvaluationRecord(
         return new EvaluationRecord(SCHEMA_VERSION, "complete",
                 new CandidateIdentity("fixture", "0".repeat(64)),
                 new CorpusIdentity("agentic-palisade/v1", "0".repeat(64)),
-                FunctionalOutcome.from(result), List.of(), List.of(), List.of());
+                FunctionalOutcome.from(result), List.of(), List.of(), List.of(), List.of());
     }
 
     /** External run identity and immutable candidate-tree digest. */

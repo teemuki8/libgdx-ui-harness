@@ -243,7 +243,10 @@ def _validate_private_mapping(run_root, review_dir, manifest, manifest_hash, map
     for label in LABELS:
         public = public_by_label[label]
         run = label_runs[label]
-        if set(public) != {"label", "captures", "automatedVisual"} or public["automatedVisual"] != run["automatedVisual"]:
+        if (set(public) != {
+                "label", "captures", "automatedVisual", "structuralUsability"}
+                or public["automatedVisual"] != run["automatedVisual"]
+                or public["structuralUsability"] != run["structuralUsability"]):
             raise ValueError("public label capture binding mismatch")
         if len(public["captures"]) != len(run["captures"]):
             raise ValueError("public label capture binding mismatch")
@@ -428,6 +431,44 @@ def _automated_visual_channel(label_runs):
     return {"raw": raw, "armSummaries": summaries, "pairedDeltas": paired}
 
 
+def _structural_channel(label_runs):
+    raw = []
+    for label, run in label_runs.items():
+        outcomes = run["evaluation"].get("structural", [])
+        raw.append({
+            "label": label,
+            "runId": run["runId"],
+            "pair": run["pair"],
+            "treatment": run["treatment"],
+            "outcomes": outcomes,
+        })
+    paired = []
+    for pair in (1, 2, 3):
+        pair_rows = [row for row in raw if row["pair"] == pair]
+        paired.append({
+            "pair": pair,
+            "baselineLabel": next(
+                row["label"] for row in pair_rows if row["treatment"] == "baseline"),
+            "harnessLabel": next(
+                row["label"] for row in pair_rows if row["treatment"] == "harness"),
+            "comparison": "independent pass/fail outcomes retained without weighting",
+        })
+    return {
+        "raw": raw,
+        "armSummaries": {
+            arm: {
+                status: sum(
+                    1 for row in raw if row["treatment"] == arm
+                    for outcome in row["outcomes"]
+                    if outcome.get("status") == status)
+                for status in ("PASS", "FAIL", "INCOMPLETE", "STALE", "UNSTABLE")
+            }
+            for arm in ("baseline", "harness")
+        },
+        "pairedDeltas": paired,
+    }
+
+
 def _human_channel(label_runs, response):
     raw = [{"label": label, "runId": run["runId"], "pair": run["pair"], "treatment": run["treatment"],
             "fidelity": response["fidelity"][label], "ranking": response["ranking"][label]}
@@ -555,6 +596,7 @@ def unblind(run_root, review_dir, mapping_path, ratings_path, lock_path, output_
         "channels": {
             "functional": _functional_channel(label_runs),
             "automatedVisual": _automated_visual_channel(label_runs),
+            "structuralUsability": _structural_channel(label_runs),
             "humanVisual": _human_channel(label_runs, response),
             "telemetryTreatment": _telemetry_channel(label_runs),
         },
@@ -562,7 +604,10 @@ def unblind(run_root, review_dir, mapping_path, ratings_path, lock_path, output_
         "interpretation": {
             "sampleSizePerTreatment": 3,
             "pairedDeltaConvention": "harness minus baseline",
-            "conclusions": "Directional only; retain separate outcome channels.",
+            "conclusions": (
+                "Directional only; raster similarity, structural usability, and "
+                "human fidelity measure different properties and remain separate."
+            ),
         },
     }
     _atomic_public_json(output_path, report)

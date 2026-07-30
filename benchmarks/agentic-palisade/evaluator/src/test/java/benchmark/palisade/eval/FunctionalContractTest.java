@@ -200,6 +200,7 @@ final class FunctionalContractTest {
                 base.schemaVersion(), base.status(),
                 new EvaluationRecord.CandidateIdentity("fixture", identity),
                 base.corpus(), base.functional(), base.visual(),
+                base.structural(),
                 List.of(new EvaluationRecord.Artifact(
                         "captures/initial-1920x1080-0.png", content.length, digest)),
                 base.diagnostics());

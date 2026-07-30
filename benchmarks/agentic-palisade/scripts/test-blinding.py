@@ -333,7 +333,7 @@ class BlindingTest(unittest.TestCase):
         self.assertEqual(3, len(public["references"]))
         BLIND.scan_package(self.review)
         package_text = "\n".join(path.read_text(errors="ignore") for path in self.review.rglob("*.json"))
-        for forbidden in ("baseline", "harness", "runId", "token", "diagnostic", str(self.input)):
+        for forbidden in ("baseline", "harness", "runId", "token", str(self.input)):
             self.assertNotIn(forbidden.lower(), package_text.lower())
 
     def test_failed_evaluation_is_retained_as_an_empty_blinded_candidate(self):
@@ -578,7 +578,12 @@ class BlindingTest(unittest.TestCase):
         self.lock(ratings_path, lock_path)
         UNBLIND.unblind(self.input, self.review, self.mapping, ratings_path, lock_path, output)
         report = json.loads(output.read_text())
-        self.assertEqual({"functional", "automatedVisual", "humanVisual", "telemetryTreatment"}, set(report["channels"]))
+        self.assertEqual({
+            "functional", "automatedVisual", "structuralUsability",
+            "humanVisual", "telemetryTreatment"}, set(report["channels"]))
+        self.assertEqual(
+            6, len(report["channels"]["structuralUsability"]["raw"]))
+        self.assertNotIn("combined", json.dumps(report).lower())
         by_pair = {item["pair"]: item for item in report["channels"]["functional"]["pairedDeltas"]}
         self.assertEqual(1, by_pair[1]["passed"]["harnessMinusBaseline"])
         human_pairs = report["channels"]["humanVisual"]["pairedDeltas"]

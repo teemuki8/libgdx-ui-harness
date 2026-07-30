@@ -42,7 +42,7 @@ class QualificationTest(unittest.TestCase):
             raw = []
             for run_id in run_ids:
                 item = {"runId": run_id}
-                if channel == "automatedVisual":
+                if channel in ("automatedVisual", "structuralUsability"):
                     item["outcomes"] = []
                 elif channel == "telemetryTreatment":
                     item["metrics"] = {

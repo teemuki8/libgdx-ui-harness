@@ -12,7 +12,7 @@ public record CandidateState(Map<String, Object> values) {
     private static final int MAX_CONTAINER_ENTRIES = 64;
     private static final int MAX_DEPTH = 8;
     private static final int MAX_KEY_LENGTH = 128;
-    private static final int MAX_NODES = 128;
+    private static final int MAX_NODES = 256;
     private static final int MAX_STRING_LENGTH = 256;
 
     /** Validates and defensively copies a snapshot. */
