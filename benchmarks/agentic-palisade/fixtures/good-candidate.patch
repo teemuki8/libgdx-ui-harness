@@ -2,7 +2,7 @@ diff --git a/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java b/src
 new file mode 100644
 --- /dev/null
 +++ b/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java
-@@ -0,0 +1,417 @@
+@@ -0,0 +1,563 @@
 +package benchmark.palisade;
 +
 +import com.badlogic.gdx.Gdx;
@@ -43,6 +43,8 @@ new file mode 100644
 +    private boolean started;
 +    private String outcome;
 +    private String clipboardText;
++    private String lastAction;
++    private Long previousSeed;
 +
 +    public SkirmishConfigurationUi() {
 +        if (Thread.currentThread().getContextClassLoader()
@@ -97,6 +99,8 @@ new file mode 100644
 +        started = false;
 +        outcome = null;
 +        clipboardText = null;
++        lastAction = null;
++        previousSeed = null;
 +    }
 +
 +    @Override public CandidateState snapshotState() {
@@ -104,6 +108,7 @@ new file mode 100644
 +        state.put("visibleControls", visible());
 +        state.put("values", values());
 +        state.put("scrollPosition", bottom ? "bottom" : "top");
++        state.put("stateAction", stateAction());
 +        state.put("structuralUsability", structuralUsability());
 +        String focused = focused();
 +        if (focused != null) {
@@ -138,6 +143,7 @@ new file mode 100644
 +    private boolean handleKey(int keycode) {
 +        if (keycode == Input.Keys.ESCAPE) {
 +            outcome = "dismissed";
++            lastAction = "escape";
 +            return true;
 +        }
 +        if (keycode == Input.Keys.TAB) {
@@ -177,14 +183,19 @@ new file mode 100644
 +        if (keycode != Input.Keys.ENTER) return false;
 +        if ("copySeed".equals(focused)) {
 +            clipboardText = seedText;
++            lastAction = "copy-seed";
 +            Gdx.app.getClipboard().setContents(seedText);
 +        } else if ("randomSeed".equals(focused)) {
++            previousSeed = Long.parseLong(seedText);
 +            seedText = "305419896";
++            lastAction = "random-seed";
 +        } else if ("cancel".equals(focused)) {
 +            outcome = "dismissed";
-+        } else if ("startBattle".equals(focused) && validSeed()) {
-+            started = true;
-+            outcome = "confirmation";
++            lastAction = "cancel";
++        } else if ("startBattle".equals(focused)) {
++            lastAction = "start-battle";
++            started = validSeed();
++            if (started) outcome = "confirmation";
 +        }
 +        return true;
 +    }
@@ -207,6 +218,141 @@ new file mode 100644
 +        } catch (NumberFormatException ignored) {
 +            return false;
 +        }
++    }
++
++    @SuppressWarnings("unchecked")
++    private Map<String, Object> stateAction() {
++        Map<String, Object> contract = new LinkedHashMap<>();
++        contract.put("schemaVersion", "state-action/v1.0");
++        contract.put("stateId", stateId());
++        contract.put("revision", 1);
++        contract.put("frame", 1);
++        List<Map<String, Object>> observedControls = new ArrayList<>();
++        Map<String, Object> currentValues = values();
++        String focused = focused();
++        for (Map<String, Object> definition : CONTROLS) {
++            String id = String.valueOf(definition.get("id"));
++            String kind = String.valueOf(definition.get("kind"));
++            boolean visible = visible().contains(id);
++            Map<String, Object> observed = new LinkedHashMap<>();
++            observed.put("id", id);
++            observed.put("role", role(kind));
++            observed.put("kind", kind);
++            observed.put("accessibleName", definition.get("label"));
++            List<Map<String, Object>> observedOptions = new ArrayList<>();
++            for (Map<String, Object> option :
++                    (List<Map<String, Object>>) definition.get("options")) {
++                observedOptions.add(Map.of(
++                        "value", typed(option.get("value")),
++                        "label", option.get("label")));
++            }
++            observed.put("options", List.copyOf(observedOptions));
++            observed.put("defaultValue", typed(definition.get("default")));
++            observed.put("currentValue", typed(currentValues.get(id)));
++            observed.put("visible", visible);
++            observed.put("enabled", true);
++            observed.put("actionable", visible);
++            observed.put("focusable", visible);
++            observed.put("focused", id.equals(focused));
++            Map<String, Object> sourceRule =
++                    (Map<String, Object>) definition.get("validation");
++            Map<String, Object> rule = new LinkedHashMap<>();
++            rule.put("format", sourceRule.get("format"));
++            for (String bound : List.of("minimum", "maximum", "step")) {
++                if (sourceRule.get(bound) != null) {
++                    rule.put(bound, typed(sourceRule.get(bound)));
++                }
++            }
++            observed.put("validationRule", rule);
++            boolean valid = !"seed".equals(id) || validSeed();
++            observed.put("validationStatus", Map.of(
++                    "valid", valid,
++                    "messages", valid ? List.of() : List.of(
++                            "Seed must be an unsigned 32-bit decimal integer")));
++            observedControls.add(observed);
++        }
++        contract.put("controls", List.copyOf(observedControls));
++        contract.put("focusOrder", visible());
++        if (focused != null) contract.put("focusedControlId", focused);
++        contract.put("conditions", List.of(Map.of(
++                "controllerId", "victoryCondition",
++                "equalsValue", typed("rival-target"),
++                "dependentId", "rivalTargetCount",
++                "visibleWhenEqual", true,
++                "actionableWhenEqual", true,
++                "restoreFocusTo", "victoryCondition")));
++        contract.put("viewports", List.of(Map.of(
++                "id", "configuration",
++                "width", stage.getViewport().getWorldWidth(),
++                "height", stage.getViewport().getWorldHeight(),
++                "scrollX", 0,
++                "scrollY", bottom ? 1 : 0,
++                "maxScrollX", 0,
++                "maxScrollY", 1,
++                "visibleControlIds", visible())));
++        if (lastAction != null) contract.put("transition", transition());
++        return contract;
++    }
++
++    private Map<String, Object> transition() {
++        boolean accepted = !"start-battle".equals(lastAction) || validSeed();
++        String kind = switch (lastAction) {
++            case "cancel", "escape" -> "dismissed";
++            case "start-battle" -> accepted ? "confirmation" : "none";
++            default -> "none";
++        };
++        Map<String, Object> payload = new LinkedHashMap<>();
++        if ("random-seed".equals(lastAction)) {
++            payload.put("previousSeed", typed(previousSeed));
++            payload.put("seed", typed(Long.parseLong(seedText)));
++        } else if ("start-battle".equals(lastAction) && accepted) {
++            values().forEach((key, value) -> payload.put(key, typed(value)));
++        }
++        Map<String, Object> transition = new LinkedHashMap<>();
++        transition.put("actionId", lastAction);
++        transition.put("accepted", accepted);
++        if (!accepted) transition.put("rejectionReason", "invalid seed");
++        transition.put("resultingStateId", stateId());
++        transition.put("resultingRevision", 1);
++        transition.put("validation", Map.of(
++                "valid", validSeed(),
++                "messages", validSeed() ? List.of() : List.of(
++                        "Seed must be an unsigned 32-bit decimal integer")));
++        transition.put("kind", kind);
++        if ("copy-seed".equals(lastAction)) {
++            transition.put("clipboardText", clipboardText);
++        }
++        transition.put("acceptedPayload", payload);
++        return transition;
++    }
++
++    private String stateId() {
++        return String.join(":", "qualification", victory, seedText,
++                Boolean.toString(bottom), String.valueOf(outcome),
++                String.valueOf(focused()));
++    }
++
++    private static String role(String kind) {
++        return switch (kind) {
++            case "button" -> "button";
++            case "checkbox" -> "checkbox";
++            case "range" -> "slider";
++            case "select" -> "combobox";
++            default -> "textbox";
++        };
++    }
++
++    private static Map<String, Object> typed(Object value) {
++        if (value == null) return Map.of("type", "null");
++        if (value instanceof Boolean booleanValue) {
++            return Map.of("type", "boolean", "booleanValue", booleanValue);
++        }
++        if (value instanceof Byte || value instanceof Short
++                || value instanceof Integer || value instanceof Long) {
++            return Map.of("type", "integer",
++                    "integerValue", ((Number) value).longValue());
++        }
++        return Map.of("type", "text", "textValue", String.valueOf(value));
 +    }
 +
 +    private Map<String, Object> structuralUsability() {

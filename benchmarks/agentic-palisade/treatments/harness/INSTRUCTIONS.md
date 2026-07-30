@@ -4,6 +4,8 @@ Implement `benchmark.palisade.SkirmishConfigurationUi` in the supplied candidate
 
 Do not inspect a reference checkout, evaluator internals, non-public fixtures, capture infrastructure, or another treatment run. Do not change the protocol or corpus. Work within the candidate template, retain the fixed candidate contract, and use exactly three implement-observe-refine rounds.
 
+Implement the public `CandidateState.values().stateAction` and `structuralUsability` evidence contracts on every completed frame. A visually working UI with omitted, partial, aliased, or differently nested evidence is incomplete.
+
 ## Treatment appendix
 
 The generated harness overlay adds the digest-bound harness candidate supplied

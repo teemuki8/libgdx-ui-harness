@@ -95,7 +95,11 @@ final class HarnessBridgeTest {
         assertEquals(HarnessBridge.SESSION_ID, ((Map<?, ?>) catalog.getFirst()).get("sessionId"));
 
         assertSuccessKind(responses.get(1), "snapshot-summary");
-        assertTrue(((Number) result(responses.get(1)).get("nodeCount")).intValue() >= 2);
+        Map<String, Object> snapshot = result(responses.get(1));
+        assertTrue(((Number) snapshot.get("nodeCount")).intValue() >= 2);
+        assertEquals("present", snapshot.get("candidateContractStatus"));
+        assertEquals("fixture-state",
+                ((Map<?, ?>) snapshot.get("candidateContract")).get("stateId"));
 
         assertSuccessKind(responses.get(2), "query-result");
         Map<String, Object> query = result(responses.get(2));
@@ -267,7 +271,16 @@ final class HarnessBridgeTest {
                     }
 
                     @Override public CandidateState snapshotState() {
-                        return new CandidateState(Map.of());
+                        return new CandidateState(Map.of(
+                                "stateAction", Map.of(
+                                        "schemaVersion", "state-action/v1.0",
+                                        "stateId", "fixture-state",
+                                        "revision", 1L,
+                                        "frame", 1L,
+                                        "controls", List.of(),
+                                        "focusOrder", List.of(),
+                                        "conditions", List.of(),
+                                        "viewports", List.of())));
                     }
 
                     @Override public void dispose() {
