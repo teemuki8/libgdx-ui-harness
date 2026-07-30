@@ -2,6 +2,7 @@ package benchmark.palisade.eval;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
@@ -25,6 +26,21 @@ final class StructuralUsabilityTest {
     }
 
     @Test
+    void offViewportCoordinatesAreValidButNegativeExtentsAreNot() {
+        StructuralUsability.Rect offViewport =
+                new StructuralUsability.Rect(-20, -40, 100, 50);
+
+        assertEquals(-20, offViewport.x());
+        assertEquals(-40, offViewport.y());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new StructuralUsability.Rect(0, 0, -1, 10));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new StructuralUsability.Rect(0, 0, 10, -1));
+    }
+
+    @Test
     void referenceLikeEvidencePassesEveryIndependentSignal() {
         StructuralUsability.Result result =
                 StructuralUsability.evaluate(policy(), evidence(control()), null);
@@ -33,6 +49,68 @@ final class StructuralUsabilityTest {
         assertEquals(6, result.signals().size());
         assertTrue(result.signals().stream()
                 .allMatch(signal -> signal.status() == StructuralUsability.Status.PASS));
+    }
+
+    @Test
+    void intrinsicLabelsAreValidOnlyForSelfLabellingRoles() {
+        for (String role : List.of("button", "checkbox")) {
+            StructuralUsability.Result result = StructuralUsability.evaluate(
+                    policy(), evidence(control(role, null, null)), null);
+
+            assertEquals(StructuralUsability.Status.PASS, result.status());
+        }
+        for (String role : List.of("slider", "combobox", "textbox", "spinbutton")) {
+            StructuralUsability.Result result = StructuralUsability.evaluate(
+                    policy(), evidence(control(role, null, null)), null);
+
+            assertEquals(StructuralUsability.Status.FAIL, result.status());
+            assertEquals(
+                    "LABEL_ASSOCIATION_MISSING",
+                    signal(result, "legibility").diagnostics().getFirst().code());
+        }
+    }
+
+    @Test
+    void accessibleRoleVocabularyMatchesTheStateActionContract() {
+        for (String role : List.of(
+                "button", "checkbox", "slider", "combobox", "textbox", "spinbutton")) {
+            StructuralUsability.Result result = StructuralUsability.evaluate(
+                    policy(),
+                    evidence(control(role, "major-rival-label", "major-rival-count")),
+                    null);
+
+            assertEquals(
+                    StructuralUsability.Status.PASS,
+                    signal(result, "affordance").status(),
+                    role);
+        }
+        for (String role : List.of("select", "text", "number")) {
+            StructuralUsability.Result result = StructuralUsability.evaluate(
+                    policy(),
+                    evidence(control(role, "major-rival-label", "major-rival-count")),
+                    null);
+
+            assertEquals(
+                    "CONTROL_ROLE_AMBIGUOUS",
+                    signal(result, "affordance").diagnostics().getFirst().code(),
+                    role);
+        }
+    }
+
+    @Test
+    void externalLabelAssociationsMustBeCompleteAndReciprocal() {
+        for (StructuralUsability.ControlEvidence mutation : List.of(
+                control("slider", null, "major-rival-count"),
+                control("slider", "major-rival-label", null),
+                control("slider", "major-rival-label", "another-control"))) {
+            StructuralUsability.Result result =
+                    StructuralUsability.evaluate(policy(), evidence(mutation), null);
+
+            assertEquals(StructuralUsability.Status.FAIL, result.status());
+            assertEquals(
+                    "LABEL_ASSOCIATION_MISSING",
+                    signal(result, "legibility").diagnostics().getFirst().code());
+        }
     }
 
     @Test
@@ -301,9 +379,14 @@ final class StructuralUsabilityTest {
     }
 
     private static StructuralUsability.ControlEvidence control() {
+        return control("slider", "major-rival-label", "major-rival-count");
+    }
+
+    private static StructuralUsability.ControlEvidence control(
+            String role, String labelControlId, String labelledControlId) {
         return new StructuralUsability.ControlEvidence(
-                "major-rival-count", "slider", "major-rival-label",
-                "major-rival-count", true, true,
+                "major-rival-count", role, labelControlId,
+                labelledControlId, true, true,
                 rect(100, 100, 420, 44), rect(100, 100, 420, 44),
                 false, 15, 0.1, 7, false,
                 "form-row", "form", "scroll", "scroll",
