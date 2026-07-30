@@ -67,10 +67,19 @@ recorded `startedAt` must be later than the precommitment's `sealedAt`.
 Prepare the ten immutable arm identities without starting OMP:
 
 ```bash
+candidate="$(git rev-parse HEAD)"
+candidate_version="1.1.0-candidate.${candidate:0:12}"
+candidate_repository="$(mktemp -d)"
+./gradlew publishToMavenLocal \
+  -Dmaven.repo.local="$candidate_repository" \
+  -PreleaseVersion="$candidate_version" --warning-mode=fail
+
 python3 benchmarks/agentic-palisade/scripts/run-benchmark.py \
   --output QUALIFICATION_ROOT \
   --model openai-codex/gpt-5.6-sol:medium \
-  --max-time 45m --pairs 5 --release-candidate --prepare-only
+  --max-time 45m --pairs 5 --release-candidate --prepare-only \
+  --candidate-maven-repository "$candidate_repository" \
+  --candidate-version "$candidate_version"
 ```
 
 Build and seal `precommitment.json` from
@@ -87,9 +96,11 @@ python3 benchmarks/agentic-palisade/scripts/run-benchmark.py \
 ```
 
 `--execute-prepared` rejects changed manifests, protected inputs, candidate
-templates, run identities, or pre-existing outcome files. The historical
-three-pair benchmark remains fixed and does not accept release-candidate pair
-counts.
+templates, run identities, candidate Maven artifacts, or pre-existing outcome
+files. The copied Maven repository digest is part of every harness-arm
+treatment identity; the external temporary repository is not consulted during
+execution. The historical three-pair benchmark remains fixed on published
+`1.0.0` and does not accept release-candidate pair counts.
 
 After all scheduled runs and blind reviews are complete, create
 `manifest.json` with the outcomes and the exact `precommitmentSha256`, then

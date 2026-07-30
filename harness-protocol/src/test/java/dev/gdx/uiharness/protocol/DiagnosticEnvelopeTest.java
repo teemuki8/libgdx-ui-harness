@@ -17,7 +17,7 @@ final class DiagnosticEnvelopeTest {
                 "INVALID_ARGUMENT_TYPE", "OUT_OF_RANGE", "INVALID_ENUM_VALUE",
                 "SCHEMA_CONFLICT", "LOCATOR_NOT_FOUND", "LOCATOR_AMBIGUOUS",
                 "STALE_REVISION", "STATE_NOT_READY", "BUILD_FAILED",
-                "LAUNCH_FAILED", "DEADLINE_EXCEEDED", "NO_PROGRESS",
+                "LAUNCH_FAILED", "DEADLINE_EXCEEDED", "LIMIT_EXCEEDED", "NO_PROGRESS",
                 "LOOP_DETECTED", "RECOVERY_BUDGET_EXHAUSTED", "INTERNAL_ERROR"),
                 java.util.Arrays.stream(DiagnosticCode.values())
                         .map(Enum::name).toList());
@@ -27,6 +27,11 @@ final class DiagnosticEnvelopeTest {
                 DiagnosticCode.UNKNOWN_OPERATION.defaultDisposition());
         assertEquals(DiagnosticEnvelope.Disposition.TERMINAL,
                 DiagnosticCode.LOOP_DETECTED.defaultDisposition());
+        assertEquals(DiagnosticEnvelope.Disposition.TERMINAL,
+                DiagnosticCode.LIMIT_EXCEEDED.defaultDisposition());
+        assertEquals(
+                "a bounded resource or result limit was exceeded",
+                DiagnosticCode.LIMIT_EXCEEDED.meaning());
         assertEquals(
                 "an equivalent recovery loop reached its boundary",
                 DiagnosticCode.LOOP_DETECTED.meaning());

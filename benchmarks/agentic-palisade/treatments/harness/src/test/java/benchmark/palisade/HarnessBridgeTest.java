@@ -36,6 +36,18 @@ import org.junit.jupiter.api.io.TempDir;
 final class HarnessBridgeTest {
     @TempDir Path temporary;
 
+    @Test void locatesThePublicReferenceInsideAnIsolatedCandidateWorkspace()
+            throws Exception {
+        Path reference = temporary.resolve(
+                "corpus/reference/initial-1280x720.png");
+        Files.createDirectories(reference.getParent());
+        Files.write(reference, new byte[] {1});
+
+        assertEquals(
+                reference.toAbsolutePath().normalize(),
+                HarnessBridge.locateInitialReference(temporary));
+    }
+
     @Test void fixedJsonCliExercisesOneApplicationOwnedSessionAndArtifacts() throws Exception {
         Path ownedArtifacts = temporary.resolve("owned-harness-artifacts");
         Path applicationFile = temporary.resolve("application-owned.txt");
@@ -110,7 +122,7 @@ final class HarnessBridgeTest {
         assertSuccessKind(responses.get(8), "trace-stopped");
         assertTrue(((Number) result(responses.get(8)).get("eventCount")).longValue() >= 2);
         assertSuccessKind(responses.get(9), "capabilities-result");
-        assertRejected(responses.get(10), "limit-exceeded");
+        assertRejected(responses.get(10), "LIMIT_EXCEEDED");
         assertSuccessKind(responses.get(11), "trace-started");
         assertSuccessKind(responses.get(12), "trace-stopped");
         assertRejected(responses.get(13), "unknown-operation");

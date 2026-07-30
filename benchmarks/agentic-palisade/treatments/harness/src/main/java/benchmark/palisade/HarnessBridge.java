@@ -196,7 +196,7 @@ public final class HarnessBridge implements AutoCloseable {
     }
 
     private static VisualReference initialReference() {
-        Path reference = locateInitialReference();
+        Path reference = locateInitialReference(Path.of("."));
         try {
             byte[] png = Files.readAllBytes(reference);
             return new VisualReference(
@@ -211,11 +211,15 @@ public final class HarnessBridge implements AutoCloseable {
         }
     }
 
-    private static Path locateInitialReference() {
+    static Path locateInitialReference(Path workingDirectory) {
+        Path root = Objects.requireNonNull(
+                workingDirectory, "workingDirectory").toAbsolutePath().normalize();
         for (Path candidate : List.of(
-                Path.of("../corpus/reference/initial-1280x720.png"),
-                Path.of("benchmarks/agentic-palisade/corpus/reference/initial-1280x720.png"))) {
-            Path normalized = candidate.toAbsolutePath().normalize();
+                root.resolve("corpus/reference/initial-1280x720.png"),
+                root.resolve("../corpus/reference/initial-1280x720.png"),
+                root.resolve(
+                    "benchmarks/agentic-palisade/corpus/reference/initial-1280x720.png"))) {
+            Path normalized = candidate.normalize();
             if (Files.isRegularFile(normalized, LinkOption.NOFOLLOW_LINKS)
                     && !Files.isSymbolicLink(normalized)) {
                 return normalized;

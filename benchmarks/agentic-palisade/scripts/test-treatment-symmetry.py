@@ -19,11 +19,11 @@ EXPECTED_COMMON_HASH = (
 )
 EXPECTED_APPENDIX_HASHES = {
     "baseline": "6addeb7eda9150d3ee901062f34cab7b72e09feeb7a011e15b44451603f99681",
-    "harness": "19961d30b28b3b12955705eaa6aaca7518eab684a28bf0e72dc6d7630eedda8b",
+    "harness": "0827621ed1d37d5ca71754453c9991c845077f33513170766a988c40a7ed30bd",
 }
-PUBLISHED_COORDINATES = {
-    b'io.github.teemuki8:harness-lwjgl3:1.0.0',
-    b'io.github.teemuki8:harness-mcp:1.0.0',
+QUALIFIED_COORDINATES = {
+    b'io.github.teemuki8:harness-lwjgl3:$harnessVersion',
+    b'io.github.teemuki8:harness-mcp:$harnessVersion',
 }
 
 
@@ -116,11 +116,17 @@ def validate_treatment_symmetry(root):
         raise SymmetryError("shared task wording differs between treatments")
 
     overlay = (root / "treatments/harness/build-overlay.gradle.kts").read_bytes()
-    for coordinate in PUBLISHED_COORDINATES:
+    for coordinate in QUALIFIED_COORDINATES:
         if overlay.count(coordinate) != 1:
             raise SymmetryError(
                 f"generated overlay must contain {coordinate.decode()} exactly once"
             )
+    for marker in (
+            b"candidate-version.txt", b"candidate-maven",
+            b"qualifiedHarnessCandidate"):
+        if overlay.count(marker) != 1:
+            raise SymmetryError(
+                f"generated overlay must bind {marker.decode()} exactly once")
     return observed
 
 

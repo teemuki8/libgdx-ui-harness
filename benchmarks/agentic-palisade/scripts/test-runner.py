@@ -63,11 +63,31 @@ def run_cli(output, *extra):
     )
 
 
-def run_release_cli(output, omp, *extra):
+def fake_candidate_repository(root, version="1.1.0-candidate.test"):
+    repository = Path(root) / "candidate-maven"
+    for module in (
+            "harness-core", "harness-scene2d", "harness-lwjgl3",
+            "harness-protocol", "harness-mcp"):
+        artifact = repository / "io/github/teemuki8" / module / version
+        artifact.mkdir(parents=True)
+        (artifact / f"{module}-{version}.jar").write_bytes(b"candidate-jar")
+        (artifact / f"{module}-{version}.pom").write_text(
+            f"<project><version>{version}</version></project>\n")
+    return repository, version
+
+
+def run_release_cli(output, omp, repository=None, version=None, *extra):
+    candidate = []
+    if repository is not None or version is not None:
+        candidate = [
+            "--candidate-maven-repository", str(repository),
+            "--candidate-version", str(version),
+        ]
     return subprocess.run(
         [sys.executable, str(RUNNER_PATH), "--output", str(output),
          "--model", MODEL, "--max-time", "45m", "--pairs", "5",
-         "--release-candidate", "--omp", str(omp), "--qualification", *extra],
+         "--release-candidate", *candidate, "--omp", str(omp),
+         "--qualification", *extra],
         cwd=BENCHMARK_ROOT,
         text=True,
         stdout=subprocess.PIPE,
@@ -421,15 +441,29 @@ class DryRunTest(unittest.TestCase):
     def test_executes_the_exact_five_pair_release_schedule_after_preparation(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "release"
+            repository, version = fake_candidate_repository(temporary)
             prepared = run_release_cli(
-                output, self.runner.QUALIFICATION_OMP, "--prepare-only")
+                output, self.runner.QUALIFICATION_OMP, repository, version,
+                "--prepare-only")
             self.assertEqual(prepared.returncode, 0, prepared.stderr)
             before = read_json(output / "benchmark-manifest.json")
             scheduled_ids = [run["runId"] for run in before["runs"]]
             self.assertEqual(len(scheduled_ids), 10)
+            harness = next(
+                run for run in before["runs"] if run["treatment"] == "harness")
+            treatment = output / harness["workspace"]
+            treatment = treatment.parent / "treatments/harness"
+            self.assertEqual(
+                (treatment / "candidate-version.txt").read_text().strip(),
+                version,
+            )
+            self.assertTrue(
+                (treatment / "candidate-maven/io/github/teemuki8/"
+                 f"harness-mcp/{version}/harness-mcp-{version}.jar").is_file())
 
             executed = run_release_cli(
-                output, self.runner.QUALIFICATION_OMP, "--execute-prepared")
+                output, self.runner.QUALIFICATION_OMP, None, None,
+                "--execute-prepared")
             self.assertIn(executed.returncode, (0, 1), executed.stderr)
             self.assertNotEqual(executed.returncode, 2, executed.stderr)
             after = read_json(output / "benchmark-manifest.json")
@@ -447,15 +481,18 @@ class DryRunTest(unittest.TestCase):
     def test_rejects_a_candidate_change_between_preparation_and_execution(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "release"
+            repository, version = fake_candidate_repository(temporary)
             prepared = run_release_cli(
-                output, self.runner.QUALIFICATION_OMP, "--prepare-only")
+                output, self.runner.QUALIFICATION_OMP, repository, version,
+                "--prepare-only")
             self.assertEqual(prepared.returncode, 0, prepared.stderr)
             manifest = read_json(output / "benchmark-manifest.json")
             workspace = output / manifest["runs"][0]["workspace"]
             (workspace / "changed-after-seal.txt").write_text("changed\n")
 
             executed = run_release_cli(
-                output, self.runner.QUALIFICATION_OMP, "--execute-prepared")
+                output, self.runner.QUALIFICATION_OMP, None, None,
+                "--execute-prepared")
             self.assertEqual(executed.returncode, 2)
             self.assertIn("prepared candidate changed", executed.stderr)
 
@@ -512,6 +549,43 @@ class DryRunTest(unittest.TestCase):
             )
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("exactly --max-time 45m", completed.stderr)
+
+    def test_retains_a_telemetry_error_for_a_missing_referenced_payload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            session = root / "session.jsonl"
+            session.write_text(
+                "\n".join([
+                    json.dumps({"type": "session", "version": 3, "id": "session"}),
+                    json.dumps({
+                        "type": "message",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{
+                                "type": "toolCall",
+                                "id": "call",
+                                "name": "bash",
+                                "arguments": {"command": "cat missing.ndjson"},
+                            }],
+                        },
+                    }),
+                    json.dumps({
+                        "type": "message",
+                        "message": {
+                            "role": "toolResult",
+                            "toolCallId": "call",
+                            "toolName": "bash",
+                            "isError": False,
+                            "content": [],
+                        },
+                    }),
+                    "",
+                ]),
+            )
+            telemetry, error = self.runner._parse_telemetry(
+                session, root, {"batchId": "batch", "runId": "run"})
+            self.assertEqual(telemetry["traceTaxonomy"]["availability"], "unavailable")
+            self.assertEqual(error, "referenced payload is missing or oversized")
 
     def test_qualification_deadline_is_available_only_to_the_fixed_mock_omp(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -760,6 +760,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             case NOT_FOUND -> DiagnosticCode.LOCATOR_NOT_FOUND;
             case STRICTNESS_VIOLATION -> DiagnosticCode.LOCATOR_AMBIGUOUS;
             case TIMEOUT -> DiagnosticCode.DEADLINE_EXCEEDED;
+            case LIMIT_EXCEEDED -> DiagnosticCode.LIMIT_EXCEEDED;
             case PROTOCOL_VERSION_MISMATCH -> DiagnosticCode.SCHEMA_CONFLICT;
             case INTERNAL_ERROR, RENDER_THREAD_FAILURE ->
                     DiagnosticCode.INTERNAL_ERROR;
