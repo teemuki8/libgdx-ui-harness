@@ -768,8 +768,12 @@ public final class HarnessToolHandler implements AutoCloseable {
         return diagnostic(
                 error.requestId(), sequence, operation, arguments, code,
                 error.message(), List.of(),
+                error.locator(), error.candidates(), error.details(),
+                error.elapsedMillis(), error.traceId(),
                 new DiagnosticEnvelope.StateIdentity(
-                        null, error.sessionId(), error.lastSnapshotRevision(), null));
+                        null, error.sessionId(), error.lastSnapshotRevision(), null),
+                error.traceReference() == null
+                        ? List.of() : List.of(error.traceReference()));
     }
 
     private McpSchema.CallToolResult diagnostic(
@@ -781,6 +785,27 @@ public final class HarnessToolHandler implements AutoCloseable {
             String message,
             List<DiagnosticEnvelope.FieldProblem> problems,
             DiagnosticEnvelope.StateIdentity stateIdentity) {
+        return diagnostic(
+                requestId, sequence, operation, arguments, requestedCode,
+                message, problems, null, List.of(), Map.of(), null, null,
+                stateIdentity, List.of());
+    }
+
+    private McpSchema.CallToolResult diagnostic(
+            String requestId,
+            long sequence,
+            String operation,
+            Map<String, Object> arguments,
+            DiagnosticCode requestedCode,
+            String message,
+            List<DiagnosticEnvelope.FieldProblem> problems,
+            String locator,
+            List<Map<String, String>> candidates,
+            Map<String, String> details,
+            Long operationElapsedMillis,
+            String traceId,
+            DiagnosticEnvelope.StateIdentity stateIdentity,
+            List<String> evidenceRefs) {
         String fingerprint = diagnosticFingerprint(
                 operation, arguments, requestedCode, problems);
         boolean transientDiagnostic = requestedCode.defaultDisposition()
@@ -809,13 +834,14 @@ public final class HarnessToolHandler implements AutoCloseable {
                 0, (nanoClock.getAsLong() - startedNanos) / 1_000_000);
         DiagnosticEnvelope envelope = DiagnosticEnvelope.create(
                 requestId, sequence, operation, code, message, problems,
+                locator, candidates, details, operationElapsedMillis, traceId,
                 stateIdentity, DiagnosticEnvelope.Progress.unavailable(),
                 new DiagnosticEnvelope.Recovery(
                         dev.gdx.uiharness.protocol.RecoveryPolicy.VERSION,
                         consumed, limit, elapsedMillis,
                         HarnessToolCatalog.recoveryPolicy().maxWallTimeMillis(),
                         terminatingRule),
-                List.of());
+                evidenceRefs);
         @SuppressWarnings("unchecked")
         Map<String, Object> encoded = COMMAND_MAPPER.convertValue(envelope, Map.class);
         LinkedHashMap<String, Object> content = new LinkedHashMap<>(encoded);

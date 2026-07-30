@@ -18,7 +18,7 @@
       "logicalDelayMillis": 96,
       "steps": [
         {"action": "expect-click-failure", "locator": {"kind": "text", "value": "Sign in"},
-         "expectedFailure": {"category": "strict-locator", "harnessCode": "strictness-violation",
+         "expectedFailure": {"category": "strict-locator", "harnessCode": "LOCATOR_AMBIGUOUS",
            "harnessEvidencePath": "/details/matchCount", "harnessEvidenceValue": "[redacted] 2",
            "playwrightErrorName": "Error",
            "playwrightMessage": "strict mode violation"}},
@@ -102,7 +102,7 @@
       "logicalDelayMillis": 96,
       "steps": [
         {"action": "expect-click-failure", "locator": {"kind": "text", "value": "Sign in"},
-         "expectedFailure": {"category": "strict-locator", "harnessCode": "strictness-violation",
+         "expectedFailure": {"category": "strict-locator", "harnessCode": "LOCATOR_AMBIGUOUS",
            "harnessEvidencePath": "/details/matchCount", "harnessEvidenceValue": "[redacted] 2",
            "playwrightErrorName": "Error",
            "playwrightMessage": "strict mode violation"}},

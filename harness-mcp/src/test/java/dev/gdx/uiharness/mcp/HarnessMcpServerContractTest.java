@@ -30,6 +30,7 @@ import dev.gdx.uiharness.protocol.HarnessProtocolService;
 import dev.gdx.uiharness.protocol.HarnessRequest;
 import dev.gdx.uiharness.protocol.HarnessResponse;
 import dev.gdx.uiharness.protocol.ProtocolJson;
+import dev.gdx.uiharness.protocol.ProtocolError;
 import dev.gdx.uiharness.protocol.ProtocolVersion;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.io.BufferedReader;
@@ -341,6 +342,54 @@ final class HarnessMcpServerContractTest {
             assertEquals(256,
                     ((List<?>) diagnostic.get("problems")).size());
             assertEquals("$", problemPaths(diagnostic).getFirst());
+        }
+    }
+
+    @Test void protocolFailureRetainsLocatorCandidatesStateAndTraceEvidence() {
+        ProtocolError error = new ProtocolError(
+                ProtocolError.Code.STRICTNESS_VIOLATION,
+                "Locator resolved to multiple actors",
+                "mcp-1",
+                "game",
+                "text=Sign in",
+                64,
+                20L,
+                "trace:strict",
+                List.of(
+                        Map.of("actorId", "first"),
+                        Map.of("actorId", "second")),
+                Map.of(
+                        "matchCount", "[redacted] 2",
+                        "lastActionability", "visible"),
+                "trace-1");
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Failure(
+                        ProtocolVersion.V1, "mcp-1", "game", error));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> response, new RecordingArtifacts(), executor, 1024)) {
+            Map<String, Object> diagnostic = structured(handler.handle(call(
+                    "ui_action",
+                    Map.of(
+                            "sessionId", "game",
+                            "locator", Map.of(
+                                    "kind", "text",
+                                    "field", "text",
+                                    "match", Map.of(
+                                            "mode", "exact", "source", "Sign in")),
+                            "action", Map.of(
+                                    "kind", "click", "pointer", 0,
+                                    "button", 0, "force", false))))
+                    .block(Duration.ofSeconds(10)));
+
+            assertEquals("LOCATOR_AMBIGUOUS", diagnostic.get("code"));
+            assertEquals("text=Sign in", diagnostic.get("locator"));
+            assertEquals(2, ((List<?>) diagnostic.get("candidates")).size());
+            assertEquals("[redacted] 2",
+                    ((Map<?, ?>) diagnostic.get("details")).get("matchCount"));
+            assertEquals(64, ((Number) diagnostic.get("elapsedMillis")).intValue());
+            assertEquals("trace-1", diagnostic.get("traceId"));
+            assertEquals(List.of("trace:strict"), diagnostic.get("evidenceRefs"));
         }
     }
 

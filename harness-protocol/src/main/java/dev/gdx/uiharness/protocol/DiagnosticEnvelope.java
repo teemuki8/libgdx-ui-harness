@@ -28,6 +28,11 @@ public record DiagnosticEnvelope(
         List<String> admissible,
         Map<String, Object> minimalExample,
         List<FieldProblem> problems,
+        String locator,
+        List<Map<String, String>> candidates,
+        Map<String, String> details,
+        Long elapsedMillis,
+        String traceId,
         StateIdentity stateIdentity,
         Progress progress,
         Recovery recovery,
@@ -63,6 +68,13 @@ public record DiagnosticEnvelope(
         if (problems.size() > MAX_PROBLEMS) {
             throw new IllegalArgumentException("too many field problems");
         }
+        optionalText(locator, "locator");
+        candidates = copyCandidates(candidates);
+        details = copyStringMap(details, "details");
+        if (elapsedMillis != null && elapsedMillis < 0) {
+            throw new IllegalArgumentException("elapsedMillis must be non-negative");
+        }
+        optionalText(traceId, "traceId");
         progress = Objects.requireNonNull(progress, "progress");
         recovery = Objects.requireNonNull(recovery, "recovery");
         evidenceRefs = boundedStrings(
@@ -81,6 +93,29 @@ public record DiagnosticEnvelope(
             Progress progress,
             Recovery recovery,
             List<String> evidenceRefs) {
+        return create(
+                requestId, sequence, operation, code, message, problems,
+                null, List.of(), Map.of(), null, null,
+                stateIdentity, progress, recovery, evidenceRefs);
+    }
+
+    /** Constructs a complete envelope retaining bounded protocol failure evidence. */
+    public static DiagnosticEnvelope create(
+            String requestId,
+            long sequence,
+            String operation,
+            DiagnosticCode code,
+            String message,
+            List<FieldProblem> problems,
+            String locator,
+            List<Map<String, String>> candidates,
+            Map<String, String> details,
+            Long elapsedMillis,
+            String traceId,
+            StateIdentity stateIdentity,
+            Progress progress,
+            Recovery recovery,
+            List<String> evidenceRefs) {
         List<FieldProblem> safeProblems = List.copyOf(problems);
         FieldProblem first = safeProblems.isEmpty() ? null : safeProblems.getFirst();
         Disposition disposition = code.defaultDisposition();
@@ -95,6 +130,11 @@ public record DiagnosticEnvelope(
             identity.put("code", code.name());
             identity.put("message", message);
             identity.put("problems", safeProblems);
+            identity.put("locator", locator);
+            identity.put("candidates", candidates);
+            identity.put("details", details);
+            identity.put("elapsedMillis", elapsedMillis);
+            identity.put("traceId", traceId);
             identity.put("stateIdentity", stateIdentity);
             identity.put("progress", progress);
             identity.put("recovery", recovery);
@@ -122,6 +162,11 @@ public record DiagnosticEnvelope(
                 first == null ? List.of() : first.admissible(),
                 first == null ? Map.of() : first.minimalExample(),
                 safeProblems,
+                locator,
+                candidates,
+                details,
+                elapsedMillis,
+                traceId,
                 stateIdentity,
                 progress,
                 recovery,
@@ -195,6 +240,37 @@ public record DiagnosticEnvelope(
         } catch (Exception failure) {
             throw new IllegalArgumentException(label + " is not serializable", failure);
         }
+    }
+
+    private static List<Map<String, String>> copyCandidates(
+            List<Map<String, String>> values) {
+        List<Map<String, String>> source =
+                List.copyOf(Objects.requireNonNull(values, "candidates"));
+        java.util.ArrayList<Map<String, String>> copy = new java.util.ArrayList<>();
+        source.stream().limit(255)
+                .map(value -> copyStringMap(value, "candidate"))
+                .forEach(copy::add);
+        if (source.size() > 255) {
+            copy.add(Map.of(
+                    "overflow", Integer.toString(source.size() - 255)
+                            + " additional candidates retained in trace"));
+        }
+        return List.copyOf(copy);
+    }
+
+    private static Map<String, String> copyStringMap(
+            Map<String, String> value, String label) {
+        Map<String, String> source = Objects.requireNonNull(value, label);
+        if (source.size() > 256) {
+            throw new IllegalArgumentException(label + " exceeds 256 fields");
+        }
+        java.util.LinkedHashMap<String, String> copy = new java.util.LinkedHashMap<>();
+        source.forEach((key, item) -> {
+            requireText(key, label + ".key");
+            requireText(item, label + ".value");
+            copy.put(key, item);
+        });
+        return Map.copyOf(copy);
     }
 
     /** Stable severity independent of message wording. */
