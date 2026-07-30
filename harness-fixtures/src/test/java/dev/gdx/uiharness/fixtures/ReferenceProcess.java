@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit;
 
 /** Launches and owns one fresh hidden LWJGL3 process used only by the smoke test. */
 final class ReferenceProcess implements AutoCloseable {
-    private static final Duration START_TIMEOUT = Duration.ofSeconds(15);
+    private static final Duration START_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration EXIT_TIMEOUT = Duration.ofSeconds(15);
 
     private final Path root;

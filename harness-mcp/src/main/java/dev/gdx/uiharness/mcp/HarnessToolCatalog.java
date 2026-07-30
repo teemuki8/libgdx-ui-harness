@@ -2,6 +2,8 @@ package dev.gdx.uiharness.mcp;
 
 import dev.gdx.uiharness.protocol.HarnessRequest;
 import dev.gdx.uiharness.protocol.HarnessResponse;
+import dev.gdx.uiharness.protocol.DiagnosticCode;
+import dev.gdx.uiharness.protocol.RecoveryPolicy;
 import dev.gdx.uiharness.protocol.ProtocolJson;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.util.ArrayList;
@@ -23,6 +25,7 @@ public final class HarnessToolCatalog {
 
     private final List<McpSchema.Tool> tools;
     private final Map<String, McpSchema.Tool> byName;
+    private final Map<String, List<Map<String, Object>>> examples;
 
     /** Builds the fixed V1 catalog. */
     public HarnessToolCatalog() {
@@ -236,14 +239,27 @@ public final class HarnessToolCatalog {
                                 List.of("traceId", "traceReference", "eventCount", "bytes"))),
                 tool("ui_capabilities", "Discover capabilities for one harness session",
                         sessionInput(Map.of(), List.of()),
-                        output("capabilities-result", Map.of(
-                                "capabilities", array(string(1, MAX_IDENTIFIER), 256)),
+                        output("capabilities-result", Map.ofEntries(
+                                Map.entry("capabilities",
+                                        array(string(1, MAX_IDENTIFIER), 256)),
+                                Map.entry("catalogSchemaVersion",
+                                        string(1, MAX_IDENTIFIER)),
+                                Map.entry("operations",
+                                        array(operationCatalogEntrySchema(), 256)),
+                                Map.entry("diagnosticRegistryVersion",
+                                        string(1, MAX_IDENTIFIER)),
+                                Map.entry("diagnosticRegistry",
+                                        array(diagnosticRegistryEntrySchema(), 256)),
+                                Map.entry("recoveryPolicyVersion",
+                                        string(1, MAX_IDENTIFIER)),
+                                Map.entry("recoveryPolicy", recoveryPolicySchema())),
                                 List.of("capabilities"))));
 
         LinkedHashMap<String, McpSchema.Tool> index = new LinkedHashMap<>();
         definitions.forEach(tool -> index.put(tool.name(), tool));
         tools = List.copyOf(definitions);
         byName = Map.copyOf(index);
+        examples = examples();
     }
 
     private static Map<String, Object> layoutReportSummarySchema() {
@@ -286,6 +302,188 @@ public final class HarnessToolCatalog {
             throw new IllegalArgumentException("Unknown tool: " + name);
         }
         return tool;
+    }
+
+    /** Returns the versioned bounded operation, schema, output, and example catalog. */
+    public List<Map<String, Object>> operationCatalog() {
+        return tools.stream().map(tool -> Map.<String, Object>of(
+                "name", tool.name(),
+                "inputSchema", tool.inputSchema(),
+                "outputSchema", tool.outputSchema(),
+                "minimalExamples", examples.get(tool.name()))).toList();
+    }
+
+    /** Returns one minimal example selected by an optional tagged variant. */
+    public Map<String, Object> minimalExample(String name, Map<String, Object> arguments) {
+        List<Map<String, Object>> values = examples.get(name);
+        if (values == null || values.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> selected;
+        if ("ui_action".equals(name)
+                && arguments.get("action") instanceof Map<?, ?> action
+                && action.get("kind") instanceof String kind) {
+            selected = values.stream()
+                    .filter(example -> example.get("action") instanceof Map<?, ?> exampleAction
+                            && kind.equals(exampleAction.get("kind")))
+                    .findFirst()
+                    .orElse(values.getFirst());
+        } else {
+            selected = values.getFirst();
+        }
+        LinkedHashMap<String, Object> contextual = new LinkedHashMap<>(selected);
+        Object sessionId = arguments.get("sessionId");
+        if (sessionId instanceof String session
+                && !session.isBlank() && session.length() <= MAX_IDENTIFIER) {
+            contextual.put("sessionId", session);
+        }
+        return Map.copyOf(contextual);
+    }
+
+    /** Returns the fixed recovery policy advertised to agent clients. */
+    public static RecoveryPolicy recoveryPolicy() {
+        return new RecoveryPolicy(3, 3, 3, 1, 1, 30_000);
+    }
+
+    /** Returns the stable diagnostic registry projection. */
+    public static List<DiagnosticCode.Entry> diagnosticRegistry() {
+        return DiagnosticCode.registry();
+    }
+
+    private static Map<String, Object> operationCatalogEntrySchema() {
+        return object(Map.of(
+                "name", string(1, MAX_IDENTIFIER),
+                "inputSchema", Map.of("type", "object"),
+                "outputSchema", Map.of("type", "object"),
+                "minimalExamples", array(Map.of("type", "object"), 256)),
+                List.of("name", "inputSchema", "outputSchema", "minimalExamples"));
+    }
+
+    private static Map<String, Object> diagnosticRegistryEntrySchema() {
+        return object(Map.of(
+                "code", enumString(java.util.Arrays.stream(DiagnosticCode.values())
+                        .map(Enum::name).toArray(String[]::new)),
+                "disposition", enumString("transient", "terminal"),
+                "retryable", Map.of("type", "boolean"),
+                "meaning", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                List.of("code", "disposition", "retryable", "meaning"));
+    }
+
+    private static Map<String, Object> recoveryPolicySchema() {
+        return object(Map.of(
+                "maxSchemaRecoveries", integer(1, Integer.MAX_VALUE),
+                "maxStateRetries", integer(1, Integer.MAX_VALUE),
+                "maxUnchangedInspectCycles", integer(1, Integer.MAX_VALUE),
+                "maxUnchangedBuilds", integer(1, Integer.MAX_VALUE),
+                "maxUnchangedLaunches", integer(1, Integer.MAX_VALUE),
+                "maxWallTimeMillis", integer(1, Long.MAX_VALUE)),
+                List.of(
+                        "maxSchemaRecoveries", "maxStateRetries",
+                        "maxUnchangedInspectCycles", "maxUnchangedBuilds",
+                        "maxUnchangedLaunches", "maxWallTimeMillis"));
+    }
+
+    private static Map<String, List<Map<String, Object>>> examples() {
+        Map<String, Object> session = Map.of("sessionId", "SESSION");
+        Map<String, Object> roleButton =
+                Map.of("kind", "role", "role", "button");
+        LinkedHashMap<String, List<Map<String, Object>>> values = new LinkedHashMap<>();
+        values.put("ui_sessions", List.of(Map.of()));
+        values.put("ui_snapshot", List.of(session));
+        values.put("ui_query", List.of(Map.of(
+                "sessionId", "SESSION", "locator", roleButton)));
+        values.put("ui_action", List.of(
+                Map.of(
+                        "sessionId", "SESSION",
+                        "locator", roleButton,
+                        "action", Map.of(
+                                "kind", "click", "pointer", 0,
+                                "button", 0, "force", false)),
+                Map.of(
+                        "sessionId", "SESSION",
+                        "locator", roleButton,
+                        "action", Map.of("kind", "hover", "force", false)),
+                Map.of(
+                        "sessionId", "SESSION",
+                        "locator", roleButton,
+                        "action", Map.of("kind", "focus", "force", false)),
+                Map.of(
+                        "sessionId", "SESSION",
+                        "locator", roleButton,
+                        "action", Map.of(
+                                "kind", "fill", "value", "", "force", false)),
+                Map.of(
+                        "sessionId", "SESSION",
+                        "locator", roleButton,
+                        "action", Map.of(
+                                "kind", "press", "keycode", 66, "force", false)),
+                Map.of(
+                        "sessionId", "SESSION",
+                        "locator", roleButton,
+                        "action", Map.of(
+                                "kind", "scroll", "amountX", 0, "amountY", 1,
+                                "force", false)),
+                Map.of(
+                        "sessionId", "SESSION",
+                        "locator", roleButton,
+                        "action", Map.of(
+                                "kind", "drag", "deltaX", 10, "deltaY", 0,
+                                "pointer", 0, "button", 0, "force", false)),
+                Map.of(
+                        "sessionId", "SESSION",
+                        "locator", roleButton,
+                        "action", Map.of(
+                                "kind", "pointer", "phase", "move",
+                                "offsetX", 0, "offsetY", 0,
+                                "pointer", 0, "button", 0, "force", false))));
+        values.put("ui_wait", List.of(Map.of(
+                "sessionId", "SESSION", "locator", roleButton,
+                "condition", "visible")));
+        values.put("ui_screenshot", List.of(Map.of(
+                "sessionId", "SESSION",
+                "maxWidth", 1280,
+                "maxHeight", 720,
+                "maxPixels", 921_600,
+                "maxPngBytes", 4_194_304)));
+        values.put("ui_inspect_compare", List.of(Map.ofEntries(
+                Map.entry("sessionId", "SESSION"),
+                Map.entry("referenceId", "REFERENCE"),
+                Map.entry("policyId", "pixel-exact"),
+                Map.entry("policyVersion", 1),
+                Map.entry("viewportId", "1280x720"),
+                Map.entry("maxIterations", 1),
+                Map.entry("maxDurationMillis", 30_000),
+                Map.entry("maxWidth", 1280),
+                Map.entry("maxHeight", 720),
+                Map.entry("maxPixels", 921_600),
+                Map.entry("maxPngBytes", 4_194_304))));
+        values.put("ui_typography_diagnose", List.of(Map.ofEntries(
+                Map.entry("sessionId", "SESSION"),
+                Map.entry("referenceId", "REFERENCE"),
+                Map.entry("viewportId", "1280x720"),
+                Map.entry("maxDurationMillis", 30_000),
+                Map.entry("maxResults", 16),
+                Map.entry("maxWidth", 1280),
+                Map.entry("maxHeight", 720),
+                Map.entry("maxPixels", 921_600),
+                Map.entry("maxPngBytes", 4_194_304))));
+        values.put("ui_layout_diagnose", List.of(Map.ofEntries(
+                Map.entry("sessionId", "SESSION"),
+                Map.entry("referenceId", "REFERENCE"),
+                Map.entry("viewportId", "1280x720"),
+                Map.entry("maxDurationMillis", 2_000),
+                Map.entry("maxResults", 16),
+                Map.entry("maxWidth", 1280),
+                Map.entry("maxHeight", 720),
+                Map.entry("maxPixels", 921_600),
+                Map.entry("maxPngBytes", 4_194_304))));
+        values.put("ui_trace_start", List.of(Map.of(
+                "sessionId", "SESSION",
+                "maxDurationMillis", 30_000,
+                "maxBytes", 1_048_576)));
+        values.put("ui_trace_stop", List.of(session));
+        values.put("ui_capabilities", List.of(session));
+        return Map.copyOf(values);
     }
 
     private static McpSchema.Tool tool(String name, String description,
@@ -422,11 +620,44 @@ public final class HarnessToolCatalog {
             List<String> required) {
         LinkedHashMap<String, Object> properties = new LinkedHashMap<>();
         properties.put("kind", Map.of("const", kind, "type", "string"));
+        properties.put("progress", progressSchema());
+        properties.put("recovery", recoverySnapshotSchema());
         properties.putAll(additions);
         ArrayList<String> allRequired = new ArrayList<>();
         allRequired.add("kind");
+        allRequired.add("progress");
+        allRequired.add("recovery");
         allRequired.addAll(required);
         return object(properties, allRequired);
+    }
+
+    private static Map<String, Object> progressSchema() {
+        return object(Map.of(
+                "status", enumString("available", "unavailable"),
+                "dimensions", Map.of(
+                        "type", "object",
+                        "additionalProperties", enumString(
+                                "changed", "unchanged", "unavailable"),
+                        "maxProperties", 32),
+                "ruleId", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                List.of("status", "dimensions", "ruleId"));
+    }
+
+    private static Map<String, Object> recoverySnapshotSchema() {
+        return object(Map.of(
+                "policyVersion", string(1, MAX_IDENTIFIER),
+                "consumedBefore", integer(0, Long.MAX_VALUE),
+                "consumed", integer(0, Long.MAX_VALUE),
+                "limit", integer(1, Long.MAX_VALUE),
+                "remainingBefore", integer(0, Long.MAX_VALUE),
+                "remaining", integer(0, Long.MAX_VALUE),
+                "elapsedMillis", integer(0, Long.MAX_VALUE),
+                "maxWallTimeMillis", integer(1, Long.MAX_VALUE),
+                "terminatingRule", string(1, MAX_IDENTIFIER)),
+                List.of(
+                        "policyVersion", "consumedBefore", "consumed", "limit",
+                        "remainingBefore", "remaining",
+                        "elapsedMillis", "maxWallTimeMillis", "terminatingRule"));
     }
 
     private static Map<String, Object> sessionSchema() {

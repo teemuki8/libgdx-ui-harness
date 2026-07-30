@@ -2,12 +2,15 @@ package dev.gdx.uiharness.mcp;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.gdx.uiharness.protocol.Command;
+import dev.gdx.uiharness.protocol.DiagnosticCode;
+import dev.gdx.uiharness.protocol.DiagnosticEnvelope;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
 import dev.gdx.uiharness.protocol.HarnessRequest;
 import dev.gdx.uiharness.protocol.HarnessResponse;
 import dev.gdx.uiharness.protocol.ProtocolError;
 import dev.gdx.uiharness.protocol.ProtocolJson;
 import dev.gdx.uiharness.protocol.ProtocolVersion;
+import dev.gdx.uiharness.protocol.RecoveryWorkflow;
 import dev.gdx.uiharness.core.typography.AffineTransformObservation;
 import dev.gdx.uiharness.core.typography.CoordinateBounds;
 import dev.gdx.uiharness.core.typography.CoordinatePoint;
@@ -15,7 +18,6 @@ import dev.gdx.uiharness.core.typography.EvidenceValue;
 import dev.gdx.uiharness.core.typography.GlyphRunObservation;
 import dev.gdx.uiharness.core.typography.TypographyDiagnostic;
 import dev.gdx.uiharness.core.typography.TypographyReport;
-import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.util.ArrayDeque;
 import java.util.Base64;
@@ -26,11 +28,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
@@ -48,26 +52,39 @@ public final class HarnessToolHandler implements AutoCloseable {
     private final ExecutorService executor;
     private final Scheduler scheduler;
     private final int artifactThresholdBytes;
+    private final LongSupplier nanoClock;
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
     private final AtomicLong requestSequence = new AtomicLong();
+    private final Map<String, Integer> diagnosticAttempts = new ConcurrentHashMap<>();
+    private final Map<String, Integer> sessionRecoveryAttempts = new ConcurrentHashMap<>();
+    private final long startedNanos;
 
     /** Creates a handler that owns a Java 25 virtual-thread executor. */
     public HarnessToolHandler(
             HarnessProtocolService protocol, ArtifactReference.Publisher artifacts) {
         this(Objects.requireNonNull(protocol, "protocol")::execute, artifacts,
-                Executors.newVirtualThreadPerTaskExecutor(), DEFAULT_ARTIFACT_THRESHOLD_BYTES);
+                Executors.newVirtualThreadPerTaskExecutor(), DEFAULT_ARTIFACT_THRESHOLD_BYTES,
+                System::nanoTime);
     }
 
     HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes) {
+        this(protocol, artifacts, executor, artifactThresholdBytes, System::nanoTime);
+    }
+
+    HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
+            ArtifactReference.Publisher artifacts, ExecutorService executor,
+            int artifactThresholdBytes, LongSupplier nanoClock) {
         this.protocol = Objects.requireNonNull(protocol, "protocol");
         this.artifacts = Objects.requireNonNull(artifacts, "artifacts");
         this.executor = Objects.requireNonNull(executor, "executor");
+        this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
         if (artifactThresholdBytes <= 0) {
             throw new IllegalArgumentException("artifactThresholdBytes must be positive");
         }
         this.artifactThresholdBytes = artifactThresholdBytes;
+        startedNanos = nanoClock.getAsLong();
         scheduler = Schedulers.fromExecutorService(executor);
     }
 
@@ -75,50 +92,80 @@ public final class HarnessToolHandler implements AutoCloseable {
     public Mono<McpSchema.CallToolResult> handle(McpSchema.CallToolRequest call) {
         Objects.requireNonNull(call, "call");
         return Mono.defer(() -> {
+            long sequence = requestSequence.incrementAndGet();
+            String requestId = "mcp-" + Long.toUnsignedString(sequence);
             Map<String, Object> arguments = call.arguments() == null ? Map.of() : call.arguments();
             McpSchema.Tool tool;
             try {
                 tool = catalog.tool(call.name());
             } catch (IllegalArgumentException failure) {
-                return Mono.just(localError("unknown-tool", failure.getMessage()));
+                return Mono.just(diagnostic(
+                        requestId, sequence, call.name(), arguments,
+                        DiagnosticCode.UNKNOWN_OPERATION,
+                        "Operation is not allowlisted",
+                        List.of(new DiagnosticEnvelope.FieldProblem(
+                                DiagnosticCode.UNKNOWN_OPERATION,
+                                "$.operation",
+                                boundedObserved(call.name()),
+                                new DiagnosticEnvelope.Expected(
+                                        "string", true, null,
+                                        catalog.toolNames().stream().sorted().toList(),
+                                        null, null, null, null, null, false),
+                                catalog.toolNames().stream().sorted().toList(),
+                                Map.of())),
+                        null));
             }
             if (!locatorShapeWithinLimits(arguments)) {
-                return Mono.just(localError(
-                        "invalid-arguments", "Locator exceeds adapter complexity limits"));
+                return Mono.just(diagnostic(
+                        requestId, sequence, call.name(), arguments,
+                        DiagnosticCode.SCHEMA_CONFLICT,
+                        "Locator exceeds adapter complexity limits",
+                        List.of(), null));
             }
-            String actionableValidation =
-                    actionableCaptureValidation(call.name(), arguments);
-            if (actionableValidation != null) {
-                return Mono.just(localError(
-                        "invalid-arguments", actionableValidation));
-            }
-            var validation = McpJsonDefaults.getSchemaValidator()
-                    .validate(tool.inputSchema(), arguments);
-            if (!validation.valid()) {
-                return Mono.just(localError("invalid-arguments", "Arguments do not match tool schema"));
+            List<DiagnosticEnvelope.FieldProblem> problems = SchemaDiagnostics.validate(
+                    tool.inputSchema(), arguments,
+                    catalog.minimalExample(call.name(), arguments));
+            if (!problems.isEmpty()) {
+                return Mono.just(diagnostic(
+                        requestId, sequence, call.name(), arguments,
+                        problems.getFirst().code(),
+                        "One or more arguments do not match the operation schema",
+                        problems, null));
             }
 
             HarnessRequest request;
             try {
-                request = toProtocolRequest(call.name(), arguments);
+                request = toProtocolRequest(call.name(), arguments, requestId);
             } catch (RuntimeException failure) {
-                return Mono.just(localError("invalid-arguments", "Arguments could not be decoded"));
+                return Mono.just(diagnostic(
+                        requestId, sequence, call.name(), arguments,
+                        DiagnosticCode.SCHEMA_CONFLICT,
+                        "Arguments could not be decoded",
+                        List.of(), null));
             }
 
             CompletionStage<HarnessResponse> stage;
             try {
                 stage = Objects.requireNonNull(protocol.apply(request), "protocol stage");
             } catch (RuntimeException failure) {
-                return Mono.just(localError("internal-error", "Protocol invocation failed"));
+                return Mono.just(diagnostic(
+                        requestId, sequence, call.name(), arguments,
+                        DiagnosticCode.INTERNAL_ERROR,
+                        "Protocol invocation failed", List.of(), null));
             }
             return Mono.fromFuture(stage.toCompletableFuture())
-                    .map(this::toMcpResult)
+                    .map(response -> toMcpResult(
+                            response, call.name(), sequence, arguments))
                     .onErrorResume(failure -> Mono.just(
-                            localError("internal-error", "Protocol invocation failed")));
+                            diagnostic(
+                                    requestId, sequence, call.name(), arguments,
+                                    DiagnosticCode.INTERNAL_ERROR,
+                                    "Protocol invocation failed", List.of(), null)));
         }).subscribeOn(scheduler);
     }
 
-    private HarnessRequest toProtocolRequest(String toolName, Map<String, Object> arguments) {
+    private HarnessRequest toProtocolRequest(
+            String toolName, Map<String, Object> arguments, String requestId) {
         LinkedHashMap<String, Object> commandJson = new LinkedHashMap<>(arguments);
         Object sessionValue = commandJson.remove("sessionId");
         Object deadlineValue = commandJson.remove("deadlineMillis");
@@ -127,7 +174,6 @@ public final class HarnessToolHandler implements AutoCloseable {
                 ? DEFAULT_DEADLINE_MILLIS : ((Number) deadlineValue).longValue();
         commandJson.put("type", commandType(toolName));
         Command command = COMMAND_MAPPER.convertValue(commandJson, Command.class);
-        String requestId = "mcp-" + Long.toUnsignedString(requestSequence.incrementAndGet());
         return new HarnessRequest(
                 ProtocolVersion.V1, sessionId, requestId, deadlineMillis, command);
     }
@@ -150,24 +196,45 @@ public final class HarnessToolHandler implements AutoCloseable {
         };
     }
 
-    private McpSchema.CallToolResult toMcpResult(HarnessResponse response) {
+    private McpSchema.CallToolResult toMcpResult(
+            HarnessResponse response,
+            String operation,
+            long sequence,
+            Map<String, Object> arguments) {
         if (response instanceof HarnessResponse.Failure failure) {
-            return protocolError(failure.error());
+            return protocolError(
+                    failure.error(), operation, sequence, arguments);
         }
         HarnessResponse.Success success = (HarnessResponse.Success) response;
         try {
-            Map<String, Object> content = structured(success.result());
+            LinkedHashMap<String, Object> content =
+                    new LinkedHashMap<>(structured(success.result()));
+            content.put("progress", encodedProgress(
+                    DiagnosticEnvelope.Progress.unavailable()));
+            content.put("recovery", encodedRecovery(new DiagnosticEnvelope.Recovery(
+                    dev.gdx.uiharness.protocol.RecoveryPolicy.VERSION,
+                    sessionRecoveryAttempts.getOrDefault(sessionKey(arguments), 0),
+                    HarnessToolCatalog.recoveryPolicy().maxSchemaRecoveries(),
+                    Math.max(0, (nanoClock.getAsLong() - startedNanos) / 1_000_000),
+                    HarnessToolCatalog.recoveryPolicy().maxWallTimeMillis(),
+                    "success/v1")));
             return McpSchema.CallToolResult.builder()
-                    .structuredContent(content)
+                    .structuredContent(Map.copyOf(content))
                     .addTextContent(compactText(content))
                     .isError(false)
                     .build();
         } catch (ArtifactReference.InvalidArtifactReferenceException failure) {
-            return localError("invalid-artifact-reference", failure.getMessage());
+            return localError(
+                    operation, sequence, arguments,
+                    "invalid-artifact-reference", failure.getMessage());
         } catch (ArtifactReference.ArtifactUnavailableException failure) {
-            return localError("artifact-unavailable", failure.getMessage());
+            return localError(
+                    operation, sequence, arguments,
+                    "artifact-unavailable", failure.getMessage());
         } catch (RuntimeException failure) {
-            return localError("internal-error", "Result translation failed");
+            return localError(
+                    operation, sequence, arguments,
+                    "internal-error", "Result translation failed");
         }
     }
 
@@ -184,6 +251,13 @@ public final class HarnessToolHandler implements AutoCloseable {
         if (result instanceof HarnessResponse.Result.Capabilities capabilities) {
             LinkedHashMap<String, Object> content = content("capabilities-result");
             content.put("capabilities", capabilities.capabilities());
+            content.put("catalogSchemaVersion", "operation-catalog/v1");
+            content.put("operations", catalog.operationCatalog());
+            content.put("diagnosticRegistryVersion", DiagnosticCode.REGISTRY_VERSION);
+            content.put("diagnosticRegistry", HarnessToolCatalog.diagnosticRegistry());
+            content.put("recoveryPolicyVersion",
+                    dev.gdx.uiharness.protocol.RecoveryPolicy.VERSION);
+            content.put("recoveryPolicy", HarnessToolCatalog.recoveryPolicy());
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.Snapshot snapshotResult) {
@@ -594,117 +668,6 @@ public final class HarnessToolHandler implements AutoCloseable {
         return true;
     }
 
-    private static String actionableCaptureValidation(
-            String toolName, Map<String, Object> arguments) {
-        List<String> required;
-        Set<String> allowed;
-        String example;
-        if ("ui_screenshot".equals(toolName)) {
-            required = List.of("sessionId", "maxWidth", "maxHeight",
-                    "maxPixels", "maxPngBytes");
-            allowed = Set.of("sessionId", "deadlineMillis", "locator",
-                    "maxWidth", "maxHeight", "maxPixels", "maxPngBytes");
-            example = "{\"sessionId\":\"game\",\"maxWidth\":8192,"
-                    + "\"maxHeight\":8192,\"maxPixels\":33554432,"
-                    + "\"maxPngBytes\":12579840}";
-        } else if ("ui_inspect_compare".equals(toolName)) {
-            required = List.of(
-                    "sessionId", "referenceId", "policyId", "policyVersion",
-                    "viewportId", "maxIterations", "maxDurationMillis",
-                    "maxWidth", "maxHeight", "maxPixels", "maxPngBytes");
-            allowed = Set.of(
-                    "sessionId", "deadlineMillis", "referenceId", "policyId",
-                    "policyVersion", "viewportId", "maxIterations",
-                    "maxDurationMillis", "maxWidth", "maxHeight",
-                    "maxPixels", "maxPngBytes");
-            example = "{\"sessionId\":\"game\",\"referenceId\":\"main\","
-                    + "\"policyId\":\"pixel-exact\",\"policyVersion\":1,"
-                    + "\"viewportId\":\"main\",\"maxIterations\":1,"
-                    + "\"maxDurationMillis\":30000,\"maxWidth\":8192,"
-                    + "\"maxHeight\":8192,\"maxPixels\":33554432,"
-                    + "\"maxPngBytes\":12579840}";
-        } else if ("ui_typography_diagnose".equals(toolName)
-                || "ui_layout_diagnose".equals(toolName)) {
-            required = List.of(
-                    "sessionId", "referenceId", "viewportId", "maxDurationMillis",
-                    "maxResults", "maxWidth", "maxHeight", "maxPixels", "maxPngBytes");
-            allowed = Set.of(
-                    "sessionId", "deadlineMillis", "referenceId", "viewportId",
-                    "maxDurationMillis", "maxResults", "maxWidth", "maxHeight",
-                    "maxPixels", "maxPngBytes");
-            String reference = "ui_layout_diagnose".equals(toolName)
-                    ? "layout-reference" : "title-reference";
-            long duration = "ui_layout_diagnose".equals(toolName) ? 2_000 : 30_000;
-            example = "{\"sessionId\":\"game\",\"referenceId\":\"" + reference + "\","
-                    + "\"viewportId\":\"main\",\"maxDurationMillis\":" + duration + ","
-                    + "\"maxResults\":16,\"maxWidth\":1920,\"maxHeight\":1080,"
-                    + "\"maxPixels\":2073600,\"maxPngBytes\":4194304}";
-        } else {
-            return null;
-        }
-        java.util.ArrayList<String> problems = new java.util.ArrayList<>();
-        required.stream().filter(field -> !arguments.containsKey(field))
-                .forEach(field -> problems.add(
-                        "$." + field + " expected required field but observed absent"));
-        arguments.keySet().stream().filter(field -> !allowed.contains(field))
-                .sorted().forEach(field -> problems.add(
-                        "$." + field + " expected one of " + allowed
-                                + " but observed unexpected field"));
-        for (String field : List.of(
-                "sessionId", "referenceId", "viewportId")) {
-            Object value = arguments.get(field);
-            if (value != null && (!(value instanceof String text)
-                    || text.isEmpty() || text.length() > 256)) {
-                problems.add("$." + field
-                        + " expected string length 1..256 but observed "
-                        + boundedObserved(value));
-            }
-        }
-        Object policyId = arguments.get("policyId");
-        if (policyId != null && (!(policyId instanceof String text)
-                || text.isEmpty() || text.length() > 240)) {
-            problems.add("$.policyId expected string length 1..240 but observed "
-                    + boundedObserved(policyId));
-        }
-        validateInteger(arguments, problems, "deadlineMillis", 1, 120_000);
-        validateInteger(arguments, problems, "policyVersion", 1, Integer.MAX_VALUE);
-        validateInteger(arguments, problems, "maxIterations", 1, 64);
-        validateInteger(arguments, problems, "maxResults", 1, 256);
-        validateInteger(arguments, problems, "maxDurationMillis", 1, 120_000);
-        validateInteger(arguments, problems, "maxWidth", 1, 8_192);
-        validateInteger(arguments, problems, "maxHeight", 1, 8_192);
-        validateInteger(arguments, problems, "maxPixels", 1, 33_554_432);
-        validateInteger(
-                arguments, problems, "maxPngBytes", 1,
-                HarnessResponse.Result.Screenshot.MAX_PNG_BYTES);
-        if (problems.isEmpty()) {
-            return null;
-        }
-        return String.join("; ", problems) + "; minimalExample=" + example;
-    }
-
-    private static void validateInteger(
-            Map<String, Object> arguments,
-            List<String> problems,
-            String field,
-            long minimum,
-            long maximum) {
-        Object value = arguments.get(field);
-        if (value == null) {
-            return;
-        }
-        boolean valid = value instanceof Number number
-                && Double.isFinite(number.doubleValue())
-                && number.doubleValue() == Math.rint(number.doubleValue())
-                && number.doubleValue() >= minimum
-                && number.doubleValue() <= maximum;
-        if (!valid) {
-            problems.add("$." + field + " expected integer in ["
-                    + minimum + "," + maximum + "] but observed "
-                    + boundedObserved(value));
-        }
-    }
-
     private static String boundedObserved(Object value) {
         String observed = String.valueOf(value);
         return observed.length() <= 128
@@ -776,26 +739,160 @@ public final class HarnessToolHandler implements AutoCloseable {
         return structured.get("kind") + ": " + structured;
     }
 
-    private static McpSchema.CallToolResult protocolError(ProtocolError error) {
-        LinkedHashMap<String, Object> content = content("error");
-        content.put("code", error.code().wireName());
-        content.put("message", error.message());
-        content.put("requestId", error.requestId());
-        content.put("sessionId", error.sessionId());
-        if (!error.details().isEmpty()) {
-            content.put("details", error.details());
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> encodedProgress(
+            DiagnosticEnvelope.Progress progress) {
+        return COMMAND_MAPPER.convertValue(progress, Map.class);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> encodedRecovery(
+            DiagnosticEnvelope.Recovery recovery) {
+        return COMMAND_MAPPER.convertValue(recovery, Map.class);
+    }
+
+    private McpSchema.CallToolResult protocolError(
+            ProtocolError error,
+            String operation,
+            long sequence,
+            Map<String, Object> arguments) {
+        DiagnosticCode code = switch (error.code()) {
+            case NOT_FOUND -> DiagnosticCode.LOCATOR_NOT_FOUND;
+            case STRICTNESS_VIOLATION -> DiagnosticCode.LOCATOR_AMBIGUOUS;
+            case TIMEOUT -> DiagnosticCode.DEADLINE_EXCEEDED;
+            case PROTOCOL_VERSION_MISMATCH -> DiagnosticCode.SCHEMA_CONFLICT;
+            case INTERNAL_ERROR, RENDER_THREAD_FAILURE ->
+                    DiagnosticCode.INTERNAL_ERROR;
+            default -> DiagnosticCode.STATE_NOT_READY;
+        };
+        return diagnostic(
+                error.requestId(), sequence, operation, arguments, code,
+                error.message(), List.of(),
+                error.locator(), error.candidates(), error.details(),
+                error.elapsedMillis(), error.traceId(),
+                new DiagnosticEnvelope.StateIdentity(
+                        null, error.sessionId(), error.lastSnapshotRevision(), null),
+                error.traceReference() == null
+                        ? List.of() : List.of(error.traceReference()));
+    }
+
+    private McpSchema.CallToolResult diagnostic(
+            String requestId,
+            long sequence,
+            String operation,
+            Map<String, Object> arguments,
+            DiagnosticCode requestedCode,
+            String message,
+            List<DiagnosticEnvelope.FieldProblem> problems,
+            DiagnosticEnvelope.StateIdentity stateIdentity) {
+        return diagnostic(
+                requestId, sequence, operation, arguments, requestedCode,
+                message, problems, null, List.of(), Map.of(), null, null,
+                stateIdentity, List.of());
+    }
+
+    private McpSchema.CallToolResult diagnostic(
+            String requestId,
+            long sequence,
+            String operation,
+            Map<String, Object> arguments,
+            DiagnosticCode requestedCode,
+            String message,
+            List<DiagnosticEnvelope.FieldProblem> problems,
+            String locator,
+            List<Map<String, String>> candidates,
+            Map<String, String> details,
+            Long operationElapsedMillis,
+            String traceId,
+            DiagnosticEnvelope.StateIdentity stateIdentity,
+            List<String> evidenceRefs) {
+        String fingerprint = diagnosticFingerprint(
+                operation, arguments, requestedCode, problems);
+        boolean transientDiagnostic = requestedCode.defaultDisposition()
+                == DiagnosticEnvelope.Disposition.TRANSIENT;
+        int equivalentConsumed = transientDiagnostic
+                ? diagnosticAttempts.merge(fingerprint, 1, Integer::sum)
+                : 0;
+        int consumed = transientDiagnostic
+                ? sessionRecoveryAttempts.merge(
+                        sessionKey(arguments), 1, Integer::sum)
+                : sessionRecoveryAttempts.getOrDefault(sessionKey(arguments), 0);
+        int limit = HarnessToolCatalog.recoveryPolicy().maxSchemaRecoveries();
+        DiagnosticCode code = requestedCode;
+        String terminatingRule = recoveryRule(requestedCode);
+        if (transientDiagnostic && equivalentConsumed > limit) {
+            code = DiagnosticCode.LOOP_DETECTED;
+            terminatingRule = "equivalent-diagnostic-budget/v1";
+        } else if (transientDiagnostic && consumed > limit) {
+            code = DiagnosticCode.RECOVERY_BUDGET_EXHAUSTED;
+            terminatingRule = "session-recovery-budget/v1";
+        } else if (requestedCode.defaultDisposition()
+                == DiagnosticEnvelope.Disposition.TERMINAL) {
+            terminatingRule = "terminal-code/v1";
         }
-        if (error.traceId() != null) {
-            content.put("traceId", error.traceId());
-        }
+        long elapsedMillis = Math.max(
+                0, (nanoClock.getAsLong() - startedNanos) / 1_000_000);
+        DiagnosticEnvelope envelope = DiagnosticEnvelope.create(
+                requestId, sequence, operation, code, message, problems,
+                locator, candidates, details, operationElapsedMillis, traceId,
+                stateIdentity, DiagnosticEnvelope.Progress.unavailable(),
+                new DiagnosticEnvelope.Recovery(
+                        dev.gdx.uiharness.protocol.RecoveryPolicy.VERSION,
+                        consumed, limit, elapsedMillis,
+                        HarnessToolCatalog.recoveryPolicy().maxWallTimeMillis(),
+                        terminatingRule),
+                evidenceRefs);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> encoded = COMMAND_MAPPER.convertValue(envelope, Map.class);
+        LinkedHashMap<String, Object> content = new LinkedHashMap<>(encoded);
+        content.put("kind", "error");
         return errorResult(content);
     }
 
-    private static McpSchema.CallToolResult localError(String code, String message) {
-        LinkedHashMap<String, Object> content = content("error");
-        content.put("code", code);
-        content.put("message", message);
-        return errorResult(content);
+    private static String sessionKey(Map<String, Object> arguments) {
+        Object value = arguments.get("sessionId");
+        return value instanceof String sessionId && !sessionId.isBlank()
+                ? sessionId : "catalog";
+    }
+
+    private static String recoveryRule(DiagnosticCode code) {
+        return switch (code) {
+            case MISSING_ARGUMENT, UNKNOWN_ARGUMENT, INVALID_ARGUMENT_TYPE,
+                    OUT_OF_RANGE, INVALID_ENUM_VALUE -> "correct-request/v1";
+            case LOCATOR_NOT_FOUND -> "wait-for-matching-locator/v1";
+            case STALE_REVISION -> "refresh-state-identity/v1";
+            case STATE_NOT_READY, NO_PROGRESS -> "wait-for-state-change/v1";
+            default -> "terminal-code/v1";
+        };
+    }
+
+    private static String diagnosticFingerprint(
+            String operation,
+            Map<String, Object> arguments,
+            DiagnosticCode code,
+            List<DiagnosticEnvelope.FieldProblem> problems) {
+        return operation + ":" + code.name() + ":"
+                + RecoveryWorkflow.normalizeIntent(arguments)
+                + ":" + problems.stream()
+                        .map(problem -> problem.code() + ":" + problem.fieldPath())
+                        .toList();
+    }
+
+    private McpSchema.CallToolResult localError(
+            String operation,
+            long sequence,
+            Map<String, Object> arguments,
+            String code,
+            String message) {
+        return diagnostic(
+                "mcp-" + Long.toUnsignedString(sequence),
+                sequence,
+                operation,
+                arguments,
+                DiagnosticCode.INTERNAL_ERROR,
+                message + " (" + code + ")",
+                List.of(),
+                null);
     }
 
     private static McpSchema.CallToolResult errorResult(Map<String, Object> content) {
