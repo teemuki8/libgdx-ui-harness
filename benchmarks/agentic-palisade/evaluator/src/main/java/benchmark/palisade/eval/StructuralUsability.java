@@ -95,6 +95,29 @@ public final class StructuralUsability {
                 List.of());
     }
 
+    /** Returns a fail-closed result when a public observation cannot be decoded. */
+    public static Result invalidObservation(
+            Policy policy, Evidence evidence, String observed) {
+        Objects.requireNonNull(policy, "policy");
+        Objects.requireNonNull(evidence, "evidence");
+        String bounded = Objects.requireNonNullElse(observed, "unavailable");
+        if (bounded.isBlank()) {
+            bounded = "unavailable";
+        } else if (bounded.length() > 1024) {
+            bounded = bounded.substring(0, 1024);
+        }
+        return terminal(
+                policy,
+                Status.INCOMPLETE,
+                evidence,
+                diagnostic(
+                        "OBSERVATION_SCHEMA_INVALID",
+                        null,
+                        "$.structuralUsability",
+                        "structural-observation/v1",
+                        bounded));
+    }
+
     private static Signal legibility(Policy policy, Evidence evidence) {
         List<Diagnostic> diagnostics = new ArrayList<>();
         for (ControlEvidence control : evidence.controls()) {

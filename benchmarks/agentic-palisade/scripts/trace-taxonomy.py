@@ -149,7 +149,7 @@ def _safe_referenced_file(workspace, relative):
 
 
 def capture_attempts_from_arguments(
-        session_id, sequence, call_id, arguments, workspace):
+        session_id, sequence, call_id, arguments, workspace, evidence_gaps=None):
     """Normalize literal, environment-like, stdin, and referenced NDJSON payloads."""
     if not isinstance(arguments, dict):
         raise TraceTaxonomyError("tool arguments must be an object")
@@ -173,22 +173,45 @@ def capture_attempts_from_arguments(
             continue
         for match in NDJSON_REFERENCE.finditer(value):
             relative = match.group(1)
-            path = _safe_referenced_file(workspace, relative)
-            content = path.read_bytes()
-            file_source = {
-                "kind": "referenced-ndjson",
-                "name": relative,
-                "sha256": sha256_bytes(content),
-            }
-            for line_number, line in enumerate(content.splitlines(), 1):
-                try:
-                    parsed = json.loads(line)
-                except (UnicodeDecodeError, json.JSONDecodeError) as error:
-                    raise TraceTaxonomyError(
-                        f"invalid referenced NDJSON line {line_number}") from error
-                payload = _capture_payload(parsed)
-                if payload is not None:
-                    sources.append((file_source, payload))
+            try:
+                path = _safe_referenced_file(workspace, relative)
+            except TraceTaxonomyError as error:
+                if evidence_gaps is None:
+                    raise
+                evidence_gaps.append({
+                    "toolCallId": call_id,
+                    "reference": relative,
+                    "code": "REFERENCED_PAYLOAD_UNAVAILABLE",
+                    "message": str(error),
+                })
+                continue
+            try:
+                content = path.read_bytes()
+                file_source = {
+                    "kind": "referenced-ndjson",
+                    "name": relative,
+                    "sha256": sha256_bytes(content),
+                }
+                file_sources = []
+                for line_number, line in enumerate(content.splitlines(), 1):
+                    try:
+                        parsed = json.loads(line)
+                    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                        raise TraceTaxonomyError(
+                            f"invalid referenced NDJSON line {line_number}") from error
+                    payload = _capture_payload(parsed)
+                    if payload is not None:
+                        file_sources.append((file_source, payload))
+                sources.extend(file_sources)
+            except TraceTaxonomyError as error:
+                if evidence_gaps is None:
+                    raise
+                evidence_gaps.append({
+                    "toolCallId": call_id,
+                    "reference": relative,
+                    "code": "REFERENCED_PAYLOAD_UNAVAILABLE",
+                    "message": str(error),
+                })
 
     attempts = []
     for occurrence, (source, payload) in enumerate(sources):
@@ -500,6 +523,19 @@ def public_trace(trace, evaluation, evaluation_sha256):
         evaluation, evidence_identity)
     attributions["rendering"] = rendering_attributions(
         evaluation, evidence_identity)
+    evidence_gaps = []
+    for raw in trace.get("evidenceGaps", []):
+        if not isinstance(raw, dict):
+            raise TraceTaxonomyError("trace evidence gap must be an object")
+        reference = _bounded_text(raw.get("reference"), "evidence gap reference")
+        tool_call_id = _bounded_text(
+            raw.get("toolCallId"), "evidence gap toolCallId")
+        evidence_gaps.append({
+            "code": _bounded_text(raw.get("code"), "evidence gap code"),
+            "message": _bounded_text(raw.get("message"), "evidence gap message"),
+            "referenceSha256": sha256_bytes(reference.encode("utf-8")),
+            "toolCallIdSha256": sha256_bytes(tool_call_id.encode("utf-8")),
+        })
     return {
         "schemaVersion": SCHEMA_VERSION,
         "availability": trace.get("availability", "unavailable"),
@@ -510,6 +546,7 @@ def public_trace(trace, evaluation, evaluation_sha256):
             "undeclared external payloads",
             "causal inference from association",
         ],
+        "evidenceGaps": evidence_gaps,
         "events": events,
         "captureAttempts": attempts,
         "captureLifecycle": dict(trace.get("captureLifecycle", {})),

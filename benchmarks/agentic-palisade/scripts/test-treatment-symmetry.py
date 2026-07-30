@@ -10,12 +10,12 @@ from pathlib import Path
 APPENDIX_MARKER = b"## Treatment appendix\n"
 IGNORED_DIRECTORIES = {".gradle", "build", "__pycache__"}
 EXPECTED_SHARED_HASHES = {
-    "PROTOCOL.md": "18e0c2724dd0c77b76013b5c0c7ec217f5c6c63d672918d97a4d0afcf0f1fcfd",
+    "PROTOCOL.md": "3c85720424064e04543d6b7e6cdede4cc368d2f4d2cf00efef50b6f896233b70",
     "template": "8333ec7f3b61d0e0bc130f004f7af71a2500c1c53082eee8e60182c0814cc053",
     "corpus": "d9d973fc53ba753fc665d64d299647444f51d26d42f87d21f14a162ac680065b",
 }
 EXPECTED_COMMON_HASH = (
-    "7cc8b07e454ed1bf07d27b4d342eed832f6c462f3af12e5b06284933ade3746e"
+    "e91325e4632af6bba7c89382631c2e006ac8fc552174f3d6098e9212e1fcb80e"
 )
 EXPECTED_APPENDIX_HASHES = {
     "baseline": "6addeb7eda9150d3ee901062f34cab7b72e09feeb7a011e15b44451603f99681",

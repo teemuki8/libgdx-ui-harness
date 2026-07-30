@@ -574,6 +574,7 @@ def _empty_telemetry(batch_id="unavailable", run_id="unavailable"):
                 "hidden reasoning",
                 "causal inference from association",
             ],
+            "evidenceGaps": [],
             "events": [],
             "captureAttempts": [],
             "captureLifecycle": {},

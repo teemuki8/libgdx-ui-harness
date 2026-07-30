@@ -125,6 +125,7 @@ observation that disagrees with the corpus is an assertion failure.
 state. This is the public `structural-observation/v1` object used by the independent structural
 channel. It contains:
 
+- `schemaVersion` with the exact value `structural-observation/v1`;
 - non-negative `semanticRevision` and `layoutRevision`;
 - `frameEdgeClipped` and the current `scrollY`;
 - lowercase SHA-256 identities `semanticSha256`, `layoutSha256`, and `regionSha256` derived

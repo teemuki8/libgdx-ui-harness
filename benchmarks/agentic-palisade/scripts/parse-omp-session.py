@@ -122,6 +122,7 @@ def parse_omp_session(path, workspace=None, identity=None):
     trace_events = []
     capture_calls = {}
     capture_attempts = []
+    evidence_gaps = []
     builds = 0
     launches = 0
     screenshots = 0
@@ -226,7 +227,8 @@ def parse_omp_session(path, workspace=None, identity=None):
                     launches += 1
                 screenshots += len(SCREENSHOT_OPERATION.findall(command))
                 normalized.extend(TRACE.capture_attempts_from_arguments(
-                    session_id, record_number, call_id, arguments, workspace))
+                    session_id, record_number, call_id, arguments, workspace,
+                    evidence_gaps))
                 for occurrence in range(
                         len(LAUNCHER_CAPTURE_OPERATION.findall(command))):
                     command_sha = hashlib.sha256(
@@ -439,6 +441,7 @@ def parse_omp_session(path, workspace=None, identity=None):
             "payload files outside the declared workspace",
             "causal inference from association",
         ],
+        "evidenceGaps": evidence_gaps,
         "events": trace_events,
         "captureAttempts": capture_attempts,
         "captureLifecycle": lifecycle,
