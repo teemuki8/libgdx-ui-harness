@@ -49,6 +49,7 @@ CANDIDATE_MODULES = (
     "harness-core", "harness-scene2d", "harness-lwjgl3",
     "harness-protocol", "harness-mcp",
 )
+LOCAL_DISPLAY = re.compile(r":(?P<number>[1-9][0-9]*)\Z")
 CREDENTIAL_KEYS = {
     "SSH_AUTH_SOCK", "GIT_ASKPASS", "SSH_ASKPASS", "AWS_PROFILE",
     "AWS_SHARED_CREDENTIALS_FILE", "GOOGLE_APPLICATION_CREDENTIALS",
@@ -821,6 +822,7 @@ def _sanitized_environment(item):
         "XDG_CACHE_HOME": str(runtime["cacheRoot"]),
         "XDG_STATE_HOME": str(runtime["profileRoot"] / ".state"),
         "XDG_DATA_HOME": str(runtime["profileRoot"] / ".local/share"),
+        "XDG_RUNTIME_DIR": str(runtime["temporaryRoot"] / "xdg-runtime"),
         "TMPDIR": str(runtime["temporaryRoot"]),
         "GRADLE_USER_HOME": str(runtime["gradleCache"]),
         "PI_ARTIFACTS_DIR": str(runtime["artifactRoot"] / "omp-artifacts"),
@@ -835,6 +837,8 @@ def _sanitized_environment(item):
         "BENCHMARK_ROUND_SOCKET": str(runtime["roundSocket"]),
         "BENCHMARK_ROUND_GATE": str(runtime["gate"]),
     })
+    runtime_directory = Path(environment["XDG_RUNTIME_DIR"])
+    runtime_directory.mkdir(mode=0o700)
     for path in (Path(environment["XDG_CONFIG_HOME"]), Path(environment["XDG_STATE_HOME"]),
                  Path(environment["XDG_DATA_HOME"]), Path(environment["GRADLE_USER_HOME"]),
                  Path(environment["PI_ARTIFACTS_DIR"])):
@@ -972,6 +976,71 @@ def classify_process_exit(return_code, timed_out):
     if return_code != 0:
         return "nonzero_exit"
     return "success"
+
+
+class ManagedDisplay:
+    READY_SECONDS = 10
+
+    def __init__(self, display, log_root, executable="Xvfb"):
+        match = LOCAL_DISPLAY.fullmatch(display)
+        if match is None:
+            raise ValueError("managed display must be a local nonzero X11 display")
+        self.display = display
+        self.socket = Path("/tmp/.X11-unix") / f"X{match.group('number')}"
+        self.log_root = Path(log_root)
+        self.executable = executable
+        self.process = None
+        self.stdout = None
+        self.stderr = None
+
+    def start(self):
+        if self.socket.exists():
+            raise RuntimeError(f"display socket already exists: {self.socket}")
+        self.stdout = (self.log_root / "xvfb.stdout.log").open("xb")
+        self.stderr = (self.log_root / "xvfb.stderr.log").open("xb")
+        try:
+            self.process = subprocess.Popen(
+                [
+                    self.executable, self.display,
+                    "-screen", "0", "1920x1080x24",
+                    "-nolisten", "tcp", "-noreset",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=self.stdout,
+                stderr=self.stderr,
+                start_new_session=True,
+            )
+            deadline = time.monotonic() + self.READY_SECONDS
+            waiter = threading.Event()
+            while time.monotonic() < deadline:
+                if self.socket.exists() and self.socket.is_socket():
+                    return
+                return_code = self.process.poll()
+                if return_code is not None:
+                    raise RuntimeError(
+                        f"Xvfb exited before readiness with status {return_code}")
+                waiter.wait(min(0.02, deadline - time.monotonic()))
+            raise RuntimeError(f"Xvfb did not create {self.socket}")
+        except BaseException:
+            self.stop()
+            raise
+
+    def stop(self):
+        failure = None
+        if self.process is not None:
+            return_code = self.process.poll()
+            if return_code is not None and return_code != 0:
+                failure = f"Xvfb exited unexpectedly with status {return_code}"
+            else:
+                failure = terminate_process_group(self.process)
+            self.process = None
+        for stream in (self.stdout, self.stderr):
+            if stream is not None:
+                stream.close()
+        self.stdout = None
+        self.stderr = None
+        if failure is not None:
+            raise RuntimeError(failure.replace("OMP", "Xvfb"))
 
 
 class BrokerRelay:
@@ -1313,7 +1382,7 @@ def _open_measured_process(command, item, runtime, environment, stdout, stderr,
 
 
 def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes,
-             broker_url, bearer_token):
+             broker_url, bearer_token, manage_display):
     runtime = item["_runtime"]
     started_at = utc_now()
     started = time.monotonic()
@@ -1325,8 +1394,10 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes,
     return_code = None
     launch_error = None
     supervisor_failures = []
+    display_failures = []
     round_supervisor = None
     auth_relay = None
+    display = None
     try:
         round_supervisor = RoundSupervisor(
             runtime["roundSocket"], runtime["workspace"], runtime["gate"])
@@ -1336,6 +1407,9 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes,
     with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
         if not supervisor_failures:
             try:
+                if manage_display:
+                    display = ManagedDisplay(item["display"], runtime["logRoot"])
+                    display.start()
                 process, auth_relay = _open_measured_process(
                     command, item, runtime, environment, stdout, stderr,
                     broker_url, bearer_token)
@@ -1351,6 +1425,11 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes,
                         auth_relay.stop()
                     except RuntimeError as error:
                         supervisor_failures.append(str(error))
+                if display is not None:
+                    try:
+                        display.stop()
+                    except RuntimeError as error:
+                        display_failures.append(str(error))
     if round_supervisor is not None:
         try:
             round_supervisor.stop()
@@ -1368,6 +1447,8 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes,
         failures.append({"phase": "omp_launch", "message": launch_error})
     for supervisor_failure in supervisor_failures:
         failures.append({"phase": "round_supervisor", "message": supervisor_failure})
+    for display_failure in display_failures:
+        failures.append({"phase": "display_server", "message": display_failure})
     if timed_out:
         failures.append({"phase": "deadline", "message": f"exceeded {max_time_text}"})
     elif return_code not in (0, None):
@@ -1424,6 +1505,8 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes,
     classification = classify_process_exit(return_code, timed_out)
     if supervisor_failures:
         classification = "round_supervisor_failure"
+    elif display_failures:
+        classification = "crashed"
     elif launch_error:
         classification = "crashed"
     elif classification == "success" and protected_drift:
@@ -1539,6 +1622,10 @@ def _validate_arguments(arguments, max_seconds):
             and arguments.auth_broker_url != FIXED_BROKER_URL):
         raise ValueError(
             f"measured runs require --auth-broker-url {FIXED_BROKER_URL}")
+    if (not arguments.dry_run and not arguments.prepare_only
+            and not arguments.qualification
+            and shutil.which("Xvfb") is None):
+        raise ValueError("measured graphical runs require Xvfb on PATH")
 
 
 def main(argv=None):
@@ -1677,7 +1764,7 @@ def main(argv=None):
                 arguments.max_time,
                 QUALIFICATION_SECONDS if arguments.qualification else max_seconds,
                 hashes, arguments.auth_broker_url or FIXED_BROKER_URL,
-                broker_token) for item in runs]
+                broker_token, not arguments.qualification) for item in runs]
             for future in as_completed(futures):
                 classifications.append(future.result())
         successful = classifications.count("success")

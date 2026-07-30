@@ -17,6 +17,9 @@ Before preparing a tag:
 7. Review the
    [Maven Central compliance checklist](maven-central-compliance.md), including
    the maintainer attestations that automation cannot make.
+8. Install `Xvfb` and verify that the executable is on `PATH`. Measured
+   graphical arms start one private `1920x1080x24` X server each and fail
+   closed before execution when the server is unavailable.
 
 Account enrollment, namespace ownership challenges, and recovery credentials are private administrative records. Do not commit them to this repository.
 

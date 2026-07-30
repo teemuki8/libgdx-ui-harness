@@ -123,7 +123,7 @@ def validate_treatment_symmetry(root):
             )
     for marker in (
             b"candidate-version.txt", b"candidate-maven",
-            b"qualifiedHarnessCandidate"):
+            b"qualifiedHarnessCandidate", b"standardInput = System.`in`"):
         if overlay.count(marker) != 1:
             raise SymmetryError(
                 f"generated overlay must bind {marker.decode()} exactly once")

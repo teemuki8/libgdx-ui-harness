@@ -243,6 +243,7 @@ def write_fake_omp(path):
             "started": time.time(),
             "profileHome": os.environ["HOME"],
             "cacheRoot": os.environ["XDG_CACHE_HOME"],
+            "runtimeRoot": os.environ["XDG_RUNTIME_DIR"],
             "sessionRoot": os.environ["BENCHMARK_SESSION_ROOT"],
             "artifactRoot": os.environ["BENCHMARK_ARTIFACT_ROOT"],
             "display": os.environ["DISPLAY"],
@@ -346,6 +347,39 @@ class DryRunTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.runner = load_runner()
+
+    def test_gives_each_run_a_private_runtime_directory_for_lwjgl(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = {
+                "profileRoot": root / "profile",
+                "cacheRoot": root / "cache",
+                "temporaryRoot": root / "tmp",
+                "gradleCache": root / "gradle",
+                "artifactRoot": root / "artifacts",
+                "binaryRoot": root / "bin",
+                "workspace": root / "workspace",
+                "sessionRoot": root / "sessions",
+                "roundSocket": root / "round.sock",
+                "gate": root / "gate",
+            }
+            for path in runtime.values():
+                if path.suffix == "":
+                    path.mkdir(parents=True, exist_ok=True)
+            item = {
+                "runId": "run",
+                "pair": 1,
+                "treatment": "harness",
+                "display": ":220",
+                "_runtime": runtime,
+            }
+
+            environment = self.runner._sanitized_environment(item)
+            runtime_directory = Path(environment["XDG_RUNTIME_DIR"])
+
+            self.assertEqual(runtime_directory, runtime["temporaryRoot"] / "xdg-runtime")
+            self.assertTrue(runtime_directory.is_dir())
+            self.assertEqual(stat.S_IMODE(runtime_directory.stat().st_mode), 0o700)
 
     def test_prepares_three_symmetric_pairs_in_unique_immutable_roots(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -930,10 +964,20 @@ class SupervisionTest(unittest.TestCase):
                            for run in manifest["runs"]]
             self.assertEqual(len({entry["profileHome"] for entry in invocations}), 6)
             self.assertEqual(len({entry["cacheRoot"] for entry in invocations}), 6)
+            self.assertEqual(len({entry["runtimeRoot"] for entry in invocations}), 6)
             self.assertEqual(len({entry["sessionRoot"] for entry in invocations}), 6)
             self.assertEqual(len({entry["artifactRoot"] for entry in invocations}), 6)
             self.assertEqual(len({entry["display"] for entry in invocations}), 6)
             self.assertTrue(all(not entry["credentialKeys"] for entry in invocations))
+            self.assertTrue(all(
+                stat.S_IMODE(Path(entry["runtimeRoot"]).stat().st_mode) == 0o700
+                for entry in invocations
+            ))
+            self.assertTrue(all(
+                (output / Path(run["artifactRoot"]).parent
+                 / "logs/xvfb.stderr.log").is_file()
+                for run in manifest["runs"]
+            ))
             self.assertTrue(all(entry["authenticated"] for entry in invocations))
             self.assertTrue(all(
                 not entry["candidateToolProbe"]["leaked"] for entry in invocations
