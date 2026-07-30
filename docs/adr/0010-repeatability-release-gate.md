@@ -13,11 +13,16 @@ also cannot be committed into the source commit whose identity it records.
 
 ## Decision
 
-Release qualification uses a sealed
-`agentic-palisade/repeatability-manifest-v1` with at least five fresh matched
-pairs per fully identified environment stratum. Each arm records distinct
-workspace, session, process, run, and output identities and matched frozen
-inputs, seed, and limits. Candidate repetitions independently require:
+Before any run starts, release qualification seals an
+`agentic-palisade/repeatability-precommitment-v1`. It fixes the candidate,
+scenario and tool identities, policies, thresholds, environment strata, and a
+schedule of at least five matched pairs per stratum. Each scheduled arm has
+distinct workspace, session, process, run, and output identities and matched
+frozen inputs, seed, and limits.
+
+After execution, `agentic-palisade/repeatability-manifest-v1` records outcomes
+and binds the exact precommitment digest. Any missing, added, reordered, or
+changed scheduled run fails. Candidate repetitions independently require:
 
 - 25/25 semantic assertions and identical canonical transition identities;
 - a finite settling policy ending in at least three unchanged completed frames;
@@ -45,8 +50,9 @@ byte-for-byte agreement before building or publishing artifacts.
 ## Consequences
 
 - A tag cannot publish from one successful or cheapest repetition.
-- Changed source, thresholds, environments, ratings, mappings, or raw evidence
-  require a new sealed qualification identity.
+- Changed source, thresholds, environments, or schedule after the first run
+  invalidate the precommitment. Changed ratings, mappings, or raw evidence
+  invalidate the result manifest.
 - Evidence may be produced after the candidate is frozen without a circular
   commit-hash dependency.
 - Hash equality is claimed only for the recorded environment strata; it is not

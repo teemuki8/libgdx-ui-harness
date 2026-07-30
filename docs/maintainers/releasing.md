@@ -58,12 +58,20 @@ Confirm that Maven local contains only the five publishable modules:
 
 Replace `X.Y.Z` with the release version. The workflow accepts semantic versions, including an optional prerelease suffix.
 
-First generate the sealed decision from the precommitted manifest after all
-matched runs and blind reviews are complete:
+Before starting a run, create and retain `precommitment.json`. It must contain
+the candidate/source identities, all policy and threshold hashes, environment
+strata, and the complete matched-pair schedule. Compute
+`precommitmentSha256` over canonical JSON with that field omitted. Every
+recorded `startedAt` must be later than the precommitment's `sealedAt`.
+
+After all scheduled runs and blind reviews are complete, create
+`manifest.json` with the outcomes and the exact `precommitmentSha256`, then
+generate the sealed decision:
 
 ```bash
 python3 benchmarks/agentic-palisade/scripts/release-gate.py create-decision \
-  --manifest manifest.json --output decision.json --evidence-root .
+  --precommitment precommitment.json --manifest manifest.json \
+  --output decision.json --evidence-root .
 ```
 
 Set `candidateSourceSha256` to the output of
@@ -72,9 +80,9 @@ exact archive digest. The manifest's `artifacts` map must list every retained
 raw artifact path and SHA-256. Verification rejects a missing, extra-path, or
 changed referenced artifact.
 
-Commit `manifest.json`, `decision.json`, and the digest-bound retained raw
-artifacts on a dedicated evidence commit. Sign an annotated evidence tag whose
-name contains the exact candidate commit:
+Commit `precommitment.json`, `manifest.json`, `decision.json`, and the
+digest-bound retained raw artifacts on a dedicated evidence commit. Sign an
+annotated evidence tag whose name contains the exact candidate commit:
 
 ```bash
 candidate="$(git rev-parse main)"

@@ -91,6 +91,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           source_sha256="$(git archive "$GITHUB_SHA" | sha256sum | cut -d' ' -f1)"
           python3 benchmarks/agentic-palisade/scripts/release-gate.py verify \
+            --precommitment "$evidence_dir/precommitment.json" \
             --manifest "$evidence_dir/manifest.json" \
             --decision "$evidence_dir/decision.json" \
             --candidate-commit "$GITHUB_SHA" \
