@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentic-palisade:repeatability-manifest:v1",
+  "title": "Sealed Agentic Palisade release qualification",
+  "type": "object",
+  "required": [
+    "schemaVersion", "candidateCommit", "candidateSourceSha256",
+    "releaseVersion", "sealedAt", "manifestSha256", "precommitmentHashes",
+    "scenarioAssertionGroups", "observations", "allocationSeed",
+    "exclusionPolicy", "dynamicMask", "statisticalMethod", "costCeilings",
+    "environments", "repetitions", "retainedControlsSha256", "artifacts"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "agentic-palisade/repeatability-manifest-v1"},
+    "candidateCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "candidateSourceSha256": {"$ref": "#/$defs/sha256"},
+    "releaseVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"},
+    "sealedAt": {"type": "string", "format": "date-time"},
+    "manifestSha256": {"$ref": "#/$defs/sha256"},
+    "precommitmentHashes": {
+      "type": "object",
+      "minProperties": 17,
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    },
+    "scenarioAssertionGroups": {"const": 25},
+    "observations": {
+      "const": ["initial-1920x1080", "bottom-1920x1080", "initial-1280x720"]
+    },
+    "allocationSeed": {"type": "integer"},
+    "exclusionPolicy": {"const": "rerun-both-arms-retain-original-v1"},
+    "dynamicMask": {"type": "null"},
+    "statisticalMethod": {"const": "paired-randomization-test-v1"},
+    "costCeilings": {
+      "type": "object",
+      "required": ["wallTimeMillis", "inputTokens", "edits", "builds", "launches"],
+      "additionalProperties": false,
+      "properties": {
+        "wallTimeMillis": {"$ref": "#/$defs/cost"},
+        "inputTokens": {"$ref": "#/$defs/cost"},
+        "edits": {"$ref": "#/$defs/cost"},
+        "builds": {"$ref": "#/$defs/cost"},
+        "launches": {"$ref": "#/$defs/cost"}
+      }
+    },
+    "environments": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+    "repetitions": {"type": "array", "minItems": 5, "items": {"type": "object"}},
+    "retainedControlsSha256": {"$ref": "#/$defs/sha256"},
+    "artifacts": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "cost": {"type": "number", "minimum": 0}
+  }
+}

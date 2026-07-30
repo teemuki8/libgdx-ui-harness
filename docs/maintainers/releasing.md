@@ -13,6 +13,7 @@ Before preparing a tag:
    by both its full fingerprint and 16-hex long key ID.
 4. Verify the latest `main` CI run is green.
 5. Confirm the release notes describe the exact version being published.
+6. Complete the repeatability qualification for the exact candidate commit.
 
 Account enrollment, namespace ownership challenges, and recovery credentials are private administrative records. Do not commit them to this repository.
 
@@ -54,6 +55,36 @@ Confirm that Maven local contains only the five publishable modules:
 
 Replace `X.Y.Z` with the release version. The workflow accepts semantic versions, including an optional prerelease suffix.
 
+First generate the sealed decision from the precommitted manifest after all
+matched runs and blind reviews are complete:
+
+```bash
+python3 benchmarks/agentic-palisade/scripts/release-gate.py create-decision \
+  --manifest manifest.json --output decision.json --evidence-root .
+```
+
+Set `candidateSourceSha256` to the output of
+`git archive CANDIDATE_COMMIT | sha256sum`; the release workflow recomputes that
+exact archive digest. The manifest's `artifacts` map must list every retained
+raw artifact path and SHA-256. Verification rejects a missing, extra-path, or
+changed referenced artifact.
+
+Commit `manifest.json`, `decision.json`, and the digest-bound retained raw
+artifacts on a dedicated evidence commit. Sign an annotated evidence tag whose
+name contains the exact candidate commit:
+
+```bash
+candidate="$(git rev-parse main)"
+git tag --sign "release-evidence-$candidate" EVIDENCE_COMMIT \
+  --message "Repeatability evidence for $candidate"
+git tag --verify "release-evidence-$candidate"
+git push origin "release-evidence-$candidate"
+```
+
+The evidence commit is deliberately separate: results can bind the already
+fixed candidate commit without creating a self-referential source hash. Never
+move or reuse an evidence tag.
+
 ```bash
 git switch main
 git pull --ff-only
@@ -62,7 +93,10 @@ git tag --verify vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-The tag must be annotated, PGP-signed by the configured key, and point to the exact workflow commit. Never move or reuse a release tag. If a candidate fails, fix the cause and create a new version.
+Both tags must be annotated and PGP-signed by the configured key. The release
+tag must point to the exact qualified candidate commit. Never move or reuse
+either tag. If a candidate fails, fix the cause, perform a fresh qualification,
+and create a new version.
 
 ## Automated publication
 
@@ -70,13 +104,16 @@ Pushing the tag starts `.github/workflows/release.yml`. The workflow:
 
 1. imports only the configured trusted public key into an isolated temporary GnuPG home;
 2. verifies the primary fingerprint, signed semantic-version tag, and tag-to-commit binding;
-3. runs the clean checks and Javadocs under JDK 25;
-4. builds and signs the deterministic five-module Central bundle;
-5. rejects missing artifacts, signatures, or unpublished-module leakage;
-6. uploads a user-managed Maven Central deployment;
-7. waits for Central state `VALIDATED`;
-8. publishes the validated deployment;
-9. waits for Central state `PUBLISHED`.
+3. verifies the separately signed evidence tag for that exact commit;
+4. regenerates the sealed repeatability decision and requires byte-identical
+   agreement with its precommitted decision;
+5. runs the clean checks and Javadocs under JDK 25;
+6. builds and signs the deterministic five-module Central bundle;
+7. rejects missing artifacts, signatures, or unpublished-module leakage;
+8. uploads a user-managed Maven Central deployment;
+9. waits for Central state `VALIDATED`;
+10. publishes the validated deployment;
+11. waits for Central state `PUBLISHED`.
 
 Publication credentials are scoped only to the steps that require them. Central authorization is written to a mode-0600 temporary curl configuration and deleted on every exit path.
 
