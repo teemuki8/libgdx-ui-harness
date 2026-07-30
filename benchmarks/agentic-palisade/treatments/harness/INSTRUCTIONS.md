@@ -6,7 +6,12 @@ Do not inspect a reference checkout, evaluator internals, non-public fixtures, c
 
 ## Treatment appendix
 
-The generated harness overlay adds `io.github.teemuki8:harness-lwjgl3:1.0.0` and `io.github.teemuki8:harness-mcp:1.0.0`, adds the treatment bridge sources, and selects `HarnessCli`. Start it with the overlay from the candidate template:
+The generated harness overlay adds the digest-bound harness candidate supplied
+for this qualification (`harness-lwjgl3` and `harness-mcp` plus their
+transitive modules), adds the treatment bridge sources, and selects
+`HarnessCli`. The isolated candidate Maven repository and exact version are
+fixed before the run; do not substitute Maven Central or another local build.
+Start it with the overlay from the candidate template:
 
 ```text
 ../../../gradlew -p . --init-script ../treatments/harness/build-overlay.gradle.kts run

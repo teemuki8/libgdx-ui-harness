@@ -18,6 +18,7 @@ public enum DiagnosticCode {
     BUILD_FAILED(DiagnosticEnvelope.Disposition.TERMINAL),
     LAUNCH_FAILED(DiagnosticEnvelope.Disposition.TERMINAL),
     DEADLINE_EXCEEDED(DiagnosticEnvelope.Disposition.TERMINAL),
+    LIMIT_EXCEEDED(DiagnosticEnvelope.Disposition.TERMINAL),
     NO_PROGRESS(DiagnosticEnvelope.Disposition.TRANSIENT),
     LOOP_DETECTED(DiagnosticEnvelope.Disposition.TERMINAL),
     RECOVERY_BUDGET_EXHAUSTED(DiagnosticEnvelope.Disposition.TERMINAL),
@@ -54,6 +55,7 @@ public enum DiagnosticCode {
             case BUILD_FAILED -> "the declared build did not complete successfully";
             case LAUNCH_FAILED -> "the declared runtime did not become healthy";
             case DEADLINE_EXCEEDED -> "the monotonic deadline was reached";
+            case LIMIT_EXCEEDED -> "a bounded resource or result limit was exceeded";
             case NO_PROGRESS -> "declared evidence did not change within policy";
             case LOOP_DETECTED -> "an equivalent recovery loop reached its boundary";
             case RECOVERY_BUDGET_EXHAUSTED -> "a hard recovery or cost ceiling was reached";

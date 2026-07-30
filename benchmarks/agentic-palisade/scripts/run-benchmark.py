@@ -43,6 +43,12 @@ TOOL_ALLOWLIST = "read,write,edit,bash,grep,glob"
 GENERATED_NAMES = {".gradle", "build", "__pycache__"}
 CANDIDATE_INPUT_NAMES = {"INSTRUCTIONS.md", "PROTOCOL.md", "corpus"}
 DURATION = re.compile(r"(?P<amount>[1-9][0-9]*)(?P<unit>ms|s|m|h)\Z")
+CANDIDATE_VERSION = re.compile(
+    r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?\Z")
+CANDIDATE_MODULES = (
+    "harness-core", "harness-scene2d", "harness-lwjgl3",
+    "harness-protocol", "harness-mcp",
+)
 CREDENTIAL_KEYS = {
     "SSH_AUTH_SOCK", "GIT_ASKPASS", "SSH_ASKPASS", "AWS_PROFILE",
     "AWS_SHARED_CREDENTIALS_FILE", "GOOGLE_APPLICATION_CREDENTIALS",
@@ -589,7 +595,9 @@ def _relative(output, path):
     return Path(path).relative_to(output).as_posix()
 
 
-def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
+def _prepare_run(
+        output, pair, treatment, index, hashes, treatment_inputs,
+        candidate_repository=None, candidate_version=None):
     run_id = str(uuid.uuid4())
     run_dir = output / "runs" / run_id
     repository = run_dir / "repository"
@@ -622,6 +630,12 @@ def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
     treatment_overlay_hash = None
     if treatment == "harness":
         _copy_tree(BENCHMARK_ROOT / "treatments/harness", benchmark / "treatments/harness")
+        if candidate_repository is not None:
+            _copy_tree(
+                candidate_repository,
+                benchmark / "treatments/harness/candidate-maven")
+            (benchmark / "treatments/harness/candidate-version.txt").write_text(
+                candidate_version + "\n", encoding="ascii")
         treatment_overlay_hash = hash_tree(
             benchmark / "treatments/harness", ignored_names=frozenset())
         _make_read_only(benchmark / "treatments/harness")
@@ -706,6 +720,22 @@ def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
 
 def _public_item(item):
     return {key: value for key, value in item.items() if key != "_runtime"}
+
+
+def _candidate_repository(path, version):
+    if not CANDIDATE_VERSION.fullmatch(version or ""):
+        raise ValueError("candidate version must be a non-SNAPSHOT semantic version")
+    repository = Path(path).resolve()
+    if not repository.is_dir() or repository.is_symlink():
+        raise ValueError("candidate Maven repository must be a local directory")
+    for module in CANDIDATE_MODULES:
+        module_root = repository / "io/github/teemuki8" / module / version
+        for suffix in (".jar", ".pom"):
+            artifact = module_root / f"{module}-{version}{suffix}"
+            if (not artifact.is_file() or artifact.is_symlink()
+                    or artifact.stat().st_size == 0):
+                raise ValueError(f"candidate Maven artifact is missing: {artifact}")
+    return repository, hash_tree(repository, ignored_names=frozenset())
 
 
 def _prepared_path(output, relative):
@@ -1246,6 +1276,18 @@ def _discover_session(session_root):
             f"expected exactly one OMP session export, found {len(candidates)}")
     return candidates[0]
 
+
+def _parse_telemetry(session_path, workspace, identity):
+    try:
+        return TELEMETRY.parse_omp_session(
+            session_path, workspace, identity), None
+    except (TELEMETRY.TelemetryError,
+            TELEMETRY.TRACE.TraceTaxonomyError) as error:
+        return _empty_telemetry(
+            identity.get("batchId", "unavailable"),
+            identity.get("runId", "unavailable")), str(error)
+
+
 def _open_measured_process(command, item, runtime, environment, stdout, stderr,
                            broker_url, bearer_token):
     config_path = (
@@ -1337,11 +1379,13 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes,
     session_path = None
     try:
         session_path = _discover_session(runtime["sessionRoot"])
-        telemetry = TELEMETRY.parse_omp_session(
+        telemetry, telemetry_error = _parse_telemetry(
             session_path,
             runtime["workspace"],
             {"batchId": batch_id, "runId": item["runId"]},
         )
+        if telemetry_error is not None:
+            failures.append({"phase": "telemetry", "message": telemetry_error})
     except TELEMETRY.TelemetryError as error:
         telemetry_error = str(error)
         failures.append({"phase": "telemetry", "message": telemetry_error})
@@ -1481,6 +1525,15 @@ def _validate_arguments(arguments, max_seconds):
         raise ValueError("qualification requires the fixed mock OMP fixture")
     if arguments.auth_broker_url not in (None, FIXED_BROKER_URL):
         raise ValueError(f"auth broker must be exactly {FIXED_BROKER_URL}")
+    has_candidate_repository = arguments.candidate_maven_repository is not None
+    has_candidate_version = arguments.candidate_version is not None
+    if arguments.release_candidate and not arguments.execute_prepared:
+        if not has_candidate_repository or not has_candidate_version:
+            raise ValueError(
+                "release preparation requires candidate Maven repository and version")
+    elif has_candidate_repository or has_candidate_version:
+        raise ValueError(
+            "candidate Maven repository and version are release-preparation inputs only")
     if (not arguments.dry_run and not arguments.prepare_only
             and not arguments.qualification
             and arguments.auth_broker_url != FIXED_BROKER_URL):
@@ -1505,6 +1558,8 @@ def main(argv=None):
     parser.add_argument("--qualification", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--release-candidate", action="store_true")
+    parser.add_argument("--candidate-maven-repository", type=Path)
+    parser.add_argument("--candidate-version")
     phase = parser.add_mutually_exclusive_group()
     phase.add_argument("--prepare-only", action="store_true")
     phase.add_argument("--execute-prepared", action="store_true")
@@ -1537,6 +1592,10 @@ def main(argv=None):
                 raise ValueError("benchmark manifest was not sealed for prepared execution")
             if manifest.get("releaseCandidate") != arguments.release_candidate:
                 raise ValueError("prepared release-candidate mode does not match")
+            if arguments.release_candidate and (
+                    not manifest.get("candidateVersion")
+                    or not manifest.get("candidateMavenRepositorySha256")):
+                raise ValueError("prepared candidate Maven identity is missing")
             if (manifest.get("model") != arguments.model
                     or manifest.get("pairs") != arguments.pairs
                     or manifest.get("maxTimeSeconds") != max_seconds):
@@ -1556,6 +1615,13 @@ def main(argv=None):
                 raise ValueError("prepared benchmark schedule is incomplete")
         else:
             output.mkdir(parents=True, exist_ok=False)
+            candidate_repository = None
+            candidate_repository_hash = None
+            if arguments.release_candidate:
+                candidate_repository, candidate_repository_hash = (
+                    _candidate_repository(
+                        arguments.candidate_maven_repository,
+                        arguments.candidate_version))
             treatment_inputs = _treatment_inputs()
             hashes = {
                 "prompt": sha256_bytes((BENCHMARK_ROOT / "prompts/task.md").read_bytes()),
@@ -1572,7 +1638,8 @@ def main(argv=None):
             for pair in range(1, arguments.pairs + 1):
                 for treatment in ("baseline", "harness"):
                     runs.append(_prepare_run(
-                        output, pair, treatment, index, hashes, treatment_inputs))
+                        output, pair, treatment, index, hashes, treatment_inputs,
+                        candidate_repository, arguments.candidate_version))
                     index += 1
 
             public_runs = [_public_item(item) for item in runs]
@@ -1582,6 +1649,8 @@ def main(argv=None):
                 "dryRun": arguments.dry_run,
                 "preparedOnly": arguments.prepare_only,
                 "releaseCandidate": arguments.release_candidate,
+                "candidateVersion": arguments.candidate_version,
+                "candidateMavenRepositorySha256": candidate_repository_hash,
                 "model": arguments.model,
                 "reasoning": FIXED_REASONING,
                 "maxTimeSeconds": FIXED_SECONDS,
