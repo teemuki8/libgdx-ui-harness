@@ -302,7 +302,7 @@ public final class FixtureControl implements AutoCloseable {
                         1,
                         0.5,
                         0.5001,
-                        0.5,
+                        0.75,
                         observation.transformSha256()))
                 .toList();
         return new TypographyReference(
