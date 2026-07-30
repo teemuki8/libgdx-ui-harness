@@ -6,7 +6,8 @@
   "additionalProperties": false,
   "required": [
     "schemaVersion", "candidateCommit", "candidateSourceSha256",
-    "releaseVersion", "manifestSha256", "evidenceDigest", "passed",
+    "releaseVersion", "precommitmentSha256", "manifestSha256",
+    "evidenceDigest", "passed",
     "failures", "strata", "runs", "statistics", "decisionSha256"
   ],
   "properties": {
@@ -15,6 +16,7 @@
     "candidateSourceSha256": {"$ref": "#/$defs/sha256"},
     "releaseVersion": {"type": "string"},
     "manifestSha256": {"$ref": "#/$defs/sha256"},
+    "precommitmentSha256": {"$ref": "#/$defs/sha256"},
     "evidenceDigest": {"$ref": "#/$defs/sha256"},
     "passed": {"type": "boolean"},
     "failures": {"type": "array", "items": {"type": "string"}},

@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "agentic-palisade/repeatability-manifest-v1"
+PRECOMMITMENT_SCHEMA = "agentic-palisade/repeatability-precommitment-v1"
 DECISION_SCHEMA = "agentic-palisade/repeatability-decision-v1"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -46,6 +47,12 @@ def sha256_file(path):
 def seal(manifest):
     unsealed = {key: value for key, value in manifest.items()
                 if key != "manifestSha256"}
+    return sha256_bytes(canonical_bytes(unsealed))
+
+
+def seal_precommitment(precommitment):
+    unsealed = {key: value for key, value in precommitment.items()
+                if key != "precommitmentSha256"}
     return sha256_bytes(canonical_bytes(unsealed))
 
 
@@ -100,7 +107,9 @@ def _range(values):
 def verify_artifacts(manifest, evidence_root):
     root = Path(evidence_root).resolve()
     catalog = manifest.get("artifacts", {})
-    expected_paths = set(catalog) | {"manifest.json", "decision.json"}
+    expected_paths = set(catalog) | {
+        "precommitment.json", "manifest.json", "decision.json",
+    }
     actual_paths = {
         str(path.relative_to(root))
         for path in root.rglob("*")
@@ -117,13 +126,33 @@ def verify_artifacts(manifest, evidence_root):
             raise ValueError(f"retained artifact mismatch: {relative}")
 
 
-def evaluate(manifest, candidate_commit, release_version, candidate_source_sha256=None):
+def evaluate(
+        manifest, precommitment, candidate_commit, release_version,
+        candidate_source_sha256=None):
     failures = []
+    if (not isinstance(precommitment, dict)
+            or precommitment.get("schemaVersion") != PRECOMMITMENT_SCHEMA):
+        _failure(failures, "Precommitment schema is unsupported")
+        precommitment = precommitment if isinstance(precommitment, dict) else {}
+    if precommitment.get("precommitmentSha256") != seal_precommitment(precommitment):
+        _failure(failures, "Precommitment seal does not match its canonical content")
     if not isinstance(manifest, dict) or manifest.get("schemaVersion") != SCHEMA:
         _failure(failures, "Manifest schema is unsupported")
         manifest = manifest if isinstance(manifest, dict) else {}
     if manifest.get("manifestSha256") != seal(manifest):
         _failure(failures, "Manifest seal does not match its canonical content")
+    if manifest.get("precommitmentSha256") != precommitment.get(
+            "precommitmentSha256"):
+        _failure(failures, "Result manifest is not bound to the precommitment")
+    committed_fields = (
+        "candidateCommit", "candidateSourceSha256", "releaseVersion",
+        "dynamicMask", "statisticalMethod", "allocationSeed", "exclusionPolicy",
+        "scenarioAssertionGroups", "observations", "precommitmentHashes",
+        "costCeilings", "environments",
+    )
+    for field in committed_fields:
+        if manifest.get(field) != precommitment.get(field):
+            _failure(failures, f"Post-start precommitment change: {field}")
     if not COMMIT.fullmatch(candidate_commit or ""):
         _failure(failures, "Expected candidate commit is malformed")
     if manifest.get("candidateCommit") != candidate_commit:
@@ -218,11 +247,38 @@ def evaluate(manifest, candidate_commit, release_version, candidate_source_sha25
             strata[environment_id].append(repetition)
         candidate = repetition.get("candidate", {})
         baseline = repetition.get("baseline", {})
-        if not repetition.get("startedAt") or manifest.get("sealedAt", "") >= repetition["startedAt"]:
+        if (not repetition.get("startedAt")
+                or precommitment.get("sealedAt", "") >= repetition["startedAt"]):
             _failure(failures, f"{prefix} did not start after manifest sealing")
         if repetition.get("armOrder") not in (
                 ["candidate", "baseline"], ["baseline", "candidate"]):
             _failure(failures, f"{prefix} arm order is not predeclared")
+        schedule = precommitment.get("schedule", [])
+        scheduled = next(
+            (item for item in schedule if isinstance(item, dict)
+             and item.get("id") == repetition.get("id")),
+            None,
+        )
+        if scheduled is None:
+            _failure(failures, f"{prefix} is absent from the sealed schedule")
+        else:
+            planned = {
+                "id": repetition.get("id"),
+                "environmentId": repetition.get("environmentId"),
+                "armOrder": repetition.get("armOrder"),
+                "candidate": {
+                    key: candidate.get(key)
+                    for key in (*IDENTITIES, "frozenInputsSha256", "seed",
+                                "resourceLimits")
+                },
+                "baseline": {
+                    key: baseline.get(key)
+                    for key in (*IDENTITIES, "frozenInputsSha256", "seed",
+                                "resourceLimits")
+                },
+            }
+            if scheduled != planned:
+                _failure(failures, f"{prefix} differs from the sealed schedule")
         for arm_name, arm in (("candidate", candidate), ("baseline", baseline)):
             if not isinstance(arm, dict):
                 _failure(failures, f"{prefix} {arm_name} arm is malformed")
@@ -375,6 +431,16 @@ def evaluate(manifest, candidate_commit, release_version, candidate_source_sha25
                          f"Environment stratum {identifier} has cross-repetition capture drift "
                          f"for {observation}")
         stratum_report.append({"environmentId": identifier, "matchedPairs": len(items)})
+    scheduled_ids = [
+        item.get("id") for item in precommitment.get("schedule", [])
+        if isinstance(item, dict)
+    ]
+    result_ids = [
+        item.get("id") for item in repetitions if isinstance(item, dict)
+    ]
+    if (len(scheduled_ids) < 5 or len(set(scheduled_ids)) != len(scheduled_ids)
+            or scheduled_ids != result_ids):
+        _failure(failures, "Result set is not the complete sealed schedule")
 
     summaries = {}
     for cost in COSTS:
@@ -387,6 +453,7 @@ def evaluate(manifest, candidate_commit, release_version, candidate_source_sha25
         }
     evidence_material = {
         "manifestSha256": manifest.get("manifestSha256"),
+        "precommitmentSha256": precommitment.get("precommitmentSha256"),
         "retainedControlsSha256": manifest.get("retainedControlsSha256"),
         "evidenceSha256": [item.get("evidenceSha256") for item in repetitions
                            if isinstance(item, dict)],
@@ -398,6 +465,7 @@ def evaluate(manifest, candidate_commit, release_version, candidate_source_sha25
         "candidateSourceSha256": manifest.get("candidateSourceSha256"),
         "releaseVersion": manifest.get("releaseVersion"),
         "manifestSha256": manifest.get("manifestSha256"),
+        "precommitmentSha256": precommitment.get("precommitmentSha256"),
         "evidenceDigest": sha256_bytes(canonical_bytes(evidence_material)),
         "passed": not failures,
         "failures": failures,
@@ -417,6 +485,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     verify = subparsers.add_parser("verify")
+    verify.add_argument("--precommitment", required=True, type=Path)
     verify.add_argument("--manifest", required=True, type=Path)
     verify.add_argument("--decision", required=True, type=Path)
     verify.add_argument("--candidate-commit", required=True)
@@ -424,15 +493,17 @@ def main(argv=None):
     verify.add_argument("--release-version", required=True)
     verify.add_argument("--evidence-root", required=True, type=Path)
     create = subparsers.add_parser("create-decision")
+    create.add_argument("--precommitment", required=True, type=Path)
     create.add_argument("--manifest", required=True, type=Path)
     create.add_argument("--output", required=True, type=Path)
     create.add_argument("--evidence-root", required=True, type=Path)
     arguments = parser.parse_args(argv)
     try:
         manifest = json.loads(arguments.manifest.read_text())
+        precommitment = json.loads(arguments.precommitment.read_text())
         if arguments.command == "create-decision":
             decision = evaluate(
-                manifest, manifest.get("candidateCommit", ""),
+                manifest, precommitment, manifest.get("candidateCommit", ""),
                 manifest.get("releaseVersion", ""))
             if arguments.output.exists():
                 raise ValueError("decision output already exists")
@@ -440,7 +511,7 @@ def main(argv=None):
             verify_artifacts(manifest, arguments.evidence_root)
             return 0 if decision["passed"] else 1
         verify_artifacts(manifest, arguments.evidence_root)
-        decision = evaluate(manifest, arguments.candidate_commit,
+        decision = evaluate(manifest, precommitment, arguments.candidate_commit,
                             arguments.release_version,
                             arguments.candidate_source_sha256)
         if arguments.decision.read_bytes() != canonical_bytes(decision):

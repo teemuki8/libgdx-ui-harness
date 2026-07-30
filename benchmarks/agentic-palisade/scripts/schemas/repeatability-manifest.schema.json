@@ -5,7 +5,8 @@
   "type": "object",
   "required": [
     "schemaVersion", "candidateCommit", "candidateSourceSha256",
-    "releaseVersion", "sealedAt", "manifestSha256", "precommitmentHashes",
+    "releaseVersion", "sealedAt", "manifestSha256", "precommitmentSha256",
+    "precommitmentHashes",
     "scenarioAssertionGroups", "observations", "allocationSeed",
     "exclusionPolicy", "dynamicMask", "statisticalMethod", "costCeilings",
     "environments", "repetitions", "retainedControlsSha256", "artifacts"
@@ -17,6 +18,7 @@
     "releaseVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"},
     "sealedAt": {"type": "string", "format": "date-time"},
     "manifestSha256": {"$ref": "#/$defs/sha256"},
+    "precommitmentSha256": {"$ref": "#/$defs/sha256"},
     "precommitmentHashes": {
       "type": "object",
       "minProperties": 17,

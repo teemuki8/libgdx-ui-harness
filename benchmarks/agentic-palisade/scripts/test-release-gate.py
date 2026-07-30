@@ -119,7 +119,7 @@ def sealed_manifest():
         "candidateCommit": "1" * 40,
         "candidateSourceSha256": "2" * 64,
         "releaseVersion": "1.1.0",
-        "sealedAt": "2026-07-30T00:02:00Z",
+        "sealedAt": "2026-07-30T00:10:00Z",
         "dynamicMask": None,
         "statisticalMethod": "paired-randomization-test-v1",
         "allocationSeed": 90210,
@@ -160,24 +160,69 @@ def sealed_manifest():
     return manifest
 
 
+def sealed_precommitment(manifest):
+    precommitment = {
+        "schemaVersion": "agentic-palisade/repeatability-precommitment-v1",
+        "candidateCommit": manifest["candidateCommit"],
+        "candidateSourceSha256": manifest["candidateSourceSha256"],
+        "releaseVersion": manifest["releaseVersion"],
+        "sealedAt": "2026-07-30T00:02:00Z",
+        "dynamicMask": manifest["dynamicMask"],
+        "statisticalMethod": manifest["statisticalMethod"],
+        "allocationSeed": manifest["allocationSeed"],
+        "exclusionPolicy": manifest["exclusionPolicy"],
+        "scenarioAssertionGroups": manifest["scenarioAssertionGroups"],
+        "observations": manifest["observations"],
+        "precommitmentHashes": manifest["precommitmentHashes"],
+        "costCeilings": manifest["costCeilings"],
+        "environments": manifest["environments"],
+        "schedule": [{
+            "id": repetition["id"],
+            "environmentId": repetition["environmentId"],
+            "armOrder": repetition["armOrder"],
+            "candidate": {
+                key: repetition["candidate"][key]
+                for key in (*GATE.IDENTITIES, "frozenInputsSha256", "seed",
+                            "resourceLimits")
+            },
+            "baseline": {
+                key: repetition["baseline"][key]
+                for key in (*GATE.IDENTITIES, "frozenInputsSha256", "seed",
+                            "resourceLimits")
+            },
+        } for repetition in manifest["repetitions"]],
+    }
+    precommitment["precommitmentSha256"] = GATE.seal_precommitment(precommitment)
+    manifest["precommitmentSha256"] = precommitment["precommitmentSha256"]
+    manifest["manifestSha256"] = GATE.seal(manifest)
+    return precommitment
+
+
 class ReleaseGateTest(unittest.TestCase):
     def test_public_schemas_are_strict_and_parseable(self):
         schema_root = SCRIPT.parent / "schemas"
+        precommitment_schema = json.loads(
+            (schema_root / "repeatability-precommitment.schema.json").read_text())
         manifest_schema = json.loads(
             (schema_root / "repeatability-manifest.schema.json").read_text())
         decision_schema = json.loads(
             (schema_root / "repeatability-decision.schema.json").read_text())
         self.assertFalse(manifest_schema["additionalProperties"])
+        self.assertFalse(precommitment_schema["additionalProperties"])
         self.assertFalse(decision_schema["additionalProperties"])
         self.assertEqual(GATE.SCHEMA,
                          manifest_schema["properties"]["schemaVersion"]["const"])
+        self.assertEqual(
+            GATE.PRECOMMITMENT_SCHEMA,
+            precommitment_schema["properties"]["schemaVersion"]["const"])
         self.assertEqual(GATE.DECISION_SCHEMA,
                          decision_schema["properties"]["schemaVersion"]["const"])
 
     def test_complete_conjunction_passes_and_is_deterministic(self):
         manifest = sealed_manifest()
-        first = GATE.evaluate(manifest, "1" * 40, "1.1.0")
-        second = GATE.evaluate(manifest, "1" * 40, "1.1.0")
+        precommitment = sealed_precommitment(manifest)
+        first = GATE.evaluate(manifest, precommitment, "1" * 40, "1.1.0")
+        second = GATE.evaluate(manifest, precommitment, "1" * 40, "1.1.0")
         self.assertTrue(first["passed"])
         self.assertEqual(first, second)
         self.assertEqual(5, first["strata"][0]["matchedPairs"])
@@ -208,9 +253,11 @@ class ReleaseGateTest(unittest.TestCase):
         for expected, mutation in mutations:
             with self.subTest(expected=expected):
                 manifest = sealed_manifest()
+                precommitment = sealed_precommitment(manifest)
                 mutation(manifest)
                 manifest["manifestSha256"] = GATE.seal(manifest)
-                decision = GATE.evaluate(manifest, "1" * 40, "1.1.0")
+                decision = GATE.evaluate(
+                    manifest, precommitment, "1" * 40, "1.1.0")
                 self.assertFalse(decision["passed"])
                 self.assertTrue(any(expected in item.lower() for item in decision["failures"]))
 
@@ -227,28 +274,34 @@ class ReleaseGateTest(unittest.TestCase):
         for mutation in mutations:
             with self.subTest(mutation=mutation):
                 manifest = sealed_manifest()
+                precommitment = sealed_precommitment(manifest)
                 mutation(manifest)
                 if manifest.get("manifestSha256") != "0" * 64:
                     manifest["manifestSha256"] = GATE.seal(manifest)
-                self.assertFalse(GATE.evaluate(manifest, "1" * 40, "1.1.0")["passed"])
+                self.assertFalse(GATE.evaluate(
+                    manifest, precommitment, "1" * 40, "1.1.0")["passed"])
 
     def test_cross_repetition_capture_drift_fails(self):
         manifest = sealed_manifest()
+        precommitment = sealed_precommitment(manifest)
         manifest["repetitions"][4]["candidate"]["captures"]["initial-1920x1080"][
             "pngSha256"] = ["9" * 64] * 5
         manifest["manifestSha256"] = GATE.seal(manifest)
-        decision = GATE.evaluate(manifest, "1" * 40, "1.1.0")
+        decision = GATE.evaluate(manifest, precommitment, "1" * 40, "1.1.0")
         self.assertFalse(decision["passed"])
         self.assertTrue(any("cross-repetition capture" in item for item in decision["failures"]))
 
     def test_cli_verifies_precommitted_decision_byte_for_byte(self):
         manifest = sealed_manifest()
-        decision = GATE.evaluate(manifest, "1" * 40, "1.1.0")
+        precommitment = sealed_precommitment(manifest)
+        decision = GATE.evaluate(manifest, precommitment, "1" * 40, "1.1.0")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             manifest_path = root / "manifest.json"
+            precommitment_path = root / "precommitment.json"
             decision_path = root / "decision.json"
             manifest_path.write_bytes(GATE.canonical_bytes(manifest))
+            precommitment_path.write_bytes(GATE.canonical_bytes(precommitment))
             decision_path.write_bytes(GATE.canonical_bytes(decision))
             (root / "runs").mkdir()
             for index in range(5):
@@ -256,6 +309,7 @@ class ReleaseGateTest(unittest.TestCase):
                     f"evidence-{index}".encode())
             self.assertEqual(0, GATE.main([
                 "verify", "--manifest", str(manifest_path),
+                "--precommitment", str(precommitment_path),
                 "--decision", str(decision_path),
                 "--candidate-commit", "1" * 40,
                 "--candidate-source-sha256", "2" * 64,
@@ -265,6 +319,7 @@ class ReleaseGateTest(unittest.TestCase):
             (root / "unsealed-extra.json").write_text("{}")
             self.assertEqual(1, GATE.main([
                 "verify", "--manifest", str(manifest_path),
+                "--precommitment", str(precommitment_path),
                 "--decision", str(decision_path),
                 "--candidate-commit", "1" * 40,
                 "--candidate-source-sha256", "2" * 64,
