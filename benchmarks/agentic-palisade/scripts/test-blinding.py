@@ -118,6 +118,29 @@ def create_fixture(root):
                 "toolCalls": {"bash": index + 1}, "edits": index + 2, "builds": index + 3,
                 "launches": index + 4, "screenshots": index + 5,
                 "failedOperations": [] if index != 4 else [{"name": "build"}],
+                "traceTaxonomy": {
+                    "schemaVersion": "agentic-palisade/trace-taxonomy-v1",
+                    "availability": "available",
+                    "parserVersion": "fixture/v1",
+                    "batchId": "fixture-batch",
+                    "runId": run_id,
+                    "sessionId": f"fixture-session-{index}",
+                    "inputSha256": sha256(f"trace-{index}".encode()),
+                    "sequenceBasis": "fixture order",
+                    "knownExclusions": ["hidden reasoning"],
+                    "events": [],
+                    "captureAttempts": [],
+                    "captureLifecycle": {},
+                    "attributions": {
+                        "capture": [], "semantic": [], "rendering": [],
+                        "workflow-loop": [],
+                    },
+                    "joins": {
+                        "process": {"status": "unavailable", "identity": None},
+                        "rounds": {"status": "unavailable", "identities": []},
+                        "evaluation": {"status": "unavailable", "identity": None},
+                    },
+                },
             },
             "rounds": [],
             "failures": [] if index != 4 else [{"phase": "agent", "message": "fixture failure"}],
@@ -408,6 +431,29 @@ class BlindingTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "metadata"):
             BLIND.scan_package(self.review)
 
+    def test_trace_treatment_leak_is_rejected_before_public_output(self):
+        manifest = json.loads(
+            (self.input / "benchmark-manifest.json").read_text())
+        entry = manifest["runs"][0]
+        record_path = self.input / entry["runRecord"]
+        hash_path = self.input / entry["runRecordHash"]
+        record = json.loads(record_path.read_text())
+        record["telemetry"]["traceTaxonomy"]["attributions"]["capture"].append({
+            "schemaVersion": "agentic-palisade/trace-taxonomy-v1",
+            "family": "capture",
+            "evidenceClass": "observed",
+            "ruleId": "fixture/v1",
+            "eventIds": [],
+            "observation": {"arm": "harness"},
+        })
+        write_hashed_json(record_path, record, hash_path)
+
+        with self.assertRaisesRegex(ValueError, "trace taxonomy contains leakage"):
+            self.build()
+
+        self.assertFalse(self.review.exists())
+        self.assertFalse(self.mapping.exists())
+
     def test_protocol_amendment_gate_precedes_evaluation_reads(self):
         manifest, _references, runs, _hashes = BLIND._load_inputs(self.input)
         self.assertEqual(manifest["protocolAmendment"], PROTOCOL_AMENDMENT)
@@ -537,6 +583,32 @@ class BlindingTest(unittest.TestCase):
         self.assertEqual([], qualitative["candidateComments"])
         self.assertIsNone(qualitative["overall"])
 
+    def test_human_boundary_excludes_unusable_tie_break_ranks(self):
+        self.build()
+        ratings_path, response = valid_response(self.review)
+        response["fidelity"] = {
+            "A": 5, "B": 1, "C": 1, "D": 1, "E": 1, "F": 1}
+        response["ranking"] = {
+            label: index + 1 for index, label in enumerate(LABELS)}
+        manifest = json.loads((self.review / "manifest.json").read_text())
+        for pair in manifest["matchedPairs"]:
+            if "A" in pair["candidates"]:
+                response["preferred"][pair["id"]] = "A"
+        ratings_path.write_bytes(canonical_bytes(response))
+        lock_path = self.root / "human-ratings.lock.json"
+        self.lock(ratings_path, lock_path)
+
+        report = UNBLIND.unblind(
+            self.input, self.review, self.mapping, ratings_path, lock_path,
+            self.root / "human-boundary-report.json")
+        boundary = report["interpretation"]["humanEvidenceBoundary"]
+
+        self.assertEqual("A", boundary["firstLabel"])
+        self.assertEqual(5, boundary["firstFidelity"])
+        self.assertEqual(list("BCDEF"), boundary["tieBreakOnlyLabels"])
+        self.assertEqual(list("BCDEF"),
+                         boundary["ordinalCorrelationExclusions"])
+
     def test_unblind_refuses_before_lock_and_detects_response_or_manifest_tampering(self):
         self.build()
         ratings_path, response = valid_response(self.review)
@@ -580,9 +652,11 @@ class BlindingTest(unittest.TestCase):
         report = json.loads(output.read_text())
         self.assertEqual({
             "functional", "automatedVisual", "structuralUsability",
-            "humanVisual", "telemetryTreatment"}, set(report["channels"]))
+            "humanVisual", "telemetryTreatment", "traceTaxonomy"},
+            set(report["channels"]))
         self.assertEqual(
             6, len(report["channels"]["structuralUsability"]["raw"]))
+        self.assertEqual(6, len(report["channels"]["traceTaxonomy"]["raw"]))
         self.assertNotIn("combined", json.dumps(report).lower())
         by_pair = {item["pair"]: item for item in report["channels"]["functional"]["pairedDeltas"]}
         self.assertEqual(1, by_pair[1]["passed"]["harnessMinusBaseline"])

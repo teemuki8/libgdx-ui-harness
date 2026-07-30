@@ -144,7 +144,8 @@
         "launches",
         "screenshots",
         "captureEvents",
-        "failedOperations"
+        "failedOperations",
+        "traceTaxonomy"
       ],
       "properties": {
         "tokens": {
@@ -193,8 +194,10 @@
         },
         "failedOperations": {
           "type": "array",
+          "maxItems": 4096,
           "items": {"$ref": "#/$defs/failedOperation"}
-        }
+        },
+        "traceTaxonomy": {"$ref": "#/$defs/traceTaxonomy"}
       }
     },
     "rounds": {
@@ -252,6 +255,257 @@
       "properties": {
         "toolCallId": {"type": "string", "minLength": 1},
         "name": {"type": "string", "minLength": 1}
+      }
+    },
+    "traceTaxonomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "availability", "parserVersion", "batchId", "runId", "sessionId",
+        "inputSha256", "sequenceBasis", "knownExclusions", "events",
+        "captureAttempts", "captureLifecycle", "attributions", "joins"
+      ],
+      "properties": {
+        "schemaVersion": {"const": "agentic-palisade/trace-taxonomy-v1"},
+        "availability": {"enum": ["available", "unavailable"]},
+        "parserVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+        "batchId": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "runId": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "sessionId": {
+          "oneOf": [
+            {"type": "string", "minLength": 1, "maxLength": 16384},
+            {"type": "null"}
+          ]
+        },
+        "inputSha256": {
+          "oneOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        },
+        "sequenceBasis": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "knownExclusions": {
+          "type": "array", "maxItems": 32,
+          "items": {"type": "string", "minLength": 1, "maxLength": 1024}
+        },
+        "events": {
+          "type": "array", "maxItems": 16384,
+          "items": {"$ref": "#/$defs/traceEvent"}
+        },
+        "captureAttempts": {
+          "type": "array", "maxItems": 4096,
+          "items": {"$ref": "#/$defs/captureAttempt"}
+        },
+        "captureLifecycle": {
+          "type": "object", "maxProperties": 4096,
+          "additionalProperties": {"$ref": "#/$defs/captureOutcome"}
+        },
+        "attributions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["capture", "semantic", "rendering", "workflow-loop"],
+          "properties": {
+            "capture": {"$ref": "#/$defs/attributionArray"},
+            "semantic": {"$ref": "#/$defs/attributionArray"},
+            "rendering": {"$ref": "#/$defs/attributionArray"},
+            "workflow-loop": {"$ref": "#/$defs/attributionArray"}
+          }
+        },
+        "joins": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["process", "rounds", "evaluation"],
+          "properties": {
+            "process": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "identity"],
+              "properties": {
+                "status": {"enum": ["available", "unavailable"]},
+                "identity": {
+                  "oneOf": [
+                    {"type": "object", "maxProperties": 16},
+                    {"type": "null"}
+                  ]
+                }
+              }
+            },
+            "rounds": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "identities"],
+              "properties": {
+                "status": {"enum": ["available", "partial", "unavailable"]},
+                "identities": {
+                  "type": "array", "maxItems": 3,
+                  "items": {"type": "object", "maxProperties": 8}
+                }
+              }
+            },
+            "evaluation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "identity"],
+              "properties": {
+                "status": {"enum": ["available", "unavailable"]},
+                "identity": {
+                  "oneOf": [
+                    {"type": "object", "maxProperties": 16},
+                    {"type": "null"}
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "traceEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "batchId", "runId", "sessionId", "sequence",
+        "kind", "parentEventIds", "eventId"
+      ],
+      "properties": {
+        "schemaVersion": {"const": "agentic-palisade/trace-event-v1"},
+        "batchId": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "runId": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "sessionId": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "sequence": {"type": "integer", "minimum": 0},
+        "kind": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "parentEventIds": {
+          "type": "array", "maxItems": 128,
+          "items": {"$ref": "#/$defs/sha256"}
+        },
+        "operation": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "requestId": {"$ref": "#/$defs/sha256"},
+        "payloadSha256": {"$ref": "#/$defs/sha256"},
+        "evidenceClass": {
+          "enum": ["observed", "source-established-cause", "hypothesis"]
+        },
+        "errorClass": {
+          "oneOf": [
+            {"type": "string", "minLength": 1, "maxLength": 1024},
+            {"type": "null"}
+          ]
+        },
+        "attemptId": {"$ref": "#/$defs/sha256"},
+        "eventId": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "captureAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attemptId", "requestId", "operation", "payloadSha256", "source",
+        "replayOfPayloadSha256", "result", "batchId", "runId", "sessionId",
+        "sequence", "requestEventId", "resultEventId", "outcomeEventId"
+      ],
+      "properties": {
+        "attemptId": {"$ref": "#/$defs/sha256"},
+        "batchId": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "runId": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "sessionId": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "sequence": {"type": "integer", "minimum": 0},
+        "requestEventId": {"$ref": "#/$defs/sha256"},
+        "resultEventId": {"$ref": "#/$defs/sha256"},
+        "outcomeEventId": {"$ref": "#/$defs/sha256"},
+        "requestId": {"$ref": "#/$defs/sha256"},
+        "operation": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "payloadSha256": {"$ref": "#/$defs/sha256"},
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name", "sha256"],
+          "properties": {
+            "kind": {"type": "string", "minLength": 1, "maxLength": 128},
+            "name": {"type": "string", "minLength": 1, "maxLength": 16384},
+            "sha256": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "replayOfPayloadSha256": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "result": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "isError", "code", "succeeded", "artifactCreated",
+                "inspected", "compared", "stale"
+              ],
+              "properties": {
+                "isError": {"type": "boolean"},
+                "code": {
+                  "oneOf": [
+                    {"type": "string", "minLength": 1, "maxLength": 1024},
+                    {"type": "null"}
+                  ]
+                },
+                "succeeded": {"type": "boolean"},
+                "artifactCreated": {"type": "boolean"},
+                "inspected": {"type": "boolean"},
+                "compared": {"type": "boolean"},
+                "stale": {"type": "boolean"}
+              }
+            }
+          ]
+        }
+      }
+    },
+    "captureOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "terminal", "states"],
+      "properties": {
+        "channel": {"enum": ["harness", "launcher"]},
+        "terminal": {
+          "enum": [
+            "requested", "schema-rejected", "execution-failed", "succeeded",
+            "artifact-created"
+          ]
+        },
+        "states": {
+          "type": "array", "maxItems": 8, "uniqueItems": true,
+          "items": {
+            "enum": [
+              "requested", "schema-rejected", "execution-failed", "succeeded",
+              "artifact-created", "inspected", "compared-current", "stale"
+            ]
+          }
+        }
+      }
+    },
+    "attributionArray": {
+      "type": "array", "maxItems": 4096,
+      "items": {"$ref": "#/$defs/attribution"}
+    },
+    "attribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "family", "evidenceClass", "ruleId",
+        "eventIds", "observation"
+      ],
+      "properties": {
+        "schemaVersion": {"const": "agentic-palisade/trace-taxonomy-v1"},
+        "family": {
+          "enum": ["capture", "semantic", "rendering", "workflow-loop"]
+        },
+        "evidenceClass": {
+          "enum": ["observed", "source-established-cause", "hypothesis"]
+        },
+        "ruleId": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "eventIds": {
+          "type": "array", "maxItems": 16384,
+          "items": {"$ref": "#/$defs/sha256"}
+        },
+        "observation": {
+          "type": "object", "maxProperties": 64
+        }
       }
     },
     "roundMarker": {

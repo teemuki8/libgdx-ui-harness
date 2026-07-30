@@ -47,6 +47,13 @@ class QualificationTest(unittest.TestCase):
                 elif channel == "telemetryTreatment":
                     item["metrics"] = {
                         name: None for name in QUALIFICATION.TOKEN_METRICS}
+                elif channel == "traceTaxonomy":
+                    item["taxonomy"] = {
+                        "attributions": {
+                            "capture": [], "semantic": [], "rendering": [],
+                            "workflow-loop": [],
+                        }
+                    }
                 raw.append(item)
             report["channels"][channel] = {"raw": raw}
         for channel in QUALIFICATION.FINAL_CHANNELS:

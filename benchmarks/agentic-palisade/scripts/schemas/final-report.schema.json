@@ -19,13 +19,14 @@
     "channels": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["functional", "automatedVisual", "structuralUsability", "humanVisual", "telemetryTreatment"],
+      "required": ["functional", "automatedVisual", "structuralUsability", "humanVisual", "telemetryTreatment", "traceTaxonomy"],
       "properties": {
         "functional": {"$ref": "#/$defs/channel"},
         "automatedVisual": {"$ref": "#/$defs/channel"},
         "structuralUsability": {"$ref": "#/$defs/channel"},
         "humanVisual": {"$ref": "#/$defs/channel"},
-        "telemetryTreatment": {"$ref": "#/$defs/channel"}
+        "telemetryTreatment": {"$ref": "#/$defs/channel"},
+        "traceTaxonomy": {"$ref": "#/$defs/channel"}
       }
     },
     "qualitativeAssociations": {
@@ -55,10 +56,44 @@
     "interpretation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sampleSizePerTreatment", "pairedDeltaConvention", "conclusions"],
+      "required": ["sampleSizePerTreatment", "pairedDeltaConvention", "humanEvidenceBoundary", "conclusions"],
       "properties": {
         "sampleSizePerTreatment": {"const": 3},
         "pairedDeltaConvention": {"const": "harness minus baseline"},
+        "humanEvidenceBoundary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "firstLabel", "firstFidelity", "preferredPair", "preferredToLabel", "lowestFidelity",
+            "tieBreakOnlyLabels", "ordinalCorrelationExclusions", "rule"
+          ],
+          "properties": {
+            "firstLabel": {"$ref": "#/$defs/label"},
+            "firstFidelity": {"type": "integer", "minimum": 1, "maximum": 7},
+            "preferredPair": {
+              "oneOf": [
+                {"enum": ["pair-1", "pair-2", "pair-3"]},
+                {"type": "null"}
+              ]
+            },
+            "preferredToLabel": {
+              "oneOf": [
+                {"$ref": "#/$defs/label"},
+                {"type": "null"}
+              ]
+            },
+            "lowestFidelity": {"type": "integer", "minimum": 1, "maximum": 7},
+            "tieBreakOnlyLabels": {
+              "type": "array", "maxItems": 6, "uniqueItems": true,
+              "items": {"$ref": "#/$defs/label"}
+            },
+            "ordinalCorrelationExclusions": {
+              "type": "array", "maxItems": 6, "uniqueItems": true,
+              "items": {"$ref": "#/$defs/label"}
+            },
+            "rule": {"type": "string", "minLength": 1, "maxLength": 1000}
+          }
+        },
         "conclusions": {"type": "string", "minLength": 1}
       }
     }
@@ -69,11 +104,13 @@
     "channel": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["raw", "armSummaries", "pairedDeltas"],
+      "required": ["raw", "armSummaries", "pairedDeltas", "sampleSizePerTreatment", "interpretation"],
       "properties": {
         "raw": {"type": "array", "minItems": 6},
         "armSummaries": {"type": ["object", "array"]},
-        "pairedDeltas": {"type": "array", "minItems": 3}
+        "pairedDeltas": {"type": "array", "minItems": 3},
+        "sampleSizePerTreatment": {"const": 3},
+        "interpretation": {"type": "string", "minLength": 1, "maxLength": 1000}
       }
     }
   }

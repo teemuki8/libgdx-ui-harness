@@ -29,7 +29,7 @@ CASES = {
 GENERATED = {".gradle", "build", "__pycache__"}
 FINAL_CHANNELS = (
     "functional", "automatedVisual", "structuralUsability",
-    "humanVisual", "telemetryTreatment")
+    "humanVisual", "telemetryTreatment", "traceTaxonomy")
 TOKEN_METRICS = (
     "tokens.input", "tokens.output", "tokens.cacheRead",
     "tokens.cacheWrite", "tokens.reasoning")
@@ -113,6 +113,14 @@ def validate_final_channels(report, expected_run_ids):
                         name not in metrics for name in TOKEN_METRICS):
                     raise ValueError(
                         "telemetryTreatment channel dropped unavailable token data")
+        if channel == "traceTaxonomy":
+            for item in raw:
+                taxonomy = item.get("taxonomy")
+                if (not isinstance(taxonomy, dict)
+                        or set(taxonomy.get("attributions", {})) != {
+                            "capture", "semantic", "rendering", "workflow-loop"}):
+                    raise ValueError(
+                        "traceTaxonomy channel dropped a comparable family")
     return sorted(expected)
 
 

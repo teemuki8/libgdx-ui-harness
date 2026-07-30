@@ -244,9 +244,11 @@ def _validate_private_mapping(run_root, review_dir, manifest, manifest_hash, map
         public = public_by_label[label]
         run = label_runs[label]
         if (set(public) != {
-                "label", "captures", "automatedVisual", "structuralUsability"}
+                "label", "captures", "automatedVisual", "structuralUsability",
+                "traceTaxonomy"}
                 or public["automatedVisual"] != run["automatedVisual"]
-                or public["structuralUsability"] != run["structuralUsability"]):
+                or public["structuralUsability"] != run["structuralUsability"]
+                or public["traceTaxonomy"] != run["traceTaxonomy"]):
             raise ValueError("public label capture binding mismatch")
         if len(public["captures"]) != len(run["captures"]):
             raise ValueError("public label capture binding mismatch")
@@ -344,6 +346,18 @@ def _arms(rows, fields):
     }
 
 
+def _channel(raw, summaries, paired):
+    return {
+        "raw": raw,
+        "armSummaries": summaries,
+        "pairedDeltas": paired,
+        "sampleSizePerTreatment": 3,
+        "interpretation": (
+            "Directional matched-pair summary for this retained batch; "
+            "no significance, population, superiority, or causal inference."),
+    }
+
+
 def _functional_channel(label_runs):
     raw = []
     for label, run in label_runs.items():
@@ -363,7 +377,7 @@ def _functional_channel(label_runs):
         harness = next(row for row in raw if row["pair"] == pair and row["treatment"] == "harness")
         paired.append({"pair": pair, "baselineLabel": baseline["label"], "harnessLabel": harness["label"],
                        **{field: _delta(baseline[field], harness[field]) for field in fields}})
-    return {"raw": raw, "armSummaries": _arms(raw, fields), "pairedDeltas": paired}
+    return _channel(raw, _arms(raw, fields), paired)
 
 
 def _visual_arm_range(values, label_runs, reference_id, metric, treatment):
@@ -428,7 +442,7 @@ def _automated_visual_channel(label_runs):
                     for metric in names
                 },
             })
-    return {"raw": raw, "armSummaries": summaries, "pairedDeltas": paired}
+    return _channel(raw, summaries, paired)
 
 
 def _structural_channel(label_runs):
@@ -453,9 +467,9 @@ def _structural_channel(label_runs):
                 row["label"] for row in pair_rows if row["treatment"] == "harness"),
             "comparison": "independent pass/fail outcomes retained without weighting",
         })
-    return {
-        "raw": raw,
-        "armSummaries": {
+    return _channel(
+        raw,
+        {
             arm: {
                 status: sum(
                     1 for row in raw if row["treatment"] == arm
@@ -465,8 +479,7 @@ def _structural_channel(label_runs):
             }
             for arm in ("baseline", "harness")
         },
-        "pairedDeltas": paired,
-    }
+        paired)
 
 
 def _human_channel(label_runs, response):
@@ -484,7 +497,7 @@ def _human_channel(label_runs, response):
             "preferredLabel": selected, "preferredTreatment": label_runs[selected]["treatment"],
             **{field: _delta(baseline[field], harness[field]) for field in fields},
         })
-    return {"raw": raw, "armSummaries": _arms(raw, fields), "pairedDeltas": paired}
+    return _channel(raw, _arms(raw, fields), paired)
 
 
 def _telemetry_values(record):
@@ -550,7 +563,93 @@ def _telemetry_channel(label_runs):
             for name in shared
         })
         paired.append(item)
-    return {"raw": raw, "armSummaries": summaries, "pairedDeltas": paired}
+    return _channel(raw, summaries, paired)
+
+
+def _trace_channel(label_runs):
+    raw = []
+    for label, run in label_runs.items():
+        taxonomy = json.loads(json.dumps(
+            run["record"]["telemetry"]["traceTaxonomy"]))
+        taxonomy["attributions"]["semantic"] = (
+            run["traceTaxonomy"]["attributions"]["semantic"])
+        taxonomy["attributions"]["rendering"] = (
+            run["traceTaxonomy"]["attributions"]["rendering"])
+        taxonomy["joins"]["evaluation"] = {
+            "status": "available",
+            "identity": {
+                "sha256": run["evaluationHash"],
+                "schemaVersion": run["evaluation"]["schemaVersion"],
+                "candidateSha256": run["evaluation"]["candidate"]["sha256"],
+                "corpusSha256": run["evaluation"]["corpus"]["sha256"],
+            },
+        }
+        raw.append({
+            "label": label,
+            "runId": run["runId"],
+            "pair": run["pair"],
+            "treatment": run["treatment"],
+            "taxonomy": taxonomy,
+        })
+    family_counts = {
+        arm: {
+            family: sum(
+                len(row["taxonomy"]["attributions"].get(family, []))
+                for row in raw if row["treatment"] == arm)
+            for family in ("capture", "semantic", "rendering", "workflow-loop")
+        }
+        for arm in ("baseline", "harness")
+    }
+    paired = []
+    for pair in (1, 2, 3):
+        baseline = next(
+            row for row in raw
+            if row["pair"] == pair and row["treatment"] == "baseline")
+        harness = next(
+            row for row in raw
+            if row["pair"] == pair and row["treatment"] == "harness")
+        paired.append({
+            "pair": pair,
+            "baselineLabel": baseline["label"],
+            "harnessLabel": harness["label"],
+            "pairedFields": [
+                "capture", "semantic", "rendering", "workflow-loop"],
+            "method": "directional matched-pair association; no causal inference",
+        })
+    return _channel(raw, family_counts, paired)
+
+
+def _human_evidence_boundary(label_runs, response):
+    fidelity = response["fidelity"]
+    lowest = min(fidelity.values())
+    tie_break_only = sorted(
+        label for label, value in fidelity.items()
+        if value == lowest
+    )
+    first = min(response["ranking"], key=response["ranking"].get)
+    preferred_to = None
+    preferred_label = None
+    for pair, selected in response["preferred"].items():
+        if selected == first:
+            preferred_to = pair
+            pair_number = int(pair.removeprefix("pair-"))
+            preferred_label = next(
+                label for label, run in label_runs.items()
+                if run["pair"] == pair_number and label != first)
+            break
+    return {
+        "firstLabel": first,
+        "firstFidelity": fidelity[first],
+        "preferredPair": preferred_to,
+        "preferredToLabel": preferred_label,
+        "lowestFidelity": lowest,
+        "tieBreakOnlyLabels": tie_break_only if len(tie_break_only) > 1 else [],
+        "ordinalCorrelationExclusions": (
+            tie_break_only if len(tie_break_only) > 1 else []),
+        "rule": (
+            "Equal low-fidelity unusable candidates are not ordinal evidence; "
+            "unique ranks within that group are deterministic tie-breaks."),
+    }
 
 
 def _qualitative(label_runs, response):
@@ -599,14 +698,19 @@ def unblind(run_root, review_dir, mapping_path, ratings_path, lock_path, output_
             "structuralUsability": _structural_channel(label_runs),
             "humanVisual": _human_channel(label_runs, response),
             "telemetryTreatment": _telemetry_channel(label_runs),
+            "traceTaxonomy": _trace_channel(label_runs),
         },
         "qualitativeAssociations": _qualitative(label_runs, response),
         "interpretation": {
             "sampleSizePerTreatment": 3,
             "pairedDeltaConvention": "harness minus baseline",
+            "humanEvidenceBoundary": _human_evidence_boundary(
+                label_runs, response),
             "conclusions": (
-                "Directional only; raster similarity, structural usability, and "
-                "human fidelity measure different properties and remain separate."
+                "Directional only for n=3 matched pairs in this retained batch; "
+                "functional, raster similarity, structural usability, human "
+                "fidelity, cost, and trace taxonomy measure different properties "
+                "and remain separate. No significance or causal inference."
             ),
         },
     }

@@ -143,6 +143,70 @@ class TelemetryTest(unittest.TestCase):
                 },
             )
 
+    def test_normalizes_environment_and_replayed_ndjson_schema_rejections(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            payload = {
+                "operation": "ui_screenshot",
+                "arguments": {"maxBytes": 1000},
+            }
+            (workspace / "cycle.ndjson").write_text(
+                json.dumps(payload) + "\n", encoding="utf-8")
+            command = (
+                f"HARNESS_COMMANDS='{json.dumps(payload)}' ./harness; "
+                "./harness < cycle.ndjson; ./harness < cycle.ndjson; "
+                "./candidate capture"
+            )
+            session = workspace / "session.jsonl"
+            events = [
+                {"type": "session", "version": 3, "id": "retained-a"},
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{
+                            "type": "toolCall", "id": "cycle", "name": "bash",
+                            "arguments": {"command": command},
+                        }],
+                    },
+                },
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "toolResult", "toolCallId": "cycle",
+                        "toolName": "bash", "isError": True,
+                        "content": [{
+                            "code": "invalid-arguments",
+                            "message": "schema rejected",
+                        }],
+                    },
+                },
+            ]
+            session.write_text(
+                "".join(json.dumps(event) + "\n" for event in events),
+                encoding="utf-8")
+
+            result = self.telemetry.parse_omp_session(
+                session, workspace,
+                {"batchId": "batch", "runId": "run"})
+
+            self.assertEqual(3, result["captureEvents"]["attempted"])
+            self.assertEqual(3, result["captureEvents"]["schemaRejected"])
+            self.assertEqual(0, result["captureEvents"]["accepted"])
+            self.assertEqual(1, result["captureEvents"]["launcherCaptures"])
+            trace = result["traceTaxonomy"]
+            self.assertEqual(("batch", "run"),
+                             (trace["batchId"], trace["runId"]))
+            self.assertEqual(
+                3, len({
+                    attempt["attemptId"]
+                    for attempt in trace["captureAttempts"]
+                    if attempt["operation"] == "ui_screenshot"
+                }))
+            self.assertEqual(
+                list(range(4)),
+                [attempt["sequence"] for attempt in trace["captureAttempts"]])
+
     def test_rejects_malformed_and_truncated_jsonl(self):
         for fixture in ("session-malformed.jsonl", "session-truncated.jsonl"):
             with self.subTest(fixture=fixture):
