@@ -49,6 +49,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -73,7 +74,13 @@ final class HarnessMcpServerContractTest {
 
             assertNotNull(result);
             assertFalse(result.isError());
-            assertEquals("action-result", structured(result).get("kind"));
+            Map<String, Object> content = structured(result);
+            assertEquals("action-result", content.get("kind"));
+            assertEquals("unavailable",
+                    ((Map<?, ?>) content.get("progress")).get("status"));
+            assertEquals(0,
+                    ((Number) ((Map<?, ?>) content.get("recovery"))
+                            .get("consumed")).intValue());
             assertEquals(1, harness.actionCalls.get());
             assertTrue(harness.actionThreadWasVirtual);
             assertEquals("Save", new StrictResolution()
@@ -88,6 +95,13 @@ final class HarnessMcpServerContractTest {
                     Map.of("sessionId", "game"))).block(Duration.ofSeconds(10));
             assertEquals("capabilities-result", structured(capabilities).get("kind"));
             assertTrue(((List<?>) structured(capabilities).get("capabilities")).contains("action"));
+            assertEquals("operation-catalog/v1",
+                    structured(capabilities).get("catalogSchemaVersion"));
+            assertEquals(12, ((List<?>) structured(capabilities).get("operations")).size());
+            assertTrue(String.valueOf(structured(capabilities).get("operations"))
+                    .contains("maxWidth=1280"));
+            assertTrue(String.valueOf(structured(capabilities).get("operations"))
+                    .contains("pointer=0"));
 
             McpSchema.CallToolResult snapshot = handler.handle(call("ui_snapshot",
                     Map.of("sessionId", "game"))).block(Duration.ofSeconds(10));
@@ -140,7 +154,11 @@ final class HarnessMcpServerContractTest {
                     "sessionId", "game", "path", "/tmp/attack")))
                     .block(Duration.ofSeconds(10));
             assertTrue(result.isError());
-            assertEquals("invalid-arguments", structured(result).get("code"));
+            assertEquals("MISSING_ARGUMENT", structured(result).get("code"));
+            assertEquals("diagnostic-envelope/v1",
+                    structured(result).get("schemaVersion"));
+            assertEquals("transient", structured(result).get("disposition"));
+            assertEquals(Boolean.TRUE, structured(result).get("retryable"));
             assertEquals(0, calls.get());
         }
     }
@@ -156,16 +174,48 @@ final class HarnessMcpServerContractTest {
                     "ui_screenshot",
                     Map.of("sessionId", "game", "maxBytes", 1024)))
                     .block(Duration.ofSeconds(10));
-            String message = String.valueOf(structured(result).get("message"));
+            Map<String, Object> diagnostic = structured(result);
 
             assertTrue(result.isError());
-            assertTrue(message.contains("$.maxWidth"));
-            assertTrue(message.contains("$.maxHeight"));
-            assertTrue(message.contains("$.maxPixels"));
-            assertTrue(message.contains("$.maxPngBytes"));
-            assertTrue(message.contains("$.maxBytes"));
-            assertTrue(message.contains("minimalExample="));
+            assertEquals("UNKNOWN_ARGUMENT", diagnostic.get("code"));
+            assertEquals(List.of(
+                    "$.maxBytes", "$.maxHeight", "$.maxPixels",
+                    "$.maxPngBytes", "$.maxWidth"),
+                    problemPaths(diagnostic));
+            assertTrue(String.valueOf(diagnostic.get("problems"))
+                    .contains("inclusive range [1,8192]"));
+            assertTrue(String.valueOf(diagnostic.get("minimalExample"))
+                    .contains("maxWidth=1280"));
             assertEquals(0, calls.get());
+        }
+    }
+
+    @Test void malformedScreenshotCanApplyReturnedCorrectionAndSucceedWithinBudget() {
+        AtomicInteger calls = new AtomicInteger();
+        RecordingArtifacts artifacts = new RecordingArtifacts();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    calls.incrementAndGet();
+                    return service(new RecordingHarness()).execute(request);
+                }, artifacts, executor, 1024)) {
+            Map<String, Object> diagnostic = structured(handler.handle(call(
+                    "ui_screenshot",
+                    Map.of("sessionId", "game", "maxBytes", 1_024)))
+                    .block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> correction =
+                    (Map<String, Object>) diagnostic.get("minimalExample");
+
+            McpSchema.CallToolResult corrected = handler.handle(call(
+                    "ui_screenshot", correction)).block(Duration.ofSeconds(10));
+            Map<String, Object> content = structured(corrected);
+
+            assertFalse(corrected.isError());
+            assertEquals("screenshot-result", content.get("kind"));
+            assertEquals(1, calls.get());
+            assertEquals(1,
+                    ((Number) ((Map<?, ?>) content.get("recovery"))
+                            .get("consumed")).intValue());
         }
     }
 
@@ -191,20 +241,106 @@ final class HarnessMcpServerContractTest {
             arguments.put("maxPngBytes", "large");
             McpSchema.CallToolResult result = handler.handle(call(
                     "ui_inspect_compare", arguments)).block(Duration.ofSeconds(10));
-            String message = String.valueOf(structured(result).get("message"));
+            Map<String, Object> diagnostic = structured(result);
+            String problems = String.valueOf(diagnostic.get("problems"));
 
             assertTrue(result.isError());
-            assertTrue(message.contains("$.sessionId expected string length 1..256"));
-            assertTrue(message.contains("$.policyVersion expected integer in [1,"));
-            assertTrue(message.contains("$.maxIterations expected integer in [1,64]"));
-            assertTrue(message.contains("$.maxDurationMillis expected integer in [1,120000]"));
-            assertTrue(message.contains("$.maxWidth expected integer in [1,8192]"));
-            assertTrue(message.contains("$.maxPixels expected integer in [1,33554432]"));
-            assertTrue(message.contains("$.maxPngBytes expected integer in [1,"));
-            assertTrue(message.contains("$.maxPixelCount"));
-            assertTrue(message.contains("observed"));
-            assertTrue(message.contains("minimalExample="));
+            assertTrue(problems.contains("$.sessionId"));
+            assertTrue(problems.contains("$.policyVersion"));
+            assertTrue(problems.contains("$.maxIterations"));
+            assertTrue(problems.contains("$.maxDurationMillis"));
+            assertTrue(problems.contains("$.maxWidth"));
+            assertTrue(problems.contains("$.maxPixels"));
+            assertTrue(problems.contains("$.maxPngBytes"));
+            assertTrue(problems.contains("$.maxPixelCount"));
+            assertTrue(problems.contains("observed"));
+            assertTrue(String.valueOf(diagnostic.get("minimalExample"))
+                    .contains("maxWidth=1280"));
             assertEquals(0, calls.get());
+        }
+    }
+
+    @Test void clickValidationReportsEveryIndependentFieldInPathOrder() {
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> CompletableFuture.failedFuture(new AssertionError()),
+                        new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_action",
+                    Map.of(
+                            "sessionId", "game",
+                            "locator", Map.of("kind", "role", "role", "button"),
+                            "action", Map.of(
+                                    "kind", "click",
+                                    "pointer", "zero",
+                                    "button", 1.5,
+                                    "force", "yes",
+                                    "script", "ignored"))))
+                    .block(Duration.ofSeconds(10));
+            Map<String, Object> diagnostic = structured(result);
+
+            assertTrue(result.isError());
+            assertEquals(List.of(
+                    "$.action.button", "$.action.force",
+                    "$.action.pointer", "$.action.script"),
+                    problemPaths(diagnostic));
+            assertTrue(String.valueOf(diagnostic.get("minimalExample"))
+                    .contains("pointer=0"));
+        }
+    }
+
+    @Test void equivalentInvalidPayloadsShareBudgetAcrossMapOrderAndRequestIds() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> CompletableFuture.failedFuture(new AssertionError()),
+                        new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            LinkedHashMap<String, Object> first = new LinkedHashMap<>();
+            first.put("sessionId", "game");
+            first.put("maxBytes", 1_024);
+            LinkedHashMap<String, Object> reordered = new LinkedHashMap<>();
+            reordered.put("maxBytes", 1_024);
+            reordered.put("sessionId", "game");
+
+            for (int attempt = 0; attempt < 3; attempt++) {
+                assertEquals("UNKNOWN_ARGUMENT", structured(handler.handle(call(
+                        "ui_screenshot", attempt % 2 == 0 ? first : reordered))
+                        .block(Duration.ofSeconds(10))).get("code"));
+            }
+            nanos.set(1_025_000_000L);
+            Map<String, Object> terminal = structured(handler.handle(call(
+                    "ui_screenshot", reordered)).block(Duration.ofSeconds(10)));
+
+            assertEquals("LOOP_DETECTED", terminal.get("code"));
+            assertEquals("terminal", terminal.get("disposition"));
+            assertEquals(Boolean.FALSE, terminal.get("retryable"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery =
+                    (Map<String, Object>) terminal.get("recovery");
+            assertEquals(4, ((Number) recovery.get("consumed")).intValue());
+            assertEquals(0, ((Number) recovery.get("remaining")).intValue());
+            assertEquals(25, ((Number) recovery.get("elapsedMillis")).intValue());
+        }
+    }
+
+    @Test void diagnosticOverflowFailsClosedWithoutSilentFieldTruncation() {
+        LinkedHashMap<String, Object> arguments = new LinkedHashMap<>();
+        arguments.put("sessionId", "game");
+        for (int index = 0; index < 300; index++) {
+            arguments.put("unknown" + index, index);
+        }
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> CompletableFuture.failedFuture(new AssertionError()),
+                        new RecordingArtifacts(), executor, 1024)) {
+            Map<String, Object> diagnostic = structured(handler.handle(call(
+                    "ui_screenshot", arguments)).block(Duration.ofSeconds(10)));
+
+            assertEquals("SCHEMA_CONFLICT", diagnostic.get("code"));
+            assertEquals("terminal", diagnostic.get("disposition"));
+            assertEquals(256,
+                    ((List<?>) diagnostic.get("problems")).size());
+            assertEquals("$", problemPaths(diagnostic).getFirst());
         }
     }
 
@@ -341,7 +477,7 @@ final class HarnessMcpServerContractTest {
                     "ui_trace_stop", Map.of("sessionId", "game")))
                     .block(Duration.ofSeconds(10));
             assertTrue(result.isError());
-            assertEquals("invalid-artifact-reference", structured(result).get("code"));
+            assertEquals("INTERNAL_ERROR", structured(result).get("code"));
         }
     }
 
@@ -477,7 +613,7 @@ final class HarnessMcpServerContractTest {
                 "ui_query", Map.of("sessionId", "game", "locator", locator)))
                 .block(Duration.ofSeconds(10));
         assertTrue(result.isError());
-        assertEquals("invalid-arguments", structured(result).get("code"));
+        assertEquals("SCHEMA_CONFLICT", structured(result).get("code"));
     }
 
     private static Map<String, Object> deepLocator(int depth) {
@@ -519,6 +655,13 @@ final class HarnessMcpServerContractTest {
     private static Map<String, Object> structured(McpSchema.CallToolResult result) {
         assertNotNull(result);
         return (Map<String, Object>) result.structuredContent();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<String> problemPaths(Map<String, Object> diagnostic) {
+        return ((List<Map<String, Object>>) diagnostic.get("problems")).stream()
+                .map(problem -> (String) problem.get("fieldPath"))
+                .toList();
     }
 
     @SuppressWarnings("unchecked")

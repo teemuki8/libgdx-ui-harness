@@ -15,7 +15,7 @@ The MCP server exposes exactly twelve V1 tools. `tools/list` is the authority; u
 | `ui_layout_diagnose` | Capture and diagnose selected controls after layout quiescence | required allowlisted reference and viewport identities plus a maximum two-second duration, result, pixel, and PNG bounds | actor-attributed layout status and summaries, quiescence proof, current PNG artifact, and immutable full evidence artifact |
 | `ui_trace_start` | Start bounded trace collection | required `maxDurationMillis` and `maxBytes` | trace ID |
 | `ui_trace_stop` | Stop and finalize the active trace | none | trace ID/reference, event count, bytes |
-| `ui_capabilities` | Discover one session's supported operations | none | bounded capability-name list |
+| `ui_capabilities` | Discover one session's supported operations | none | bounded capability names, exact operation schemas/examples, diagnostic registry, and recovery policy |
 
 ## Locator and action inputs
 
@@ -68,7 +68,29 @@ Start a trace before the operation under diagnosis and stop it in all success/fa
 
 ## Failure handling
 
-Read the structured error code and bounded evidence; do not parse logs. V1 codes are `invalid-request`, `unsupported-capability`, `session-not-found`, `session-closed`, `not-found`, `strictness-violation`, `not-actionable`, `timeout`, `render-thread-failure`, `capture-failure`, `limit-exceeded`, `protocol-version-mismatch`, and `internal-error`. Remote internal errors redact stack frames and filesystem paths; full local detail belongs only in restricted traces. Never respond to `limit-exceeded` by disabling bounds or to `strictness-violation` by silently choosing the first match.
+Read the structured error code and bounded evidence; do not parse logs.
+Transport-neutral protocol failures retain the V1 codes `invalid-request`,
+`unsupported-capability`, `session-not-found`, `session-closed`, `not-found`,
+`strictness-violation`, `not-actionable`, `timeout`,
+`render-thread-failure`, `capture-failure`, `limit-exceeded`,
+`protocol-version-mismatch`, and `internal-error`.
+
+The MCP agent boundary maps failures to `diagnostic-envelope/v1`. Its closed
+registry contains `UNKNOWN_OPERATION`, `MISSING_ARGUMENT`,
+`UNKNOWN_ARGUMENT`, `INVALID_ARGUMENT_TYPE`, `OUT_OF_RANGE`,
+`INVALID_ENUM_VALUE`, `SCHEMA_CONFLICT`, `LOCATOR_NOT_FOUND`,
+`LOCATOR_AMBIGUOUS`, `STALE_REVISION`, `STATE_NOT_READY`, `BUILD_FAILED`,
+`LAUNCH_FAILED`, `DEADLINE_EXCEEDED`, `NO_PROGRESS`, `LOOP_DETECTED`,
+`RECOVERY_BUDGET_EXHAUSTED`, and `INTERNAL_ERROR`. Branch on `code`, not
+message text. A transient response supplies the correction or state change,
+consumed and remaining recovery budget, and a minimal valid example. A
+terminal response has `retryable=false` and names the terminating rule.
+Applying a correction does not erase the hard recovery total.
+
+Remote internal errors redact stack frames and filesystem paths; full local
+detail belongs only in restricted traces. Never respond to an exhausted bound
+by disabling limits or to `LOCATOR_AMBIGUOUS` by silently choosing the first
+match.
 
 The boundary never accepts executable code, scripts, class names, reflection targets, method names, arbitrary commands, or caller-selected filesystem paths. The supported server transport is stdio. Any non-loopback network exposure requires authentication and a separately reviewed deployment and is outside the default workflow.
 

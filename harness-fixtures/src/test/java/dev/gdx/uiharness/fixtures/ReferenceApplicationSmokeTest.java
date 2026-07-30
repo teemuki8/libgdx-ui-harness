@@ -191,7 +191,8 @@ final class ReferenceApplicationSmokeTest {
 
                 IllegalStateException actionFailure = assertThrows(IllegalStateException.class,
                         () -> agent.clickMissing(SESSION_ID, "missing-target", 64));
-                assertTrue(actionFailure.getMessage().contains("\"code\":\"timeout\""),
+                assertTrue(actionFailure.getMessage().contains(
+                                "\"code\":\"DEADLINE_EXCEEDED\""),
                         actionFailure::getMessage);
 
                 HarnessMcpClient.Trace trace = agent.stopTrace(SESSION_ID);

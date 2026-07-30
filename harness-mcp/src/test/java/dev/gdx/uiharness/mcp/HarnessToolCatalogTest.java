@@ -9,6 +9,8 @@ import dev.gdx.uiharness.protocol.ProtocolJson;
 import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -89,10 +91,43 @@ final class HarnessToolCatalogTest {
                         "outputSchema", tool.outputSchema()))
                 .toList();
         JsonNode actual = ProtocolJson.mapper().valueToTree(projection);
+        if ("true".equals(System.getenv("UPDATE_TOOL_CATALOG_GOLDEN"))) {
+            Files.writeString(
+                    Path.of("src/test/resources/mcp/tool-catalog-v1.json"),
+                    ProtocolJson.mapper().writerWithDefaultPrettyPrinter()
+                            .writeValueAsString(actual) + System.lineSeparator());
+        }
         try (InputStream fixture = getClass().getResourceAsStream("/mcp/tool-catalog-v1.json")) {
             JsonNode expected = ProtocolJson.mapper().readTree(fixture);
             assertEquals(expected.toString(), actual.toString());
         }
+    }
+
+    @Test void everyAdvertisedExampleValidatesAgainstItsInputSchema() {
+        for (Map<String, Object> operation : catalog.operationCatalog()) {
+            String name = (String) operation.get("name");
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> examples =
+                    (List<Map<String, Object>>) operation.get("minimalExamples");
+            assertFalse(examples.isEmpty(), name);
+            for (Map<String, Object> example : examples) {
+                assertValid(name, example);
+                assertTrue(SchemaDiagnostics.validate(
+                        catalog.tool(name).inputSchema(), example, example).isEmpty(), name);
+            }
+        }
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> actionExamples =
+                (List<Map<String, Object>>) catalog.operationCatalog().stream()
+                        .filter(operation -> "ui_action".equals(operation.get("name")))
+                        .findFirst().orElseThrow().get("minimalExamples");
+        assertEquals(Set.of(
+                        "click", "hover", "focus", "fill",
+                        "press", "scroll", "drag", "pointer"),
+                actionExamples.stream()
+                        .map(example -> (Map<?, ?>) example.get("action"))
+                        .map(action -> (String) action.get("kind"))
+                        .collect(java.util.stream.Collectors.toSet()));
     }
 
     @Test void schemasRejectMalformedAndArbitraryExecutionInputs() {
@@ -125,6 +160,20 @@ final class HarnessToolCatalogTest {
                 "policy", "pixel-exact/v1",
                 "iterations", 1,
                 "elapsedMillis", 10,
+                "progress", Map.of(
+                        "status", "unavailable",
+                        "dimensions", Map.of(),
+                        "ruleId", "progress-fingerprint/v1"),
+                "recovery", Map.of(
+                        "policyVersion", "recovery-policy/v1",
+                        "consumedBefore", 0,
+                        "consumed", 0,
+                        "limit", 3,
+                        "remainingBefore", 3,
+                        "remaining", 3,
+                        "elapsedMillis", 10,
+                        "maxWallTimeMillis", 30_000,
+                        "terminatingRule", "success/v1"),
                 "differences", List.of(Map.of(
                         "category", "raster-residual",
                         "path", "$.pixels",
