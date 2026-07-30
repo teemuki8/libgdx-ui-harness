@@ -73,6 +73,14 @@ public final class Scene2dSession implements AutoCloseable {
         return typographyExtractor.extract(revision, frame, context);
     }
 
+    /** Captures selected actor-attributed layout evidence after a completed frame. */
+    public List<dev.gdx.uiharness.core.layout.LayoutObservation> layout(
+            long revision, long frame, LayoutCaptureContext context) {
+        requireOpen();
+        return new Scene2dLayoutExtractor(stage, semantics)
+                .extract(revision, frame, context);
+    }
+
     /** Returns this session's stable weak-identity token without retaining the Actor. */
     long actorToken(Actor actor) {
         requireOpen();

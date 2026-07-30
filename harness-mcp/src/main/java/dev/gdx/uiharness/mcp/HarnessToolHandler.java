@@ -142,6 +142,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             case "ui_screenshot" -> "screenshot";
             case "ui_inspect_compare" -> "inspect-compare";
             case "ui_typography_diagnose" -> "typography-diagnose";
+            case "ui_layout_diagnose" -> "layout-diagnose";
             case "ui_trace_start" -> "trace-start";
             case "ui_trace_stop" -> "trace-stop";
             case "ui_capabilities" -> "capabilities";
@@ -325,6 +326,63 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("scaleX", typography.current().scaleX());
                 content.put("scaleY", typography.current().scaleY());
                 content.put("sha256", typography.current().sha256());
+            }
+            ArtifactReference evidence = artifacts.publish(
+                    "application/json", encoded.clone());
+            content.put("evidenceArtifact", artifactMap(evidence));
+            return Map.copyOf(content);
+        }
+        if (result instanceof HarnessResponse.Result.LayoutDiagnostic layout) {
+            LinkedHashMap<String, Object> content = content("layout-diagnostic-result");
+            content.put("status", layout.status());
+            content.put("reportCount", layout.reports().size());
+            content.put("reports", layout.reports().stream()
+                    .map(report -> Map.<String, Object>of(
+                            "controlId", report.observation().controlId(),
+                            "actorId", report.observation().actorId(),
+                            "status", report.status().name()
+                                    .toLowerCase(java.util.Locale.ROOT)
+                                    .replace('_', '-'),
+                            "diagnosticCount", report.diagnostics().size()))
+                    .toList());
+            content.put("diagnostics", COMMAND_MAPPER.convertValue(
+                    layout.diagnostics(), List.class));
+            content.put("elapsedMillis", layout.elapsedMillis());
+            if (layout.settling() != null && layout.captures() != null) {
+                content.put("quiescence", Map.of(
+                        "settled", layout.settling().settled()
+                                && layout.captures().settled(),
+                        "status", layout.settling().settled()
+                                ? layout.captures().status() : layout.settling().status(),
+                        "stableFrameCount", layout.settling().stableFrameCount(),
+                        "elapsedMillis", Math.max(
+                                layout.settling().elapsedMillis(),
+                                layout.captures().elapsedMillis()),
+                        "sampleCount", layout.settling().samples().size()
+                                + layout.captures().samples().size()));
+            }
+            if (layout.referenceId() != null) {
+                content.put("referenceId", layout.referenceId());
+            }
+            if (layout.current() != null) {
+                if (layout.currentPngBase64() == null) {
+                    throw new IllegalArgumentException(
+                            "accepted layout evidence is missing PNG bytes");
+                }
+                byte[] png = Base64.getDecoder().decode(layout.currentPngBase64());
+                ArtifactReference current = artifacts.publish("image/png", png.clone());
+                if (!current.sha256().equals(layout.current().sha256())) {
+                    throw new IllegalArgumentException(
+                            "published layout capture hash changed");
+                }
+                content.put("currentArtifact", artifactMap(current));
+                content.put("revision", layout.current().revision());
+                content.put("frame", layout.current().frame());
+                content.put("width", layout.current().width());
+                content.put("height", layout.current().height());
+                content.put("scaleX", layout.current().scaleX());
+                content.put("scaleY", layout.current().scaleY());
+                content.put("sha256", layout.current().sha256());
             }
             ArtifactReference evidence = artifacts.publish(
                     "application/json", encoded.clone());
@@ -565,7 +623,8 @@ public final class HarnessToolHandler implements AutoCloseable {
                     + "\"maxDurationMillis\":30000,\"maxWidth\":8192,"
                     + "\"maxHeight\":8192,\"maxPixels\":33554432,"
                     + "\"maxPngBytes\":12579840}";
-        } else if ("ui_typography_diagnose".equals(toolName)) {
+        } else if ("ui_typography_diagnose".equals(toolName)
+                || "ui_layout_diagnose".equals(toolName)) {
             required = List.of(
                     "sessionId", "referenceId", "viewportId", "maxDurationMillis",
                     "maxResults", "maxWidth", "maxHeight", "maxPixels", "maxPngBytes");
@@ -573,8 +632,11 @@ public final class HarnessToolHandler implements AutoCloseable {
                     "sessionId", "deadlineMillis", "referenceId", "viewportId",
                     "maxDurationMillis", "maxResults", "maxWidth", "maxHeight",
                     "maxPixels", "maxPngBytes");
-            example = "{\"sessionId\":\"game\",\"referenceId\":\"title-reference\","
-                    + "\"viewportId\":\"main\",\"maxDurationMillis\":30000,"
+            String reference = "ui_layout_diagnose".equals(toolName)
+                    ? "layout-reference" : "title-reference";
+            long duration = "ui_layout_diagnose".equals(toolName) ? 2_000 : 30_000;
+            example = "{\"sessionId\":\"game\",\"referenceId\":\"" + reference + "\","
+                    + "\"viewportId\":\"main\",\"maxDurationMillis\":" + duration + ","
                     + "\"maxResults\":16,\"maxWidth\":1920,\"maxHeight\":1080,"
                     + "\"maxPixels\":2073600,\"maxPngBytes\":4194304}";
         } else {

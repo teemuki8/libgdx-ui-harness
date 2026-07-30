@@ -21,12 +21,14 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.Screenshot.class, name = "screenshot"),
     @JsonSubTypes.Type(value = Command.InspectCompare.class, name = "inspect-compare"),
     @JsonSubTypes.Type(value = Command.TypographyDiagnose.class, name = "typography-diagnose"),
+    @JsonSubTypes.Type(value = Command.LayoutDiagnose.class, name = "layout-diagnose"),
     @JsonSubTypes.Type(value = Command.TraceStart.class, name = "trace-start"),
     @JsonSubTypes.Type(value = Command.TraceStop.class, name = "trace-stop")
 })
 public sealed interface Command permits Command.Sessions, Command.Capabilities, Command.Snapshot,
         Command.Query, Command.Action, Command.Wait, Command.Screenshot, Command.TraceStart,
-        Command.InspectCompare, Command.TypographyDiagnose, Command.TraceStop {
+        Command.InspectCompare, Command.TypographyDiagnose, Command.LayoutDiagnose,
+        Command.TraceStop {
     /** Lists active sessions. */
     record Sessions() implements Command {}
 
@@ -175,6 +177,48 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
                     maxResults,
                     new CaptureRequest.Limits(
                             maxWidth, maxHeight, maxPixels, maxPngBytes));
+        }
+    }
+
+    /** Runs one bounded capture-backed layout, clipping, and viewport diagnosis. */
+    record LayoutDiagnose(
+            String referenceId,
+            String viewportId,
+            long maxDurationMillis,
+            int maxResults,
+            int maxWidth,
+            int maxHeight,
+            long maxPixels,
+            int maxPngBytes) implements Command {
+        /** Validates reference identity and fixed issue-four operation bounds. */
+        public LayoutDiagnose {
+            ProtocolJson.requireIdentifier(referenceId, "referenceId");
+            ProtocolJson.requireIdentifier(viewportId, "viewportId");
+            if (maxDurationMillis <= 0 || maxDurationMillis > 2_000) {
+                throw new IllegalArgumentException(
+                        "maxDurationMillis must be between 1 and 2000");
+            }
+            if (maxResults <= 0 || maxResults > 256) {
+                throw new IllegalArgumentException("maxResults must be between 1 and 256");
+            }
+            new CaptureRequest.Limits(maxWidth, maxHeight, maxPixels, maxPngBytes);
+            if (maxWidth > 8_192 || maxHeight > 8_192
+                    || maxPixels > 33_554_432L
+                    || maxPngBytes > HarnessResponse.Result.Screenshot.MAX_PNG_BYTES) {
+                throw new IllegalArgumentException(
+                        "layout capture bound exceeds protocol limit");
+            }
+        }
+
+        dev.gdx.uiharness.core.layout.LayoutDiagnosticRequest toCore() {
+            return new dev.gdx.uiharness.core.layout.LayoutDiagnosticRequest(
+                    referenceId,
+                    viewportId,
+                    java.time.Duration.ofMillis(maxDurationMillis),
+                    maxResults,
+                    CaptureRequest.fullWindow().withLimits(
+                            new CaptureRequest.Limits(
+                                    maxWidth, maxHeight, maxPixels, maxPngBytes)));
         }
     }
 

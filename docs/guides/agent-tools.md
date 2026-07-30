@@ -1,6 +1,6 @@
 # Agent tools and safe operation
 
-The MCP server exposes exactly eleven V1 tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms. Deadlines include adapter work and backend queue time.
+The MCP server exposes exactly twelve V1 tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms. Deadlines include adapter work and backend queue time.
 
 | Tool | Purpose | Tool-specific input | Result |
 |---|---|---|---|
@@ -12,6 +12,7 @@ The MCP server exposes exactly eleven V1 tools. `tools/list` is the authority; u
 | `ui_screenshot` | Capture completed-frame PNG evidence | optional `locator`; required `maxWidth`, `maxHeight`, `maxPixels`, `maxPngBytes` | opaque artifact receipt plus frame/revision/dimensions/scales |
 | `ui_inspect_compare` | Inspect, capture, and compare one current full frame | required allowlisted reference/policy/viewport identities plus iteration, duration, pixel, and PNG bounds | explicit convergence status, bounded diagnostics, current PNG artifact, and full immutable evidence artifact |
 | `ui_typography_diagnose` | Capture and diagnose visible registered text controls | required allowlisted reference and viewport identities plus duration, result, pixel, and PNG bounds | actor-attributed typography status and reports, current PNG artifact, and immutable diagnostic evidence artifact |
+| `ui_layout_diagnose` | Capture and diagnose selected controls after layout quiescence | required allowlisted reference and viewport identities plus a maximum two-second duration, result, pixel, and PNG bounds | actor-attributed layout status and summaries, quiescence proof, current PNG artifact, and immutable full evidence artifact |
 | `ui_trace_start` | Start bounded trace collection | required `maxDurationMillis` and `maxBytes` | trace ID |
 | `ui_trace_stop` | Stop and finalize the active trace | none | trace ID/reference, event count, bytes |
 | `ui_capabilities` | Discover one session's supported operations | none | bounded capability-name list |
@@ -55,6 +56,13 @@ alignment residuals, and per-control raster residual. Coordinates named `screen`
 bottom-left origin. Unsupported evidence is an explicit unavailable value with a reason.
 Missing identity, mapping, reference, or required metadata fails closed rather than supplying
 a default. `stale` and `not-stable` remain distinct from `not-pixel-sharp`.
+
+`ui_layout_diagnose` reports stable actor, parent, layout, scroll, and clip-owner identities
+with local, stage, screen, and framebuffer geometry. It waits for three consecutive completed
+frames whose scroll position/range, viewport/content bounds, clip chain, layout digest, and
+revision agree, then requires five identical post-settle samples. The gate is bounded by 120
+frames and two monotonic seconds; missing, moving, non-invertible, or stale evidence fails
+closed.
 
 Start a trace before the operation under diagnosis and stop it in all success/failure cleanup paths. Trace ZIPs contain a strict manifest, newline-delimited causal events, and claimed optional evidence. Replay validates sequence, causal parents, session identity, semantic revision/frame progression, limits, archive signatures, duplicate names, traversal names, and Windows drive-qualified names. Replay does not execute commands and does not promise byte-identical GPU output.
 

@@ -11,7 +11,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 
-/** Immutable catalog of the eleven allowlisted MCP tools and their bounded JSON schemas. */
+/** Immutable catalog of the twelve allowlisted MCP tools and their bounded JSON schemas. */
 public final class HarnessToolCatalog {
     private static final int MAX_IDENTIFIER = 256;
     private static final Map<String, Object> ARTIFACT_SCHEMA = object(Map.of(
@@ -178,6 +178,47 @@ public final class HarnessToolCatalog {
                                 List.of(
                                         "status", "reportCount", "reports",
                                         "diagnostics", "elapsedMillis"))),
+                tool("ui_layout_diagnose",
+                        "Capture and diagnose actor-attributed layout, clipping, and viewport "
+                                + "geometry against a named reference",
+                        sessionInput(Map.of(
+                                "referenceId", string(1, MAX_IDENTIFIER),
+                                "viewportId", string(1, MAX_IDENTIFIER),
+                                "maxDurationMillis", integer(1, 2_000),
+                                "maxResults", integer(1, 256),
+                                "maxWidth", integer(1, 8_192),
+                                "maxHeight", integer(1, 8_192),
+                                "maxPixels", integer(1, 33_554_432L),
+                                "maxPngBytes", integer(
+                                        1, HarnessResponse.Result.Screenshot.MAX_PNG_BYTES)),
+                                List.of(
+                                        "referenceId", "viewportId", "maxDurationMillis",
+                                        "maxResults", "maxWidth", "maxHeight",
+                                        "maxPixels", "maxPngBytes")),
+                        output("layout-diagnostic-result", Map.ofEntries(
+                                Map.entry("status", enumString(
+                                        "conformant", "non-conformant", "incomplete",
+                                        "not-diagnosable", "stale", "not-stable")),
+                                Map.entry("referenceId", string(1, MAX_IDENTIFIER)),
+                                Map.entry("currentArtifact", ARTIFACT_SCHEMA),
+                                Map.entry("evidenceArtifact", ARTIFACT_SCHEMA),
+                                Map.entry("revision", integer(0, Long.MAX_VALUE)),
+                                Map.entry("frame", integer(0, Long.MAX_VALUE)),
+                                Map.entry("width", integer(1, 8_192)),
+                                Map.entry("height", integer(1, 8_192)),
+                                Map.entry("scaleX", positiveNumber(Double.MAX_VALUE)),
+                                Map.entry("scaleY", positiveNumber(Double.MAX_VALUE)),
+                                Map.entry("sha256", string(64, 64)),
+                                Map.entry("reportCount", integer(0, 256)),
+                                Map.entry("reports", array(
+                                        layoutReportSummarySchema(), 256)),
+                                Map.entry("quiescence", layoutQuiescenceSummarySchema()),
+                                Map.entry("diagnostics", array(
+                                        comparisonDiagnosticSchema(), 256)),
+                                Map.entry("elapsedMillis", integer(0, 2_000))),
+                                List.of(
+                                        "status", "reportCount", "reports",
+                                        "diagnostics", "elapsedMillis"))),
                 tool("ui_trace_start", "Start bounded trace collection",
                         sessionInput(Map.of(
                                 "maxDurationMillis", integer(1, 3_600_000),
@@ -198,10 +239,34 @@ public final class HarnessToolCatalog {
                         output("capabilities-result", Map.of(
                                 "capabilities", array(string(1, MAX_IDENTIFIER), 256)),
                                 List.of("capabilities"))));
+
         LinkedHashMap<String, McpSchema.Tool> index = new LinkedHashMap<>();
         definitions.forEach(tool -> index.put(tool.name(), tool));
         tools = List.copyOf(definitions);
         byName = Map.copyOf(index);
+    }
+
+    private static Map<String, Object> layoutReportSummarySchema() {
+        return object(Map.of(
+                "controlId", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                "actorId", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                "status", enumString(
+                        "conformant", "non-conformant", "incomplete",
+                        "not-diagnosable", "stale", "not-stable"),
+                "diagnosticCount", integer(0, 256)),
+                List.of("controlId", "actorId", "status", "diagnosticCount"));
+    }
+
+    private static Map<String, Object> layoutQuiescenceSummarySchema() {
+        return object(Map.of(
+                "settled", Map.of("type", "boolean"),
+                "status", enumString("settled", "not-stable", "incomplete"),
+                "stableFrameCount", integer(0, 125),
+                "elapsedMillis", integer(0, 2_000),
+                "sampleCount", integer(0, 125)),
+                List.of(
+                        "settled", "status", "stableFrameCount",
+                        "elapsedMillis", "sampleCount"));
     }
 
     /** Returns catalog order used by MCP tools/list. */
