@@ -48,6 +48,10 @@ public final class PublicFeedback {
             item.put("repeatability", metrics.repeatability());
             item.put("fontRasterResidual", metrics.fontRasterResidual());
         }
+        ArrayNode structural = output.putArray("structuralUsability");
+        for (StructuralUsability.Result outcome : record.structural()) {
+            structural.add(JSON.valueToTree(outcome));
+        }
         try {
             return JSON.writeValueAsString(output);
         } catch (JsonProcessingException impossible) {

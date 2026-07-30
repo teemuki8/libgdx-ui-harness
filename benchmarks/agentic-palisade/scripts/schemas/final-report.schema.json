@@ -19,10 +19,11 @@
     "channels": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["functional", "automatedVisual", "humanVisual", "telemetryTreatment"],
+      "required": ["functional", "automatedVisual", "structuralUsability", "humanVisual", "telemetryTreatment"],
       "properties": {
         "functional": {"$ref": "#/$defs/channel"},
         "automatedVisual": {"$ref": "#/$defs/channel"},
+        "structuralUsability": {"$ref": "#/$defs/channel"},
         "humanVisual": {"$ref": "#/$defs/channel"},
         "telemetryTreatment": {"$ref": "#/$defs/channel"}
       }

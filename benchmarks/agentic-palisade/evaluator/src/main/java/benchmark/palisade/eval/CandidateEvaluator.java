@@ -1,6 +1,7 @@
 package benchmark.palisade.eval;
 
 import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -55,7 +56,7 @@ public final class CandidateEvaluator {
             Map.entry("src/main/java/benchmark/palisade/CandidateLauncher.java", "aa8bf5d629899646f770b6e395b877879e72111baaf6305239fda71348bc8024"),
             Map.entry("src/main/java/benchmark/palisade/BenchmarkControl.java", "5c33f4fbf41a53e2986d962dfe40adac599dcb4c948688e24e771b89caa0db68"),
             Map.entry("src/main/java/benchmark/palisade/CandidateApplication.java", "8d20fb4f2b11de529ce30ae9f846abb45ce1e937fe0dd14563c7490de5625725"),
-            Map.entry("src/main/java/benchmark/palisade/CandidateState.java", "c6dbeb6127b63acd37cece591b44a07b98ee306164ca513b1f997eff8ab1173f"),
+            Map.entry("src/main/java/benchmark/palisade/CandidateState.java", "e35bad6e32e78f109012db94bc0a0293fdc477c39c003d0eeeadea215023fddc"),
             Map.entry("src/main/java/benchmark/palisade/CandidateUi.java", "fe93166097d0a357b85452a09f91fd7c2690e8d4f7d6648bc426456741c10eb7"));
     private static final Pattern RESERVED_TYPE_DECLARATION = Pattern.compile(
             "\\b(?:class|record|interface|enum)\\s+(?:CandidateLauncher|BenchmarkControl|CandidateApplication|CandidateState|CandidateUi)\\b");
@@ -93,7 +94,7 @@ public final class CandidateEvaluator {
             } catch (CandidateRejected rejected) {
                 EvaluationRecord failed = record(
                         "invalid-candidate", candidateIdentity, corpusIdentity,
-                        noEvidence, List.of(), List.of(),
+                        noEvidence, List.of(), List.of(), List.of(),
                         List.of(boundDiagnostic(rejected)));
                 publishAfterIdentityCheck(
                         request.candidateDirectory(), candidateHash,
@@ -105,6 +106,7 @@ public final class CandidateEvaluator {
             if (compilation.exitCode() != 0) {
                 EvaluationRecord failed = record("compile-failed", candidateIdentity, corpusIdentity,
                         noEvidence, List.of(), List.of(),
+                        List.of(),
                         List.of("candidate compilation failed; exit=" + compilation.exitCode()));
                 publishAfterIdentityCheck(
                         request.candidateDirectory(), candidateHash, request.outputDirectory(), failed);
@@ -116,14 +118,16 @@ public final class CandidateEvaluator {
                 EvaluationData data = evaluateLaunches(
                         request, candidateCopy, corpus, contract, workspace, runtimeClasspath);
                 EvaluationRecord complete = record("complete", candidateIdentity, corpusIdentity,
-                        data.functional(), data.visual(), data.artifacts(), List.of());
+                        data.functional(), data.visual(), data.structural(),
+                        data.artifacts(), List.of());
                 publishAfterIdentityCheck(
                         request.candidateDirectory(), candidateHash,
                         request.outputDirectory(), complete, workspace);
                 return complete;
             } catch (RuntimeException | IOException launchFailure) {
                 EvaluationRecord failed = record("runtime-failed", candidateIdentity, corpusIdentity,
-                        noEvidence, List.of(), List.of(), List.of(boundDiagnostic(launchFailure)));
+                        noEvidence, List.of(), List.of(), List.of(),
+                        List.of(boundDiagnostic(launchFailure)));
                 publishAfterIdentityCheck(
                         request.candidateDirectory(), candidateHash, request.outputDirectory(), failed);
                 return failed;
@@ -186,6 +190,8 @@ public final class CandidateEvaluator {
                 results1920, "captures/initial-1920x1080-0.png");
         ObjectNode bottomState = stateForCapture(
                 results1920, "captures/bottom-1920x1080-0.png");
+        ObjectNode initial1280State = stateForCapture(
+                results1280, "captures/initial-1280x720-0.png");
         List<EvaluationRecord.Artifact> artifacts = new ArrayList<>();
         ObjectNode functionalEvidence = runFunctionalScenarios(
                 runtimeClasspath, candidateCopy, workspace, initialState);
@@ -195,9 +201,13 @@ public final class CandidateEvaluator {
         FunctionalContract.Result functional = contract.evaluate(functionalEvidence);
 
         List<EvaluationRecord.VisualOutcome> visual = new ArrayList<>();
+        List<StructuralUsability.Result> structural = new ArrayList<>();
         for (JsonNode reference : corpus.path("references")) {
             String referenceId = reference.path("id").asText();
             Path evidence = referenceId.endsWith("1280x720") ? evidence1280 : evidence1920;
+            ObjectNode observedState = referenceId.equals("bottom-1920x1080")
+                    ? bottomState
+                    : referenceId.endsWith("1280x720") ? initial1280State : initialState;
             List<Path> captures = capturePaths(evidence, referenceId);
             Path referencePath = request.corpusDirectory().resolve(reference.path("file").asText()).normalize();
             VisualMetrics.Result metrics =
@@ -212,10 +222,150 @@ public final class CandidateEvaluator {
             visual.add(new EvaluationRecord.VisualOutcome(
                     referenceId, reference.path("viewportId").asText(),
                     reference.path("sha256").asText(), captureHashes, metrics));
+            structural.add(structuralOutcome(
+                    reference,
+                    statesForCaptures(
+                            referenceId.endsWith("1280x720") ? results1280 : results1920,
+                            referenceId),
+                    captureHashes));
         }
         artifacts.add(artifact("evidence/1920/results.ndjson", evidence1920.resolve("results.ndjson")));
         artifacts.add(artifact("evidence/1280/results.ndjson", evidence1280.resolve("results.ndjson")));
-        return new EvaluationData(functional, visual, artifacts);
+        return new EvaluationData(functional, visual, structural, artifacts);
+    }
+
+    private static StructuralUsability.Result structuralOutcome(
+            JsonNode reference, List<ObjectNode> observedStates, List<String> captureHashes) {
+        String referenceId = reference.path("id").asText();
+        String expectedState = reference.path("stateId").asText();
+        String observedScroll = observedStates.getFirst().path("scrollPosition").asText("");
+        String observedStateId = "bottom".equals(observedScroll) ? "bottom" : "initial";
+        int width = reference.path("width").asInt();
+        int height = reference.path("height").asInt();
+        StructuralUsability.Rect panel = structuralPanel(referenceId);
+        StructuralUsability.Policy policy = new StructuralUsability.Policy(
+                "agentic-palisade-structural/v1",
+                1,
+                "structural-usability-evaluator/v1",
+                StructuralUsability.implementationSha256(),
+                reference.path("sha256").asText(),
+                expectedState,
+                reference.path("viewportId").asText(),
+                width,
+                height,
+                1,
+                12,
+                0.5,
+                4.5,
+                34,
+                34,
+                "bottom".equals(expectedState) ? "costlyCavalry" : "majorRivalCount",
+                panel,
+                structuralControl(referenceId),
+                "form-row",
+                "form",
+                "scroll",
+                "scroll",
+                structuralControl(referenceId));
+        List<StructuralUsability.Observation> observations = new ArrayList<>();
+        for (ObjectNode state : observedStates) {
+            JsonNode observation = state.path("structuralUsability");
+            if (observation.isObject()) {
+                try {
+                    observations.add(JSON.treeToValue(
+                            observation, StructuralUsability.Observation.class));
+                } catch (JsonProcessingException invalid) {
+                    throw new IllegalArgumentException(
+                            "Invalid structural usability observation", invalid);
+                }
+            }
+        }
+        if (observations.size() == observedStates.size()) {
+            StructuralUsability.Observation first = observations.getFirst();
+            List<StructuralUsability.FrameEvidence> boundFrames = new ArrayList<>();
+            for (int index = 0; index < observations.size(); index++) {
+                StructuralUsability.Observation observation = observations.get(index);
+                boundFrames.add(new StructuralUsability.FrameEvidence(
+                        index,
+                        observation.semanticRevision(),
+                        observation.layoutRevision(),
+                        observation.scrollY(),
+                        observation.semanticSha256(),
+                        observation.layoutSha256(),
+                        observation.regionSha256(),
+                        captureHashes.get(index)));
+            }
+            StructuralUsability.Evidence bound = new StructuralUsability.Evidence(
+                    "structural-usability/v1",
+                    policy.evaluatorId(),
+                    policy.evaluatorSha256(),
+                    policy.referenceSha256(),
+                    captureHashes.getFirst(),
+                    observedStateId,
+                    policy.viewportId(),
+                    width,
+                    height,
+                    1,
+                    first.semanticRevision(),
+                    first.layoutRevision(),
+                    first.frameEdgeClipped(),
+                    first.panelBounds(),
+                    first.controls(),
+                    boundFrames);
+            return StructuralUsability.evaluate(policy, bound, null);
+        }
+        List<StructuralUsability.FrameEvidence> frames = new ArrayList<>();
+        for (int index = 0; index < captureHashes.size(); index++) {
+            frames.add(new StructuralUsability.FrameEvidence(
+                    index,
+                    0,
+                    0,
+                    "bottom".equals(observedScroll) ? 1 : 0,
+                    "0".repeat(64),
+                    "0".repeat(64),
+                    "0".repeat(64),
+                    captureHashes.get(index)));
+        }
+        StructuralUsability.Evidence evidence = new StructuralUsability.Evidence(
+                "structural-usability/v1",
+                policy.evaluatorId(),
+                policy.evaluatorSha256(),
+                policy.referenceSha256(),
+                captureHashes.getFirst(),
+                observedStateId,
+                reference.path("viewportId").asText(),
+                width,
+                height,
+                1,
+                -1,
+                -1,
+                false,
+                panel,
+                List.of(),
+                frames);
+        return StructuralUsability.evaluate(policy, evidence, null);
+    }
+
+    private static StructuralUsability.Rect structuralPanel(String referenceId) {
+        int width = referenceId.endsWith("1280x720") ? 1280 : 1920;
+        int height = referenceId.endsWith("1280x720") ? 720 : 1080;
+        return new StructuralUsability.Rect((width - 680) / 2.0, 24, 680, height - 48);
+    }
+
+    private static StructuralUsability.Rect structuralControl(String referenceId) {
+        double x = structuralPanel(referenceId).x() + 455;
+        double y = referenceId.startsWith("bottom-") ? 121 : 229;
+        return new StructuralUsability.Rect(x, y, 180, 34);
+    }
+
+    private static List<ObjectNode> statesForCaptures(
+            List<ResultLine> lines, String referenceId) {
+        List<ObjectNode> states = new ArrayList<>();
+        for (int index = 0; index < 5; index++) {
+            states.add(stateForCapture(
+                    lines, "captures/" + referenceId + "-" + index + ".png"));
+        }
+        return List.copyOf(states);
     }
 
     private static String resolveRuntimeClasspath(
@@ -849,10 +999,13 @@ public final class CandidateEvaluator {
 
     private static EvaluationRecord record(String status, EvaluationRecord.CandidateIdentity candidate,
             EvaluationRecord.CorpusIdentity corpus, FunctionalContract.Result functional,
-            List<EvaluationRecord.VisualOutcome> visual, List<EvaluationRecord.Artifact> artifacts,
+            List<EvaluationRecord.VisualOutcome> visual,
+            List<StructuralUsability.Result> structural,
+            List<EvaluationRecord.Artifact> artifacts,
             List<String> diagnostics) {
         return new EvaluationRecord(EvaluationRecord.SCHEMA_VERSION, status, candidate, corpus,
-                EvaluationRecord.FunctionalOutcome.from(functional), visual, artifacts, diagnostics);
+                EvaluationRecord.FunctionalOutcome.from(functional), visual, structural,
+                artifacts, diagnostics);
     }
 
     static void publishAfterIdentityCheck(
@@ -1165,7 +1318,9 @@ public final class CandidateEvaluator {
     }
 
     private record EvaluationData(FunctionalContract.Result functional,
-            List<EvaluationRecord.VisualOutcome> visual, List<EvaluationRecord.Artifact> artifacts) {}
+            List<EvaluationRecord.VisualOutcome> visual,
+            List<StructuralUsability.Result> structural,
+            List<EvaluationRecord.Artifact> artifacts) {}
     private record ResultLine(String command, String artifact, ObjectNode state) {}
     private record ProcessResult(int exitCode) {}
 }

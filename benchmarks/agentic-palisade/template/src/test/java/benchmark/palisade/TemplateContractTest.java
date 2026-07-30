@@ -44,6 +44,26 @@ final class TemplateContractTest {
     Path temporaryDirectory;
 
     @Test
+    void candidateStateBudgetFitsBoundedStructuralEvidenceAndStillRejectsOverflow() {
+        Map<String, Object> withinBudget = nodeBudgetFixture(5, 49);
+        Map<String, Object> overBudget = nodeBudgetFixture(6, 49);
+
+        assertEquals(withinBudget, new CandidateState(withinBudget).values());
+        assertThrows(IllegalArgumentException.class,
+                () -> new CandidateState(overBudget));
+    }
+
+    private static Map<String, Object> nodeBudgetFixture(
+            int containers, int valuesPerContainer) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (int index = 0; index < containers; index++) {
+            result.put("group" + index,
+                    java.util.Collections.nCopies(valuesPerContainer, index));
+        }
+        return result;
+    }
+
+    @Test
     void exposesTheCandidateContract() throws Exception {
         assertMethod(CandidateUi.class, "stage", Stage.class);
         assertMethod(CandidateUi.class, "showInitial", void.class);

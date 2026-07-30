@@ -27,7 +27,14 @@ REQUIRED_REFERENCES = (
 FORBIDDEN_TEXT = re.compile(
     r"(?:\bbaseline\b|\bharness\b|\btreatment\b|run[ _-]?id|\buuid\b|"
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b|"
-    r"\btoken[A-Za-z0-9_-]*\b|\bdiagnostic[A-Za-z0-9_-]*\b|\bsession[A-Za-z0-9_-]*\b|\bworkspace\b|"
+    r"\btoken[A-Za-z0-9_-]*\b|\bsession[A-Za-z0-9_-]*\b|\bworkspace\b|"
+    r"artifact[ _-]?root|(?:^|[\"'\s])/(?:home|Users|tmp)/|[A-Za-z]:\\)",
+    re.IGNORECASE,
+)
+STRUCTURAL_FORBIDDEN_TEXT = re.compile(
+    r"(?:\bbaseline\b|\bharness\b|\btreatment\b|run[ _-]?id|\buuid\b|"
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b|"
+    r"\btoken[A-Za-z0-9_-]*\b|\bsession[A-Za-z0-9_-]*\b|\bworkspace\b|"
     r"artifact[ _-]?root|(?:^|[\"'\s])/(?:home|Users|tmp)/|[A-Za-z]:\\)",
     re.IGNORECASE,
 )
@@ -323,6 +330,13 @@ def _load_inputs(root):
         artifact_by_path = {item.get("path"): item for item in artifacts if isinstance(item, dict)}
         captures = []
         public_visual = []
+        structural = evaluation.get("structural", [])
+        if not isinstance(structural, list):
+            raise ValueError("structural usability outcomes must be an array")
+        if STRUCTURAL_FORBIDDEN_TEXT.search(json.dumps(structural, sort_keys=True)):
+            raise ValueError("structural usability outcomes contain leakage")
+        if structural and len(structural) != len(REQUIRED_REFERENCES):
+            raise ValueError("structural outcomes must cover every reference or be unavailable")
         for visual in sorted(visuals, key=lambda item: REQUIRED_REFERENCES.index(item["referenceId"])):
             reference = references[visual["referenceId"]]["entry"]
             if visual.get("viewportId") != reference["viewportId"] or visual.get("referenceSha256") != reference["sha256"]:
@@ -365,7 +379,8 @@ def _load_inputs(root):
         runs.append({
             "runId": record["runId"], "pair": record["pair"], "treatment": record["treatment"],
             "record": record, "evaluation": evaluation, "runRecordHash": run_hash,
-            "evaluationHash": evaluation_hash, "captures": captures, "automatedVisual": public_visual,
+            "evaluationHash": evaluation_hash, "captures": captures,
+            "automatedVisual": public_visual, "structuralUsability": structural,
         })
     if pair_arms != {(pair, arm) for pair in (1, 2, 3) for arm in ("baseline", "harness")}:
         raise ValueError("every matched pair must contain one run from each arm")
@@ -453,6 +468,7 @@ def build_package(run_root, review_dir, mapping_path, seed=None):
                 "label": label,
                 "captures": public_captures,
                 "automatedVisual": run["automatedVisual"],
+                "structuralUsability": run["structuralUsability"],
             })
 
         public_pairs = []
