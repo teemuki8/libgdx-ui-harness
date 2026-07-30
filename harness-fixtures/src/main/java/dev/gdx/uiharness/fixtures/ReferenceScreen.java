@@ -26,6 +26,7 @@ import com.badlogic.gdx.utils.Array;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
 import dev.gdx.uiharness.scene2d.Semantics;
 import dev.gdx.uiharness.scene2d.TypographyMetadata;
+import dev.gdx.uiharness.scene2d.LayoutMetadata;
 import dev.gdx.uiharness.core.typography.EvidenceValue;
 import dev.gdx.uiharness.core.typography.UnavailableReason;
 
@@ -99,6 +100,10 @@ public final class ReferenceScreen implements AutoCloseable {
         tag(harnessTitle, "harness-title", "Deterministic UI Harness");
         semantics.setTypography(
                 harnessTitle, typographyMetadata());
+        semantics.setLayout(harnessTitle, new LayoutMetadata("persistent-title"));
+        semantics.setLayout(
+                stage.getRoot().findActor("settings-list"),
+                new LayoutMetadata("scrolling-list"));
         tag(bodyCaption, "body-caption", "Transforms and overlap");
         semantics.setTypography(bodyCaption, typographyMetadata());
         benchmarkTags.forEach((actor, metadata) ->

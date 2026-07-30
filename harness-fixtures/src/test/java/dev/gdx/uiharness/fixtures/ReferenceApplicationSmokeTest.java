@@ -37,9 +37,22 @@ final class ReferenceApplicationSmokeTest {
                 try (HarnessMcpClient agent = HarnessMcpClient.connect(app)) {
                     assertEquals(List.of(SESSION_ID), agent.sessions());
                     assertEquals(List.of(
-                                    "action", "compare", "query", "screenshot",
+                                    "action", "compare", "layout", "query", "screenshot",
                                     "snapshot", "trace", "typography", "wait"),
                             agent.capabilities(SESSION_ID));
+                    HarnessMcpClient.Layout layout = agent.layout(SESSION_ID);
+                    assertEquals("conformant", layout.status(), layout.reports());
+                    assertEquals(
+                            List.of("harness-title", "settings-list"),
+                            layout.controlIds());
+                    assertTrue(layout.settled());
+                    assertEquals(layout.sha256(), layout.current().sha256());
+                    assertEquals("image/png", layout.current().mediaType());
+                    assertEquals("application/json", layout.evidence().mediaType());
+                    JsonNode layoutEvidence = ProtocolJson.mapper().readTree(
+                            app.readArtifact(layout.evidence()));
+                    assertEquals("conformant", layoutEvidence.path("status").asText());
+                    assertEquals(2, layoutEvidence.path("reports").size());
                     String stableTypography = null;
                     long previousTypographyFrame = -1;
                     for (int repeat = 0; repeat < 5; repeat++) {

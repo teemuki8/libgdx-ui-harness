@@ -2914,6 +2914,274 @@
         "minimum" : 1,
         "type" : "integer"
       },
+      "maxDurationMillis" : {
+        "maximum" : 2000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxHeight" : {
+        "maximum" : 8192,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxPixels" : {
+        "maximum" : 33554432,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxPngBytes" : {
+        "maximum" : 12579840,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxResults" : {
+        "maximum" : 256,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "maxWidth" : {
+        "maximum" : 8192,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "referenceId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "viewportId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId", "referenceId", "viewportId", "maxDurationMillis", "maxResults", "maxWidth", "maxHeight", "maxPixels", "maxPngBytes" ],
+    "type" : "object"
+  },
+  "name" : "ui_layout_diagnose",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "currentArtifact" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "byteLength" : {
+            "maximum" : 16777216,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "mediaType" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "reference" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "sha256" : {
+            "maxLength" : 64,
+            "minLength" : 64,
+            "type" : "string"
+          }
+        },
+        "required" : [ "reference", "mediaType", "byteLength", "sha256" ],
+        "type" : "object"
+      },
+      "diagnostics" : {
+        "items" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "code" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "expected" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "observed" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "path" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            }
+          },
+          "required" : [ "code", "path", "expected", "observed" ],
+          "type" : "object"
+        },
+        "maxItems" : 256,
+        "type" : "array"
+      },
+      "elapsedMillis" : {
+        "maximum" : 2000,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "evidenceArtifact" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "byteLength" : {
+            "maximum" : 16777216,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "mediaType" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "reference" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "sha256" : {
+            "maxLength" : 64,
+            "minLength" : 64,
+            "type" : "string"
+          }
+        },
+        "required" : [ "reference", "mediaType", "byteLength", "sha256" ],
+        "type" : "object"
+      },
+      "frame" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "height" : {
+        "maximum" : 8192,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "kind" : {
+        "const" : "layout-diagnostic-result",
+        "type" : "string"
+      },
+      "quiescence" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "elapsedMillis" : {
+            "maximum" : 2000,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "sampleCount" : {
+            "maximum" : 125,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "settled" : {
+            "type" : "boolean"
+          },
+          "stableFrameCount" : {
+            "maximum" : 125,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "status" : {
+            "enum" : [ "settled", "not-stable", "incomplete" ],
+            "type" : "string"
+          }
+        },
+        "required" : [ "settled", "status", "stableFrameCount", "elapsedMillis", "sampleCount" ],
+        "type" : "object"
+      },
+      "referenceId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "reportCount" : {
+        "maximum" : 256,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "reports" : {
+        "items" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "actorId" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "controlId" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "diagnosticCount" : {
+              "maximum" : 256,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "status" : {
+              "enum" : [ "conformant", "non-conformant", "incomplete", "not-diagnosable", "stale", "not-stable" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "controlId", "actorId", "status", "diagnosticCount" ],
+          "type" : "object"
+        },
+        "maxItems" : 256,
+        "type" : "array"
+      },
+      "revision" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "scaleX" : {
+        "exclusiveMinimum" : 0,
+        "maximum" : 1.7976931348623157E308,
+        "type" : "number"
+      },
+      "scaleY" : {
+        "exclusiveMinimum" : 0,
+        "maximum" : 1.7976931348623157E308,
+        "type" : "number"
+      },
+      "sha256" : {
+        "maxLength" : 64,
+        "minLength" : 64,
+        "type" : "string"
+      },
+      "status" : {
+        "enum" : [ "conformant", "non-conformant", "incomplete", "not-diagnosable", "stale", "not-stable" ],
+        "type" : "string"
+      },
+      "width" : {
+        "maximum" : 8192,
+        "minimum" : 1,
+        "type" : "integer"
+      }
+    },
+    "required" : [ "kind", "status", "reportCount", "reports", "diagnostics", "elapsedMillis" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
       "maxBytes" : {
         "maximum" : 67108864,
         "minimum" : 1,

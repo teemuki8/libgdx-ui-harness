@@ -49,9 +49,9 @@ final class HarnessMcpClient implements Closeable {
         }
         client.notify("notifications/initialized", Map.of());
         JsonNode listed = client.request("tools/list", Map.of());
-        if (listed.path("tools").size() != 11) {
+        if (listed.path("tools").size() != 12) {
             client.close();
-            throw new IllegalStateException("Expected the eleven production tools: " + listed);
+            throw new IllegalStateException("Expected the twelve production tools: " + listed);
         }
         return client;
     }
@@ -246,6 +246,33 @@ final class HarnessMcpClient implements Closeable {
                 content.path("frame").asLong(),
                 content.path("sha256").asText(),
                 List.copyOf(controlIds),
+                artifact(content.path("currentArtifact")),
+                artifact(content.path("evidenceArtifact")),
+                content.path("reports").toString());
+    }
+
+    Layout layout(String sessionId) throws Exception {
+        JsonNode content = call("ui_layout_diagnose", Map.of(
+                "sessionId", sessionId,
+                "referenceId", "reference-layout",
+                "viewportId", "main",
+                "maxDurationMillis", 2_000,
+                "maxResults", 16,
+                "maxWidth", 1280,
+                "maxHeight", 720,
+                "maxPixels", 1280L * 720,
+                "maxPngBytes", 4 * 1024 * 1024));
+        requireKind(content, "layout-diagnostic-result");
+        java.util.ArrayList<String> controlIds = new java.util.ArrayList<>();
+        content.path("reports").forEach(
+                report -> controlIds.add(report.path("controlId").asText()));
+        return new Layout(
+                content.path("status").asText(),
+                content.path("revision").asLong(),
+                content.path("frame").asLong(),
+                content.path("sha256").asText(),
+                List.copyOf(controlIds),
+                content.path("quiescence").path("settled").asBoolean(),
                 artifact(content.path("currentArtifact")),
                 artifact(content.path("evidenceArtifact")),
                 content.path("reports").toString());
@@ -486,6 +513,17 @@ final class HarnessMcpClient implements Closeable {
             long frame,
             String sha256,
             List<String> controlIds,
+            Artifact current,
+            Artifact evidence,
+            String reports) {}
+
+    record Layout(
+            String status,
+            long revision,
+            long frame,
+            String sha256,
+            List<String> controlIds,
+            boolean settled,
             Artifact current,
             Artifact evidence,
             String reports) {}

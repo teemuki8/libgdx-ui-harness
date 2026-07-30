@@ -24,6 +24,10 @@ import dev.gdx.uiharness.core.wait.WaitResult;
 import dev.gdx.uiharness.core.visual.VisualComparisonResult;
 import dev.gdx.uiharness.core.typography.TypographyDiagnosticResult;
 import dev.gdx.uiharness.core.typography.TypographyReport;
+import dev.gdx.uiharness.core.layout.LayoutDiagnosticResult;
+import dev.gdx.uiharness.core.layout.LayoutQuiescenceResult;
+import dev.gdx.uiharness.core.layout.LayoutReport;
+import dev.gdx.uiharness.core.layout.LayoutStabilitySample;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -93,12 +97,14 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(
                 value = Result.TypographyDiagnostic.class,
                 name = "typography-diagnostic"),
+        @JsonSubTypes.Type(value = Result.LayoutDiagnostic.class, name = "layout-diagnostic"),
         @JsonSubTypes.Type(value = Result.TraceStarted.class, name = "trace-started"),
         @JsonSubTypes.Type(value = Result.TraceStopped.class, name = "trace-stopped")
     })
     sealed interface Result permits Result.Sessions, Result.Capabilities, Result.Snapshot,
             Result.Query, Result.Action, Result.Wait, Result.Screenshot, Result.TraceStarted,
-            Result.InspectCompare, Result.TypographyDiagnostic, Result.TraceStopped {
+            Result.InspectCompare, Result.TypographyDiagnostic, Result.LayoutDiagnostic,
+            Result.TraceStopped {
         /** Active session catalog. */
         record Sessions(List<SessionInfo> sessions) implements Result {
             /** Defensively copies the session catalog. */
@@ -386,6 +392,116 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                                 .toList(),
                         result.elapsed().toMillis(),
                         png);
+            }
+        }
+
+        /** Capture-backed actor-attributed layout, clipping, and viewport result. */
+        record LayoutDiagnostic(
+                String status,
+                String referenceId,
+                CurrentCaptureData current,
+                List<LayoutReport> reports,
+                QuiescenceData settling,
+                QuiescenceData captures,
+                List<ComparisonDiagnosticData> diagnostics,
+                long elapsedMillis,
+                String currentPngBase64) implements Result {
+
+            /** Validates bounded wire data and current PNG integrity. */
+            public LayoutDiagnostic {
+                if (!Set.of(
+                                "conformant",
+                                "non-conformant",
+                                "incomplete",
+                                "not-diagnosable",
+                                "stale",
+                                "not-stable")
+                        .contains(status)) {
+                    throw new IllegalArgumentException("unknown layout status");
+                }
+                if (referenceId != null) {
+                    ProtocolJson.requireIdentifier(referenceId, "referenceId");
+                }
+                reports = List.copyOf(Objects.requireNonNull(reports, "reports"));
+                diagnostics = List.copyOf(Objects.requireNonNull(diagnostics, "diagnostics"));
+                if (reports.size() > 256 || diagnostics.size() > 256
+                        || elapsedMillis < 0 || elapsedMillis > 2_000) {
+                    throw new IllegalArgumentException(
+                            "layout result is outside protocol bounds");
+                }
+                if ((current == null) != (currentPngBase64 == null)) {
+                    throw new IllegalArgumentException(
+                            "current layout metadata and PNG must appear together");
+                }
+                if (currentPngBase64 != null) {
+                    byte[] png;
+                    try {
+                        png = Base64.getDecoder().decode(currentPngBase64);
+                    } catch (IllegalArgumentException invalid) {
+                        throw new IllegalArgumentException(
+                                "layout PNG is not valid base64", invalid);
+                    }
+                    if (png.length > Screenshot.MAX_PNG_BYTES
+                            || !sha256(png).equals(current.sha256())) {
+                        throw new IllegalArgumentException(
+                                "layout PNG does not match bounded current metadata");
+                    }
+                }
+            }
+
+            static LayoutDiagnostic fromCore(LayoutDiagnosticResult result) {
+                Objects.requireNonNull(result, "result");
+                String png = result.current() == null
+                        ? null
+                        : Base64.getEncoder().encodeToString(result.current().pngBytes());
+                return new LayoutDiagnostic(
+                        wire(result.status().name()),
+                        result.reference() == null
+                                ? null : result.reference().referenceId(),
+                        result.current() == null
+                                ? null : CurrentCaptureData.fromCore(result.current()),
+                        result.reports(),
+                        result.settling() == null
+                                ? null : QuiescenceData.fromCore(result.settling()),
+                        result.captures() == null
+                                ? null : QuiescenceData.fromCore(result.captures()),
+                        result.diagnostics().stream()
+                                .map(ComparisonDiagnosticData::fromCore)
+                                .toList(),
+                        result.elapsed().toMillis(),
+                        png);
+            }
+
+            /** Duration-free bounded wire projection of one quiescence proof. */
+            public record QuiescenceData(
+                    boolean settled,
+                    String status,
+                    int stableFrameCount,
+                    long elapsedMillis,
+                    List<LayoutStabilitySample> samples) {
+                /** Validates the fixed issue-four proof bounds. */
+                public QuiescenceData {
+                    if (!Set.of("settled", "not-stable", "incomplete").contains(status)
+                            || stableFrameCount < 0 || stableFrameCount > 125
+                            || elapsedMillis < 0 || elapsedMillis > 2_000) {
+                        throw new IllegalArgumentException(
+                                "layout quiescence data is outside fixed bounds");
+                    }
+                    samples = List.copyOf(Objects.requireNonNull(samples, "samples"));
+                    if (samples.size() > 125) {
+                        throw new IllegalArgumentException(
+                                "layout quiescence samples exceed fixed bounds");
+                    }
+                }
+
+                static QuiescenceData fromCore(LayoutQuiescenceResult result) {
+                    return new QuiescenceData(
+                            result.settled(),
+                            result.status(),
+                            result.stableFrameCount(),
+                            result.elapsed().toMillis(),
+                            result.samples());
+                }
             }
         }
 

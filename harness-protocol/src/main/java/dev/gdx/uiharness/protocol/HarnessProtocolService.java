@@ -40,13 +40,14 @@ public final class HarnessProtocolService {
     private final Map<String, ContractProvider> contracts;
     private final Map<String, InspectCaptureCompareService> comparisons;
     private final Map<String, TypographyDiagnosticService> typographyDiagnostics;
+    private final Map<String, LayoutDiagnosticService> layoutDiagnostics;
     private final MonotonicClock clock;
     private final Executor blockingExecutor;
 
     /** Creates a service over an immutable session registry. */
     public HarnessProtocolService(
             Map<String, Session> sessions, MonotonicClock clock, Executor blockingExecutor) {
-        this(sessions, Map.of(), Map.of(), Map.of(), clock, blockingExecutor);
+        this(sessions, Map.of(), Map.of(), Map.of(), Map.of(), clock, blockingExecutor);
     }
 
     /** Creates a service with optional evaluator-complete contract providers by session ID. */
@@ -55,7 +56,7 @@ public final class HarnessProtocolService {
             Map<String, ContractProvider> contracts,
             MonotonicClock clock,
             Executor blockingExecutor) {
-        this(sessions, contracts, Map.of(), Map.of(), clock, blockingExecutor);
+        this(sessions, contracts, Map.of(), Map.of(), Map.of(), clock, blockingExecutor);
     }
 
     /** Creates a service with optional contract and inspect-compare providers by session ID. */
@@ -65,7 +66,7 @@ public final class HarnessProtocolService {
             Map<String, InspectCaptureCompareService> comparisons,
             MonotonicClock clock,
             Executor blockingExecutor) {
-        this(sessions, contracts, comparisons, Map.of(), clock, blockingExecutor);
+        this(sessions, contracts, comparisons, Map.of(), Map.of(), clock, blockingExecutor);
     }
 
     /**
@@ -76,6 +77,19 @@ public final class HarnessProtocolService {
             Map<String, ContractProvider> contracts,
             Map<String, InspectCaptureCompareService> comparisons,
             Map<String, TypographyDiagnosticService> typographyDiagnostics,
+            MonotonicClock clock,
+            Executor blockingExecutor) {
+        this(sessions, contracts, comparisons, typographyDiagnostics, Map.of(),
+                clock, blockingExecutor);
+    }
+
+    /** Creates a service with all optional V1 diagnostic providers by session ID. */
+    public HarnessProtocolService(
+            Map<String, Session> sessions,
+            Map<String, ContractProvider> contracts,
+            Map<String, InspectCaptureCompareService> comparisons,
+            Map<String, TypographyDiagnosticService> typographyDiagnostics,
+            Map<String, LayoutDiagnosticService> layoutDiagnostics,
             MonotonicClock clock,
             Executor blockingExecutor) {
         Objects.requireNonNull(sessions, "sessions");
@@ -122,6 +136,17 @@ public final class HarnessProtocolService {
                     id, Objects.requireNonNull(diagnostic, "typography service"));
         });
         this.typographyDiagnostics = Map.copyOf(typographyCopy);
+        Objects.requireNonNull(layoutDiagnostics, "layoutDiagnostics");
+        LinkedHashMap<String, LayoutDiagnosticService> layoutCopy = new LinkedHashMap<>();
+        layoutDiagnostics.forEach((id, diagnostic) -> {
+            ProtocolJson.requireIdentifier(id, "layout sessionId");
+            if (!copy.containsKey(id)) {
+                throw new IllegalArgumentException(
+                        "layout service has no matching session: " + id);
+            }
+            layoutCopy.put(id, Objects.requireNonNull(diagnostic, "layout service"));
+        });
+        this.layoutDiagnostics = Map.copyOf(layoutCopy);
         this.clock = Objects.requireNonNull(clock, "clock");
         this.blockingExecutor = Objects.requireNonNull(blockingExecutor, "blockingExecutor");
     }
@@ -241,6 +266,18 @@ public final class HarnessProtocolService {
                     diagnostic.execute(typography.toCore(), deadline),
                     HarnessResponse.Result.TypographyDiagnostic::fromCore);
         }
+        if (command instanceof Command.LayoutDiagnose layout) {
+            LayoutDiagnosticService diagnostic = layoutDiagnostics.get(request.sessionId());
+            if (diagnostic == null) {
+                throw new HarnessException(
+                        ErrorCode.UNSUPPORTED_CAPABILITY,
+                        "Session does not support layout diagnosis",
+                        ErrorEvidence.empty());
+            }
+            return RoutedOperation.map(
+                    diagnostic.execute(layout.toCore(), deadline),
+                    HarnessResponse.Result.LayoutDiagnostic::fromCore);
+        }
         if (command instanceof Command.TraceStart traceStart) {
             return RoutedOperation.map(session.traces().start(traceStart, deadline),
                     Function.identity());
@@ -278,6 +315,9 @@ public final class HarnessProtocolService {
         }
         if (command instanceof Command.TypographyDiagnose) {
             return "typography";
+        }
+        if (command instanceof Command.LayoutDiagnose) {
+            return "layout";
         }
         return "trace";
     }

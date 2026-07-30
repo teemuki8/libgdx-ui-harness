@@ -8,6 +8,13 @@ import dev.gdx.uiharness.core.action.Harness;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
+import dev.gdx.uiharness.core.layout.LayoutControlReference;
+import dev.gdx.uiharness.core.layout.LayoutEvidence;
+import dev.gdx.uiharness.core.layout.LayoutObservation;
+import dev.gdx.uiharness.core.layout.LayoutQuiescenceEvaluator;
+import dev.gdx.uiharness.core.layout.LayoutQuiescencePolicy;
+import dev.gdx.uiharness.core.layout.LayoutReference;
+import dev.gdx.uiharness.core.layout.LayoutStabilitySample;
 import dev.gdx.uiharness.core.visual.VisualPolicy;
 import dev.gdx.uiharness.core.visual.VisualReference;
 import dev.gdx.uiharness.core.typography.CoordinateSpace;
@@ -38,8 +45,10 @@ import dev.gdx.uiharness.protocol.FileArtifactStore;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
 import dev.gdx.uiharness.protocol.HarnessResponse;
 import dev.gdx.uiharness.protocol.InspectCaptureCompareService;
+import dev.gdx.uiharness.protocol.LayoutDiagnosticService;
 import dev.gdx.uiharness.protocol.TypographyDiagnosticService;
 import dev.gdx.uiharness.scene2d.ControlledStageClock;
+import dev.gdx.uiharness.scene2d.LayoutCaptureContext;
 import dev.gdx.uiharness.scene2d.RenderThreadScheduler;
 import dev.gdx.uiharness.scene2d.Scene2dHarness;
 import dev.gdx.uiharness.scene2d.Scene2dSession;
@@ -63,6 +72,7 @@ import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
@@ -80,12 +90,13 @@ public final class FixtureControl implements AutoCloseable {
     private static final String VIEWPORT_ID = "main";
     private static final String REFERENCE_ID = "reference-screen";
     private static final String TYPOGRAPHY_REFERENCE_ID = "reference-typography";
+    private static final String LAYOUT_REFERENCE_ID = "reference-layout";
 
     private static final Duration FIXED_STEP = Duration.ofMillis(16);
     private static final Duration ARTIFACT_LIFETIME = Duration.ofHours(1);
     private static final List<String> CAPABILITIES = List.of(
             "action", "compare", "query", "screenshot", "snapshot",
-            "trace", "typography", "wait");
+            "layout", "trace", "typography", "wait");
 
     private final Path processRoot;
     private final Path artifactRoot;
@@ -171,9 +182,21 @@ public final class FixtureControl implements AutoCloseable {
                         : java.util.Optional.empty(),
                 this::typographyEvidence,
                 clock);
+        LayoutReference layoutReference = layoutReference(reference.pngBytes());
+        LayoutDiagnosticService layout = new LayoutDiagnosticService(
+                APPLICATION_ID,
+                VIEWPORT_ID,
+                tracingCapture,
+                id -> LAYOUT_REFERENCE_ID.equals(id)
+                        ? java.util.Optional.of(layoutReference)
+                        : java.util.Optional.empty(),
+                (registered, current, deadline) ->
+                        layoutEvidence(registered, current, deadline, tracingCapture),
+                clock);
         HarnessProtocolService protocol = new HarnessProtocolService(
                 Map.of(SESSION_ID, session), Map.of(), Map.of(SESSION_ID, comparison),
-                Map.of(SESSION_ID, typography), clock, protocolExecutor);
+                Map.of(SESSION_ID, typography), Map.of(SESSION_ID, layout),
+                clock, protocolExecutor);
         server = HarnessMcpServer.open(protocol, publisher, input, output);
         terminationTask = terminationExecutor.submit(() -> {
             server.awaitTermination();
@@ -378,6 +401,129 @@ public final class FixtureControl implements AutoCloseable {
                                             residuals)),
                             deadline);
                 });
+    }
+
+    private LayoutReference layoutReference(byte[] png) {
+        String hash = sha256(png);
+        List<LayoutObservation> observations = sceneSession.layout(
+                0,
+                0,
+                new LayoutCaptureContext(
+                        APPLICATION_ID,
+                        VIEWPORT_ID,
+                        "reference:" + LAYOUT_REFERENCE_ID,
+                        hash,
+                        1280,
+                        720,
+                        1280,
+                        720,
+                        0,
+                        Set.of("harness-title", "settings-list")));
+        List<LayoutControlReference> controls = observations.stream()
+                .map(observation -> new LayoutControlReference(
+                        observation.controlId(),
+                        observation.parentActorId(),
+                        observation.layoutOwnerId(),
+                        observation.scrollOwnerId(),
+                        observation.observedClipOwnerId(),
+                        observation.layoutRole(),
+                        observation.bounds(),
+                        observation.visibleIntersection(),
+                        observation.padding(),
+                        0,
+                        0,
+                        null,
+                        observation.layoutSha256()))
+                .toList();
+        return new LayoutReference(
+                LAYOUT_REFERENCE_ID,
+                APPLICATION_ID,
+                VIEWPORT_ID,
+                "reference:" + LAYOUT_REFERENCE_ID,
+                controls);
+    }
+
+    private CompletionStage<LayoutEvidence> layoutEvidence(
+            LayoutReference reference,
+            CapturedImage current,
+            Deadline deadline,
+            ScreenCapture diagnosticCapture) {
+        Set<String> controlIds = reference.controlsById().keySet();
+        CompletionStage<List<LayoutObservation>> observations = scheduler.submit(
+                () -> layoutObservations(current, controlIds),
+                deadline);
+        return observations.thenCompose(currentObservations -> {
+            List<LayoutStabilitySample> samples = new ArrayList<>();
+            CompletionStage<Void> chain = CompletableFuture.completedFuture(null);
+            for (int index = 0; index < 8; index++) {
+                chain = chain.thenCompose(ignored ->
+                        diagnosticCapture.capture(CaptureRequest.fullWindow(), deadline)
+                                .thenCompose(image -> scheduler.submit(
+                                        () -> {
+                                            List<LayoutObservation> observed =
+                                                    layoutObservations(image, controlIds);
+                                            samples.add(layoutSample(image, observed));
+                                            return null;
+                                        },
+                                        deadline)));
+            }
+            return chain.thenApply(ignored -> {
+                LayoutQuiescenceEvaluator evaluator = new LayoutQuiescenceEvaluator();
+                LayoutQuiescencePolicy policy = LayoutQuiescencePolicy.issueFour();
+                return new LayoutEvidence(
+                        currentObservations,
+                        evaluator.evaluate(
+                                samples.subList(0, 3), deadline.elapsed(), policy),
+                        evaluator.verifyCaptures(
+                                samples.subList(3, 8), deadline.elapsed(), policy));
+            });
+        });
+    }
+
+    private List<LayoutObservation> layoutObservations(
+            CapturedImage image, Set<String> controlIds) {
+        return sceneSession.layout(
+                image.revision(),
+                image.frame(),
+                new LayoutCaptureContext(
+                        APPLICATION_ID,
+                        VIEWPORT_ID,
+                        "capture:" + image.sha256(),
+                        image.sha256(),
+                        Math.toIntExact(Math.round(image.width() / image.scale().x())),
+                        Math.toIntExact(Math.round(image.height() / image.scale().y())),
+                        image.width(),
+                        image.height(),
+                        0,
+                        controlIds));
+    }
+
+    private static LayoutStabilitySample layoutSample(
+            CapturedImage image, List<LayoutObservation> observations) {
+        LayoutObservation scrolling = observations.stream()
+                .filter(value -> value.scrollOwnerId() != null)
+                .findFirst()
+                .orElse(observations.getFirst());
+        return new LayoutStabilitySample(
+                image.frame(),
+                image.revision(),
+                scrolling.layoutRevision(),
+                scrolling.scroll().x(),
+                scrolling.scroll().y(),
+                scrolling.scroll().maxX(),
+                scrolling.scroll().maxY(),
+                sha256(scrolling.scroll().viewportBounds().toString()
+                        .getBytes(StandardCharsets.UTF_8)),
+                sha256(scrolling.scroll().contentBounds().toString()
+                        .getBytes(StandardCharsets.UTF_8)),
+                sha256(scrolling.clipChain().toString()
+                        .getBytes(StandardCharsets.UTF_8)),
+                sha256(observations.stream()
+                        .map(LayoutObservation::layoutSha256)
+                        .collect(java.util.stream.Collectors.joining("|"))
+                        .getBytes(StandardCharsets.UTF_8)),
+                image.sha256(),
+                scrolling.scroll().active());
     }
 
     private static String sha256(byte[] bytes) {

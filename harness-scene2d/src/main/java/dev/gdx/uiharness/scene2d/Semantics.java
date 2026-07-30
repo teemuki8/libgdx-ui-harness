@@ -90,6 +90,12 @@ public final class Semantics {
         update(actor, value -> value.withTypography(typography));
     }
 
+    /** Attaches a stable actor role for layout and clipping diagnostics. */
+    public void setLayout(Actor actor, LayoutMetadata layout) {
+        Objects.requireNonNull(layout, "layout");
+        update(actor, value -> value.withLayout(layout));
+    }
+
     /** Adds one ordered application-domain conditional relationship. */
     public synchronized void addCondition(ConditionalRule condition) {
         requireOpen();

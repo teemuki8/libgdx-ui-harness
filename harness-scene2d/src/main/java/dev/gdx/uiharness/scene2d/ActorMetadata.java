@@ -16,10 +16,11 @@ public record ActorMetadata(
         ContractValue currentValue,
         String viewportId,
         TypographyMetadata typography,
+        LayoutMetadata layout,
         Map<String, String> properties) {
     static final ActorMetadata EMPTY =
             new ActorMetadata(
-                    null, null, null, null, null, null, null, null, null, Map.of());
+                    null, null, null, null, null, null, null, null, null, null, Map.of());
 
     /** Defensively copies the custom property map. */
     public ActorMetadata {
@@ -35,7 +36,7 @@ public record ActorMetadata(
             String testId,
             Map<String, String> properties) {
         this(role, accessibleName, text, label, testId,
-                null, null, null, null, properties);
+                null, null, null, null, null, properties);
     }
 
     /** Retains the evaluator-complete constructor introduced in protocol V1. */
@@ -50,7 +51,23 @@ public record ActorMetadata(
             String viewportId,
             Map<String, String> properties) {
         this(role, accessibleName, text, label, testId,
-                control, currentValue, viewportId, null, properties);
+                control, currentValue, viewportId, null, null, properties);
+    }
+
+    /** Retains the evaluator/typography constructor introduced before layout V1. */
+    public ActorMetadata(
+            Role role,
+            String accessibleName,
+            String text,
+            String label,
+            String testId,
+            ControlMetadata control,
+            ContractValue currentValue,
+            String viewportId,
+            TypographyMetadata typography,
+            Map<String, String> properties) {
+        this(role, accessibleName, text, label, testId,
+                control, currentValue, viewportId, typography, null, properties);
     }
 
     ActorMetadata withRole(Role value) {
@@ -98,11 +115,16 @@ public record ActorMetadata(
                 control, currentValue, viewportId, value);
     }
 
+    ActorMetadata withLayout(LayoutMetadata value) {
+        return copy(role, accessibleName, text, label, testId,
+                control, currentValue, viewportId, typography, value);
+    }
+
     ActorMetadata withProperty(String key, String value) {
         var updated = new java.util.LinkedHashMap<>(properties);
         updated.put(key, value);
         return new ActorMetadata(role, accessibleName, text, label, testId,
-                control, currentValue, viewportId, typography, updated);
+                control, currentValue, viewportId, typography, layout, updated);
     }
 
     private ActorMetadata copy(
@@ -115,7 +137,23 @@ public record ActorMetadata(
             ContractValue nextCurrentValue,
             String nextViewportId,
             TypographyMetadata nextTypography) {
+        return copy(nextRole, nextAccessibleName, nextText, nextLabel, nextTestId,
+                nextControl, nextCurrentValue, nextViewportId, nextTypography, layout);
+    }
+
+    private ActorMetadata copy(
+            Role nextRole,
+            String nextAccessibleName,
+            String nextText,
+            String nextLabel,
+            String nextTestId,
+            ControlMetadata nextControl,
+            ContractValue nextCurrentValue,
+            String nextViewportId,
+            TypographyMetadata nextTypography,
+            LayoutMetadata nextLayout) {
         return new ActorMetadata(nextRole, nextAccessibleName, nextText, nextLabel, nextTestId,
-                nextControl, nextCurrentValue, nextViewportId, nextTypography, properties);
+                nextControl, nextCurrentValue, nextViewportId,
+                nextTypography, nextLayout, properties);
     }
 }
