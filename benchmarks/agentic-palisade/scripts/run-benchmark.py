@@ -34,6 +34,7 @@ FIXED_REASONING = "medium"
 FIXED_BROKER_URL = "http://127.0.0.1:9000"
 PROTOCOL_AMENDMENT = "agentic-palisade/task-8-auth-broker-amendment-v1"
 FIXED_PAIRS = 3
+RELEASE_PAIRS = 5
 FIXED_ROUNDS = 3
 FIXED_SECONDS = 45 * 60
 QUALIFICATION_SECONDS = 1
@@ -705,6 +706,79 @@ def _prepare_run(output, pair, treatment, index, hashes, treatment_inputs):
 
 def _public_item(item):
     return {key: value for key, value in item.items() if key != "_runtime"}
+
+
+def _prepared_path(output, relative):
+    if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
+        raise ValueError("prepared run path must be a non-empty relative path")
+    path = (output / relative).resolve()
+    try:
+        path.relative_to(output)
+    except ValueError as error:
+        raise ValueError("prepared run path escapes the output root") from error
+    return path
+
+
+def _restore_run(output, item, hashes):
+    if not isinstance(item, dict):
+        raise ValueError("prepared run entry must be an object")
+    required = {
+        "runId", "pair", "treatment", "display", "workspace", "profileRoot",
+        "cacheRoot", "sessionRoot", "artifactRoot", "inputManifest",
+        "runRecord", "runRecordHash", "roundEvidence", "roundEvidenceHash",
+        "initialCandidateHash", "treatmentAppendixHash", "instructionsHash",
+        "treatmentOverlayHash", "inputManifestHash",
+    }
+    if set(item) != required:
+        raise ValueError("prepared run fields do not match the fixed schema")
+    try:
+        uuid.UUID(item["runId"])
+    except (TypeError, ValueError, AttributeError) as error:
+        raise ValueError("prepared run ID is malformed") from error
+    run_dir = _prepared_path(output, item["inputManifest"]).parent
+    workspace = _prepared_path(output, item["workspace"])
+    input_path = _prepared_path(output, item["inputManifest"])
+    if sha256_bytes(input_path.read_bytes()) != item["inputManifestHash"]:
+        raise ValueError(f"prepared input manifest changed: {item['runId']}")
+    input_manifest = json.loads(input_path.read_text(encoding="utf-8"))
+    if (input_manifest.get("runId") != item["runId"]
+            or input_manifest.get("pair") != item["pair"]
+            or input_manifest.get("treatment") != item["treatment"]
+            or any(input_manifest.get("hashes", {}).get(key) != value
+                   for key, value in hashes.items())):
+        raise ValueError(f"prepared input identity changed: {item['runId']}")
+    drift = verify_protected_inputs(workspace, input_manifest["hashes"])
+    if drift:
+        raise ValueError(
+            f"prepared protected inputs changed: {item['runId']}: {drift}")
+    observed_candidate = hash_candidate(workspace)
+    if (observed_candidate != item["initialCandidateHash"]
+            or observed_candidate !=
+            input_manifest["hashes"].get("initialCandidate")):
+        raise ValueError(f"prepared candidate changed: {item['runId']}")
+    for field in ("runRecord", "runRecordHash", "roundEvidence", "roundEvidenceHash"):
+        if _prepared_path(output, item[field]).exists():
+            raise ValueError(f"prepared output already exists: {item[field]}")
+    item = dict(item)
+    item["_runtime"] = {
+        "runDir": run_dir,
+        "workspace": workspace,
+        "profileRoot": _prepared_path(output, item["profileRoot"]),
+        "cacheRoot": _prepared_path(output, item["cacheRoot"]),
+        "sessionRoot": _prepared_path(output, item["sessionRoot"]),
+        "artifactRoot": _prepared_path(output, item["artifactRoot"]),
+        "logRoot": run_dir / "logs",
+        "binaryRoot": run_dir / "bin",
+        "temporaryRoot": run_dir / "tmp",
+        "gradleCache": _prepared_path(output, item["cacheRoot"]) / "gradle",
+        "prompt": run_dir / "task.md",
+        "instructions": workspace / "INSTRUCTIONS.md",
+        "roundLog": _prepared_path(output, item["roundEvidence"]),
+        "roundHash": _prepared_path(output, item["roundEvidenceHash"]),
+        "roundSocket": Path(tempfile.gettempdir()) / f"palisade-round-{item['runId']}.sock",
+        "gate": run_dir / "bin/benchmark-feedback",
+    }
+    return item
 
 
 def _sanitized_environment(item):
@@ -1398,15 +1472,17 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes,
 def _validate_arguments(arguments, max_seconds):
     if arguments.model != FIXED_MODEL:
         raise ValueError(f"model must be exactly {FIXED_MODEL}")
-    if arguments.pairs != FIXED_PAIRS:
-        raise ValueError(f"pairs must be exactly {FIXED_PAIRS}")
+    required_pairs = RELEASE_PAIRS if arguments.release_candidate else FIXED_PAIRS
+    if arguments.pairs != required_pairs:
+        raise ValueError(f"pairs must be exactly {required_pairs}")
     if max_seconds != FIXED_SECONDS:
         raise ValueError("measured runs must use exactly --max-time 45m")
     if arguments.qualification and Path(arguments.omp).resolve() != QUALIFICATION_OMP.resolve():
         raise ValueError("qualification requires the fixed mock OMP fixture")
     if arguments.auth_broker_url not in (None, FIXED_BROKER_URL):
         raise ValueError(f"auth broker must be exactly {FIXED_BROKER_URL}")
-    if (not arguments.dry_run and not arguments.qualification
+    if (not arguments.dry_run and not arguments.prepare_only
+            and not arguments.qualification
             and arguments.auth_broker_url != FIXED_BROKER_URL):
         raise ValueError(
             f"measured runs require --auth-broker-url {FIXED_BROKER_URL}")
@@ -1428,61 +1504,100 @@ def main(argv=None):
     parser.add_argument("--omp", default="omp", help=argparse.SUPPRESS)
     parser.add_argument("--qualification", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--release-candidate", action="store_true")
+    phase = parser.add_mutually_exclusive_group()
+    phase.add_argument("--prepare-only", action="store_true")
+    phase.add_argument("--execute-prepared", action="store_true")
     arguments = parser.parse_args(argv)
     try:
         max_seconds = parse_duration(arguments.max_time)
         _validate_arguments(arguments, max_seconds)
         output = arguments.output.resolve()
-        if output.exists():
+        if arguments.dry_run and (arguments.prepare_only or arguments.execute_prepared):
+            raise ValueError("--dry-run cannot be combined with a prepared execution phase")
+        if arguments.execute_prepared:
+            if not output.is_dir():
+                raise ValueError(f"prepared output directory does not exist: {output}")
+        elif output.exists():
             raise ValueError(f"output directory already exists: {output}")
         broker_token = ""
-        if not arguments.dry_run and not arguments.qualification:
+        if (not arguments.dry_run and not arguments.prepare_only
+                and not arguments.qualification):
             broker_token = _load_broker_token(arguments.omp)
             _run_auth_preflight(
                 arguments.omp, arguments.model,
                 arguments.auth_broker_url, broker_token)
-        output.mkdir(parents=True, exist_ok=False)
+        if arguments.execute_prepared:
+            manifest_path = output / "benchmark-manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if (manifest.get("schemaVersion") !=
+                    "agentic-palisade/benchmark-manifest-v1"):
+                raise ValueError("prepared benchmark manifest schema is unsupported")
+            if manifest.get("preparedOnly") is not True:
+                raise ValueError("benchmark manifest was not sealed for prepared execution")
+            if manifest.get("releaseCandidate") != arguments.release_candidate:
+                raise ValueError("prepared release-candidate mode does not match")
+            if (manifest.get("model") != arguments.model
+                    or manifest.get("pairs") != arguments.pairs
+                    or manifest.get("maxTimeSeconds") != max_seconds):
+                raise ValueError("prepared benchmark arguments do not match")
+            hashes = manifest.get("hashes", {})
+            expected_hashes = {
+                "prompt": sha256_bytes((BENCHMARK_ROOT / "prompts/task.md").read_bytes()),
+                "corpus": hash_tree(BENCHMARK_ROOT / "corpus"),
+                "template": hash_tree(BENCHMARK_ROOT / "template"),
+                "protocol": sha256_bytes((BENCHMARK_ROOT / "PROTOCOL.md").read_bytes()),
+            }
+            if hashes != expected_hashes:
+                raise ValueError("prepared benchmark inputs do not match current inputs")
+            runs = [_restore_run(output, item, hashes)
+                    for item in manifest.get("runs", [])]
+            if len(runs) != arguments.pairs * 2:
+                raise ValueError("prepared benchmark schedule is incomplete")
+        else:
+            output.mkdir(parents=True, exist_ok=False)
+            treatment_inputs = _treatment_inputs()
+            hashes = {
+                "prompt": sha256_bytes((BENCHMARK_ROOT / "prompts/task.md").read_bytes()),
+                "corpus": hash_tree(BENCHMARK_ROOT / "corpus"),
+                "template": hash_tree(BENCHMARK_ROOT / "template"),
+                "protocol": sha256_bytes((BENCHMARK_ROOT / "PROTOCOL.md").read_bytes()),
+            }
+            _copy_tree(BENCHMARK_ROOT / "corpus", output / "corpus")
+            _make_read_only(output / "corpus")
+            _copy_tree(BENCHMARK_ROOT / "template", output / "template")
+            _make_read_only(output / "template")
+            runs = []
+            index = 0
+            for pair in range(1, arguments.pairs + 1):
+                for treatment in ("baseline", "harness"):
+                    runs.append(_prepare_run(
+                        output, pair, treatment, index, hashes, treatment_inputs))
+                    index += 1
 
-        treatment_inputs = _treatment_inputs()
-        hashes = {
-            "prompt": sha256_bytes((BENCHMARK_ROOT / "prompts/task.md").read_bytes()),
-            "corpus": hash_tree(BENCHMARK_ROOT / "corpus"),
-            "template": hash_tree(BENCHMARK_ROOT / "template"),
-            "protocol": sha256_bytes((BENCHMARK_ROOT / "PROTOCOL.md").read_bytes()),
-        }
-        _copy_tree(BENCHMARK_ROOT / "corpus", output / "corpus")
-        _make_read_only(output / "corpus")
-        _copy_tree(BENCHMARK_ROOT / "template", output / "template")
-        _make_read_only(output / "template")
-        runs = []
-        index = 0
-        for pair in range(1, FIXED_PAIRS + 1):
-            for treatment in ("baseline", "harness"):
-                runs.append(_prepare_run(
-                    output, pair, treatment, index, hashes, treatment_inputs))
-                index += 1
-
-        public_runs = [_public_item(item) for item in runs]
-        manifest = {
-            "schemaVersion": "agentic-palisade/benchmark-manifest-v1",
-            "createdAt": utc_now(),
-            "dryRun": arguments.dry_run,
-            "model": arguments.model,
-            "reasoning": FIXED_REASONING,
-            "maxTimeSeconds": FIXED_SECONDS,
-            "rounds": FIXED_ROUNDS,
-            "pairs": FIXED_PAIRS,
-            "protocolAmendment": PROTOCOL_AMENDMENT,
-            "hashes": hashes,
-            "treatmentCommonInstructionHash": treatment_inputs["commonHash"],
-            "approvedTreatmentDifferences": [
-                "INSTRUCTIONS.md content after the Treatment appendix marker",
-                "treatments/harness overlay and bridge sources in harness workspaces",
-            ],
-            "runs": public_runs,
-        }
-        _write_exclusive_json(output / "benchmark-manifest.json", manifest)
-        if arguments.dry_run:
+            public_runs = [_public_item(item) for item in runs]
+            manifest = {
+                "schemaVersion": "agentic-palisade/benchmark-manifest-v1",
+                "createdAt": utc_now(),
+                "dryRun": arguments.dry_run,
+                "preparedOnly": arguments.prepare_only,
+                "releaseCandidate": arguments.release_candidate,
+                "model": arguments.model,
+                "reasoning": FIXED_REASONING,
+                "maxTimeSeconds": FIXED_SECONDS,
+                "rounds": FIXED_ROUNDS,
+                "pairs": arguments.pairs,
+                "protocolAmendment": PROTOCOL_AMENDMENT,
+                "hashes": hashes,
+                "treatmentCommonInstructionHash": treatment_inputs["commonHash"],
+                "approvedTreatmentDifferences": [
+                    "INSTRUCTIONS.md content after the Treatment appendix marker",
+                    "treatments/harness overlay and bridge sources in harness workspaces",
+                ],
+                "runs": public_runs,
+            }
+            _write_exclusive_json(output / "benchmark-manifest.json", manifest)
+        if arguments.dry_run or arguments.prepare_only:
             print(json.dumps({"status": "prepared", "runs": len(runs), "output": str(output)}))
             return 0
 
