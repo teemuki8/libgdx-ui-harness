@@ -78,6 +78,57 @@ class TelemetryTest(unittest.TestCase):
         self.assertEqual(result["toolCalls"], {"bash": 2, "edit": 1})
         self.assertEqual(result["screenshots"], 1)
 
+    def test_missing_referenced_payload_is_a_bounded_trace_gap(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            session = workspace / "session.jsonl"
+            events = [
+                {"type": "session", "version": 3, "id": "retained"},
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "assistant",
+                        "usage": {
+                            "input": 7, "output": 3,
+                            "cacheRead": 0, "cacheWrite": 0,
+                            "reasoning": 1,
+                        },
+                        "content": [{
+                            "type": "toolCall", "id": "cycle", "name": "bash",
+                            "arguments": {
+                                "command": "./gradlew clean run < build/cycle.ndjson"
+                            },
+                        }],
+                    },
+                },
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "toolResult", "toolCallId": "cycle",
+                        "toolName": "bash", "isError": False, "content": [],
+                    },
+                },
+            ]
+            session.write_text(
+                "".join(json.dumps(event) + "\n" for event in events),
+                encoding="utf-8")
+
+            result = self.telemetry.parse_omp_session(
+                session, workspace,
+                {"batchId": "batch", "runId": "run"})
+
+            self.assertEqual("available",
+                             result["traceTaxonomy"]["availability"])
+            self.assertEqual(7, result["tokens"]["input"]["value"])
+            self.assertEqual({"bash": 1}, result["toolCalls"])
+            self.assertEqual([], result["failedOperations"])
+            self.assertEqual([{
+                "toolCallId": "cycle",
+                "reference": "build/cycle.ndjson",
+                "code": "REFERENCED_PAYLOAD_UNAVAILABLE",
+                "message": "referenced payload is missing or oversized",
+            }], result["traceTaxonomy"]["evidenceGaps"])
+
     def test_separates_capture_and_comparison_channels_from_launcher_pngs(self):
         with tempfile.TemporaryDirectory() as temporary:
             session = Path(temporary) / "session.jsonl"

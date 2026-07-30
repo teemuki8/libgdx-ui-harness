@@ -246,6 +246,12 @@ class TraceTaxonomyTest(unittest.TestCase):
             "inputSha256": "a" * 64,
             "sequenceBasis": "record order",
             "knownExclusions": ["hidden reasoning"],
+            "evidenceGaps": [{
+                "toolCallId": "private-call",
+                "reference": "private/treatment-harness.ndjson",
+                "code": "REFERENCED_PAYLOAD_UNAVAILABLE",
+                "message": "referenced payload is missing or oversized",
+            }],
             "events": [
                 self.trace.event(
                     "batch", "run", "session", 1, "tool-request", [],
@@ -287,6 +293,13 @@ class TraceTaxonomyTest(unittest.TestCase):
                          public["captureAttempts"][0]["source"]["kind"])
         self.assertEqual("e" * 64,
                          public["captureAttempts"][0]["source"]["sha256"])
+        self.assertEqual(
+            "REFERENCED_PAYLOAD_UNAVAILABLE",
+            public["evidenceGaps"][0]["code"])
+        self.assertEqual(
+            64, len(public["evidenceGaps"][0]["referenceSha256"]))
+        self.assertNotIn("reference", public["evidenceGaps"][0])
+        self.assertNotIn("toolCallId", public["evidenceGaps"][0])
 
     def test_f_protocol_fixture_reconstructs_responses_without_causal_claim(self):
         records = []

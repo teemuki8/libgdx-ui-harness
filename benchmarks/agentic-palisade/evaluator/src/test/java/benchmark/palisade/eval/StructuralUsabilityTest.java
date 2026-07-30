@@ -168,6 +168,24 @@ final class StructuralUsabilityTest {
     }
 
     @Test
+    void invalidPublicObservationIsAnIndependentIncompleteResult() {
+        StructuralUsability.Result result = StructuralUsability.invalidObservation(
+                policy(), evidence(control()), "schemaVersion: null");
+
+        assertEquals(StructuralUsability.Status.INCOMPLETE, result.status());
+        assertEquals(6, result.signals().size());
+        assertTrue(result.signals().stream()
+                .allMatch(signal ->
+                        signal.status() == StructuralUsability.Status.INCOMPLETE));
+        assertEquals("OBSERVATION_SCHEMA_INVALID",
+                result.diagnostics().getFirst().code());
+        assertEquals("$.structuralUsability",
+                result.diagnostics().getFirst().path());
+        assertEquals("schemaVersion: null",
+                result.diagnostics().getFirst().observed());
+    }
+
+    @Test
     void everyBoundObservationIdentityFailsClosedWhenChangedOrMissing() {
         StructuralUsability.Evidence base = evidence(control());
         for (StructuralUsability.Evidence mutation : List.of(

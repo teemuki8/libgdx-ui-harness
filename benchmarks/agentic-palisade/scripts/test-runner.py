@@ -584,7 +584,7 @@ class DryRunTest(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("exactly --max-time 45m", completed.stderr)
 
-    def test_retains_a_telemetry_error_for_a_missing_referenced_payload(self):
+    def test_retains_telemetry_with_a_gap_for_a_missing_referenced_payload(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             session = root / "session.jsonl"
@@ -618,8 +618,11 @@ class DryRunTest(unittest.TestCase):
             )
             telemetry, error = self.runner._parse_telemetry(
                 session, root, {"batchId": "batch", "runId": "run"})
-            self.assertEqual(telemetry["traceTaxonomy"]["availability"], "unavailable")
-            self.assertEqual(error, "referenced payload is missing or oversized")
+            self.assertEqual(telemetry["traceTaxonomy"]["availability"], "available")
+            self.assertEqual(
+                telemetry["traceTaxonomy"]["evidenceGaps"][0]["code"],
+                "REFERENCED_PAYLOAD_UNAVAILABLE")
+            self.assertIsNone(error)
 
     def test_qualification_deadline_is_available_only_to_the_fixed_mock_omp(self):
         with tempfile.TemporaryDirectory() as temporary:

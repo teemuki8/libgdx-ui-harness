@@ -289,6 +289,8 @@ public final class CandidateEvaluator {
                 "scroll",
                 structuralControl(referenceId));
         List<StructuralUsability.Observation> observations = new ArrayList<>();
+        StructuralUsability.Evidence incompleteEvidence = incompleteStructuralEvidence(
+                policy, observedStateId, width, height, panel, captureHashes);
         for (ObjectNode state : observedStates) {
             JsonNode observation = state.path("structuralUsability");
             if (observation.isObject()) {
@@ -296,8 +298,8 @@ public final class CandidateEvaluator {
                     observations.add(JSON.treeToValue(
                             observation, StructuralUsability.Observation.class));
                 } catch (JsonProcessingException invalid) {
-                    throw new IllegalArgumentException(
-                            "Invalid structural usability observation", invalid);
+                    return StructuralUsability.invalidObservation(
+                            policy, incompleteEvidence, invalid.getOriginalMessage());
                 }
             }
         }
@@ -335,13 +337,23 @@ public final class CandidateEvaluator {
                     boundFrames);
             return StructuralUsability.evaluate(policy, bound, null);
         }
+        return StructuralUsability.evaluate(policy, incompleteEvidence, null);
+    }
+
+    private static StructuralUsability.Evidence incompleteStructuralEvidence(
+            StructuralUsability.Policy policy,
+            String observedStateId,
+            int width,
+            int height,
+            StructuralUsability.Rect panel,
+            List<String> captureHashes) {
         List<StructuralUsability.FrameEvidence> frames = new ArrayList<>();
         for (int index = 0; index < captureHashes.size(); index++) {
             frames.add(new StructuralUsability.FrameEvidence(
                     index,
                     0,
                     0,
-                    observedBottom ? 1 : 0,
+                    "bottom".equals(observedStateId) ? 1 : 0,
                     "0".repeat(64),
                     "0".repeat(64),
                     "0".repeat(64),
@@ -354,7 +366,7 @@ public final class CandidateEvaluator {
                 policy.referenceSha256(),
                 captureHashes.getFirst(),
                 observedStateId,
-                reference.path("viewportId").asText(),
+                policy.viewportId(),
                 width,
                 height,
                 1,
@@ -364,7 +376,7 @@ public final class CandidateEvaluator {
                 panel,
                 List.of(),
                 frames);
-        return StructuralUsability.evaluate(policy, evidence, null);
+        return evidence;
     }
 
     private static StructuralUsability.Rect structuralPanel(String referenceId) {
