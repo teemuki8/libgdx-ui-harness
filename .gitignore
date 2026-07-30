@@ -6,3 +6,4 @@ docs/superpowers/
 .idea/
 *.iml
 out/
+__pycache__/

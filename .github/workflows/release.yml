@@ -72,6 +72,31 @@ jobs:
             echo 'Signed tag does not identify the workflow commit' >&2
             exit 1
           fi
+          evidence_tag="release-evidence-$GITHUB_SHA"
+          git fetch --force --no-tags origin \
+            "refs/tags/$evidence_tag:refs/tags/$evidence_tag"
+          if [[ "$(git cat-file -t "refs/tags/$evidence_tag")" != tag ]]; then
+            echo 'Release evidence ref must be an annotated tag' >&2
+            exit 1
+          fi
+          git tag --verify "$evidence_tag"
+      - name: Verify sealed repeatability decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_tag="release-evidence-$GITHUB_SHA"
+          evidence_dir="$RUNNER_TEMP/release-evidence"
+          mkdir "$evidence_dir"
+          git archive "$evidence_tag^{}" | tar -x -C "$evidence_dir"
+          version="${GITHUB_REF_NAME#v}"
+          source_sha256="$(git archive "$GITHUB_SHA" | sha256sum | cut -d' ' -f1)"
+          python3 benchmarks/agentic-palisade/scripts/release-gate.py verify \
+            --manifest "$evidence_dir/manifest.json" \
+            --decision "$evidence_dir/decision.json" \
+            --candidate-commit "$GITHUB_SHA" \
+            --candidate-source-sha256 "$source_sha256" \
+            --release-version "$version" \
+            --evidence-root "$evidence_dir"
       - name: Install JDK 25
         uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
@@ -192,3 +217,4 @@ jobs:
             **/build/reports/**
             **/build/test-results/**
             build/central-staging/**
+            ${{ runner.temp }}/release-evidence/**

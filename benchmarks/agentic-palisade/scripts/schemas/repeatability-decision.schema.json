@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentic-palisade:repeatability-decision:v1",
+  "title": "Digest-bound Agentic Palisade release decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "candidateCommit", "candidateSourceSha256",
+    "releaseVersion", "manifestSha256", "evidenceDigest", "passed",
+    "failures", "strata", "runs", "statistics", "decisionSha256"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "agentic-palisade/repeatability-decision-v1"},
+    "candidateCommit": {"type": "string"},
+    "candidateSourceSha256": {"$ref": "#/$defs/sha256"},
+    "releaseVersion": {"type": "string"},
+    "manifestSha256": {"$ref": "#/$defs/sha256"},
+    "evidenceDigest": {"$ref": "#/$defs/sha256"},
+    "passed": {"type": "boolean"},
+    "failures": {"type": "array", "items": {"type": "string"}},
+    "strata": {"type": "array", "items": {"type": "object"}},
+    "runs": {"type": "array", "items": {"type": "object"}},
+    "statistics": {"type": "object"},
+    "decisionSha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}
