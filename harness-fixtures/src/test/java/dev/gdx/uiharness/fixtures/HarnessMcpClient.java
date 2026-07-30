@@ -49,9 +49,9 @@ final class HarnessMcpClient implements Closeable {
         }
         client.notify("notifications/initialized", Map.of());
         JsonNode listed = client.request("tools/list", Map.of());
-        if (listed.path("tools").size() != 10) {
+        if (listed.path("tools").size() != 11) {
             client.close();
-            throw new IllegalStateException("Expected the ten production tools: " + listed);
+            throw new IllegalStateException("Expected the eleven production tools: " + listed);
         }
         return client;
     }
@@ -223,6 +223,32 @@ final class HarnessMcpClient implements Closeable {
                 artifact(content.path("evidenceArtifact")),
                 content.path("differences").toString(),
                 content.path("metrics").toString());
+    }
+
+    Typography typography(String sessionId) throws Exception {
+        JsonNode content = call("ui_typography_diagnose", Map.of(
+                "sessionId", sessionId,
+                "referenceId", "reference-typography",
+                "viewportId", "main",
+                "maxDurationMillis", 30_000,
+                "maxResults", 16,
+                "maxWidth", 1280,
+                "maxHeight", 720,
+                "maxPixels", 1280L * 720,
+                "maxPngBytes", 4 * 1024 * 1024));
+        requireKind(content, "typography-diagnostic-result");
+        java.util.ArrayList<String> controlIds = new java.util.ArrayList<>();
+        content.path("reports").forEach(
+                report -> controlIds.add(report.path("controlId").asText()));
+        return new Typography(
+                content.path("status").asText(),
+                content.path("revision").asLong(),
+                content.path("frame").asLong(),
+                content.path("sha256").asText(),
+                List.copyOf(controlIds),
+                artifact(content.path("currentArtifact")),
+                artifact(content.path("evidenceArtifact")),
+                content.path("reports").toString());
     }
 
     Trace stopTrace(String sessionId) throws Exception {
@@ -453,6 +479,16 @@ final class HarnessMcpClient implements Closeable {
             Artifact evidence,
             String differences,
             String metrics) {}
+
+    record Typography(
+            String status,
+            long revision,
+            long frame,
+            String sha256,
+            List<String> controlIds,
+            Artifact current,
+            Artifact evidence,
+            String reports) {}
 
     record Snapshot(long revision, long frame, String rootId, int nodeCount) {}
 

@@ -39,13 +39,14 @@ public final class HarnessProtocolService {
     private final Map<String, Session> sessions;
     private final Map<String, ContractProvider> contracts;
     private final Map<String, InspectCaptureCompareService> comparisons;
+    private final Map<String, TypographyDiagnosticService> typographyDiagnostics;
     private final MonotonicClock clock;
     private final Executor blockingExecutor;
 
     /** Creates a service over an immutable session registry. */
     public HarnessProtocolService(
             Map<String, Session> sessions, MonotonicClock clock, Executor blockingExecutor) {
-        this(sessions, Map.of(), Map.of(), clock, blockingExecutor);
+        this(sessions, Map.of(), Map.of(), Map.of(), clock, blockingExecutor);
     }
 
     /** Creates a service with optional evaluator-complete contract providers by session ID. */
@@ -54,7 +55,7 @@ public final class HarnessProtocolService {
             Map<String, ContractProvider> contracts,
             MonotonicClock clock,
             Executor blockingExecutor) {
-        this(sessions, contracts, Map.of(), clock, blockingExecutor);
+        this(sessions, contracts, Map.of(), Map.of(), clock, blockingExecutor);
     }
 
     /** Creates a service with optional contract and inspect-compare providers by session ID. */
@@ -62,6 +63,19 @@ public final class HarnessProtocolService {
             Map<String, Session> sessions,
             Map<String, ContractProvider> contracts,
             Map<String, InspectCaptureCompareService> comparisons,
+            MonotonicClock clock,
+            Executor blockingExecutor) {
+        this(sessions, contracts, comparisons, Map.of(), clock, blockingExecutor);
+    }
+
+    /**
+     * Creates a service with optional contract, visual comparison, and typography providers.
+     */
+    public HarnessProtocolService(
+            Map<String, Session> sessions,
+            Map<String, ContractProvider> contracts,
+            Map<String, InspectCaptureCompareService> comparisons,
+            Map<String, TypographyDiagnosticService> typographyDiagnostics,
             MonotonicClock clock,
             Executor blockingExecutor) {
         Objects.requireNonNull(sessions, "sessions");
@@ -95,6 +109,19 @@ public final class HarnessProtocolService {
                     id, Objects.requireNonNull(comparison, "comparison service"));
         });
         this.comparisons = Map.copyOf(comparisonCopy);
+        Objects.requireNonNull(typographyDiagnostics, "typographyDiagnostics");
+        LinkedHashMap<String, TypographyDiagnosticService> typographyCopy =
+                new LinkedHashMap<>();
+        typographyDiagnostics.forEach((id, diagnostic) -> {
+            ProtocolJson.requireIdentifier(id, "typography sessionId");
+            if (!copy.containsKey(id)) {
+                throw new IllegalArgumentException(
+                        "typography service has no matching session: " + id);
+            }
+            typographyCopy.put(
+                    id, Objects.requireNonNull(diagnostic, "typography service"));
+        });
+        this.typographyDiagnostics = Map.copyOf(typographyCopy);
         this.clock = Objects.requireNonNull(clock, "clock");
         this.blockingExecutor = Objects.requireNonNull(blockingExecutor, "blockingExecutor");
     }
@@ -201,6 +228,19 @@ public final class HarnessProtocolService {
                     comparison.execute(compare.toCore(), deadline),
                     HarnessResponse.Result.InspectCompare::fromCore);
         }
+        if (command instanceof Command.TypographyDiagnose typography) {
+            TypographyDiagnosticService diagnostic =
+                    typographyDiagnostics.get(request.sessionId());
+            if (diagnostic == null) {
+                throw new HarnessException(
+                        ErrorCode.UNSUPPORTED_CAPABILITY,
+                        "Session does not support typography diagnosis",
+                        ErrorEvidence.empty());
+            }
+            return RoutedOperation.map(
+                    diagnostic.execute(typography.toCore(), deadline),
+                    HarnessResponse.Result.TypographyDiagnostic::fromCore);
+        }
         if (command instanceof Command.TraceStart traceStart) {
             return RoutedOperation.map(session.traces().start(traceStart, deadline),
                     Function.identity());
@@ -235,6 +275,9 @@ public final class HarnessProtocolService {
         }
         if (command instanceof Command.InspectCompare) {
             return "compare";
+        }
+        if (command instanceof Command.TypographyDiagnose) {
+            return "typography";
         }
         return "trace";
     }

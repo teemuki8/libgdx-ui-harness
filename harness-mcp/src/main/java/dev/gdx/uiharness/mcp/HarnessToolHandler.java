@@ -8,6 +8,13 @@ import dev.gdx.uiharness.protocol.HarnessResponse;
 import dev.gdx.uiharness.protocol.ProtocolError;
 import dev.gdx.uiharness.protocol.ProtocolJson;
 import dev.gdx.uiharness.protocol.ProtocolVersion;
+import dev.gdx.uiharness.core.typography.AffineTransformObservation;
+import dev.gdx.uiharness.core.typography.CoordinateBounds;
+import dev.gdx.uiharness.core.typography.CoordinatePoint;
+import dev.gdx.uiharness.core.typography.EvidenceValue;
+import dev.gdx.uiharness.core.typography.GlyphRunObservation;
+import dev.gdx.uiharness.core.typography.TypographyDiagnostic;
+import dev.gdx.uiharness.core.typography.TypographyReport;
 import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.util.ArrayDeque;
@@ -134,6 +141,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             case "ui_wait" -> "wait";
             case "ui_screenshot" -> "screenshot";
             case "ui_inspect_compare" -> "inspect-compare";
+            case "ui_typography_diagnose" -> "typography-diagnose";
             case "ui_trace_start" -> "trace-start";
             case "ui_trace_stop" -> "trace-stop";
             case "ui_capabilities" -> "capabilities";
@@ -283,6 +291,46 @@ public final class HarnessToolHandler implements AutoCloseable {
             content.put("evidenceArtifact", artifactMap(evidence));
             return Map.copyOf(content);
         }
+        if (result instanceof HarnessResponse.Result.TypographyDiagnostic typography) {
+            LinkedHashMap<String, Object> content =
+                    content("typography-diagnostic-result");
+            content.put("status", typography.status());
+            content.put("reportCount", typography.reports().size());
+            content.put("reports", typography.reports().stream()
+                    .map(HarnessToolHandler::typographyReport)
+                    .toList());
+            content.put("diagnostics", COMMAND_MAPPER.convertValue(
+                    typography.diagnostics(), List.class));
+            content.put("elapsedMillis", typography.elapsedMillis());
+            if (typography.referenceId() != null) {
+                content.put("referenceId", typography.referenceId());
+            }
+            if (typography.current() != null) {
+                if (typography.currentPngBase64() == null) {
+                    throw new IllegalArgumentException(
+                            "accepted typography evidence is missing PNG bytes");
+                }
+                byte[] png = Base64.getDecoder().decode(
+                        typography.currentPngBase64());
+                ArtifactReference current = artifacts.publish("image/png", png.clone());
+                if (!current.sha256().equals(typography.current().sha256())) {
+                    throw new IllegalArgumentException(
+                            "published typography capture hash changed");
+                }
+                content.put("currentArtifact", artifactMap(current));
+                content.put("revision", typography.current().revision());
+                content.put("frame", typography.current().frame());
+                content.put("width", typography.current().width());
+                content.put("height", typography.current().height());
+                content.put("scaleX", typography.current().scaleX());
+                content.put("scaleY", typography.current().scaleY());
+                content.put("sha256", typography.current().sha256());
+            }
+            ArtifactReference evidence = artifacts.publish(
+                    "application/json", encoded.clone());
+            content.put("evidenceArtifact", artifactMap(evidence));
+            return Map.copyOf(content);
+        }
         if (result instanceof HarnessResponse.Result.TraceStarted started) {
             LinkedHashMap<String, Object> content = content("trace-started");
             content.put("traceId", started.traceId());
@@ -298,6 +346,143 @@ public final class HarnessToolHandler implements AutoCloseable {
             return Map.copyOf(content);
         }
         throw new AssertionError("Unhandled protocol result " + result.getClass().getName());
+    }
+
+    private static Map<String, Object> typographyReport(TypographyReport report) {
+        var observation = report.observation();
+        LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+        result.put("controlId", observation.controlId());
+        result.put("actorId", observation.actorId());
+        result.put("status", wire(report.status()));
+        result.put("text", observation.text());
+        result.put("textStart", observation.textStart());
+        result.put("textEnd", observation.textEnd());
+        result.put("glyphRuns", observation.glyphRuns().stream()
+                .map(HarnessToolHandler::glyphRun).toList());
+        result.put("revision", observation.revision());
+        result.put("frame", observation.frame());
+        result.put("currentArtifactId", observation.currentArtifactId());
+        result.put("captureSha256", observation.captureSha256());
+        result.put("transformSha256", observation.transformSha256());
+        result.put("font", font(observation.font()));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> display = COMMAND_MAPPER.convertValue(
+                observation.display(), Map.class);
+        result.put("display", display);
+        result.put("transforms", observation.transforms().mappings().stream()
+                .map(HarnessToolHandler::transform).toList());
+        result.put("origins", observation.geometry().origins().stream()
+                .map(HarnessToolHandler::point).toList());
+        result.put("baselines", observation.geometry().baselines().stream()
+                .map(HarnessToolHandler::point).toList());
+        result.put("layoutBounds", observation.geometry().layoutBounds().stream()
+                .map(HarnessToolHandler::bounds).toList());
+        result.put("inkBounds", observation.geometry().inkBounds().stream()
+                .map(HarnessToolHandler::bounds).toList());
+        result.put("fractionalTranslationX",
+                observation.geometry().fractionalTranslationX());
+        result.put("fractionalTranslationY",
+                observation.geometry().fractionalTranslationY());
+        result.put("rasterResidual", observation.rasterResidual());
+        result.put("diagnostics", report.diagnostics().stream()
+                .map(HarnessToolHandler::typographyDifference).toList());
+        result.put("sourceMechanisms", report.sourceMechanisms());
+        result.put("controlledResults", report.controlledResults());
+        result.put("unresolvedHypotheses", report.unresolvedHypotheses());
+        return Map.copyOf(result);
+    }
+
+    private static Map<String, Object> glyphRun(GlyphRunObservation run) {
+        return Map.of(
+                "textStart", run.textStart(),
+                "textEnd", run.textEnd(),
+                "text", run.text(),
+                "origin", point(run.origin()),
+                "baseline", point(run.baseline()),
+                "inkBounds", bounds(run.inkBounds()));
+    }
+
+    private static Map<String, Object> font(
+            dev.gdx.uiharness.core.typography.FontObservation font) {
+        return Map.ofEntries(
+                Map.entry("sourceId", evidence(font.sourceId())),
+                Map.entry("atlasPageIds", font.atlasPageIds()),
+                Map.entry("nominalSize", evidence(font.nominalSize())),
+                Map.entry("generatedGlyphSize", evidence(font.generatedGlyphSize())),
+                Map.entry("effectiveSizeX", font.effectiveSizeX()),
+                Map.entry("effectiveSizeY", font.effectiveSizeY()),
+                Map.entry("bitmapScaleX", font.bitmapScaleX()),
+                Map.entry("bitmapScaleY", font.bitmapScaleY()),
+                Map.entry("minificationFilter", evidence(font.minificationFilter())),
+                Map.entry("magnificationFilter", evidence(font.magnificationFilter())),
+                Map.entry("distanceField", evidence(font.distanceField())),
+                Map.entry("weight", evidence(font.weight())),
+                Map.entry("letterSpacing", evidence(font.letterSpacing())));
+    }
+
+    private static Map<String, Object> evidence(EvidenceValue<?> evidence) {
+        if (evidence.isAvailable()) {
+            return Map.of(
+                    "availability", "available",
+                    "value", evidence.value());
+        }
+        return Map.of(
+                "availability", "unavailable",
+                "reason", evidence.unavailableReason().protocolValue(),
+                "detail", evidence.detail());
+    }
+
+    private static Map<String, Object> transform(AffineTransformObservation value) {
+        return Map.ofEntries(
+                Map.entry("source", wire(value.source())),
+                Map.entry("target", wire(value.target())),
+                Map.entry("m00", value.m00()),
+                Map.entry("m01", value.m01()),
+                Map.entry("translateX", value.translateX()),
+                Map.entry("m10", value.m10()),
+                Map.entry("m11", value.m11()),
+                Map.entry("translateY", value.translateY()),
+                Map.entry("effectiveScaleX", value.effectiveScaleX()),
+                Map.entry("effectiveScaleY", value.effectiveScaleY()),
+                Map.entry("rotationDegrees", value.rotationDegrees()),
+                Map.entry("shear", value.shear()),
+                Map.entry("fractionalTranslationX", value.fractionalTranslationX()),
+                Map.entry("fractionalTranslationY", value.fractionalTranslationY()),
+                Map.entry("invertible", value.invertible()));
+    }
+
+    private static Map<String, Object> point(CoordinatePoint value) {
+        return Map.of(
+                "space", wire(value.space()),
+                "x", value.x(),
+                "y", value.y());
+    }
+
+    private static Map<String, Object> bounds(CoordinateBounds value) {
+        return Map.of(
+                "space", wire(value.space()),
+                "x", value.x(),
+                "y", value.y(),
+                "width", value.width(),
+                "height", value.height());
+    }
+
+    private static Map<String, Object> typographyDifference(
+            TypographyDiagnostic value) {
+        LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+        result.put("controlId", value.controlId());
+        result.put("path", value.path());
+        result.put("expected", value.expected());
+        result.put("observed", value.observed());
+        result.put("units", value.units());
+        putNullable(result, "coordinateSpace", value.coordinateSpace());
+        result.put("referenceArtifactId", value.referenceArtifactId());
+        result.put("currentArtifactId", value.currentArtifactId());
+        return Map.copyOf(result);
+    }
+
+    private static String wire(Enum<?> value) {
+        return value.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-');
     }
 
     private static boolean locatorShapeWithinLimits(Map<String, Object> arguments) {
@@ -380,6 +565,18 @@ public final class HarnessToolHandler implements AutoCloseable {
                     + "\"maxDurationMillis\":30000,\"maxWidth\":8192,"
                     + "\"maxHeight\":8192,\"maxPixels\":33554432,"
                     + "\"maxPngBytes\":12579840}";
+        } else if ("ui_typography_diagnose".equals(toolName)) {
+            required = List.of(
+                    "sessionId", "referenceId", "viewportId", "maxDurationMillis",
+                    "maxResults", "maxWidth", "maxHeight", "maxPixels", "maxPngBytes");
+            allowed = Set.of(
+                    "sessionId", "deadlineMillis", "referenceId", "viewportId",
+                    "maxDurationMillis", "maxResults", "maxWidth", "maxHeight",
+                    "maxPixels", "maxPngBytes");
+            example = "{\"sessionId\":\"game\",\"referenceId\":\"title-reference\","
+                    + "\"viewportId\":\"main\",\"maxDurationMillis\":30000,"
+                    + "\"maxResults\":16,\"maxWidth\":1920,\"maxHeight\":1080,"
+                    + "\"maxPixels\":2073600,\"maxPngBytes\":4194304}";
         } else {
             return null;
         }
@@ -410,6 +607,7 @@ public final class HarnessToolHandler implements AutoCloseable {
         validateInteger(arguments, problems, "deadlineMillis", 1, 120_000);
         validateInteger(arguments, problems, "policyVersion", 1, Integer.MAX_VALUE);
         validateInteger(arguments, problems, "maxIterations", 1, 64);
+        validateInteger(arguments, problems, "maxResults", 1, 256);
         validateInteger(arguments, problems, "maxDurationMillis", 1, 120_000);
         validateInteger(arguments, problems, "maxWidth", 1, 8_192);
         validateInteger(arguments, problems, "maxHeight", 1, 8_192);

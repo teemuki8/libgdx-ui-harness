@@ -17,14 +17,14 @@ import org.junit.jupiter.api.Test;
 final class HarnessToolCatalogTest {
     private static final Set<String> APPROVED = Set.of(
             "ui_sessions", "ui_snapshot", "ui_query", "ui_action", "ui_wait",
-            "ui_screenshot", "ui_inspect_compare", "ui_trace_start",
+            "ui_screenshot", "ui_inspect_compare", "ui_typography_diagnose", "ui_trace_start",
             "ui_trace_stop", "ui_capabilities");
 
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
 
     @Test void exposesOnlyTheApprovedBoundedTools() {
         assertEquals(APPROVED, catalog.toolNames());
-        assertEquals(10, catalog.tools().size());
+        assertEquals(11, catalog.tools().size());
         for (McpSchema.Tool tool : catalog.tools()) {
             assertEquals("object", tool.inputSchema().get("type"));
             assertEquals(false, tool.inputSchema().get("additionalProperties"));
@@ -33,6 +33,29 @@ final class HarnessToolCatalogTest {
                     .validate(tool.inputSchema(), Map.of("path", "/tmp/attack"))
                     .valid(), tool.name());
         }
+    }
+
+    @Test void typographySchemaRequiresBoundedNamedReferenceAndViewport() {
+        assertValid("ui_typography_diagnose", Map.of(
+                "sessionId", "game",
+                "referenceId", "title-reference",
+                "viewportId", "main",
+                "maxDurationMillis", 30_000,
+                "maxResults", 16,
+                "maxWidth", 1920,
+                "maxHeight", 1080,
+                "maxPixels", 2_073_600,
+                "maxPngBytes", 4_194_304));
+        assertInvalid("ui_typography_diagnose", Map.of(
+                "sessionId", "game",
+                "referenceId", "title-reference",
+                "viewportId", "main",
+                "maxDurationMillis", 30_000,
+                "maxResults", 257,
+                "maxWidth", 1920,
+                "maxHeight", 1080,
+                "maxPixels", 2_073_600,
+                "maxPngBytes", 4_194_304));
     }
 
     @Test void goldenCatalogMatchesTypedSchemas() throws Exception {

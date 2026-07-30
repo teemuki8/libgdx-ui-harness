@@ -84,6 +84,12 @@ public final class Semantics {
         update(actor, value -> value.withViewportId(viewportId));
     }
 
+    /** Attaches font provenance and explicitly available glyph metadata. */
+    public void setTypography(Actor actor, TypographyMetadata typography) {
+        Objects.requireNonNull(typography, "typography");
+        update(actor, value -> value.withTypography(typography));
+    }
+
     /** Adds one ordered application-domain conditional relationship. */
     public synchronized void addCondition(ConditionalRule condition) {
         requireOpen();

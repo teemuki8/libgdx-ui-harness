@@ -38,8 +38,35 @@ final class ReferenceApplicationSmokeTest {
                     assertEquals(List.of(SESSION_ID), agent.sessions());
                     assertEquals(List.of(
                                     "action", "compare", "query", "screenshot",
-                                    "snapshot", "trace", "wait"),
+                                    "snapshot", "trace", "typography", "wait"),
                             agent.capabilities(SESSION_ID));
+                    String stableTypography = null;
+                    long previousTypographyFrame = -1;
+                    for (int repeat = 0; repeat < 5; repeat++) {
+                        HarnessMcpClient.Typography typography =
+                                agent.typography(SESSION_ID);
+                        assertEquals("pixel-sharp", typography.status(),
+                                typography.reports());
+                        assertEquals(
+                                List.of("harness-title", "body-caption"),
+                                typography.controlIds());
+                        assertTrue(typography.frame() > previousTypographyFrame);
+                        previousTypographyFrame = typography.frame();
+                        assertEquals(typography.sha256(), typography.current().sha256());
+                        assertEquals("image/png", typography.current().mediaType());
+                        assertEquals("application/json", typography.evidence().mediaType());
+                        JsonNode reports = ProtocolJson.mapper().readTree(typography.reports());
+                        String stable = stableTypographyProjection(reports).toString();
+                        if (stableTypography == null) {
+                            stableTypography = stable;
+                        } else {
+                            assertEquals(stableTypography, stable);
+                        }
+                        JsonNode evidence = ProtocolJson.mapper().readTree(
+                                app.readArtifact(typography.evidence()));
+                        assertEquals("pixel-sharp", evidence.path("status").asText());
+                        assertEquals(2, evidence.path("reports").size());
+                    }
                     agent.startTrace(SESSION_ID);
                     HarnessMcpClient.Snapshot snapshot = agent.snapshot(SESSION_ID);
                     assertTrue(snapshot.nodeCount() >= 20);
@@ -228,5 +255,17 @@ final class ReferenceApplicationSmokeTest {
 
     private static String resourceText(String name) throws Exception {
         return new String(resourceBytes(name), java.nio.charset.StandardCharsets.UTF_8).strip();
+    }
+
+    private static JsonNode stableTypographyProjection(JsonNode reports) {
+        com.fasterxml.jackson.databind.node.ArrayNode stable =
+                ProtocolJson.mapper().createArrayNode();
+        reports.forEach(report -> {
+            com.fasterxml.jackson.databind.node.ObjectNode copy = report.deepCopy();
+            copy.remove(List.of(
+                    "revision", "frame", "currentArtifactId", "captureSha256"));
+            stable.add(copy);
+        });
+        return stable;
     }
 }

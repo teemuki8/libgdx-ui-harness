@@ -22,6 +22,8 @@ import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.model.SemanticState;
 import dev.gdx.uiharness.core.wait.WaitResult;
 import dev.gdx.uiharness.core.visual.VisualComparisonResult;
+import dev.gdx.uiharness.core.typography.TypographyDiagnosticResult;
+import dev.gdx.uiharness.core.typography.TypographyReport;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -88,12 +90,15 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(value = Result.Wait.class, name = "wait"),
         @JsonSubTypes.Type(value = Result.Screenshot.class, name = "screenshot"),
         @JsonSubTypes.Type(value = Result.InspectCompare.class, name = "inspect-compare"),
+        @JsonSubTypes.Type(
+                value = Result.TypographyDiagnostic.class,
+                name = "typography-diagnostic"),
         @JsonSubTypes.Type(value = Result.TraceStarted.class, name = "trace-started"),
         @JsonSubTypes.Type(value = Result.TraceStopped.class, name = "trace-stopped")
     })
     sealed interface Result permits Result.Sessions, Result.Capabilities, Result.Snapshot,
             Result.Query, Result.Action, Result.Wait, Result.Screenshot, Result.TraceStarted,
-            Result.InspectCompare, Result.TraceStopped {
+            Result.InspectCompare, Result.TypographyDiagnostic, Result.TraceStopped {
         /** Active session catalog. */
         record Sessions(List<SessionInfo> sessions) implements Result {
             /** Defensively copies the session catalog. */
@@ -310,6 +315,80 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             }
         }
 
+        /** Capture-backed actor-attributed typography diagnostic result. */
+        record TypographyDiagnostic(
+                String status,
+                String referenceId,
+                CurrentCaptureData current,
+                List<TypographyReport> reports,
+                List<ComparisonDiagnosticData> diagnostics,
+                long elapsedMillis,
+                String currentPngBase64) implements Result {
+
+            /** Validates the bounded wire projection and current PNG integrity. */
+            public TypographyDiagnostic {
+                if (!Set.of(
+                                "pixel-sharp",
+                                "not-pixel-sharp",
+                                "incomplete",
+                                "not-diagnosable",
+                                "stale",
+                                "not-stable")
+                        .contains(status)) {
+                    throw new IllegalArgumentException("unknown typography status");
+                }
+                if (referenceId != null) {
+                    ProtocolJson.requireIdentifier(referenceId, "referenceId");
+                }
+                reports = List.copyOf(Objects.requireNonNull(reports, "reports"));
+                diagnostics =
+                        List.copyOf(Objects.requireNonNull(diagnostics, "diagnostics"));
+                if (reports.size() > 256 || diagnostics.size() > 256
+                        || elapsedMillis < 0 || elapsedMillis > 120_000) {
+                    throw new IllegalArgumentException(
+                            "typography result is outside protocol bounds");
+                }
+                if ((current == null) != (currentPngBase64 == null)) {
+                    throw new IllegalArgumentException(
+                            "current typography metadata and PNG must appear together");
+                }
+                if (currentPngBase64 != null) {
+                    byte[] png;
+                    try {
+                        png = Base64.getDecoder().decode(currentPngBase64);
+                    } catch (IllegalArgumentException invalid) {
+                        throw new IllegalArgumentException(
+                                "typography PNG is not valid base64", invalid);
+                    }
+                    if (png.length > Screenshot.MAX_PNG_BYTES
+                            || !sha256(png).equals(current.sha256())) {
+                        throw new IllegalArgumentException(
+                                "typography PNG does not match bounded current metadata");
+                    }
+                }
+            }
+
+            static TypographyDiagnostic fromCore(TypographyDiagnosticResult result) {
+                Objects.requireNonNull(result, "result");
+                String png = result.current() == null
+                        ? null
+                        : Base64.getEncoder().encodeToString(
+                                result.current().pngBytes());
+                return new TypographyDiagnostic(
+                        wire(result.status().name()),
+                        result.reference() == null
+                                ? null : result.reference().referenceId(),
+                        result.current() == null
+                                ? null : CurrentCaptureData.fromCore(result.current()),
+                        result.reports(),
+                        result.diagnostics().stream()
+                                .map(ComparisonDiagnosticData::fromCore)
+                                .toList(),
+                        result.elapsed().toMillis(),
+                        png);
+            }
+        }
+
         /** Successful trace start. */
         record TraceStarted(String traceId) implements Result {
             /** Validates trace identifier. */
@@ -400,6 +479,37 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             for (String childId : node.childIds()) {
                 appendDepthFirst(snapshot, childId, destination);
             }
+        }
+    }
+
+    /** Accepted current capture identity without backend or semantic object leakage. */
+    record CurrentCaptureData(
+            String sha256,
+            long revision,
+            long frame,
+            int width,
+            int height,
+            double scaleX,
+            double scaleY) {
+        /** Validates bounded capture identity. */
+        public CurrentCaptureData {
+            ProtocolJson.requireText(sha256, "current sha256");
+            if (revision < 0 || frame < 0 || width <= 0 || height <= 0
+                    || !Double.isFinite(scaleX) || scaleX <= 0
+                    || !Double.isFinite(scaleY) || scaleY <= 0) {
+                throw new IllegalArgumentException("invalid current capture metadata");
+            }
+        }
+
+        static CurrentCaptureData fromCore(CapturedImage image) {
+            return new CurrentCaptureData(
+                    image.sha256(),
+                    image.revision(),
+                    image.frame(),
+                    image.width(),
+                    image.height(),
+                    image.scale().x(),
+                    image.scale().y());
         }
     }
 

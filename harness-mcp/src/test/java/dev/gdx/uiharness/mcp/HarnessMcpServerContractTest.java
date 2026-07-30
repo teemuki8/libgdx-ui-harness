@@ -208,6 +208,51 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test void typographyFailurePublishesBoundedEvidenceArtifact() {
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(
+                        ProtocolVersion.V1,
+                        "mcp-1",
+                        "game",
+                        new HarnessResponse.Result.TypographyDiagnostic(
+                                "incomplete",
+                                "title-reference",
+                                null,
+                                List.of(),
+                                List.of(new HarnessResponse.ComparisonDiagnosticData(
+                                        "REFERENCE_NOT_FOUND",
+                                        "$.referenceId",
+                                        "registered typography reference",
+                                        "title-reference")),
+                                2,
+                                null)));
+        RecordingArtifacts artifacts = new RecordingArtifacts();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> response, artifacts, executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_typography_diagnose",
+                    Map.of(
+                            "sessionId", "game",
+                            "referenceId", "title-reference",
+                            "viewportId", "main",
+                            "maxDurationMillis", 30_000,
+                            "maxResults", 16,
+                            "maxWidth", 1920,
+                            "maxHeight", 1080,
+                            "maxPixels", 2_073_600,
+                            "maxPngBytes", 4_194_304)))
+                    .block(Duration.ofSeconds(10));
+            Map<String, Object> content = structured(result);
+
+            assertFalse(result.isError());
+            assertEquals("typography-diagnostic-result", content.get("kind"));
+            assertEquals("incomplete", content.get("status"));
+            assertEquals("artifact:1",
+                    ((Map<?, ?>) content.get("evidenceArtifact")).get("reference"));
+        }
+    }
+
     @Test void cancellingToolCallCancelsTheProtocolStage() throws Exception {
         AtomicReference<HarnessRequest> observed = new AtomicReference<>();
         CompletableFuture<HarnessResponse> pending = new CompletableFuture<>();
@@ -365,7 +410,7 @@ final class HarnessMcpServerContractTest {
             send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}");
             JsonNode listed = read(reader);
-            assertEquals(10, listed.at("/result/tools").size());
+            assertEquals(11, listed.at("/result/tools").size());
 
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
                     + "\"params\":{\"name\":\"ui_action\",\"arguments\":{"

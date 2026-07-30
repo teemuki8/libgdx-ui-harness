@@ -13,6 +13,8 @@ import java.lang.ref.WeakReference;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.List;
+import dev.gdx.uiharness.core.typography.TypographyObservation;
 
 /** Non-owning semantic extraction session attached to one Scene2D stage. */
 public final class Scene2dSession implements AutoCloseable {
@@ -21,6 +23,7 @@ public final class Scene2dSession implements AutoCloseable {
     private final ActorAdapterRegistry adapters;
     private final Scene2dSnapshotter snapshotter;
     private final Scene2dContractSnapshotter contractSnapshotter;
+    private final Scene2dTypographyExtractor typographyExtractor;
     private final ActorTokens actorTokens = new ActorTokens();
     private volatile boolean open = true;
 
@@ -37,6 +40,7 @@ public final class Scene2dSession implements AutoCloseable {
         snapshotter = new Scene2dSnapshotter(limits, semantics, adapters);
         contractSnapshotter =
                 new Scene2dContractSnapshotter(stage, semantics, adapters, snapshotter);
+        typographyExtractor = new Scene2dTypographyExtractor(stage, semantics, snapshotter);
     }
 
     /** Returns the metadata facade owned by this session. */
@@ -60,6 +64,13 @@ public final class Scene2dSession implements AutoCloseable {
     public StateActionContract stateActionContract(long revision, long frame) {
         requireOpen();
         return contractSnapshotter.snapshot(revision, frame);
+    }
+
+    /** Captures actor-attributed typography evidence after a completed frame. */
+    public List<TypographyObservation> typography(
+            long revision, long frame, TypographyCaptureContext context) {
+        requireOpen();
+        return typographyExtractor.extract(revision, frame, context);
     }
 
     /** Returns this session's stable weak-identity token without retaining the Actor. */
