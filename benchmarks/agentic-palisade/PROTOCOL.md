@@ -44,6 +44,106 @@ All viewports use device scale factor 1. The fixed seed `305419896` makes the bo
 
 The behavioral surface additionally includes scrolling, copying the current seed, deterministic random-seed replacement, CANCEL, Escape, and START BATTLE. START BATTLE is evaluated through the normalized `confirmation` payload in the spec; it does not expand the visual scope beyond the configuration workflow.
 
+## Public candidate evidence contract
+
+`CandidateUi.snapshotState()` is the only treatment-neutral state evidence channel. Its
+`CandidateState.values()` map must contain a `stateAction` member conforming to
+`state-action/v1.0` on every completed frame. The evaluator consumes this public member
+directly and does not accept candidate-specific aliases, infer omitted defaults, or translate
+another nesting shape. In the harness treatment, `ui_snapshot` exposes the same member as
+`candidateContract`; the library-owned semantic `contract` remains a separate result member.
+
+The `stateAction` object has these required members:
+
+- `schemaVersion`: exactly `state-action/v1.0`;
+- `stateId`: a stable identity for the complete observable state;
+- `revision` and `frame`: non-negative integers;
+- `controls`: all 19 controls in the normative corpus order, including the conditionally hidden
+  control;
+- `focusOrder`: the currently visible focusable control IDs in actual TAB order;
+- `conditions`: the corpus-declared rival-target relationship; and
+- `viewports`: the configuration viewport, its dimensions, scroll values and currently visible
+  control IDs.
+
+`focusedControlId` is present only while a declared control owns keyboard focus. `transition`
+is present after an observable action outcome and remains bound to the resulting state until the
+next action outcome.
+
+Every control object has exactly these members: `id`, `role`, `kind`, `accessibleName`,
+`options`, `defaultValue`, `currentValue`, `visible`, `enabled`, `actionable`, `focusable`,
+`focused`, `validationRule`, and `validationStatus`. Control IDs, option order, labels, default
+values, validation constraints and current values come from `corpus/spec.json` and the live UI.
+The closed `kind` values are `button`, `checkbox`, `number`, `range`, `select`, and `text`.
+Use the matching accessible role name, such as `button`, `checkbox`, `slider`, `combobox`, or
+`textbox`.
+
+All domain values are typed objects:
+
+```json
+{"type":"null"}
+{"type":"boolean","booleanValue":true}
+{"type":"integer","integerValue":305419896}
+{"type":"decimal","decimalValue":"1.0"}
+{"type":"text","textValue":"conquest"}
+```
+
+An option is `{"value":<typed-value>,"label":"<public label>"}`. A validation rule contains
+`format` and, when applicable, typed `minimum`, `maximum`, and `step`. A validation status is
+`{"valid":true,"messages":[]}` or contains bounded user-visible messages when invalid.
+
+The rival-target condition is represented as:
+
+```json
+{
+  "controllerId":"victoryCondition",
+  "equalsValue":{"type":"text","textValue":"rival-target"},
+  "dependentId":"rivalTargetCount",
+  "visibleWhenEqual":true,
+  "actionableWhenEqual":true,
+  "restoreFocusTo":"victoryCondition"
+}
+```
+
+The viewport object has exactly `id`, `width`, `height`, `scrollX`, `scrollY`, `maxScrollX`,
+`maxScrollY`, and `visibleControlIds`. At the bottom observation, `scrollY` equals
+`maxScrollY`; at the initial observation it is zero.
+
+A transition object has `actionId`, `accepted`, optional `rejectionReason`,
+`resultingStateId`, `resultingRevision`, `validation`, `kind`, optional `clipboardText`, and
+`acceptedPayload`. The closed kinds are `none`, `dismissed`, and `confirmation`. Values inside
+`acceptedPayload` use the same typed representation. COPY SEED reports `clipboardText`.
+RANDOM SEED reports typed `previousSeed` and `seed` payload entries. CANCEL and Escape use
+`dismissed` with an empty payload. START BATTLE uses `confirmation` and the normalized corpus
+payload. An invalid START BATTLE transition is rejected, includes a reason, and has no accepted
+payload.
+
+Missing, mistyped, duplicated, reordered, or unknown-major fields make the scenario
+contract-incompatible. Omitting a scenario makes it scenario-unexecuted. A schema-compatible
+observation that disagrees with the corpus is an assertion failure.
+
+`CandidateState.values()` must also contain `structuralUsability` for every approved capture
+state. This is the public `structural-observation/v1` object used by the independent structural
+channel. It contains:
+
+- non-negative `semanticRevision` and `layoutRevision`;
+- `frameEdgeClipped` and the current `scrollY`;
+- lowercase SHA-256 identities `semanticSha256`, `layoutSha256`, and `regionSha256` derived
+  deterministically from the candidate's current semantic, layout, and visible-region
+  observations;
+- `panelBounds` in top-left framebuffer pixels; and
+- bounded `controls` attributed by the stable corpus control IDs.
+
+Each rectangle is `{"x":0,"y":0,"width":0,"height":0}` in top-left framebuffer pixels.
+Each structural control contains exactly `controlId`, `role`, optional `labelControlId`,
+optional `labelledControlId`, `enabled`, `focusable`, `hitBounds`, `visualBounds`, `occluded`,
+`fontPixels`, `rasterResidual`, `contrastRatio`, `glyphClipped`, `hierarchyRole`,
+`parentControlId`, optional `scrollOwnerId`, optional `clipOwnerId`, and `visibleBounds`.
+Report actual completed-frame measurements, not desired values. Stable unchanged captures must
+retain the same semantic, layout, and region hashes and revisions. The structural release
+thresholds are at least 12 font pixels, at most 0.5 raster residual, at least 4.5 contrast,
+at least 34 × 34 hit bounds, no glyph or frame-edge clipping, no occlusion, correct label/control
+association, form-row ownership under `form`, and scroll/clip ownership under `scroll`.
+
 ## Outcomes
 
 Two outcome families are reported separately:

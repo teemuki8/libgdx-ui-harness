@@ -45,8 +45,8 @@ final class TemplateContractTest {
 
     @Test
     void candidateStateBudgetFitsBoundedStructuralEvidenceAndStillRejectsOverflow() {
-        Map<String, Object> withinBudget = nodeBudgetFixture(5, 49);
-        Map<String, Object> overBudget = nodeBudgetFixture(6, 49);
+        Map<String, Object> withinBudget = nodeBudgetFixture(63, 63);
+        Map<String, Object> overBudget = nodeBudgetFixture(64, 64);
 
         assertEquals(withinBudget, new CandidateState(withinBudget).values());
         assertThrows(IllegalArgumentException.class,

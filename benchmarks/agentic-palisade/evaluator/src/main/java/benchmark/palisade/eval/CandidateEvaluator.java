@@ -56,7 +56,7 @@ public final class CandidateEvaluator {
             Map.entry("src/main/java/benchmark/palisade/CandidateLauncher.java", "aa8bf5d629899646f770b6e395b877879e72111baaf6305239fda71348bc8024"),
             Map.entry("src/main/java/benchmark/palisade/BenchmarkControl.java", "5c33f4fbf41a53e2986d962dfe40adac599dcb4c948688e24e771b89caa0db68"),
             Map.entry("src/main/java/benchmark/palisade/CandidateApplication.java", "8d20fb4f2b11de529ce30ae9f846abb45ce1e937fe0dd14563c7490de5625725"),
-            Map.entry("src/main/java/benchmark/palisade/CandidateState.java", "e35bad6e32e78f109012db94bc0a0293fdc477c39c003d0eeeadea215023fddc"),
+            Map.entry("src/main/java/benchmark/palisade/CandidateState.java", "88157890ecdfb4a4e7f2fee028d99d1f9940ff84d21dcd2445f73945ba5a2fd6"),
             Map.entry("src/main/java/benchmark/palisade/CandidateUi.java", "fe93166097d0a357b85452a09f91fd7c2690e8d4f7d6648bc426456741c10eb7"));
     private static final Pattern RESERVED_TYPE_DECLARATION = Pattern.compile(
             "\\b(?:class|record|interface|enum)\\s+(?:CandidateLauncher|BenchmarkControl|CandidateApplication|CandidateState|CandidateUi)\\b");
@@ -119,7 +119,7 @@ public final class CandidateEvaluator {
                         request, candidateCopy, corpus, contract, workspace, runtimeClasspath);
                 EvaluationRecord complete = record("complete", candidateIdentity, corpusIdentity,
                         data.functional(), data.visual(), data.structural(),
-                        data.artifacts(), List.of());
+                        data.artifacts(), data.diagnostics());
                 publishAfterIdentityCheck(
                         request.candidateDirectory(), candidateHash,
                         request.outputDirectory(), complete, workspace);
@@ -193,12 +193,27 @@ public final class CandidateEvaluator {
         ObjectNode initial1280State = stateForCapture(
                 results1280, "captures/initial-1280x720-0.png");
         List<EvaluationRecord.Artifact> artifacts = new ArrayList<>();
-        ObjectNode functionalEvidence = runFunctionalScenarios(
-                runtimeClasspath, candidateCopy, workspace, initialState);
+        FunctionalContract.Result functional;
+        List<String> diagnostics = new ArrayList<>();
+        try {
+            ObjectNode functionalSuite = runFunctionalScenarios(
+                    runtimeClasspath, candidateCopy, workspace, initialState);
+            functionalSuite.withObject("scenarios").set(
+                    "bottom", publicContract(bottomState, "bottom"));
+            FunctionalContract.PublicEvaluation publicEvaluation =
+                    contract.evaluatePublicContractOutcome(functionalSuite);
+            if (publicEvaluation.result() == null) {
+                diagnostics.add("public-state-action:"
+                        + publicEvaluation.status().name().toLowerCase(Locale.ROOT));
+                functional = contract.evaluate(JSON.createObjectNode());
+            } else {
+                functional = publicEvaluation.result();
+            }
+        } catch (CandidateContractException incompatible) {
+            diagnostics.add("public-state-action:contract_incompatible");
+            functional = contract.evaluate(JSON.createObjectNode());
+        }
         addFunctionalArtifacts(workspace, artifacts);
-        ObjectNode checkpoints = functionalEvidence.withObject("checkpoints");
-        copyObservedCheckpoint(checkpoints, "bottom", bottomState);
-        FunctionalContract.Result functional = contract.evaluate(functionalEvidence);
 
         List<EvaluationRecord.VisualOutcome> visual = new ArrayList<>();
         List<StructuralUsability.Result> structural = new ArrayList<>();
@@ -231,15 +246,21 @@ public final class CandidateEvaluator {
         }
         artifacts.add(artifact("evidence/1920/results.ndjson", evidence1920.resolve("results.ndjson")));
         artifacts.add(artifact("evidence/1280/results.ndjson", evidence1280.resolve("results.ndjson")));
-        return new EvaluationData(functional, visual, structural, artifacts);
+        return new EvaluationData(functional, visual, structural, artifacts, diagnostics);
     }
 
     private static StructuralUsability.Result structuralOutcome(
             JsonNode reference, List<ObjectNode> observedStates, List<String> captureHashes) {
         String referenceId = reference.path("id").asText();
         String expectedState = reference.path("stateId").asText();
-        String observedScroll = observedStates.getFirst().path("scrollPosition").asText("");
-        String observedStateId = "bottom".equals(observedScroll) ? "bottom" : "initial";
+        JsonNode observedViewport = observedStates.getFirst()
+                .path("stateAction").path("viewports").path(0);
+        boolean observedBottom = observedViewport.path("maxScrollY").isNumber()
+                && observedViewport.path("maxScrollY").doubleValue() > 0
+                && Double.compare(
+                        observedViewport.path("scrollY").doubleValue(),
+                        observedViewport.path("maxScrollY").doubleValue()) == 0;
+        String observedStateId = observedBottom ? "bottom" : "initial";
         int width = reference.path("width").asInt();
         int height = reference.path("height").asInt();
         StructuralUsability.Rect panel = structuralPanel(referenceId);
@@ -320,7 +341,7 @@ public final class CandidateEvaluator {
                     index,
                     0,
                     0,
-                    "bottom".equals(observedScroll) ? 1 : 0,
+                    observedBottom ? 1 : 0,
                     "0".repeat(64),
                     "0".repeat(64),
                     "0".repeat(64),
@@ -479,29 +500,19 @@ public final class CandidateEvaluator {
     private static ObjectNode runFunctionalScenarios(
             String runtimeClasspath, Path candidateCopy, Path workspace,
             ObjectNode initialState) throws IOException, InterruptedException {
-        ObjectNode evidence = JSON.createObjectNode();
-        ObjectNode checkpoints = evidence.putObject("checkpoints");
-        int visibleCount;
-        try {
-            visibleCount = visibleControls(initialState).size();
-        } catch (IllegalArgumentException missingObservation) {
-            copyObservedCheckpoint(checkpoints, "initial", initialState);
-            return evidence;
-        }
-        List<ObjectNode> focusCommands = tabs(visibleCount);
+        ObjectNode suite = JSON.createObjectNode();
+        suite.put("schemaVersion", "state-action-suite/v1");
+        ObjectNode scenarios = suite.putObject("scenarios");
+        int focusableCount = focusOrder(initialState).size();
+        List<ObjectNode> focusCommands = tabs(focusableCount);
         List<ResultLine> focusResults = runFunctionalScenario(
                 runtimeClasspath, candidateCopy, workspace, "focus", focusCommands);
-        ObjectNode initial = initialState.deepCopy();
+        ObjectNode initial = publicContract(initialState, "initial");
         ArrayNode observedFocusOrder = initial.putArray("focusOrder");
-        ArrayNode observedControlOrder = initial.putArray("controlOrder");
-        ArrayNode observedControls = initial.putArray("controls");
         for (ResultLine line : focusResults.subList(0, focusCommands.size())) {
-            String focused = observableText(
-                    line.state(), "focusedControlId", "focusId");
+            String focused = observableText(line.state(), "focusedControlId");
             if (focused != null) {
                 observedFocusOrder.add(focused);
-                observedControlOrder.add(focused);
-                addFocusedControl(observedControls, line.state(), focused, -1);
             }
         }
 
@@ -519,53 +530,49 @@ public final class CandidateEvaluator {
         conditional.add(key("ENTER", false));
         List<ResultLine> conditionalResults = runFunctionalScenario(
                 runtimeClasspath, candidateCopy, workspace, "conditional", conditional);
-        ObjectNode targetState = conditionalResults.get(visibleIndex + 1).state();
-        String targetFocus = observableText(
-                targetState, "focusedControlId", "focusId");
-        if (targetFocus != null) {
-            observedControlOrder.insert(6, targetFocus);
-            addFocusedControl(observedControls, targetState, targetFocus, 6);
-        }
-        copyObservedCheckpoint(checkpoints, "initial", initial);
-        copyObservedCheckpoint(checkpoints, "conditionalVisible", conditionalResults.get(visibleIndex).state());
-        copyObservedCheckpoint(checkpoints, "conditionalHidden", conditionalResults.get(conditional.size() - 1).state());
+        scenarios.set("initial", initial);
+        scenarios.set("conditionalVisible", publicContract(
+                conditionalResults.get(visibleIndex).state(), "conditionalVisible"));
+        scenarios.set("conditionalHidden", publicContract(
+                conditionalResults.get(conditional.size() - 1).state(),
+                "conditionalHidden"));
 
         int seedTabs = tabCountTo(initialState, "seed");
         int seedToStart = tabDistance(
                 initialState, "seed", "startBattle");
-        copyObservedCheckpoint(checkpoints, "minimumSeed", runSeedScenario(
+        scenarios.set("minimumSeed", publicContract(runSeedScenario(
                 runtimeClasspath, candidateCopy, workspace,
-                "seed-minimum", "0", false, seedTabs, seedToStart));
-        copyObservedCheckpoint(checkpoints, "maximumSeed", runSeedScenario(
+                "seed-minimum", "0", false, seedTabs, seedToStart), "minimumSeed"));
+        scenarios.set("maximumSeed", publicContract(runSeedScenario(
                 runtimeClasspath, candidateCopy, workspace,
                 "seed-maximum", "4294967295", false,
-                seedTabs, seedToStart));
-        copyObservedCheckpoint(checkpoints, "belowMinimumSeed", runSeedScenario(
+                seedTabs, seedToStart), "maximumSeed"));
+        scenarios.set("belowMinimumSeed", publicContract(runSeedScenario(
                 runtimeClasspath, candidateCopy, workspace,
-                "seed-below", "-1", false, seedTabs, seedToStart));
-        copyObservedCheckpoint(checkpoints, "aboveMaximumSeed", runSeedScenario(
+                "seed-below", "-1", false, seedTabs, seedToStart), "belowMinimumSeed"));
+        scenarios.set("aboveMaximumSeed", publicContract(runSeedScenario(
                 runtimeClasspath, candidateCopy, workspace,
                 "seed-above", "4294967296", false,
-                seedTabs, seedToStart));
-        copyObservedCheckpoint(checkpoints, "invalidStart", runSeedScenario(
+                seedTabs, seedToStart), "aboveMaximumSeed"));
+        scenarios.set("invalidStart", publicContract(runSeedScenario(
                 runtimeClasspath, candidateCopy, workspace,
-                "invalid-start", "-1", true, seedTabs, seedToStart));
+                "invalid-start", "-1", true, seedTabs, seedToStart), "invalidStart"));
 
-        copyObservedCheckpoint(checkpoints, "copySeed", runActionScenario(
+        scenarios.set("copySeed", publicContract(runActionScenario(
                 runtimeClasspath, candidateCopy, workspace, "copy-seed",
-                tabCountTo(initialState, "copySeed")));
-        copyObservedCheckpoint(checkpoints, "randomSeed", runRandomSeedScenario(
+                tabCountTo(initialState, "copySeed")), "copySeed"));
+        scenarios.set("randomSeed", publicContract(runRandomSeedScenario(
                 runtimeClasspath, candidateCopy, workspace, seedTabs,
-                tabDistance(initialState, "seed", "randomSeed")));
-        copyObservedCheckpoint(checkpoints, "cancel", runActionScenario(
+                tabDistance(initialState, "seed", "randomSeed")), "randomSeed"));
+        scenarios.set("cancel", publicContract(runActionScenario(
                 runtimeClasspath, candidateCopy, workspace, "cancel",
-                tabCountTo(initialState, "cancel")));
-        copyObservedCheckpoint(checkpoints, "confirmation", runActionScenario(
+                tabCountTo(initialState, "cancel")), "cancel"));
+        scenarios.set("confirmation", publicContract(runActionScenario(
                 runtimeClasspath, candidateCopy, workspace, "start-battle",
-                tabCountTo(initialState, "startBattle")));
-        copyObservedCheckpoint(checkpoints, "escape", runEscapeScenario(
-                runtimeClasspath, candidateCopy, workspace));
-        return evidence;
+                tabCountTo(initialState, "startBattle")), "confirmation"));
+        scenarios.set("escape", publicContract(runEscapeScenario(
+                runtimeClasspath, candidateCopy, workspace), "escape"));
+        return suite;
     }
 
     private static void addFunctionalArtifacts(
@@ -612,22 +619,12 @@ public final class CandidateEvaluator {
         List<ObjectNode> commands = new ArrayList<>(tabs(seedTabs));
         commands.add(key("A", false).put("control", true));
         commands.add(command("key").put("action", "type").put("character", "1"));
-        int previousIndex = commands.size() - 1;
         commands.addAll(tabs(seedToRandom));
         commands.add(key("ENTER", false));
         List<ResultLine> results = runFunctionalScenario(
                 runtimeClasspath, candidateCopy, workspace,
                 "random-seed", commands);
-        ObjectNode outcome = results.get(commands.size() - 1).state().deepCopy();
-        JsonNode previousState = results.get(previousIndex).state();
-        JsonNode previousSeed = previousState.path("seed");
-        if (!previousSeed.isIntegralNumber()) {
-            previousSeed = previousState.path("values").path("seed");
-        }
-        if (previousSeed.isIntegralNumber()) {
-            outcome.put("previousSeed", previousSeed.longValue());
-        }
-        return outcome;
+        return results.get(commands.size() - 1).state();
     }
 
     private static ObjectNode runActionScenario(String runtimeClasspath, Path candidateCopy, Path workspace,
@@ -659,44 +656,44 @@ public final class CandidateEvaluator {
     }
 
     static int tabCountTo(JsonNode state, String target) {
-        List<String> visible = visibleControls(state);
-        int index = visible.indexOf(target);
+        List<String> focusOrder = focusOrder(state);
+        int index = focusOrder.indexOf(target);
         if (index < 0) {
-            throw new IllegalArgumentException(
-                    "Target control is not visible: " + target);
+            throw new CandidateContractException(
+                    "Target control is not focusable: " + target);
         }
         return index + 1;
     }
 
     private static int tabDistance(
             JsonNode state, String current, String target) {
-        List<String> visible = visibleControls(state);
-        int currentIndex = visible.indexOf(current);
-        int targetIndex = visible.indexOf(target);
+        List<String> focusOrder = focusOrder(state);
+        int currentIndex = focusOrder.indexOf(current);
+        int targetIndex = focusOrder.indexOf(target);
         if (currentIndex < 0 || targetIndex <= currentIndex) {
-            throw new IllegalArgumentException(
+            throw new CandidateContractException(
                     "Invalid visible focus transition");
         }
         return targetIndex - currentIndex;
     }
 
-    private static List<String> visibleControls(JsonNode state) {
-        JsonNode observed = state.path("visibleControls");
+    private static List<String> focusOrder(JsonNode state) {
+        JsonNode observed = state.path("stateAction").path("focusOrder");
         if (!observed.isArray() || observed.isEmpty()
                 || observed.size() > 64) {
-            throw new IllegalArgumentException(
-                    "Missing bounded visibleControls observation");
+            throw new CandidateContractException(
+                    "Missing bounded stateAction.focusOrder observation");
         }
-        List<String> visible = new ArrayList<>(observed.size());
-        for (JsonNode value : observed) {
-            String id = value.textValue();
-            if (id == null || id.isBlank() || visible.contains(id)) {
-                throw new IllegalArgumentException(
-                        "Invalid visibleControls observation");
+        List<String> order = new ArrayList<>(observed.size());
+        for (JsonNode identifier : observed) {
+            String id = identifier.textValue();
+            if (id == null || id.isBlank() || order.contains(id)) {
+                throw new CandidateContractException(
+                        "Invalid stateAction focus-order observation");
             }
-            visible.add(id);
+            order.add(id);
         }
-        return List.copyOf(visible);
+        return List.copyOf(order);
     }
 
     private static List<ObjectNode> tabs(int count) {
@@ -715,23 +712,17 @@ public final class CandidateEvaluator {
         return command;
     }
 
-    private static String observableText(ObjectNode state, String primary, String alternate) {
-        String value = state.path(primary).textValue();
-        return value != null ? value : state.path(alternate).textValue();
+    private static String observableText(ObjectNode state, String primary) {
+        return state.path("stateAction").path(primary).textValue();
     }
 
-    private static void addFocusedControl(
-            ArrayNode controls, ObjectNode state, String focused, int index) {
-        JsonNode metadata = state.path("focusedControl");
-        if (!metadata.isObject()
-                || !focused.equals(metadata.path("id").textValue())) {
-            return;
+    private static ObjectNode publicContract(ObjectNode state, String scenario) {
+        JsonNode contract = state.path("stateAction");
+        if (!contract.isObject()) {
+            throw new CandidateContractException(
+                    "Scenario " + scenario + " is missing stateAction");
         }
-        if (index < 0) {
-            controls.add(metadata.deepCopy());
-        } else {
-            controls.insert(index, metadata.deepCopy());
-        }
+        return ((ObjectNode) contract).deepCopy();
     }
 
     private static void addCaptures(List<ObjectNode> commands, String referenceId) {
@@ -1320,7 +1311,14 @@ public final class CandidateEvaluator {
     private record EvaluationData(FunctionalContract.Result functional,
             List<EvaluationRecord.VisualOutcome> visual,
             List<StructuralUsability.Result> structural,
-            List<EvaluationRecord.Artifact> artifacts) {}
+            List<EvaluationRecord.Artifact> artifacts,
+            List<String> diagnostics) {}
     private record ResultLine(String command, String artifact, ObjectNode state) {}
     private record ProcessResult(int exitCode) {}
+    private static final class CandidateContractException
+            extends IllegalArgumentException {
+        private CandidateContractException(String message) {
+            super(message);
+        }
+    }
 }

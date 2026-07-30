@@ -83,9 +83,10 @@ public final class HarnessBridge implements AutoCloseable {
     private final ExecutorService protocolExecutor;
     private final HarnessToolHandler tools;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final CandidateUi candidate;
 
     private HarnessBridge(CandidateUi candidate, Path artifactRoot) {
-        Objects.requireNonNull(candidate, "candidate");
+        this.candidate = Objects.requireNonNull(candidate, "candidate");
         Stage stage = Objects.requireNonNull(candidate.stage(), "candidate.stage()");
         ownedRoot = prepareOwnedRoot(artifactRoot);
         this.artifactRoot = ownedRoot.resolve("artifacts");
@@ -161,6 +162,27 @@ public final class HarnessBridge implements AutoCloseable {
         return tools.handle(McpSchema.CallToolRequest.builder(operation)
                 .arguments(Map.copyOf(arguments))
                 .build()).toFuture();
+    }
+
+    /** Reads the treatment-neutral candidate contract on the owning render thread. */
+    CompletionStage<Map<String, Object>> candidateContract() {
+        requireOpen();
+        return scheduler.submit(() -> {
+            Object value = candidate.snapshotState().values().get("stateAction");
+            if (!(value instanceof Map<?, ?> raw)) {
+                return Map.of();
+            }
+            java.util.LinkedHashMap<String, Object> contract =
+                    new java.util.LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : raw.entrySet()) {
+                if (!(entry.getKey() instanceof String key)) {
+                    throw new IllegalArgumentException(
+                            "Candidate stateAction keys must be strings");
+                }
+                contract.put(key, entry.getValue());
+            }
+            return java.util.Collections.unmodifiableMap(contract);
+        }, Deadline.after(clock, Duration.ofSeconds(30)));
     }
 
     /** Closes harness resources while retaining only bounded published benchmark evidence. */

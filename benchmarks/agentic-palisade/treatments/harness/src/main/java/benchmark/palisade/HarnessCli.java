@@ -122,12 +122,45 @@ public final class HarnessCli {
                         ? Map.of("code", "operation-failed", "message", "Harness operation failed")
                         : structured);
             } else {
-                response.put("result", result.structuredContent());
+                response.put("result", "ui_snapshot".equals(operation)
+                        ? withCandidateContract(
+                                result.structuredContent(),
+                                bridge.candidateContract().toCompletableFuture().join())
+                        : result.structuredContent());
             }
             return Map.copyOf(response);
         } catch (RuntimeException failure) {
             return error("operation-failed", "Harness operation failed");
         }
+    }
+
+    private static Map<String, Object> withCandidateContract(
+            Object structured, Map<String, Object> contract) {
+        if (!(structured instanceof Map<?, ?> raw)) {
+            throw new IllegalArgumentException(
+                    "Harness snapshot result must be an object");
+        }
+        LinkedHashMap<String, Object> merged = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (!(entry.getKey() instanceof String key)) {
+                throw new IllegalArgumentException(
+                        "Harness snapshot keys must be strings");
+            }
+            merged.put(key, entry.getValue());
+        }
+        if (contract.isEmpty()) {
+            merged.put("candidateContractStatus", "missing");
+        } else {
+            merged.put("candidateContractStatus", "present");
+            merged.put("candidateContract", contract);
+            merged.put("candidateContractSchemaVersion",
+                    contract.get("schemaVersion"));
+            merged.put("candidateStateId", contract.get("stateId"));
+            Object controls = contract.get("controls");
+            merged.put("candidateControlCount",
+                    controls instanceof java.util.List<?> list ? list.size() : 0);
+        }
+        return Map.copyOf(merged);
     }
 
     private static byte[] readBoundedLine(InputStream input) throws IOException {

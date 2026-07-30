@@ -274,11 +274,15 @@ final class FunctionalContractTest {
     }
 
     @Test
-    void focusNavigationUsesVisibleControlsRatherThanCorpusFocusNumbers()
+    void focusNavigationUsesThePublicStateActionContractRatherThanCandidateAliases()
             throws Exception {
         JsonNode initial = findById(corpus().path("states"), "initial");
         ObjectNode state = JSON.createObjectNode();
-        state.set("visibleControls", initial.path("visibleControls").deepCopy());
+        state.putArray("visibleControls").add("candidateAlias");
+        ArrayNode focusOrder = state.putObject("stateAction").putArray("focusOrder");
+        for (JsonNode identifier : initial.path("visibleControls")) {
+            focusOrder.add(identifier.textValue());
+        }
 
         assertEquals(6, CandidateEvaluator.tabCountTo(
                 state, "victoryCondition"));
@@ -290,6 +294,9 @@ final class FunctionalContractTest {
         assertThrows(IllegalArgumentException.class,
                 () -> CandidateEvaluator.tabCountTo(
                         state, "rivalTargetCount"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CandidateEvaluator.tabCountTo(
+                        JSON.createObjectNode(), "seed"));
     }
 
     @Test
