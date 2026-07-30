@@ -25,6 +25,9 @@ import com.badlogic.gdx.scenes.scene2d.utils.TextureRegionDrawable;
 import com.badlogic.gdx.utils.Array;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
 import dev.gdx.uiharness.scene2d.Semantics;
+import dev.gdx.uiharness.scene2d.TypographyMetadata;
+import dev.gdx.uiharness.core.typography.EvidenceValue;
+import dev.gdx.uiharness.core.typography.UnavailableReason;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -46,6 +49,8 @@ public final class ReferenceScreen implements AutoCloseable {
     private final float benchmarkDelaySeconds;
     private final Map<Actor, SemanticTag> benchmarkTags = new LinkedHashMap<>();
     private Table signInPanel;
+    private Label harnessTitle;
+    private Label bodyCaption;
     private TextField username;
     private TextField password;
     private Semantics semantics;
@@ -91,6 +96,11 @@ public final class ReferenceScreen implements AutoCloseable {
                 "rotated-card", "Rotated card");
         tag(stage.getRoot().findActor("overlap-card"),
                 "overlap-card", "Overlap card");
+        tag(harnessTitle, "harness-title", "Deterministic UI Harness");
+        semantics.setTypography(
+                harnessTitle, typographyMetadata());
+        tag(bodyCaption, "body-caption", "Transforms and overlap");
+        semantics.setTypography(bodyCaption, typographyMetadata());
         benchmarkTags.forEach((actor, metadata) ->
                 tag(actor, metadata.testId(), metadata.accessibleName()));
     }
@@ -117,11 +127,11 @@ public final class ReferenceScreen implements AutoCloseable {
         background.setName("background");
         stage.addActor(background);
 
-        Label heading = new Label("Deterministic UI Harness", skin);
-        heading.setBounds(64, 640, 500, 42);
-        heading.setFontScale(1.35f);
-        heading.setTouchable(Touchable.disabled);
-        stage.addActor(heading);
+        harnessTitle = new Label("Deterministic UI Harness", skin);
+        harnessTitle.setBounds(64, 624, 580, 74);
+        harnessTitle.setFontScale(2.8f);
+        harnessTitle.setTouchable(Touchable.disabled);
+        stage.addActor(harnessTitle);
     }
 
     private void buildSignIn() {
@@ -218,11 +228,11 @@ public final class ReferenceScreen implements AutoCloseable {
         overlap.setTouchable(Touchable.disabled);
         stage.addActor(overlap);
 
-        Label caption = new Label("transforms + overlap", skin);
-        caption.setColor(MUTED);
-        caption.setBounds(220, 132, 260, 30);
-        caption.setTouchable(Touchable.disabled);
-        stage.addActor(caption);
+        bodyCaption = new Label("transforms + overlap", skin);
+        bodyCaption.setColor(MUTED);
+        bodyCaption.setBounds(220, 132, 260, 31);
+        bodyCaption.setTouchable(Touchable.disabled);
+        stage.addActor(bodyCaption);
     }
 
     private void buildBenchmarkScenario() {
@@ -418,6 +428,23 @@ public final class ReferenceScreen implements AutoCloseable {
     }
 
     private record SemanticTag(String testId, String accessibleName) {}
+
+    private static TypographyMetadata typographyMetadata() {
+        return new TypographyMetadata(
+                "classpath:reference-ui/lsans-15.fnt",
+                java.util.List.of("classpath:reference-ui/lsans-15.png"),
+                15,
+                15,
+                EvidenceValue.unavailable(
+                        UnavailableReason.UNSUPPORTED,
+                        "BitmapFont does not expose weight"),
+                EvidenceValue.unavailable(
+                        UnavailableReason.UNSUPPORTED,
+                        "BitmapFont does not expose letter spacing"),
+                EvidenceValue.unavailable(
+                        UnavailableReason.UNSUPPORTED,
+                        "bitmap font has no distance-field smoothing"));
+    }
 
     private static Skin createSkin() {
         Skin skin = new Skin();

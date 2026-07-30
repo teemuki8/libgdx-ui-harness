@@ -178,7 +178,7 @@ public final class Lwjgl3VisualComparator implements VisualComparator {
                 ((first >>> shift) & 0xff) - ((second >>> shift) & 0xff));
     }
 
-    private static BufferedImage decode(
+    static BufferedImage decode(
             byte[] png, int expectedWidth, int expectedHeight, String name) {
         try (ByteArrayInputStream raw = new ByteArrayInputStream(png);
                 ImageInputStream input = ImageIO.createImageInputStream(raw)) {

@@ -11,7 +11,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 
-/** Immutable catalog of the ten allowlisted MCP tools and their bounded JSON schemas. */
+/** Immutable catalog of the eleven allowlisted MCP tools and their bounded JSON schemas. */
 public final class HarnessToolCatalog {
     private static final int MAX_IDENTIFIER = 256;
     private static final Map<String, Object> ARTIFACT_SCHEMA = object(Map.of(
@@ -139,6 +139,45 @@ public final class HarnessToolCatalog {
                                 List.of(
                                         "status", "policy", "iterations",
                                         "elapsedMillis", "differences", "diagnostics"))),
+                tool("ui_typography_diagnose",
+                        "Capture and diagnose actor-attributed typography against a named "
+                                + "reference",
+                        sessionInput(Map.of(
+                                "referenceId", string(1, MAX_IDENTIFIER),
+                                "viewportId", string(1, MAX_IDENTIFIER),
+                                "maxDurationMillis", integer(1, 120_000),
+                                "maxResults", integer(1, 256),
+                                "maxWidth", integer(1, 8_192),
+                                "maxHeight", integer(1, 8_192),
+                                "maxPixels", integer(1, 33_554_432L),
+                                "maxPngBytes", integer(
+                                        1, HarnessResponse.Result.Screenshot.MAX_PNG_BYTES)),
+                                List.of(
+                                        "referenceId", "viewportId", "maxDurationMillis",
+                                        "maxResults", "maxWidth", "maxHeight",
+                                        "maxPixels", "maxPngBytes")),
+                        output("typography-diagnostic-result", Map.ofEntries(
+                                Map.entry("status", enumString(
+                                        "pixel-sharp", "not-pixel-sharp", "incomplete",
+                                        "not-diagnosable", "stale", "not-stable")),
+                                Map.entry("referenceId", string(1, MAX_IDENTIFIER)),
+                                Map.entry("currentArtifact", ARTIFACT_SCHEMA),
+                                Map.entry("evidenceArtifact", ARTIFACT_SCHEMA),
+                                Map.entry("revision", integer(0, Long.MAX_VALUE)),
+                                Map.entry("frame", integer(0, Long.MAX_VALUE)),
+                                Map.entry("width", integer(1, 8_192)),
+                                Map.entry("height", integer(1, 8_192)),
+                                Map.entry("scaleX", positiveNumber(Double.MAX_VALUE)),
+                                Map.entry("scaleY", positiveNumber(Double.MAX_VALUE)),
+                                Map.entry("sha256", string(64, 64)),
+                                Map.entry("reportCount", integer(0, 256)),
+                                Map.entry("reports", array(typographyReportSchema(), 256)),
+                                Map.entry("diagnostics", array(
+                                        comparisonDiagnosticSchema(), 256)),
+                                Map.entry("elapsedMillis", integer(0, 120_000))),
+                                List.of(
+                                        "status", "reportCount", "reports",
+                                        "diagnostics", "elapsedMillis"))),
                 tool("ui_trace_start", "Start bounded trace collection",
                         sessionInput(Map.of(
                                 "maxDurationMillis", integer(1, 3_600_000),
@@ -340,6 +379,186 @@ public final class HarnessToolCatalog {
                 List.of(
                         "differingPixels", "meanAbsoluteError",
                         "maximumChannelDelta"));
+    }
+
+    private static Map<String, Object> typographyReportSchema() {
+        return object(Map.ofEntries(
+                Map.entry("controlId", string(1, MAX_IDENTIFIER)),
+                Map.entry("actorId", string(1, MAX_IDENTIFIER)),
+                Map.entry("status", enumString(
+                        "pixel-sharp", "not-pixel-sharp", "incomplete",
+                        "not-diagnosable", "stale", "not-stable")),
+                Map.entry("text", string(0, ProtocolJson.MAX_STRING_LENGTH)),
+                Map.entry("textStart", integer(0, ProtocolJson.MAX_STRING_LENGTH)),
+                Map.entry("textEnd", integer(0, ProtocolJson.MAX_STRING_LENGTH)),
+                Map.entry("glyphRuns", array(glyphRunSchema(), 1_024)),
+                Map.entry("revision", integer(0, Long.MAX_VALUE)),
+                Map.entry("frame", integer(0, Long.MAX_VALUE)),
+                Map.entry("currentArtifactId", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                Map.entry("captureSha256", string(64, 64)),
+                Map.entry("transformSha256", string(64, 64)),
+                Map.entry("font", fontObservationSchema()),
+                Map.entry("display", displayObservationSchema()),
+                Map.entry("transforms", array(affineTransformSchema(), 4)),
+                Map.entry("origins", array(coordinatePointSchema(), 4)),
+                Map.entry("baselines", array(coordinatePointSchema(), 4)),
+                Map.entry("layoutBounds", array(coordinateBoundsSchema(), 4)),
+                Map.entry("inkBounds", array(coordinateBoundsSchema(), 4)),
+                Map.entry("fractionalTranslationX", number(-1, 1)),
+                Map.entry("fractionalTranslationY", number(-1, 1)),
+                Map.entry("rasterResidual", number(0, 255)),
+                Map.entry("diagnostics", array(typographyDifferenceSchema(), 256)),
+                Map.entry("sourceMechanisms", array(
+                        string(1, ProtocolJson.MAX_STRING_LENGTH), 256)),
+                Map.entry("controlledResults", array(
+                        string(1, ProtocolJson.MAX_STRING_LENGTH), 256)),
+                Map.entry("unresolvedHypotheses", array(
+                        string(1, ProtocolJson.MAX_STRING_LENGTH), 256))),
+                List.of(
+                        "controlId", "actorId", "status", "text", "textStart", "textEnd",
+                        "glyphRuns", "revision", "frame", "currentArtifactId",
+                        "captureSha256", "transformSha256", "font", "display", "transforms",
+                        "origins", "baselines", "layoutBounds", "inkBounds",
+                        "fractionalTranslationX", "fractionalTranslationY",
+                        "rasterResidual", "diagnostics", "sourceMechanisms",
+                        "controlledResults", "unresolvedHypotheses"));
+    }
+
+    private static Map<String, Object> glyphRunSchema() {
+        return object(Map.of(
+                "textStart", integer(0, ProtocolJson.MAX_STRING_LENGTH),
+                "textEnd", integer(0, ProtocolJson.MAX_STRING_LENGTH),
+                "text", string(0, ProtocolJson.MAX_STRING_LENGTH),
+                "origin", coordinatePointSchema(),
+                "baseline", coordinatePointSchema(),
+                "inkBounds", coordinateBoundsSchema()),
+                List.of("textStart", "textEnd", "text", "origin", "baseline", "inkBounds"));
+    }
+
+    private static Map<String, Object> fontObservationSchema() {
+        return object(Map.ofEntries(
+                Map.entry("sourceId", evidenceValueSchema(
+                        string(1, ProtocolJson.MAX_STRING_LENGTH))),
+                Map.entry("atlasPageIds", array(
+                        string(1, ProtocolJson.MAX_STRING_LENGTH), 256)),
+                Map.entry("nominalSize", evidenceValueSchema(
+                        positiveNumber(Double.MAX_VALUE))),
+                Map.entry("generatedGlyphSize", evidenceValueSchema(
+                        positiveNumber(Double.MAX_VALUE))),
+                Map.entry("effectiveSizeX", positiveNumber(Double.MAX_VALUE)),
+                Map.entry("effectiveSizeY", positiveNumber(Double.MAX_VALUE)),
+                Map.entry("bitmapScaleX", positiveNumber(Double.MAX_VALUE)),
+                Map.entry("bitmapScaleY", positiveNumber(Double.MAX_VALUE)),
+                Map.entry("minificationFilter", evidenceValueSchema(
+                        string(1, 256))),
+                Map.entry("magnificationFilter", evidenceValueSchema(
+                        string(1, 256))),
+                Map.entry("distanceField", evidenceValueSchema(
+                        string(1, ProtocolJson.MAX_STRING_LENGTH))),
+                Map.entry("weight", evidenceValueSchema(number(-Double.MAX_VALUE,
+                        Double.MAX_VALUE))),
+                Map.entry("letterSpacing", evidenceValueSchema(number(
+                        -Double.MAX_VALUE, Double.MAX_VALUE)))),
+                List.of(
+                        "sourceId", "atlasPageIds", "nominalSize", "generatedGlyphSize",
+                        "effectiveSizeX", "effectiveSizeY", "bitmapScaleX", "bitmapScaleY",
+                        "minificationFilter", "magnificationFilter", "distanceField",
+                        "weight", "letterSpacing"));
+    }
+
+    private static Map<String, Object> evidenceValueSchema(Map<String, Object> valueSchema) {
+        return Map.of("oneOf", List.of(
+                object(Map.of(
+                        "availability", Map.of("const", "available", "type", "string"),
+                        "value", valueSchema),
+                        List.of("availability", "value")),
+                object(Map.of(
+                        "availability", Map.of("const", "unavailable", "type", "string"),
+                        "reason", enumString(
+                                "unsupported", "not-registered", "not-exposed",
+                                "missing", "unknown", "non-invertible"),
+                        "detail", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                        List.of("availability", "reason", "detail"))));
+    }
+
+    private static Map<String, Object> displayObservationSchema() {
+        return object(Map.ofEntries(
+                Map.entry("applicationId", string(1, MAX_IDENTIFIER)),
+                Map.entry("viewportId", string(1, MAX_IDENTIFIER)),
+                Map.entry("windowWidth", integer(1, 8_192)),
+                Map.entry("windowHeight", integer(1, 8_192)),
+                Map.entry("logicalViewportWidth", integer(1, 8_192)),
+                Map.entry("logicalViewportHeight", integer(1, 8_192)),
+                Map.entry("framebufferWidth", integer(1, 8_192)),
+                Map.entry("framebufferHeight", integer(1, 8_192)),
+                Map.entry("deviceScaleX", positiveNumber(Double.MAX_VALUE)),
+                Map.entry("deviceScaleY", positiveNumber(Double.MAX_VALUE))),
+                List.of(
+                        "applicationId", "viewportId", "windowWidth", "windowHeight",
+                        "logicalViewportWidth", "logicalViewportHeight",
+                        "framebufferWidth", "framebufferHeight",
+                        "deviceScaleX", "deviceScaleY"));
+    }
+
+    private static Map<String, Object> affineTransformSchema() {
+        return object(Map.ofEntries(
+                Map.entry("source", coordinateSpaceSchema()),
+                Map.entry("target", coordinateSpaceSchema()),
+                Map.entry("m00", number(-Double.MAX_VALUE, Double.MAX_VALUE)),
+                Map.entry("m01", number(-Double.MAX_VALUE, Double.MAX_VALUE)),
+                Map.entry("translateX", number(-Double.MAX_VALUE, Double.MAX_VALUE)),
+                Map.entry("m10", number(-Double.MAX_VALUE, Double.MAX_VALUE)),
+                Map.entry("m11", number(-Double.MAX_VALUE, Double.MAX_VALUE)),
+                Map.entry("translateY", number(-Double.MAX_VALUE, Double.MAX_VALUE)),
+                Map.entry("effectiveScaleX", number(0, Double.MAX_VALUE)),
+                Map.entry("effectiveScaleY", number(0, Double.MAX_VALUE)),
+                Map.entry("rotationDegrees", number(-Double.MAX_VALUE, Double.MAX_VALUE)),
+                Map.entry("shear", number(-Double.MAX_VALUE, Double.MAX_VALUE)),
+                Map.entry("fractionalTranslationX", number(-1, 1)),
+                Map.entry("fractionalTranslationY", number(-1, 1)),
+                Map.entry("invertible", Map.of("type", "boolean"))),
+                List.of(
+                        "source", "target", "m00", "m01", "translateX",
+                        "m10", "m11", "translateY", "effectiveScaleX", "effectiveScaleY",
+                        "rotationDegrees", "shear", "fractionalTranslationX",
+                        "fractionalTranslationY", "invertible"));
+    }
+
+    private static Map<String, Object> coordinatePointSchema() {
+        return object(Map.of(
+                "space", coordinateSpaceSchema(),
+                "x", number(-Double.MAX_VALUE, Double.MAX_VALUE),
+                "y", number(-Double.MAX_VALUE, Double.MAX_VALUE)),
+                List.of("space", "x", "y"));
+    }
+
+    private static Map<String, Object> coordinateBoundsSchema() {
+        return object(Map.of(
+                "space", coordinateSpaceSchema(),
+                "x", number(-Double.MAX_VALUE, Double.MAX_VALUE),
+                "y", number(-Double.MAX_VALUE, Double.MAX_VALUE),
+                "width", number(0, Double.MAX_VALUE),
+                "height", number(0, Double.MAX_VALUE)),
+                List.of("space", "x", "y", "width", "height"));
+    }
+
+    private static Map<String, Object> coordinateSpaceSchema() {
+        return enumString("local", "parent", "stage", "screen", "framebuffer");
+    }
+
+    private static Map<String, Object> typographyDifferenceSchema() {
+        return object(Map.of(
+                "controlId", string(1, MAX_IDENTIFIER),
+                "path", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                "expected", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                "observed", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                "units", string(1, 256),
+                "coordinateSpace", nullableString(),
+                "referenceArtifactId", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                "currentArtifactId", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                List.of(
+                        "controlId", "path", "expected", "observed", "units",
+                        "referenceArtifactId", "currentArtifactId"));
     }
 
     private static Map<String, Object> visualDifferenceSchema() {

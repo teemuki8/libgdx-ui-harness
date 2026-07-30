@@ -10,6 +10,10 @@ import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
 import dev.gdx.uiharness.core.visual.VisualPolicy;
 import dev.gdx.uiharness.core.visual.VisualReference;
+import dev.gdx.uiharness.core.typography.CoordinateSpace;
+import dev.gdx.uiharness.core.typography.TypographyControlReference;
+import dev.gdx.uiharness.core.typography.TypographyObservation;
+import dev.gdx.uiharness.core.typography.TypographyReference;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.locator.StrictResolution;
@@ -22,6 +26,7 @@ import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3ScreenCapture;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3VisualComparator;
+import dev.gdx.uiharness.lwjgl3.Lwjgl3TypographyRasterComparator;
 import dev.gdx.uiharness.mcp.ArtifactReference;
 import dev.gdx.uiharness.mcp.HarnessMcpServer;
 import dev.gdx.uiharness.protocol.ArtifactId;
@@ -33,10 +38,12 @@ import dev.gdx.uiharness.protocol.FileArtifactStore;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
 import dev.gdx.uiharness.protocol.HarnessResponse;
 import dev.gdx.uiharness.protocol.InspectCaptureCompareService;
+import dev.gdx.uiharness.protocol.TypographyDiagnosticService;
 import dev.gdx.uiharness.scene2d.ControlledStageClock;
 import dev.gdx.uiharness.scene2d.RenderThreadScheduler;
 import dev.gdx.uiharness.scene2d.Scene2dHarness;
 import dev.gdx.uiharness.scene2d.Scene2dSession;
+import dev.gdx.uiharness.scene2d.TypographyCaptureContext;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -72,11 +79,13 @@ public final class FixtureControl implements AutoCloseable {
     private static final String APPLICATION_ID = "reference-ui-app";
     private static final String VIEWPORT_ID = "main";
     private static final String REFERENCE_ID = "reference-screen";
+    private static final String TYPOGRAPHY_REFERENCE_ID = "reference-typography";
 
     private static final Duration FIXED_STEP = Duration.ofMillis(16);
     private static final Duration ARTIFACT_LIFETIME = Duration.ofHours(1);
     private static final List<String> CAPABILITIES = List.of(
-            "action", "compare", "query", "screenshot", "snapshot", "trace", "wait");
+            "action", "compare", "query", "screenshot", "snapshot",
+            "trace", "typography", "wait");
 
     private final Path processRoot;
     private final Path artifactRoot;
@@ -152,9 +161,19 @@ public final class FixtureControl implements AutoCloseable {
                 null, id -> REFERENCE_ID.equals(id)
                         ? java.util.Optional.of(reference) : java.util.Optional.empty(),
                 List.of(policy), new Lwjgl3VisualComparator(), clock, InstantSource.system());
+        TypographyReference typographyReference = typographyReference(reference.pngBytes());
+        TypographyDiagnosticService typography = new TypographyDiagnosticService(
+                APPLICATION_ID,
+                VIEWPORT_ID,
+                tracingCapture,
+                id -> TYPOGRAPHY_REFERENCE_ID.equals(id)
+                        ? java.util.Optional.of(typographyReference)
+                        : java.util.Optional.empty(),
+                this::typographyEvidence,
+                clock);
         HarnessProtocolService protocol = new HarnessProtocolService(
                 Map.of(SESSION_ID, session), Map.of(), Map.of(SESSION_ID, comparison),
-                clock, protocolExecutor);
+                Map.of(SESSION_ID, typography), clock, protocolExecutor);
         server = HarnessMcpServer.open(protocol, publisher, input, output);
         terminationTask = terminationExecutor.submit(() -> {
             server.awaitTermination();
@@ -244,6 +263,121 @@ public final class FixtureControl implements AutoCloseable {
                 REFERENCE_ID, APPLICATION_ID, SESSION_ID, VIEWPORT_ID,
                 png, sha256(png), 1280, 720, new CapturedImage.Scale(1, 1),
                 Instant.EPOCH, null, null);
+    }
+
+    private TypographyReference typographyReference(byte[] png) {
+        String hash = sha256(png);
+        Map<String, Double> residuals = Map.of(
+                "harness-title", 0.0,
+                "body-caption", 0.0);
+        List<TypographyObservation> observations = sceneSession.typography(
+                0,
+                0,
+                new TypographyCaptureContext(
+                        APPLICATION_ID,
+                        VIEWPORT_ID,
+                        "reference:" + TYPOGRAPHY_REFERENCE_ID,
+                        hash,
+                        1280,
+                        720,
+                        1280,
+                        720,
+                        residuals));
+        List<TypographyControlReference> controls = observations.stream()
+                .map(observation -> new TypographyControlReference(
+                        observation.controlId(),
+                        observation.font().sourceId().value(),
+                        observation.font().nominalSize().value(),
+                        observation.font().generatedGlyphSize().value(),
+                        observation.font().bitmapScaleX(),
+                        observation.font().bitmapScaleY(),
+                        observation.font().minificationFilter().value(),
+                        observation.font().magnificationFilter().value(),
+                        observation.display().deviceScaleX(),
+                        observation.display().deviceScaleY(),
+                        observation.font().weight(),
+                        observation.font().letterSpacing(),
+                        observation.geometry().inkBounds(CoordinateSpace.FRAMEBUFFER),
+                        observation.geometry().baseline(CoordinateSpace.FRAMEBUFFER).y(),
+                        1,
+                        0.5,
+                        0.5001,
+                        0.75,
+                        observation.transformSha256()))
+                .toList();
+        return new TypographyReference(
+                TYPOGRAPHY_REFERENCE_ID,
+                APPLICATION_ID,
+                VIEWPORT_ID,
+                "reference:" + TYPOGRAPHY_REFERENCE_ID,
+                png,
+                hash,
+                1280,
+                720,
+                new CapturedImage.Scale(1, 1),
+                controls);
+    }
+
+    private CompletionStage<List<TypographyObservation>> typographyEvidence(
+            TypographyReference reference,
+            CapturedImage current,
+            Deadline deadline) {
+        String artifactId = "capture:" + current.sha256();
+        Map<String, Double> zeroResiduals = reference.controls().stream()
+                .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                        TypographyControlReference::controlId, ignored -> 0.0));
+        return scheduler.submit(
+                        () -> sceneSession.typography(
+                                current.revision(),
+                                current.frame(),
+                                new TypographyCaptureContext(
+                                        APPLICATION_ID,
+                                        VIEWPORT_ID,
+                                        artifactId,
+                                        current.sha256(),
+                                        Math.toIntExact(Math.round(
+                                                current.width() / current.scale().x())),
+                                        Math.toIntExact(Math.round(
+                                                current.height() / current.scale().y())),
+                                        current.width(),
+                                        current.height(),
+                                        zeroResiduals)),
+                        deadline)
+                .thenCompose(preliminary -> {
+                    Map<String, TypographyControlReference> expected =
+                            reference.controlsById();
+                    Lwjgl3TypographyRasterComparator comparator =
+                            new Lwjgl3TypographyRasterComparator();
+                    Map<String, Double> residuals = preliminary.stream()
+                            .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                                    TypographyObservation::controlId,
+                                    observation -> comparator.meanAbsoluteError(
+                                            reference.pngBytes(),
+                                            current.pngBytes(),
+                                            current.width(),
+                                            current.height(),
+                                            expected.get(observation.controlId())
+                                                    .expectedInkBounds(),
+                                            observation.geometry().inkBounds(
+                                                    CoordinateSpace.FRAMEBUFFER))));
+                    return scheduler.submit(
+                            () -> sceneSession.typography(
+                                    current.revision(),
+                                    current.frame(),
+                                    new TypographyCaptureContext(
+                                            APPLICATION_ID,
+                                            VIEWPORT_ID,
+                                        artifactId,
+                                        current.sha256(),
+                                        Math.toIntExact(Math.round(
+                                                current.width() / current.scale().x())),
+                                        Math.toIntExact(Math.round(
+                                                current.height() / current.scale().y())),
+                                        current.width(),
+                                            current.height(),
+                                            residuals)),
+                            deadline);
+                });
     }
 
     private static String sha256(byte[] bytes) {

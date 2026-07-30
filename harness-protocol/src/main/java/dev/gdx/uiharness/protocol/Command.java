@@ -20,12 +20,13 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.Wait.class, name = "wait"),
     @JsonSubTypes.Type(value = Command.Screenshot.class, name = "screenshot"),
     @JsonSubTypes.Type(value = Command.InspectCompare.class, name = "inspect-compare"),
+    @JsonSubTypes.Type(value = Command.TypographyDiagnose.class, name = "typography-diagnose"),
     @JsonSubTypes.Type(value = Command.TraceStart.class, name = "trace-start"),
     @JsonSubTypes.Type(value = Command.TraceStop.class, name = "trace-stop")
 })
 public sealed interface Command permits Command.Sessions, Command.Capabilities, Command.Snapshot,
         Command.Query, Command.Action, Command.Wait, Command.Screenshot, Command.TraceStart,
-        Command.InspectCompare, Command.TraceStop {
+        Command.InspectCompare, Command.TypographyDiagnose, Command.TraceStop {
     /** Lists active sessions. */
     record Sessions() implements Command {}
 
@@ -131,6 +132,47 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
             return new dev.gdx.uiharness.core.visual.InspectCaptureCompareRequest(
                     referenceId, policyId, policyVersion, viewportId, maxIterations,
                     java.time.Duration.ofMillis(maxDurationMillis),
+                    new CaptureRequest.Limits(
+                            maxWidth, maxHeight, maxPixels, maxPngBytes));
+        }
+    }
+
+    /** Runs one bounded capture-backed typography diagnosis. */
+    record TypographyDiagnose(
+            String referenceId,
+            String viewportId,
+            long maxDurationMillis,
+            int maxResults,
+            int maxWidth,
+            int maxHeight,
+            long maxPixels,
+            int maxPngBytes) implements Command {
+        /** Validates reference identity and all duration/result/capture bounds. */
+        public TypographyDiagnose {
+            ProtocolJson.requireIdentifier(referenceId, "referenceId");
+            ProtocolJson.requireIdentifier(viewportId, "viewportId");
+            if (maxDurationMillis <= 0 || maxDurationMillis > 120_000) {
+                throw new IllegalArgumentException(
+                        "maxDurationMillis must be between 1 and 120000");
+            }
+            if (maxResults <= 0 || maxResults > 256) {
+                throw new IllegalArgumentException("maxResults must be between 1 and 256");
+            }
+            new CaptureRequest.Limits(maxWidth, maxHeight, maxPixels, maxPngBytes);
+            if (maxWidth > 8_192 || maxHeight > 8_192
+                    || maxPixels > 33_554_432L
+                    || maxPngBytes > HarnessResponse.Result.Screenshot.MAX_PNG_BYTES) {
+                throw new IllegalArgumentException(
+                        "typography capture bound exceeds protocol limit");
+            }
+        }
+
+        dev.gdx.uiharness.core.typography.TypographyDiagnosticRequest toCore() {
+            return new dev.gdx.uiharness.core.typography.TypographyDiagnosticRequest(
+                    referenceId,
+                    viewportId,
+                    java.time.Duration.ofMillis(maxDurationMillis),
+                    maxResults,
                     new CaptureRequest.Limits(
                             maxWidth, maxHeight, maxPixels, maxPngBytes));
         }
