@@ -15,6 +15,7 @@ import org.gradle.api.tasks.testing.Test
 import org.gradle.external.javadoc.StandardJavadocDocletOptions
 import org.gradle.jvm.toolchain.JavaLanguageVersion
 import org.gradle.plugins.signing.SigningExtension
+import java.util.zip.ZipFile
 
 val publishableModules = listOf(
     "harness-core",
@@ -95,6 +96,13 @@ subprojects {
         pluginManager.apply("maven-publish")
         pluginManager.apply("signing")
 
+        tasks.withType<Jar>().configureEach {
+            from(rootProject.file("LICENSE")) {
+                into("META-INF")
+                rename { "LICENSE" }
+            }
+        }
+
         extensions.configure<PublishingExtension> {
             publications.create<MavenPublication>("mavenJava") {
                 from(components["java"])
@@ -113,8 +121,9 @@ subprojects {
                     }
                     developers {
                         developer {
-                            id.set("maintainers")
-                            name.set("libGDX UI Harness maintainers")
+                            id.set("teemuki8")
+                            name.set("Teemu Jääskeläinen")
+                            url.set("https://github.com/teemuki8")
                         }
                     }
                     scm {
@@ -207,6 +216,37 @@ tasks.register("javadoc") {
     group = "documentation"
     description = "Generates warning-free Javadocs for all published modules"
     dependsOn(publishableModules.map { project(":$it").tasks.named("javadoc") })
+}
+
+val verifyPublishedLicenseFiles = tasks.register("verifyPublishedLicenseFiles") {
+    group = "verification"
+    description = "Verifies every published JAR carries the repository license"
+    val archiveTasks = publishableModules.flatMap { moduleName ->
+        listOf("jar", "sourcesJar", "javadocJar").map { taskName ->
+            project(":$moduleName").tasks.named<Jar>(taskName)
+        }
+    }
+    dependsOn(archiveTasks)
+    doLast {
+        val expectedLicense = rootProject.file("LICENSE").readBytes()
+        for (archiveTask in archiveTasks) {
+            val archive = archiveTask.get().archiveFile.get().asFile
+            ZipFile(archive).use { zip ->
+                val entry = zip.getEntry("META-INF/LICENSE")
+                    ?: throw GradleException("Missing META-INF/LICENSE: $archive")
+                val actualLicense = zip.getInputStream(entry).use { it.readBytes() }
+                if (!actualLicense.contentEquals(expectedLicense)) {
+                    throw GradleException("Incorrect META-INF/LICENSE: $archive")
+                }
+            }
+        }
+    }
+}
+
+for (moduleName in publishableModules) {
+    project(":$moduleName").tasks.named("check") {
+        dependsOn(verifyPublishedLicenseFiles)
+    }
 }
 
 val verifyReleaseConfiguration = tasks.register("verifyReleaseConfiguration") {
