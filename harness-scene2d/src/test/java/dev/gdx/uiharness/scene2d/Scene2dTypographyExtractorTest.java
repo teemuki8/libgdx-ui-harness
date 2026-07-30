@@ -124,6 +124,37 @@ final class Scene2dTypographyExtractorTest {
     }
 
     @Test
+    void captureContextSelectsTheBoundedControlSet() {
+        Stage stage = Scene2dTestSupport.stage();
+        Label selected = label("AAA");
+        Label unrelated = label("AAA");
+        unrelated.setPosition(0, 40);
+        stage.addActor(selected);
+        stage.addActor(unrelated);
+        try (Scene2dSession session = new Scene2dSession(stage)) {
+            session.semantics().setTestId(selected, "selected-title");
+            session.semantics().setTestId(unrelated, "benchmark-status");
+
+            List<TypographyObservation> observed = session.typography(
+                    1,
+                    2,
+                    new TypographyCaptureContext(
+                            "fixture-app",
+                            "initial-800x600",
+                            "current-title",
+                            "a".repeat(64),
+                            800,
+                            600,
+                            800,
+                            600,
+                            Map.of("selected-title", 0.0)));
+
+            assertEquals(List.of("selected-title"),
+                    observed.stream().map(TypographyObservation::controlId).toList());
+        }
+    }
+
+    @Test
     void aLikeTitleRetainsIdentityAndMappingsAcrossFiveFramesAtBothViewports() {
         Scene2dTestSupport.stage().dispose();
         ScreenViewport screenViewport = new ScreenViewport();

@@ -108,7 +108,9 @@ final class Scene2dTypographyExtractor {
         if (visible && actor instanceof Label label) {
             String actorId = actorIds.get(actor);
             SemanticNode node = snapshot.nodes().get(actorId);
-            if (node != null && node.testId() != null) {
+            if (node != null
+                    && node.testId() != null
+                    && context.rasterResiduals().containsKey(node.testId())) {
                 result.add(observe(
                         label,
                         actorId,
