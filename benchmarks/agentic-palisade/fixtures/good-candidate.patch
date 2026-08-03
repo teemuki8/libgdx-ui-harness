@@ -12,10 +12,15 @@ new file mode 100644
 +import com.badlogic.gdx.graphics.Texture;
 +import com.badlogic.gdx.graphics.g2d.Batch;
 +import com.badlogic.gdx.graphics.g2d.BitmapFont;
++import com.badlogic.gdx.math.Rectangle;
 +import com.badlogic.gdx.scenes.scene2d.Actor;
++import com.badlogic.gdx.scenes.scene2d.Group;
 +import com.badlogic.gdx.scenes.scene2d.InputEvent;
 +import com.badlogic.gdx.scenes.scene2d.InputListener;
 +import com.badlogic.gdx.scenes.scene2d.Stage;
++import com.badlogic.gdx.scenes.scene2d.Touchable;
++import com.badlogic.gdx.scenes.scene2d.ui.Label;
++import com.badlogic.gdx.utils.Align;
 +import com.badlogic.gdx.utils.viewport.ScreenViewport;
 +import java.util.ArrayList;
 +import java.util.LinkedHashMap;
@@ -33,6 +38,11 @@ new file mode 100644
 +
 +    private final Stage stage = new Stage(new ScreenViewport());
 +    private final QualificationCanvas canvas = new QualificationCanvas();
++    private final Group panel = namedGroup("panel");
++    private final Group scroll = namedGroup("scroll");
++    private final Group form = namedGroup("form");
++    private final Map<String, Label> controlActors = new LinkedHashMap<>();
++    private final Map<String, Label> labelActors = new LinkedHashMap<>();
 +    private int focusIndex = -1;
 +    private boolean selectOpen;
 +    private boolean shiftDown;
@@ -52,6 +62,26 @@ new file mode 100644
 +            throw new IllegalStateException("qualification missing capture fixture");
 +        }
 +        stage.addActor(canvas);
++        panel.addActor(scroll);
++        scroll.addActor(form);
++        stage.addActor(panel);
++        for (Map<String, Object> definition : CONTROLS) {
++            String id = String.valueOf(definition.get("id"));
++            Label label = new Label(String.valueOf(definition.get("label")),
++                    new Label.LabelStyle(canvas.font, Color.valueOf("fff1ddff")));
++            label.setName(id + "Label");
++            label.setTouchable(Touchable.disabled);
++            label.setAlignment(Align.left);
++            Label control = new Label("",
++                    new Label.LabelStyle(canvas.font, Color.WHITE));
++            control.setName(id);
++            control.setTouchable(Touchable.enabled);
++            control.setAlignment(Align.left);
++            form.addActor(label);
++            form.addActor(control);
++            labelActors.put(id, label);
++            controlActors.put(id, control);
++        }
 +        stage.addCaptureListener(new InputListener() {
 +            @Override public boolean keyDown(InputEvent event, int keycode) {
 +                if (keycode == Input.Keys.SHIFT_LEFT || keycode == Input.Keys.SHIFT_RIGHT) {
@@ -109,7 +139,6 @@ new file mode 100644
 +        state.put("values", values());
 +        state.put("scrollPosition", bottom ? "bottom" : "top");
 +        state.put("stateAction", stateAction());
-+        state.put("structuralUsability", structuralUsability());
 +        String focused = focused();
 +        if (focused != null) {
 +            state.put("focusedControlId", focused);
@@ -183,12 +212,12 @@ new file mode 100644
 +        if (keycode != Input.Keys.ENTER) return false;
 +        if ("copySeed".equals(focused)) {
 +            clipboardText = seedText;
-+            lastAction = "copy-seed";
++            lastAction = "copySeed";
 +            Gdx.app.getClipboard().setContents(seedText);
 +        } else if ("randomSeed".equals(focused)) {
 +            previousSeed = Long.parseLong(seedText);
 +            seedText = "305419896";
-+            lastAction = "random-seed";
++            lastAction = "randomSeed";
 +        } else if ("cancel".equals(focused)) {
 +            outcome = "dismissed";
 +            lastAction = "cancel";
@@ -302,7 +331,7 @@ new file mode 100644
 +            default -> "none";
 +        };
 +        Map<String, Object> payload = new LinkedHashMap<>();
-+        if ("random-seed".equals(lastAction)) {
++        if ("randomSeed".equals(lastAction)) {
 +            payload.put("previousSeed", typed(previousSeed));
 +            payload.put("seed", typed(Long.parseLong(seedText)));
 +        } else if ("start-battle".equals(lastAction) && accepted) {
@@ -319,7 +348,7 @@ new file mode 100644
 +                "messages", validSeed() ? List.of() : List.of(
 +                        "Seed must be an unsigned 32-bit decimal integer")));
 +        transition.put("kind", kind);
-+        if ("copy-seed".equals(lastAction)) {
++        if ("copySeed".equals(lastAction)) {
 +            transition.put("clipboardText", clipboardText);
 +        }
 +        transition.put("acceptedPayload", payload);
@@ -355,53 +384,11 @@ new file mode 100644
 +        return Map.of("type", "text", "textValue", String.valueOf(value));
 +    }
 +
-+    private Map<String, Object> structuralUsability() {
-+        double width = stage.getViewport().getWorldWidth();
-+        double height = stage.getViewport().getWorldHeight();
-+        double panelX = (width - 680) / 2;
-+        String id = bottom ? "costlyCavalry" : "majorRivalCount";
-+        double controlY = bottom ? 121 : 229;
-+        Map<String, Object> control = new LinkedHashMap<>();
-+        control.put("controlId", id);
-+        control.put("role", bottom ? "checkbox" : "slider");
-+        control.put("labelControlId", id + "Label");
-+        control.put("labelledControlId", id);
-+        control.put("enabled", true);
-+        control.put("focusable", true);
-+        control.put("hitBounds", rect(panelX + 455, controlY, 180, 34));
-+        control.put("visualBounds", rect(panelX + 455, controlY, 180, 34));
-+        control.put("occluded", false);
-+        control.put("fontPixels", 15);
-+        control.put("rasterResidual", 0.1);
-+        control.put("contrastRatio", 7);
-+        control.put("glyphClipped", false);
-+        control.put("hierarchyRole", "form-row");
-+        control.put("parentControlId", "form");
-+        control.put("scrollOwnerId", "scroll");
-+        control.put("clipOwnerId", "scroll");
-+        control.put("visibleBounds", rect(panelX + 455, controlY, 180, 34));
-+        Map<String, Object> evidence = new LinkedHashMap<>();
-+        evidence.put("schemaVersion", "structural-observation/v1");
-+        evidence.put("semanticRevision", 1);
-+        evidence.put("layoutRevision", 1);
-+        evidence.put("frameEdgeClipped", false);
-+        evidence.put("scrollY", bottom ? 1 : 0);
-+        evidence.put("semanticSha256", "1".repeat(64));
-+        evidence.put("layoutSha256", "2".repeat(64));
-+        evidence.put("regionSha256", "3".repeat(64));
-+        evidence.put("panelBounds", rect(panelX, 24, 680, height - 48));
-+        evidence.put("controls", List.of(control));
-+        return evidence;
-+    }
-+
-+    private static Map<String, Object> rect(
-+            double x, double y, double width, double height) {
-+        Map<String, Object> result = new LinkedHashMap<>();
-+        result.put("x", x);
-+        result.put("y", y);
-+        result.put("width", width);
-+        result.put("height", height);
-+        return result;
++    private static Group namedGroup(String name) {
++        Group group = new Group();
++        group.setName(name);
++        group.setTouchable(Touchable.childrenOnly);
++        return group;
 +    }
 +
 +    private Map<String, Object> values() {
@@ -523,6 +510,12 @@ new file mode 100644
 +            batch.draw(texture, 0, 0, width, height);
 +            float panelWidth = Math.min(680, width - 48);
 +            float x = (width - panelWidth) / 2f;
++            panel.setBounds(x, 24, panelWidth, height - 48);
++            scroll.setBounds(0, 0, panelWidth, height - 48);
++            scroll.setCullingArea(new Rectangle(0, 0, panelWidth, height - 48));
++            form.setBounds(0, 0, panelWidth, height - 48);
++            controlActors.values().forEach(actor -> actor.setVisible(false));
++            labelActors.values().forEach(actor -> actor.setVisible(false));
 +            batch.setColor(Color.valueOf("0c2427ff"));
 +            batch.draw(texture, x, 24, panelWidth, height - 48);
 +            batch.setColor(Color.valueOf("cb7d58ff"));
@@ -539,12 +532,16 @@ new file mode 100644
 +                Map<String, Object> metadata = control(shown.get(index));
 +                batch.setColor(Color.valueOf("315154ff"));
 +                batch.draw(texture, x + 42, rowY - 34, panelWidth - 84, 1);
-+                font.setColor(Color.valueOf("fff1ddff"));
-+                font.draw(batch, String.valueOf(metadata.get("label")), x + 58, rowY - 8);
 +                batch.setColor(Color.valueOf("173538ff"));
 +                batch.draw(texture, x + panelWidth - 225, rowY - 30, 180, 34);
-+                font.setColor(Color.WHITE);
-+                font.draw(batch, displayValue(shown.get(index)), x + panelWidth - 210, rowY - 8);
++                Label label = labelActors.get(shown.get(index));
++                label.setText("  " + metadata.get("label"));
++                label.setBounds(58, rowY - 34, panelWidth - 300, 34);
++                label.setVisible(true);
++                Label control = controlActors.get(shown.get(index));
++                control.setText("  " + displayValue(shown.get(index)));
++                control.setBounds(panelWidth - 225, rowY - 54, 180, 34);
++                control.setVisible(true);
 +                rowY -= 54;
 +            }
 +            batch.setColor(Color.WHITE);
@@ -555,6 +552,9 @@ new file mode 100644
 +            if ("map".equals(id)) return "The Northern Realms";
 +            if ("playerRealm".equals(id)) return "Vestfold";
 +            if ("victoryCondition".equals(id)) return "conquest".equals(victory) ? "Total conquest" : "Rival target";
++            if (List.of("copySeed", "randomSeed", "cancel", "startBattle").contains(id)) {
++                return String.valueOf(control(id).get("label"));
++            }
 +            return value == null ? "" : String.valueOf(value);
 +        }
 +

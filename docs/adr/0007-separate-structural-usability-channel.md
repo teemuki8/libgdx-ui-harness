@@ -1,6 +1,6 @@
 # ADR 0007: Separate Structural-Usability Evaluation Channel
 
-- Status: Accepted
+- Status: Accepted; structural observation source amended by ADR 0015
 - Date: 2026-07-30
 
 ## Context
@@ -35,8 +35,8 @@ expected-versus-observed values, coordinate space, and units. Responsive
 claims are limited to the frozen 1920 by 1080 and 1280 by 720 viewports at
 device scale 1.
 
-Candidate observations use `structural-observation/v1`. The evaluator, rather
-than the candidate, binds reference and capture hashes, canonical state,
+Trusted template observations use `structural-observation/v1`. The evaluator binds reference and
+capture hashes, canonical state,
 viewport, dimensions, device scale, and frame order. Missing or mismatched
 identity, attribution, revision, or five-frame evidence cannot pass.
 
@@ -53,9 +53,9 @@ failures as measurements of different properties. A structural failure is
 actionable without invalidating unchanged raster history or treating a human
 review as universally authoritative.
 
-New complete evaluator runs publish one structural outcome for each frozen
-reference. Candidate implementations that do not provide the versioned
-observation remain evaluable, but their structural result is `INCOMPLETE`.
+New complete evaluator runs publish one structural outcome for each frozen reference. The reserved
+template supplies the versioned observation; missing or unverifiable trusted observations produce
+`INCOMPLETE` rather than accepting a candidate declaration.
 
 ## Verification
 

@@ -1,6 +1,6 @@
 # ADR 0012: Independent evidence ingestion failures
 
-- Status: Accepted
+- Status: Accepted; structural ingestion amended by ADR 0015
 - Date: 2026-07-30
 
 ## Context

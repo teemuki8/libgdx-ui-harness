@@ -250,6 +250,13 @@ final class TemplateContractTest {
         assertFalse(results.get(1).getBoolean("ok"));
         assertEquals("captures/initial-1280x720.png",
                 results.get(3).getString("artifact"));
+        assertEquals("trusted-structural-measurement/v1",
+                results.get(3).get("trustedStructural").getString("schemaVersion"));
+        assertTrue(results.get(3).get("trustedStructural")
+                .getString("probeSha256").matches("[0-9a-f]{64}"));
+        assertEquals("structural-observation/v1", results.get(3)
+                .get("trustedStructural").get("observation")
+                .getString("schemaVersion"));
         assertEquals("captures/initial-1920x1080.png",
                 results.get(5).getString("artifact"));
         assertTrue(results.get(6).getBoolean("ok"));

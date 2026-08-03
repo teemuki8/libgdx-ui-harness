@@ -36,7 +36,7 @@ public final class BenchmarkControl implements AutoCloseable {
     private static final int MAX_COMMANDS = 256;
     private static final long MAX_COMMAND_BYTES = 1_048_576L;
     private static final int MAX_LINE_CHARACTERS = 16_384;
-    private static final int MAX_RESULT_BYTES = 65_536;
+    private static final int MAX_RESULT_BYTES = 262_144;
     private static final int MAX_DIMENSION = 4096;
     private static final Pattern CAPTURE_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]{0,63}");
     private static final Map<String, String> LIBGDX_KEY_NAMES = libgdxKeyNames();
@@ -48,6 +48,7 @@ public final class BenchmarkControl implements AutoCloseable {
     private String pendingCaptureId;
     private boolean closeRequested;
     private boolean exitRequested;
+    private long completedFrames;
 
     private BenchmarkControl(List<JsonValue> commands, Path evidenceDirectory) throws IOException {
         this.commands = commands;
@@ -129,6 +130,12 @@ public final class BenchmarkControl implements AutoCloseable {
 
     /** Records a result and any capture only after the Stage has finished drawing. */
     public void afterCompletedFrame(CandidateState state) {
+        afterCompletedFrame(null, state);
+    }
+
+    /** Records trusted render-thread measurements with completed capture frames. */
+    public void afterCompletedFrame(Stage stage, CandidateState state) {
+        completedFrames++;
         if (pending == null) {
             return;
         }
@@ -136,12 +143,18 @@ public final class BenchmarkControl implements AutoCloseable {
             return;
         }
         try {
+            Map<String, Object> trustedStructural = null;
             if (pendingCaptureId != null && pending.ok) {
                 String relative = "captures/" + pendingCaptureId + ".png";
-                evidence.writeCapture(pendingCaptureId, captureCompletedFrame());
+                Pixmap capture = captureCompletedFrame();
+                if (stage != null) {
+                    trustedStructural = TrustedStructuralProbe.capture(
+                            stage, state, capture, completedFrames);
+                }
+                evidence.writeCapture(pendingCaptureId, capture);
                 pending.artifact = relative;
             }
-            evidence.appendResult(resultJson(pending, state));
+            evidence.appendResult(resultJson(pending, state, trustedStructural));
         } catch (IOException failure) {
             throw new IllegalStateException("Could not write benchmark evidence", failure);
         } finally {
@@ -369,7 +382,10 @@ public final class BenchmarkControl implements AutoCloseable {
         return pixmap;
     }
 
-    private static String resultJson(PendingResult result, CandidateState state) {
+    private static String resultJson(
+            PendingResult result,
+            CandidateState state,
+            Map<String, Object> trustedStructural) {
         JsonValue object = new JsonValue(JsonValue.ValueType.object);
         object.addChild("sequence", new JsonValue((long) result.sequence));
         object.addChild("command", new JsonValue(result.command));
@@ -385,6 +401,9 @@ public final class BenchmarkControl implements AutoCloseable {
             stateObject.addChild(entry.getKey(), jsonScalar(entry.getValue()));
         }
         object.addChild("state", stateObject);
+        if (trustedStructural != null) {
+            object.addChild("trustedStructural", jsonScalar(trustedStructural));
+        }
         String json = object.toJson(JsonWriter.OutputType.json);
         if (json.getBytes(StandardCharsets.UTF_8).length > MAX_RESULT_BYTES) {
             throw new IllegalArgumentException("Candidate result exceeds the byte limit");

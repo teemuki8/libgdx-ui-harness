@@ -180,6 +180,7 @@ final class HarnessToolCatalogTest {
                         "expected", "reference pixels",
                         "observed", "1 current pixel differs",
                         "blocking", true)),
+                "regions", List.of(),
                 "diagnostics", List.of());
 
         assertTrue(McpJsonDefaults.getSchemaValidator()

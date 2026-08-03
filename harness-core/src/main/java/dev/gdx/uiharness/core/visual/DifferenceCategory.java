@@ -7,5 +7,6 @@ public enum DifferenceCategory {
     VISIBILITY,
     BOUNDS,
     PADDING,
+    CLIPPING,
     RASTER_RESIDUAL
 }

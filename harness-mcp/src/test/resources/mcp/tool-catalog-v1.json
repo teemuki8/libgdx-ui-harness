@@ -2160,7 +2160,7 @@
               "type" : "boolean"
             },
             "category" : {
-              "enum" : [ "text", "value", "bounds", "padding", "visibility", "raster-residual" ],
+              "enum" : [ "text", "value", "bounds", "padding", "visibility", "clipping", "raster-residual" ],
               "type" : "string"
             },
             "controlId" : {
@@ -2225,6 +2225,33 @@
         "maximum" : 9223372036854775807,
         "minimum" : 0,
         "type" : "integer"
+      },
+      "heatmapArtifact" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "byteLength" : {
+            "maximum" : 16777216,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "mediaType" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "reference" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "sha256" : {
+            "maxLength" : 64,
+            "minLength" : 64,
+            "type" : "string"
+          }
+        },
+        "required" : [ "reference", "mediaType", "byteLength", "sha256" ],
+        "type" : "object"
       },
       "height" : {
         "maximum" : 8192,
@@ -2348,6 +2375,55 @@
         "minLength" : 1,
         "type" : "string"
       },
+      "regions" : {
+        "items" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "category" : {
+              "enum" : [ "text", "value", "bounds", "padding", "visibility", "clipping", "raster-residual" ],
+              "type" : "string"
+            },
+            "controlId" : {
+              "maxLength" : 16384,
+              "type" : [ "string", "null" ]
+            },
+            "differingPixels" : {
+              "maximum" : 33554432,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "height" : {
+              "maximum" : 8192,
+              "minimum" : 1,
+              "type" : "integer"
+            },
+            "meanAbsoluteError" : {
+              "maximum" : 255.0,
+              "minimum" : 0.0,
+              "type" : "number"
+            },
+            "width" : {
+              "maximum" : 8192,
+              "minimum" : 1,
+              "type" : "integer"
+            },
+            "x" : {
+              "maximum" : 8191,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "y" : {
+              "maximum" : 8191,
+              "minimum" : 0,
+              "type" : "integer"
+            }
+          },
+          "required" : [ "category", "controlId", "x", "y", "width", "height", "differingPixels", "meanAbsoluteError" ],
+          "type" : "object"
+        },
+        "maxItems" : 256,
+        "type" : "array"
+      },
       "revision" : {
         "maximum" : 9223372036854775807,
         "minimum" : 0,
@@ -2378,7 +2454,7 @@
         "type" : "integer"
       }
     },
-    "required" : [ "kind", "progress", "recovery", "status", "policy", "iterations", "elapsedMillis", "differences", "diagnostics" ],
+    "required" : [ "kind", "progress", "recovery", "status", "policy", "iterations", "elapsedMillis", "differences", "regions", "diagnostics" ],
     "type" : "object"
   }
 }, {

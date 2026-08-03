@@ -54,13 +54,14 @@ public final class CandidateEvaluator {
             Map.entry("build.gradle.kts", "537819f6baf1d593a8298a439b65eea2080bc5d2633573d178d669bb277f6ac6"),
             Map.entry("settings.gradle.kts", "2098bf5d2904d7d13b7a4e5e9d1b309800b63e5002e990f44bac0299a2693301"),
             Map.entry("src/main/java/benchmark/palisade/CandidateLauncher.java", "aa8bf5d629899646f770b6e395b877879e72111baaf6305239fda71348bc8024"),
-            Map.entry("src/main/java/benchmark/palisade/BenchmarkControl.java", "5c33f4fbf41a53e2986d962dfe40adac599dcb4c948688e24e771b89caa0db68"),
-            Map.entry("src/main/java/benchmark/palisade/CandidateApplication.java", "9ff867ae444682e0ac7c97faa768fd91b2c10007b0ba5fa38286d988f0583bdb"),
+            Map.entry("src/main/java/benchmark/palisade/BenchmarkControl.java", "a013cf41c0bf214dddefa4a378fe6627801c6b7ec87c3f4110f1eea96908c01e"),
+            Map.entry("src/main/java/benchmark/palisade/CandidateApplication.java", "01d92020ba840feb8ee1ccf1cbab6d876e3d120f1985ecd41a322c61ea612c2b"),
             Map.entry("src/main/java/benchmark/palisade/BlankCandidateUi.java", "3572c409cb50db029e245e1af247824461dc47f73ff46f26211bc02912cece59"),
+            Map.entry("src/main/java/benchmark/palisade/TrustedStructuralProbe.java", "5eb23c0b5865db3dae8e48081ec2f658928a8a38d2bde4ae57bddbaf3749a4bc"),
             Map.entry("src/main/java/benchmark/palisade/CandidateState.java", "88157890ecdfb4a4e7f2fee028d99d1f9940ff84d21dcd2445f73945ba5a2fd6"),
             Map.entry("src/main/java/benchmark/palisade/CandidateUi.java", "fe93166097d0a357b85452a09f91fd7c2690e8d4f7d6648bc426456741c10eb7"));
     private static final Pattern RESERVED_TYPE_DECLARATION = Pattern.compile(
-            "\\b(?:class|record|interface|enum)\\s+(?:CandidateLauncher|BenchmarkControl|CandidateApplication|BlankCandidateUi|CandidateState|CandidateUi)\\b");
+            "\\b(?:class|record|interface|enum)\\s+(?:CandidateLauncher|BenchmarkControl|CandidateApplication|BlankCandidateUi|TrustedStructuralProbe|CandidateState|CandidateUi)\\b");
     private static final ObjectMapper JSON = new ObjectMapper(JsonFactory.builder()
             .streamReadConstraints(StreamReadConstraints.builder()
                     .maxNestingDepth(32).maxStringLength(65_536).maxNumberLength(128)
@@ -193,6 +194,8 @@ public final class CandidateEvaluator {
                 results1920, "captures/bottom-1920x1080-0.png");
         ObjectNode initial1280State = stateForCapture(
                 results1280, "captures/initial-1280x720-0.png");
+        String structuralProbeSha256 = fileSha256(candidateCopy.resolve(
+                "build/classes/java/main/benchmark/palisade/TrustedStructuralProbe.class"));
         List<EvaluationRecord.Artifact> artifacts = new ArrayList<>();
         FunctionalContract.Result functional;
         List<String> diagnostics = new ArrayList<>();
@@ -240,10 +243,11 @@ public final class CandidateEvaluator {
                     reference.path("sha256").asText(), captureHashes, metrics));
             structural.add(structuralOutcome(
                     reference,
-                    statesForCaptures(
+                    trustedStructuresForCaptures(
                             referenceId.endsWith("1280x720") ? results1280 : results1920,
                             referenceId),
-                    captureHashes));
+                    captureHashes,
+                    structuralProbeSha256));
         }
         artifacts.add(artifact("evidence/1920/results.ndjson", evidence1920.resolve("results.ndjson")));
         artifacts.add(artifact("evidence/1280/results.ndjson", evidence1280.resolve("results.ndjson")));
@@ -251,25 +255,21 @@ public final class CandidateEvaluator {
     }
 
     private static StructuralUsability.Result structuralOutcome(
-            JsonNode reference, List<ObjectNode> observedStates, List<String> captureHashes) {
+            JsonNode reference,
+            List<ObjectNode> trustedStructures,
+            List<String> captureHashes,
+            String structuralProbeSha256) {
         String referenceId = reference.path("id").asText();
         String expectedState = reference.path("stateId").asText();
-        JsonNode observedViewport = observedStates.getFirst()
-                .path("stateAction").path("viewports").path(0);
-        boolean observedBottom = observedViewport.path("maxScrollY").isNumber()
-                && observedViewport.path("maxScrollY").doubleValue() > 0
-                && Double.compare(
-                        observedViewport.path("scrollY").doubleValue(),
-                        observedViewport.path("maxScrollY").doubleValue()) == 0;
-        String observedStateId = observedBottom ? "bottom" : "initial";
         int width = reference.path("width").asInt();
         int height = reference.path("height").asInt();
         StructuralUsability.Rect panel = structuralPanel(referenceId);
+        String measurementSha256 = measurementIdentitySha256(structuralProbeSha256);
         StructuralUsability.Policy policy = new StructuralUsability.Policy(
                 "agentic-palisade-structural/v1",
                 1,
-                "structural-usability-evaluator/v1",
-                StructuralUsability.implementationSha256(),
+                "trusted-template-probe+structural-usability/v1",
+                measurementSha256,
                 reference.path("sha256").asText(),
                 expectedState,
                 reference.path("viewportId").asText(),
@@ -290,21 +290,22 @@ public final class CandidateEvaluator {
                 "scroll",
                 structuralControl(referenceId));
         List<StructuralUsability.Observation> observations = new ArrayList<>();
+        String observedStateId = expectedState;
         StructuralUsability.Evidence incompleteEvidence = incompleteStructuralEvidence(
                 policy, observedStateId, width, height, panel, captureHashes);
-        for (ObjectNode state : observedStates) {
-            JsonNode observation = state.path("structuralUsability");
-            if (observation.isObject()) {
-                try {
-                    observations.add(JSON.treeToValue(
-                            observation, StructuralUsability.Observation.class));
-                } catch (JsonProcessingException invalid) {
-                    return StructuralUsability.invalidObservation(
-                            policy, incompleteEvidence, invalid.getOriginalMessage());
-                }
+        for (ObjectNode trusted : trustedStructures) {
+            try {
+                observations.add(trustedStructuralObservation(
+                        trusted, structuralProbeSha256));
+            } catch (IllegalArgumentException invalid) {
+                return StructuralUsability.invalidObservation(
+                        policy, incompleteEvidence, invalid.getMessage());
             }
         }
-        if (observations.size() == observedStates.size()) {
+        if (!observations.isEmpty()) {
+            observedStateId = observations.getFirst().scrollY() > 0 ? "bottom" : "initial";
+        }
+        if (observations.size() == trustedStructures.size()) {
             StructuralUsability.Observation first = observations.getFirst();
             List<StructuralUsability.FrameEvidence> boundFrames = new ArrayList<>();
             for (int index = 0; index < observations.size(); index++) {
@@ -339,6 +340,39 @@ public final class CandidateEvaluator {
             return StructuralUsability.evaluate(policy, bound, null);
         }
         return StructuralUsability.evaluate(policy, incompleteEvidence, null);
+    }
+
+    static StructuralUsability.Observation trustedStructuralObservation(
+            JsonNode wrapper, String expectedProbeSha256) {
+        requireFields(wrapper, Set.of("schemaVersion", "probeSha256", "observation"));
+        if (!"trusted-structural-measurement/v1".equals(
+                    wrapper.path("schemaVersion").textValue())
+                || !expectedProbeSha256.equals(
+                    wrapper.path("probeSha256").textValue())) {
+            throw new IllegalArgumentException(
+                    "Trusted structural probe identity is missing or mismatched");
+        }
+        JsonNode observation = wrapper.path("observation");
+        if (!observation.isObject()) {
+            throw new IllegalArgumentException(
+                    "Trusted structural observation is missing");
+        }
+        try {
+            return JSON.treeToValue(
+                    observation, StructuralUsability.Observation.class);
+        } catch (JsonProcessingException invalid) {
+            throw new IllegalArgumentException(
+                    "Trusted structural observation is invalid: "
+                            + invalid.getOriginalMessage(), invalid);
+        }
+    }
+
+    private static String measurementIdentitySha256(String structuralProbeSha256) {
+        MessageDigest digest = sha256Digest();
+        digest.update(structuralProbeSha256.getBytes(StandardCharsets.US_ASCII));
+        digest.update(StructuralUsability.implementationSha256()
+                .getBytes(StandardCharsets.US_ASCII));
+        return hex(digest.digest());
     }
 
     private static StructuralUsability.Evidence incompleteStructuralEvidence(
@@ -392,12 +426,17 @@ public final class CandidateEvaluator {
         return new StructuralUsability.Rect(x, y, 180, 34);
     }
 
-    private static List<ObjectNode> statesForCaptures(
+    private static List<ObjectNode> trustedStructuresForCaptures(
             List<ResultLine> lines, String referenceId) {
         List<ObjectNode> states = new ArrayList<>();
         for (int index = 0; index < 5; index++) {
-            states.add(stateForCapture(
-                    lines, "captures/" + referenceId + "-" + index + ".png"));
+            String artifact = "captures/" + referenceId + "-" + index + ".png";
+            states.add(lines.stream()
+                    .filter(line -> artifact.equals(line.artifact()))
+                    .map(ResultLine::trustedStructural)
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Missing trusted structure for " + artifact)));
         }
         return List.copyOf(states);
     }
@@ -787,7 +826,8 @@ public final class CandidateEvaluator {
         for (int sequence = 0; sequence < lines.size(); sequence++) {
             JsonNode node = JSON.readTree(lines.get(sequence));
             requireFields(node, Set.of(
-                    "sequence", "command", "ok", "error", "artifact", "state"));
+                    "sequence", "command", "ok", "error", "artifact", "state",
+                    "trustedStructural"));
             String expectedCommand =
                     expectedCommands.get(sequence).path("command").textValue();
             boolean ok = node.path("ok").isBoolean()
@@ -810,13 +850,17 @@ public final class CandidateEvaluator {
                     || !Objects.equals(
                             expectedArtifact,
                             artifact == null ? null : artifact.textValue())
-                    || !node.path("state").isObject()) {
+                    || !node.path("state").isObject()
+                    || (expectedArtifact != null
+                            && !node.path("trustedStructural").isObject())) {
                 throw new IllegalArgumentException(
                         "Invalid launcher result identity");
             }
             parsed.add(new ResultLine(
                     expectedCommand, expectedArtifact,
-                    (ObjectNode) node.path("state")));
+                    (ObjectNode) node.path("state"),
+                    node.path("trustedStructural").isObject()
+                            ? (ObjectNode) node.path("trustedStructural") : null));
         }
         return parsed;
     }
@@ -1326,7 +1370,11 @@ public final class CandidateEvaluator {
             List<StructuralUsability.Result> structural,
             List<EvaluationRecord.Artifact> artifacts,
             List<String> diagnostics) {}
-    private record ResultLine(String command, String artifact, ObjectNode state) {}
+    private record ResultLine(
+            String command,
+            String artifact,
+            ObjectNode state,
+            ObjectNode trustedStructural) {}
     private record ProcessResult(int exitCode) {}
     private static final class CandidateContractException
             extends IllegalArgumentException {

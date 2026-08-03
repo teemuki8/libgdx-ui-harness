@@ -246,21 +246,26 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                 CurrentVisualData current,
                 MetricsData metrics,
                 List<DifferenceData> differences,
+                List<RegionData> regions,
+                HeatmapData heatmap,
                 List<ComparisonDiagnosticData> diagnostics,
                 int iterations,
                 long elapsedMillis,
-                String currentPngBase64) implements Result {
+                String currentPngBase64,
+                String heatmapPngBase64) implements Result {
             /** Validates the bounded wire projection. */
             public InspectCompare {
                 ProtocolJson.requireIdentifier(status, "comparison status");
                 ProtocolJson.requireIdentifier(policy, "comparison policy");
                 differences = List.copyOf(
                         Objects.requireNonNull(differences, "differences"));
+                regions = List.copyOf(Objects.requireNonNull(regions, "regions"));
                 diagnostics = List.copyOf(
                         Objects.requireNonNull(diagnostics, "diagnostics"));
                 if (!Set.of("incomplete", "stale", "not-converged", "converged")
                         .contains(status)
-                        || differences.size() > 1_024 || diagnostics.size() > 256
+                        || differences.size() > 1_024 || regions.size() > 256
+                        || diagnostics.size() > 256
                         || iterations < 0 || iterations > 64
                         || elapsedMillis < 0 || elapsedMillis > 120_000) {
                     throw new IllegalArgumentException(
@@ -269,6 +274,18 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                 if ((current == null) != (currentPngBase64 == null)) {
                     throw new IllegalArgumentException(
                             "current metadata and PNG evidence must appear together");
+                }
+                if ((heatmap == null) != (heatmapPngBase64 == null)) {
+                    throw new IllegalArgumentException(
+                            "heatmap metadata and PNG evidence must appear together");
+                }
+                if (current != null && (regions.stream().anyMatch(region ->
+                        (long) region.x() + region.width() > current.width()
+                                || (long) region.y() + region.height() > current.height())
+                        || heatmap != null && (heatmap.width() != current.width()
+                        || heatmap.height() != current.height()))) {
+                    throw new IllegalArgumentException(
+                            "spatial evidence exceeds current capture bounds");
                 }
                 if (("converged".equals(status) || "not-converged".equals(status))
                         && (reference == null || current == null || metrics == null)) {
@@ -298,6 +315,40 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                                 "comparison PNG hash does not match current metadata");
                     }
                 }
+                if (heatmapPngBase64 != null) {
+                    if (heatmapPngBase64.length() > Screenshot.MAX_BASE64_LENGTH) {
+                        throw new IllegalArgumentException(
+                                "heatmap PNG exceeds protocol response limit");
+                    }
+                    byte[] png;
+                    try {
+                        png = Base64.getDecoder().decode(heatmapPngBase64);
+                    } catch (IllegalArgumentException invalid) {
+                        throw new IllegalArgumentException(
+                                "heatmap PNG is not valid base64", invalid);
+                    }
+                    if (!sha256(png).equals(heatmap.sha256())) {
+                        throw new IllegalArgumentException(
+                                "heatmap PNG hash does not match metadata");
+                    }
+                }
+            }
+
+            /** Compatibility constructor for responses without spatial evidence. */
+            public InspectCompare(
+                    String status,
+                    String policy,
+                    ReferenceVisualData reference,
+                    CurrentVisualData current,
+                    MetricsData metrics,
+                    List<DifferenceData> differences,
+                    List<ComparisonDiagnosticData> diagnostics,
+                    int iterations,
+                    long elapsedMillis,
+                    String currentPngBase64) {
+                this(status, policy, reference, current, metrics, differences,
+                        List.of(), null, diagnostics, iterations, elapsedMillis,
+                        currentPngBase64, null);
             }
 
             static InspectCompare fromCore(VisualComparisonResult result) {
@@ -305,6 +356,9 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                 String png = result.current() == null ? null
                         : Base64.getEncoder().encodeToString(
                                 result.current().image().pngBytes());
+                String heatmapPng = result.heatmap() == null ? null
+                        : Base64.getEncoder().encodeToString(
+                                result.heatmap().pngBytes());
                 return new InspectCompare(
                         wire(result.status().name()), result.policy().wireName(),
                         result.reference() == null ? null
@@ -315,9 +369,13 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                                 : MetricsData.fromCore(result.metrics()),
                         result.differences().stream()
                                 .map(DifferenceData::fromCore).toList(),
+                        result.regions().stream().map(RegionData::fromCore).toList(),
+                        result.heatmap() == null ? null
+                                : HeatmapData.fromCore(result.heatmap()),
                         result.diagnostics().stream()
                                 .map(ComparisonDiagnosticData::fromCore).toList(),
-                        result.iterations(), result.elapsed().toMillis(), png);
+                        result.iterations(), result.elapsed().toMillis(), png,
+                        heatmapPng);
             }
         }
 
@@ -755,6 +813,56 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                     wire(difference.category().name()), difference.controlId(),
                     difference.path(), difference.expected(), difference.observed(),
                     difference.blocking());
+        }
+    }
+
+    /** One bounded framebuffer-top-left spatial difference region. */
+    record RegionData(
+            String category,
+            String controlId,
+            int x,
+            int y,
+            int width,
+            int height,
+            long differingPixels,
+            double meanAbsoluteError) {
+        public RegionData {
+            ProtocolJson.requireIdentifier(category, "region category");
+            if (controlId != null) {
+                ProtocolJson.requireIdentifier(controlId, "region controlId");
+            }
+            if (x < 0 || y < 0 || width <= 0 || height <= 0
+                    || differingPixels < 0
+                    || differingPixels > (long) width * height
+                    || !Double.isFinite(meanAbsoluteError)
+                    || meanAbsoluteError < 0 || meanAbsoluteError > 255) {
+                throw new IllegalArgumentException("invalid comparison region");
+            }
+        }
+
+        static RegionData fromCore(
+                dev.gdx.uiharness.core.visual.VisualRegion region) {
+            return new RegionData(
+                    wire(region.category().name()), region.controlId(),
+                    region.x(), region.y(), region.width(), region.height(),
+                    region.differingPixels(), region.meanAbsoluteError());
+        }
+    }
+
+    /** Hash-bound heatmap metadata; encoded bytes travel separately. */
+    record HeatmapData(String sha256, int width, int height) {
+        public HeatmapData {
+            if (sha256 == null || !sha256.matches("[0-9a-f]{64}")
+                    || width <= 0 || height <= 0
+                    || (long) width * height > 33_554_432L) {
+                throw new IllegalArgumentException("invalid heatmap metadata");
+            }
+        }
+
+        static HeatmapData fromCore(
+                dev.gdx.uiharness.core.visual.VisualHeatmap heatmap) {
+            return new HeatmapData(
+                    heatmap.sha256(), heatmap.width(), heatmap.height());
         }
     }
 

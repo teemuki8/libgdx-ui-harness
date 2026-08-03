@@ -329,6 +329,8 @@ public final class HarnessToolHandler implements AutoCloseable {
             content.put("elapsedMillis", comparison.elapsedMillis());
             content.put("differences", COMMAND_MAPPER.convertValue(
                     comparison.differences(), List.class));
+            content.put("regions", COMMAND_MAPPER.convertValue(
+                    comparison.regions(), List.class));
             content.put("diagnostics", COMMAND_MAPPER.convertValue(
                     comparison.diagnostics(), List.class));
             if (comparison.reference() != null) {
@@ -360,6 +362,20 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("scaleX", comparison.current().scaleX());
                 content.put("scaleY", comparison.current().scaleY());
                 content.put("sha256", comparison.current().sha256());
+            }
+            if (comparison.heatmap() != null) {
+                if (comparison.heatmapPngBase64() == null) {
+                    throw new IllegalArgumentException(
+                            "accepted heatmap evidence is missing PNG bytes");
+                }
+                byte[] png = Base64.getDecoder().decode(
+                        comparison.heatmapPngBase64());
+                ArtifactReference heatmap = artifacts.publish("image/png", png.clone());
+                if (!heatmap.sha256().equals(comparison.heatmap().sha256())) {
+                    throw new IllegalArgumentException(
+                            "published heatmap hash changed");
+                }
+                content.put("heatmapArtifact", artifactMap(heatmap));
             }
             ArtifactReference evidence = artifacts.publish(
                     "application/json", encoded.clone());

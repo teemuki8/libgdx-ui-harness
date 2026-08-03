@@ -66,6 +66,27 @@ final class FunctionalContractTest {
     }
 
     @Test
+    void publicTransitionProjectionRejectsUndeclaredHyphenatedActionAliases() throws Exception {
+        JsonNode corpus = corpus();
+        FunctionalContract contract = FunctionalContract.fromCorpus(corpus);
+        for (String scenario : List.of("copySeed", "randomSeed")) {
+            ObjectNode suite = publicContractFixture(corpus);
+            ObjectNode transition = (ObjectNode) suite.path("scenarios")
+                    .path(scenario).path("transition");
+            transition.put("actionId", scenario.equals("copySeed")
+                    ? "copy-seed" : "random-seed");
+
+            FunctionalContract.Result result = contract.evaluatePublicContract(suite);
+
+            String assertionId = scenario.equals("copySeed")
+                    ? "transition.copy-seed" : "transition.random-seed";
+            assertFalse(result.assertions().stream()
+                    .filter(assertion -> assertion.id().equals(assertionId))
+                    .findFirst().orElseThrow().passed());
+        }
+    }
+
+    @Test
     void publicContractMissingFieldUnknownMajorAndDuplicateIdFailClosed() throws Exception {
         JsonNode corpus = corpus();
         ObjectNode missing = publicContractFixture(corpus);
@@ -606,8 +627,8 @@ final class FunctionalContractTest {
             ObjectNode contract, String name, JsonNode checkpoint) {
         String action = switch (name) {
             case "invalidStart" -> "start-battle";
-            case "copySeed" -> "copy-seed";
-            case "randomSeed" -> "random-seed";
+            case "copySeed" -> "copySeed";
+            case "randomSeed" -> "randomSeed";
             case "cancel" -> "cancel";
             case "escape" -> "escape";
             case "confirmation" -> "start-battle";

@@ -170,6 +170,7 @@ public final class InspectCaptureCompareService {
                 return new VisualComparisonResult(
                         ComparisonStatus.INCOMPLETE, policy, reference, current,
                         comparison.metrics(), comparison.differences(),
+                        comparison.regions(), comparison.heatmap(),
                         List.of(new ComparisonDiagnostic(
                                 "OPERATION_BOUND_EXCEEDED", "$.maxDurationMillis",
                                 "completed before deadline", deadline.timeout().toString())),
@@ -177,7 +178,8 @@ public final class InspectCaptureCompareService {
             }
             return new VisualComparisonResult(
                     status, policy, reference, current, comparison.metrics(),
-                    comparison.differences(), List.of(), 1, deadline.elapsed());
+                    comparison.differences(), comparison.regions(), comparison.heatmap(),
+                    List.of(), 1, deadline.elapsed());
         });
     }
 

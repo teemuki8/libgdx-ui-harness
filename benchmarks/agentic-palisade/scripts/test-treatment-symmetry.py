@@ -12,15 +12,15 @@ APPENDIX_MARKER = b"## Treatment appendix\n"
 IGNORED_DIRECTORIES = {".gradle", "build", "__pycache__"}
 EXPECTED_SHARED_HASHES = {
     "PROTOCOL.md": "952ad23e0794165d0c4bf1a32d7c4605fa1792961c6203ae78f4d354916d910f",
-    "template": "f6d007b14675151f3fe29fcc2c7d40aae9bd0ffeea36461e71589704eb59c9a5",
+    "template": "06d1d8085038ce09d5f328842cd85b670ab25d07d418ecbe80790fbed48abd1f",
     "corpus": "d9d973fc53ba753fc665d64d299647444f51d26d42f87d21f14a162ac680065b",
 }
 EXPECTED_COMMON_HASH = (
-    "22ee47b13c343240050584eacbae06147cb9de05f5a43ee85015df493caece4c"
+    "d910cc7576cf941784dfcfcf002bc9eb35e985e4ede522b0e50e3a4067417fb3"
 )
 EXPECTED_APPENDIX_HASHES = {
     "baseline": "a9810b5911cf89ff97cd729d9923ae8e6deb455a5bbaaba427d1976f44ccdbed",
-    "harness": "ab35d61026fc7cdab271579fbe60711e0d01f61a672e86fa949bfcd9d5cadf3e",
+    "harness": "57bf1fc1b11e9fc9ad79f2c29eebaf46ee338fc67323c2710a28c5df30c5358e",
 }
 QUALIFIED_COORDINATES = {
     b'io.github.teemuki8:harness-lwjgl3:$harnessVersion',
