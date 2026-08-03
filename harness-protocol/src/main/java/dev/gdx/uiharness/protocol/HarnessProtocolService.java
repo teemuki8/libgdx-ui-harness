@@ -7,6 +7,7 @@ import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
+import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import dev.gdx.uiharness.core.wait.WaitEngine;
@@ -209,14 +210,11 @@ public final class HarnessProtocolService {
         if (command instanceof Command.Snapshot) {
             ContractProvider contract = contracts.get(request.sessionId());
             if (contract != null) {
-                CompletionStage<HarnessResponse.Result.Snapshot> combined =
-                        session.harness().snapshot(deadline).thenCombine(
-                                contract.snapshot(deadline),
-                                (snapshot, stateAction) ->
-                                        new HarnessResponse.Result.Snapshot(
-                                                HarnessResponse.SnapshotData.fromCore(
-                                                        snapshot, stateAction)));
-                return RoutedOperation.map(combined, Function.identity());
+                return RoutedOperation.map(
+                        contract.snapshotWith(session.harness(), deadline),
+                        evidence -> new HarnessResponse.Result.Snapshot(
+                                HarnessResponse.SnapshotData.fromCore(
+                                        evidence.snapshot(), evidence.contract())));
             }
             return RoutedOperation.map(session.harness().snapshot(deadline),
                     snapshot -> new HarnessResponse.Result.Snapshot(
@@ -591,5 +589,29 @@ public final class HarnessProtocolService {
     public interface ContractProvider {
         /** Captures the resulting completed-frame contract before the monotonic deadline. */
         CompletionStage<StateActionContract> snapshot(Deadline deadline);
+
+        /** Captures correlated semantic and contract evidence before the same deadline. */
+        default CompletionStage<SnapshotEvidence> snapshotWith(
+                Harness harness, Deadline deadline) {
+            Objects.requireNonNull(harness, "harness");
+            Objects.requireNonNull(deadline, "deadline");
+            return harness.snapshot(deadline).thenCombine(
+                    snapshot(deadline), SnapshotEvidence::new);
+        }
+    }
+
+    /** One same-frame semantic snapshot and evaluator-complete contract pair. */
+    public record SnapshotEvidence(
+            SemanticSnapshot snapshot, StateActionContract contract) {
+        /** Rejects mixed-frame evidence at its construction boundary. */
+        public SnapshotEvidence {
+            snapshot = Objects.requireNonNull(snapshot, "snapshot");
+            contract = Objects.requireNonNull(contract, "contract");
+            if (snapshot.revision() != contract.revision()
+                    || snapshot.frame() != contract.frame()) {
+                throw new IllegalArgumentException(
+                        "semantic snapshot and state/action contract identities differ");
+            }
+        }
     }
 }

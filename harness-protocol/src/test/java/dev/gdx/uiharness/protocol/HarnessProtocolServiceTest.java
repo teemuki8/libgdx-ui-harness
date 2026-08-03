@@ -11,6 +11,8 @@ import dev.gdx.uiharness.core.action.Harness;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
+import dev.gdx.uiharness.core.contract.ContractVersion;
+import dev.gdx.uiharness.core.contract.StateActionContract;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
@@ -103,6 +105,42 @@ final class HarnessProtocolServiceTest {
         assertEquals(ProtocolError.Code.SESSION_NOT_FOUND, failure.error().code());
         assertEquals("request-17", failure.requestId());
         assertEquals("missing", failure.sessionId());
+        assertEquals(0, harness.snapshotCalls.get());
+    }
+
+    @Test void combinedSnapshotProviderKeepsSemanticAndContractEvidenceAtomic() {
+        RecordingHarness harness = new RecordingHarness();
+        harness.snapshotFailure = new IllegalStateException(
+                "independent semantic snapshot must not run");
+        StateActionContract contract = new StateActionContract(
+                ContractVersion.V1, "atomic-state", 1, 1,
+                List.of(), List.of(), null, List.of(), List.of(), null);
+        HarnessProtocolService.ContractProvider contracts =
+                new HarnessProtocolService.ContractProvider() {
+                    @Override public CompletionStage<StateActionContract> snapshot(
+                            Deadline deadline) {
+                        return CompletableFuture.failedFuture(new IllegalStateException(
+                                "independent contract snapshot must not run"));
+                    }
+
+                    @Override public CompletionStage<HarnessProtocolService.SnapshotEvidence>
+                            snapshotWith(Harness ignored, Deadline deadline) {
+                        return CompletableFuture.completedFuture(
+                                new HarnessProtocolService.SnapshotEvidence(SNAPSHOT, contract));
+                    }
+                };
+        HarnessProtocolService.Session session = session(
+                harness, new RecordingCapture(),
+                HarnessProtocolService.TraceController.unsupported());
+        HarnessProtocolService service = new HarnessProtocolService(
+                Map.of("game", session), Map.of("game", contracts), CLOCK, Runnable::run);
+
+        HarnessResponse.Success success = assertInstanceOf(HarnessResponse.Success.class,
+                await(service.execute(request(new Command.Snapshot()))));
+        HarnessResponse.Result.Snapshot result = assertInstanceOf(
+                HarnessResponse.Result.Snapshot.class, success.result());
+
+        assertEquals("atomic-state", result.snapshot().contract().stateId());
         assertEquals(0, harness.snapshotCalls.get());
     }
 
@@ -266,14 +304,21 @@ final class HarnessProtocolServiceTest {
 
     private static HarnessProtocolService service(RecordingHarness harness,
             RecordingCapture capture, HarnessProtocolService.TraceController traces) {
+        return new HarnessProtocolService(Map.of("game", session(harness, capture, traces)),
+                CLOCK, Runnable::run);
+    }
+
+    private static HarnessProtocolService.Session session(
+            RecordingHarness harness,
+            RecordingCapture capture,
+            HarnessProtocolService.TraceController traces) {
         LocatorEngine locators = new StrictResolution();
         FrameSignal frames = listener -> () -> {};
         WaitEngine waits = new WaitEngine(() -> SNAPSHOT, locators, CLOCK, frames);
         CapabilitySet capabilities = new CapabilitySet(List.of("action", "capabilities", "query",
                 "screenshot", "snapshot", "trace", "wait"));
-        HarnessProtocolService.Session session = new HarnessProtocolService.Session(
+        return new HarnessProtocolService.Session(
                 harness, locators, waits, capture, capabilities, traces);
-        return new HarnessProtocolService(Map.of("game", session), CLOCK, Runnable::run);
     }
 
     private static void assertResult(HarnessProtocolService service, Command command,

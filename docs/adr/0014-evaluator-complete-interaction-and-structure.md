@@ -19,6 +19,11 @@ therefore publish schema-compatible state while implementing a different initial
 model from the one exercised by the evaluator. Exact panel and target-control geometry was
 evaluator-owned but undisclosed even though it was a mandatory structural predicate.
 
+The transport initially requested the semantic tree and evaluator-complete contract as two
+independent render-thread commands. A render-loop drain beginning between those submissions could
+place the reads on adjacent frames, causing a valid `ui_snapshot` request to fail the strict
+revision and frame identity check nondeterministically.
+
 ## Decision
 
 Both public evidence channels use the closed accessible-role vocabulary `button`, `checkbox`,
@@ -40,6 +45,11 @@ real Scene2D input dispatch.
 The protocol also publishes the exact panel, target-control, and visible target bounds required
 for each frozen reference identity.
 
+`ContractProvider.snapshotWith` represents one correlated semantic snapshot and state/action
+contract. Render-thread adapters override it with one scheduled read and one revision/frame pair.
+The default implementation preserves compatibility for providers whose evidence source is already
+atomic. `SnapshotEvidence` rejects mixed revision or frame identities at construction.
+
 ## Consequences
 
 - Role and label evidence have one deterministic meaning across the public contract and evaluator.
@@ -48,6 +58,8 @@ for each frozen reference identity.
   internals.
 - Exact structural geometry failures distinguish candidate divergence from missing evaluator
   information.
+- Application-owned render loops cannot split one correlated snapshot across completed frames.
+- Strict mixed-frame rejection remains in force instead of being relaxed to hide scheduling races.
 - Existing retained qualifications remain diagnostic evidence and cannot qualify a release that
   uses the corrected contract.
 
@@ -56,5 +68,7 @@ for each frozen reference identity.
 ```bash
 ./gradlew -p benchmarks/agentic-palisade/evaluator test --warning-mode=fail
 python3 benchmarks/agentic-palisade/scripts/test-treatment-symmetry.py
+./gradlew :harness-protocol:test --tests \
+  dev.gdx.uiharness.protocol.HarnessProtocolServiceTest.combinedSnapshotProviderKeepsSemanticAndContractEvidenceAtomic
 ./gradlew check javadoc --warning-mode=fail
 ```
