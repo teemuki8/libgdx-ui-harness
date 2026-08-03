@@ -12,6 +12,8 @@ public record VisualComparisonResult(
         CurrentVisualEvidence current,
         VisualMetrics metrics,
         List<VisualDifference> differences,
+        List<VisualRegion> regions,
+        VisualHeatmap heatmap,
         List<ComparisonDiagnostic> diagnostics,
         int iterations,
         Duration elapsed) {
@@ -20,6 +22,7 @@ public record VisualComparisonResult(
         Objects.requireNonNull(status, "status");
         Objects.requireNonNull(policy, "policy");
         differences = List.copyOf(Objects.requireNonNull(differences, "differences"));
+        regions = List.copyOf(Objects.requireNonNull(regions, "regions"));
         diagnostics = List.copyOf(Objects.requireNonNull(diagnostics, "diagnostics"));
         Objects.requireNonNull(elapsed, "elapsed");
         if (iterations < 0 || iterations > 64 || elapsed.isNegative()) {
@@ -41,6 +44,34 @@ public record VisualComparisonResult(
             throw new IllegalArgumentException(
                     "incomplete or stale status requires a diagnostic");
         }
+        if (differences.size() > 1_024 || regions.size() > 256) {
+            throw new IllegalArgumentException("comparison evidence exceeds bounds");
+        }
+        if (reference != null && regions.stream().anyMatch(region ->
+                (long) region.x() + region.width() > reference.width()
+                        || (long) region.y() + region.height() > reference.height())) {
+            throw new IllegalArgumentException("comparison region exceeds reference bounds");
+        }
+        if (heatmap != null && reference != null
+                && (heatmap.width() != reference.width()
+                || heatmap.height() != reference.height())) {
+            throw new IllegalArgumentException("heatmap dimensions differ from reference");
+        }
+    }
+
+    /** Compatibility constructor for non-spatial incomplete and fixture results. */
+    public VisualComparisonResult(
+            ComparisonStatus status,
+            VisualPolicy policy,
+            VisualReference reference,
+            CurrentVisualEvidence current,
+            VisualMetrics metrics,
+            List<VisualDifference> differences,
+            List<ComparisonDiagnostic> diagnostics,
+            int iterations,
+            Duration elapsed) {
+        this(status, policy, reference, current, metrics, differences,
+                List.of(), null, diagnostics, iterations, elapsed);
     }
 
     /** Creates an incomplete result that cannot contain accepted current evidence. */
@@ -51,7 +82,7 @@ public record VisualComparisonResult(
             Duration elapsed) {
         return new VisualComparisonResult(
                 ComparisonStatus.INCOMPLETE, policy, reference, null, null,
-                List.of(), diagnostics, 0, elapsed);
+                List.of(), List.of(), null, diagnostics, 0, elapsed);
     }
 
     /** Returns whether application, viewport, dimensions, and required scale are compatible. */

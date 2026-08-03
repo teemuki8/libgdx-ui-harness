@@ -5,11 +5,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 final class StructuralUsabilityTest {
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final String SHA_A =
             "98c092bfd976171cb17745b425e8d0ae357e93f085ed8eae9e618ee56c0f5cb3";
     private static final String SHA_B = "b".repeat(64);
@@ -23,6 +26,52 @@ final class StructuralUsabilityTest {
         assertEquals(64, first.length());
         assertTrue(first.matches("[0-9a-f]{64}"));
         assertEquals(first, StructuralUsability.implementationSha256());
+    }
+
+    @Test
+    void trustedStructuralObservationRequiresThePinnedProbeIdentity() throws Exception {
+        ObjectNode wrapper = (ObjectNode) JSON.readTree("""
+                {"schemaVersion":"trusted-structural-measurement/v1",
+                 "probeSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                 "observation":{"schemaVersion":"structural-observation/v1",
+                   "semanticRevision":1,"layoutRevision":2,"frameEdgeClipped":false,
+                   "scrollY":0,"semanticSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                   "layoutSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                   "regionSha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                   "panelBounds":{"x":0,"y":0,"width":100,"height":100},
+                   "controls":[]}}
+                """);
+
+        StructuralUsability.Observation observation =
+                CandidateEvaluator.trustedStructuralObservation(wrapper, SHA_B);
+
+        assertEquals("structural-observation/v1", observation.schemaVersion());
+        wrapper.put("probeSha256", SHA_C);
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> CandidateEvaluator.trustedStructuralObservation(wrapper, SHA_B));
+        assertTrue(failure.getMessage().contains("probe identity"));
+    }
+
+    @Test
+    void candidateAuthoredPerfectStructuralClaimCannotEnterTrustedChannel() throws Exception {
+        ObjectNode perfectCandidateClaim = (ObjectNode) JSON.readTree("""
+                {"schemaVersion":"structural-observation/v1",
+                 "semanticRevision":1,"layoutRevision":1,"frameEdgeClipped":false,
+                 "scrollY":0,
+                 "semanticSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                 "layoutSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                 "regionSha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                 "panelBounds":{"x":620,"y":24,"width":680,"height":1032},
+                 "controls":[]}
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> CandidateEvaluator.trustedStructuralObservation(
+                        perfectCandidateClaim, SHA_B));
+
+        assertFalse(failure.getMessage().isBlank());
     }
 
     @Test

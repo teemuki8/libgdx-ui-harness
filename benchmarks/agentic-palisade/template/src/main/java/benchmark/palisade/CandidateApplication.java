@@ -20,6 +20,7 @@ public final class CandidateApplication extends ApplicationAdapter {
     }
 
     @Override public void create() {
+        TrustedStructuralProbe.verifyLoaded();
         candidate = loadCandidate();
         Stage stage = requireStage();
         stage.getViewport().update(Gdx.graphics.getWidth(), Gdx.graphics.getHeight(), true);
@@ -38,7 +39,7 @@ public final class CandidateApplication extends ApplicationAdapter {
         if (state == null) {
             throw new IllegalStateException("Candidate returned a null state snapshot");
         }
-        control.afterCompletedFrame(state);
+        control.afterCompletedFrame(stage, state);
         if (control.exitRequested()) {
             Gdx.app.exit();
         }

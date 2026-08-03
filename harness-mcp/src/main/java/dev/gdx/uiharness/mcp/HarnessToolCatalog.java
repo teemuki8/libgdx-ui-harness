@@ -124,6 +124,7 @@ public final class HarnessToolCatalog {
                                 Map.entry("policy", string(1, MAX_IDENTIFIER)),
                                 Map.entry("referenceId", string(1, MAX_IDENTIFIER)),
                                 Map.entry("currentArtifact", ARTIFACT_SCHEMA),
+                                Map.entry("heatmapArtifact", ARTIFACT_SCHEMA),
                                 Map.entry("evidenceArtifact", ARTIFACT_SCHEMA),
                                 Map.entry("revision", integer(0, Long.MAX_VALUE)),
                                 Map.entry("frame", integer(0, Long.MAX_VALUE)),
@@ -137,11 +138,14 @@ public final class HarnessToolCatalog {
                                 Map.entry("metrics", comparisonMetricsSchema()),
                                 Map.entry("differences", array(
                                         visualDifferenceSchema(), 1_024)),
+                                Map.entry("regions", array(
+                                        visualRegionSchema(), 256)),
                                 Map.entry("diagnostics", array(
                                         comparisonDiagnosticSchema(), 256))),
                                 List.of(
                                         "status", "policy", "iterations",
-                                        "elapsedMillis", "differences", "diagnostics"))),
+                                        "elapsedMillis", "differences", "regions",
+                                        "diagnostics"))),
                 tool("ui_typography_diagnose",
                         "Capture and diagnose actor-attributed typography against a named "
                                 + "reference",
@@ -861,7 +865,7 @@ public final class HarnessToolCatalog {
         return object(Map.of(
                 "category", enumString(
                         "text", "value", "bounds", "padding", "visibility",
-                        "raster-residual"),
+                        "clipping", "raster-residual"),
                 "controlId", nullableString(),
                 "path", string(1, ProtocolJson.MAX_STRING_LENGTH),
                 "expected", string(1, ProtocolJson.MAX_STRING_LENGTH),
@@ -870,6 +874,23 @@ public final class HarnessToolCatalog {
                 List.of(
                         "category", "path",
                         "expected", "observed", "blocking"));
+    }
+
+    private static Map<String, Object> visualRegionSchema() {
+        return object(Map.of(
+                "category", enumString(
+                        "text", "value", "bounds", "padding", "visibility",
+                        "clipping", "raster-residual"),
+                "controlId", nullableString(),
+                "x", integer(0, 8_191),
+                "y", integer(0, 8_191),
+                "width", integer(1, 8_192),
+                "height", integer(1, 8_192),
+                "differingPixels", integer(0, 33_554_432L),
+                "meanAbsoluteError", number(0, 255)),
+                List.of(
+                        "category", "x", "y", "width", "height",
+                        "differingPixels", "meanAbsoluteError"));
     }
 
     private static Map<String, Object> comparisonDiagnosticSchema() {

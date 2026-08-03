@@ -4,7 +4,7 @@ Implement `benchmark.palisade.SkirmishConfigurationUi` in the supplied candidate
 
 Do not inspect a reference checkout, evaluator internals, non-public fixtures, capture infrastructure, or another treatment run. Do not change the protocol or corpus. Work within the candidate template, retain the fixed candidate contract, and use exactly three implement-observe-refine rounds.
 
-Implement the public `CandidateState.values().stateAction` and `structuralUsability` evidence contracts on every completed frame. A visually working UI with omitted, partial, aliased, or differently nested evidence is incomplete.
+Implement the public `CandidateState.values().stateAction` evidence contract on every completed frame. A visually working UI with omitted, partial, aliased, or differently nested functional evidence is incomplete. Structural evidence is measured independently from the completed Stage and framebuffer; candidate-authored structural claims do not substitute for those measurements.
 Keep finite command files and other trace inputs outside Gradle's `build/` directory so a later `clean` cannot remove evidence referenced by the session trace.
 
 The runner installs the repository-owned Gradle Wrapper at `../../../gradlew`.

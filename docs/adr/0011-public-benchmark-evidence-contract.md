@@ -1,6 +1,6 @@
 # ADR 0011: Public benchmark evidence contract
 
-- Status: Accepted
+- Status: Superseded by ADR 0015
 - Date: 2026-07-30
 
 ## Context

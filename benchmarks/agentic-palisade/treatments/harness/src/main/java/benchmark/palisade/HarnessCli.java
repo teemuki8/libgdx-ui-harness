@@ -40,9 +40,10 @@ public final class HarnessCli {
         if (args.length != 0) {
             throw new IllegalArgumentException("HarnessCli accepts no process arguments");
         }
+        LaunchViewport viewport = launchViewport(System.getenv());
         Lwjgl3ApplicationConfiguration configuration = new Lwjgl3ApplicationConfiguration();
         configuration.setTitle("Candidate UI with harness");
-        configuration.setWindowedMode(1280, 720);
+        configuration.setWindowedMode(viewport.width(), viewport.height());
         configuration.setWindowSizeLimits(1, 1, 4096, 4096);
         configuration.setResizable(false);
         configuration.setHdpiMode(HdpiMode.Pixels);
@@ -52,6 +53,20 @@ public final class HarnessCli {
         configuration.setIdleFPS(60);
         configuration.disableAudio(true);
         new Lwjgl3Application(new HarnessApplication(), configuration);
+    }
+
+    static LaunchViewport launchViewport(Map<String, String> environment) {
+        String requested = Objects.requireNonNull(environment, "environment")
+                .getOrDefault("PALISADE_VIEWPORT", "desktop-1280x720");
+        return switch (requested) {
+            case "desktop-1280x720" -> new LaunchViewport(requested, 1280, 720);
+            case "desktop-1920x1080" -> new LaunchViewport(requested, 1920, 1080);
+            default -> throw new IllegalArgumentException(
+                    "PALISADE_VIEWPORT must name an approved corpus viewport");
+        };
+    }
+
+    record LaunchViewport(String id, int width, int height) {
     }
 
     static CandidateUi loadCandidate() {

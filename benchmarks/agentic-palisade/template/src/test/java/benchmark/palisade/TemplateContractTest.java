@@ -11,7 +11,11 @@ import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.Graphics;
 import com.badlogic.gdx.Input;
 import com.badlogic.gdx.graphics.GL20;
+import com.badlogic.gdx.graphics.Pixmap;
 import com.badlogic.gdx.graphics.g2d.Batch;
+import com.badlogic.gdx.math.Rectangle;
+import com.badlogic.gdx.scenes.scene2d.Actor;
+import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
 import com.badlogic.gdx.utils.GdxNativesLoader;
 import com.badlogic.gdx.scenes.scene2d.Stage;
@@ -85,6 +89,37 @@ final class TemplateContractTest {
                 ((Map<?, ?>) state.values().get("confirmation")).get("seed"));
         assertThrows(UnsupportedOperationException.class,
                 () -> state.values().put("other", true));
+    }
+
+    @Test
+    void trustedStructuralEvidenceUsesTheConfiguredCullingRectangle() {
+        RecordingStage stage = new RecordingStage();
+        stage.getViewport().setWorldSize(100, 100);
+        Group scroll = new Group();
+        scroll.setName("scroll");
+        scroll.setBounds(10, 10, 80, 80);
+        scroll.setCullingArea(new Rectangle(5, 10, 40, 30));
+        Actor action = new Actor();
+        action.setName("action");
+        action.setBounds(0, 0, 80, 80);
+        scroll.addActor(action);
+        stage.addActor(scroll);
+        CandidateState state = new CandidateState(Map.of(
+                "stateAction", Map.of(
+                        "controls", List.of(Map.of("id", "action", "role", "button")))));
+
+        Pixmap framebuffer = new Pixmap(100, 100, Pixmap.Format.RGBA8888);
+        try {
+            Map<?, ?> measurement = TrustedStructuralProbe.capture(stage, state, framebuffer, 1);
+            Map<?, ?> observation = (Map<?, ?>) measurement.get("observation");
+            List<?> controls = (List<?>) observation.get("controls");
+            Map<?, ?> control = (Map<?, ?>) controls.getFirst();
+
+            assertEquals(Map.of("x", 15.0, "y", 50.0, "width", 40.0, "height", 30.0),
+                    control.get("visibleBounds"));
+        } finally {
+            framebuffer.dispose();
+        }
     }
 
     @Test
@@ -250,6 +285,13 @@ final class TemplateContractTest {
         assertFalse(results.get(1).getBoolean("ok"));
         assertEquals("captures/initial-1280x720.png",
                 results.get(3).getString("artifact"));
+        assertEquals("trusted-structural-measurement/v1",
+                results.get(3).get("trustedStructural").getString("schemaVersion"));
+        assertTrue(results.get(3).get("trustedStructural")
+                .getString("probeSha256").matches("[0-9a-f]{64}"));
+        assertEquals("structural-observation/v1", results.get(3)
+                .get("trustedStructural").get("observation")
+                .getString("schemaVersion"));
         assertEquals("captures/initial-1920x1080.png",
                 results.get(5).getString("artifact"));
         assertTrue(results.get(6).getBoolean("ok"));

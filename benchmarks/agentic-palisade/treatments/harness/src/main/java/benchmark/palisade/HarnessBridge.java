@@ -112,13 +112,14 @@ public final class HarnessBridge implements AutoCloseable {
         HarnessProtocolService.ContractProvider contracts = deadline -> scheduler.submit(
                 () -> sceneSession.stateActionContract(revision.get(), frame.get()),
                 deadline);
-        VisualReference reference = initialReference();
+        Map<String, VisualReference> references = visualReferences(Path.of("."));
+        String viewportId = "desktop-" + stage.getViewport().getScreenWidth()
+                + "x" + stage.getViewport().getScreenHeight();
         VisualPolicy policy = VisualPolicy.pixelExactV1();
         InspectCaptureCompareService comparison = new InspectCaptureCompareService(
-                SESSION_ID, "palisade-skirmish", "desktop-1280x720",
+                SESSION_ID, "palisade-skirmish", viewportId,
                 sceneHarness, capture, contracts,
-                id -> reference.referenceId().equals(id)
-                        ? java.util.Optional.of(reference) : java.util.Optional.empty(),
+                id -> java.util.Optional.ofNullable(references.get(id)),
                 List.of(policy), new Lwjgl3VisualComparator(), clock,
                 InstantSource.system());
         HarnessProtocolService protocol = new HarnessProtocolService(
@@ -217,15 +218,34 @@ public final class HarnessBridge implements AutoCloseable {
                 .toCompletableFuture().join();
     }
 
-    private static VisualReference initialReference() {
-        Path reference = locateInitialReference(Path.of("."));
+    static Map<String, VisualReference> visualReferences(Path workingDirectory) {
+        java.util.LinkedHashMap<String, VisualReference> references =
+                new java.util.LinkedHashMap<>();
+        for (ReferenceDescriptor descriptor : List.of(
+                new ReferenceDescriptor(
+                        "initial-1920x1080", "desktop-1920x1080", 1920, 1080,
+                        "98c092bfd976171cb17745b425e8d0ae357e93f085ed8eae9e618ee56c0f5cb3"),
+                new ReferenceDescriptor(
+                        "bottom-1920x1080", "desktop-1920x1080", 1920, 1080,
+                        "92b4dd35574d3b614bd1f4a05c172dd9df9c41ef96396a7fab45902e7f4f2fb6"),
+                new ReferenceDescriptor(
+                        "initial-1280x720", "desktop-1280x720", 1280, 720,
+                        "9de83761bb4135d618c48830afc280b85c36ff413f7d3b7248d0fb168b8d5ad0"))) {
+            VisualReference reference = visualReference(workingDirectory, descriptor);
+            references.put(reference.referenceId(), reference);
+        }
+        return java.util.Collections.unmodifiableMap(references);
+    }
+
+    private static VisualReference visualReference(
+            Path workingDirectory, ReferenceDescriptor descriptor) {
+        Path reference = locateReference(workingDirectory, descriptor.id());
         try {
             byte[] png = Files.readAllBytes(reference);
             return new VisualReference(
-                    "initial-1280x720", "palisade-skirmish", "corpus-v1",
-                    "desktop-1280x720", png,
-                    "9de83761bb4135d618c48830afc280b85c36ff413f7d3b7248d0fb168b8d5ad0",
-                    1280, 720, new CapturedImage.Scale(1, 1),
+                    descriptor.id(), "palisade-skirmish", "corpus-v1",
+                    descriptor.viewportId(), png, descriptor.sha256(),
+                    descriptor.width(), descriptor.height(), new CapturedImage.Scale(1, 1),
                     Instant.EPOCH, null, null);
         } catch (IOException failure) {
             throw new IllegalStateException(
@@ -234,13 +254,21 @@ public final class HarnessBridge implements AutoCloseable {
     }
 
     static Path locateInitialReference(Path workingDirectory) {
+        return locateReference(workingDirectory, "initial-1280x720");
+    }
+
+    static Path locateReference(Path workingDirectory, String referenceId) {
         Path root = Objects.requireNonNull(
                 workingDirectory, "workingDirectory").toAbsolutePath().normalize();
+        if (!List.of("initial-1920x1080", "bottom-1920x1080", "initial-1280x720")
+                .contains(referenceId)) {
+            throw new IllegalArgumentException("Unknown canonical reference: " + referenceId);
+        }
+        String filename = referenceId + ".png";
         for (Path candidate : List.of(
-                root.resolve("corpus/reference/initial-1280x720.png"),
-                root.resolve("../corpus/reference/initial-1280x720.png"),
-                root.resolve(
-                    "benchmarks/agentic-palisade/corpus/reference/initial-1280x720.png"))) {
+                root.resolve("corpus/reference").resolve(filename),
+                root.resolve("../corpus/reference").resolve(filename),
+                root.resolve("benchmarks/agentic-palisade/corpus/reference").resolve(filename))) {
             Path normalized = candidate.normalize();
             if (Files.isRegularFile(normalized, LinkOption.NOFOLLOW_LINKS)
                     && !Files.isSymbolicLink(normalized)) {
@@ -248,6 +276,10 @@ public final class HarnessBridge implements AutoCloseable {
             }
         }
         throw new IllegalStateException("Fixed public visual reference is missing");
+    }
+
+    private record ReferenceDescriptor(
+            String id, String viewportId, int width, int height, String sha256) {
     }
 
     private void requireOpen() {

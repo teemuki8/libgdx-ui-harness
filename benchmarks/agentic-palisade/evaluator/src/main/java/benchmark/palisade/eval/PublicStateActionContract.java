@@ -141,10 +141,10 @@ public final class PublicStateActionContract {
         checkpoint.put("valid", transition.path("validation").path("valid").booleanValue());
         checkpoint.put("started", transition.path("accepted").booleanValue());
         String action = transition.path("actionId").textValue();
-        if ("copy-seed".equals(action)) {
+        if ("copySeed".equals(action)) {
             checkpoint.set("seed", values.path("seed").deepCopy());
             checkpoint.set("clipboardText", transition.path("clipboardText").deepCopy());
-        } else if ("random-seed".equals(action)) {
+        } else if ("randomSeed".equals(action)) {
             JsonNode payload = transition.path("acceptedPayload");
             checkpoint.set("previousSeed", value(payload.path("previousSeed"),
                     "$.transition.acceptedPayload.previousSeed"));

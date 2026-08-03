@@ -10,7 +10,7 @@ The MCP server exposes exactly twelve V1 tools. `tools/list` is the authority; u
 | `ui_action` | Perform one allowlisted action | required `locator` and `action` | before/after revisions, observed state, evidence, optional artifact |
 | `ui_wait` | Wait on semantics | required `locator`; `condition` is `present` or `visible` | final revision/frame, matches/evidence, optional artifact |
 | `ui_screenshot` | Capture completed-frame PNG evidence | optional `locator`; required `maxWidth`, `maxHeight`, `maxPixels`, `maxPngBytes` | opaque artifact receipt plus frame/revision/dimensions/scales |
-| `ui_inspect_compare` | Inspect, capture, and compare one current full frame | required allowlisted reference/policy/viewport identities plus iteration, duration, pixel, and PNG bounds | explicit convergence status, bounded diagnostics, current PNG artifact, and full immutable evidence artifact |
+| `ui_inspect_compare` | Inspect, capture, and compare one current full frame | required allowlisted reference/policy/viewport identities plus iteration, duration, pixel, and PNG bounds | explicit convergence status, bounded semantic/spatial differences, current PNG and heatmap artifacts, and full immutable evidence artifact |
 | `ui_typography_diagnose` | Capture and diagnose visible registered text controls | required allowlisted reference and viewport identities plus duration, result, pixel, and PNG bounds | actor-attributed typography status and reports, current PNG artifact, and immutable diagnostic evidence artifact |
 | `ui_layout_diagnose` | Capture and diagnose selected controls after layout quiescence | required allowlisted reference and viewport identities plus a maximum two-second duration, result, pixel, and PNG bounds | actor-attributed layout status and summaries, quiescence proof, current PNG artifact, and immutable full evidence artifact |
 | `ui_trace_start` | Start bounded trace collection | required `maxDurationMillis` and `maxBytes` | trace ID |
@@ -47,6 +47,15 @@ named policy with no blocking semantic difference. `stale`, `incomplete`, and `n
 remain distinct results. The current PNG and complete JSON evidence are immutable artifacts.
 Missing or invalid capture fields are reported together with their ranges, observed values, and
 a minimal valid request.
+
+Comparison results contain at most 256 top-left-origin framebuffer regions. A region reports its
+category, optional stable control ID, bounds, differing-pixel count, and mean absolute error.
+Text, value, bounds, padding, visibility, and clipping differences are attributed only when both
+snapshots contain trustworthy semantic identity; remaining changed tiles are `raster-residual`.
+The full-frame heatmap is a digest-verified PNG published through the same opaque artifact channel.
+Use attributed regions to correct structure first, then the heatmap to localize residual pixels,
+and pair text residuals with `ui_typography_diagnose` to distinguish native glyph-size errors from
+bitmap scaling, filtering, or rasterization errors.
 
 `ui_typography_diagnose` reports font and atlas identity, nominal/generated/effective size,
 bitmap scale, texture filtering, available weight and spacing, window/viewport/framebuffer

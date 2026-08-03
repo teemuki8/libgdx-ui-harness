@@ -3,6 +3,7 @@ package benchmark.palisade;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.badlogic.gdx.ApplicationAdapter;
@@ -26,6 +27,7 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -46,6 +48,36 @@ final class HarnessBridgeTest {
         assertEquals(
                 reference.toAbsolutePath().normalize(),
                 HarnessBridge.locateInitialReference(temporary));
+    }
+
+    @Test void canonicalReferencesAndLaunchViewportsAreClosedAndBounded() throws Exception {
+        Path references = temporary.resolve("corpus/reference");
+        Files.createDirectories(references);
+        for (String referenceId : List.of(
+                "initial-1920x1080", "bottom-1920x1080", "initial-1280x720")) {
+            Path reference = references.resolve(referenceId + ".png");
+            Files.write(reference, new byte[] {1});
+            assertEquals(reference.toAbsolutePath().normalize(),
+                    HarnessBridge.locateReference(temporary, referenceId));
+        }
+        assertEquals(1920, HarnessCli.launchViewport(
+                Map.of("PALISADE_VIEWPORT", "desktop-1920x1080")).width());
+        assertEquals(720, HarnessCli.launchViewport(Map.of()).height());
+        assertThrows(IllegalArgumentException.class, () ->
+                HarnessCli.launchViewport(Map.of("PALISADE_VIEWPORT", "desktop-4096x4096")));
+        assertThrows(IllegalArgumentException.class, () ->
+                HarnessBridge.locateReference(temporary, "private-reference"));
+    }
+
+    @Test void comparisonCatalogContainsEveryDigestBoundCanonicalReference() {
+        var references = HarnessBridge.visualReferences(Path.of("."));
+
+        assertEquals(Set.of(
+                "initial-1920x1080", "bottom-1920x1080", "initial-1280x720"),
+                references.keySet());
+        assertEquals("desktop-1920x1080",
+                references.get("bottom-1920x1080").viewportId());
+        assertEquals(1280, references.get("initial-1280x720").width());
     }
 
     @Test void fixedJsonCliExercisesOneApplicationOwnedSessionAndArtifacts() throws Exception {
