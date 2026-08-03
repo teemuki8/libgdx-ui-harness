@@ -55,11 +55,12 @@ public final class CandidateEvaluator {
             Map.entry("settings.gradle.kts", "2098bf5d2904d7d13b7a4e5e9d1b309800b63e5002e990f44bac0299a2693301"),
             Map.entry("src/main/java/benchmark/palisade/CandidateLauncher.java", "aa8bf5d629899646f770b6e395b877879e72111baaf6305239fda71348bc8024"),
             Map.entry("src/main/java/benchmark/palisade/BenchmarkControl.java", "5c33f4fbf41a53e2986d962dfe40adac599dcb4c948688e24e771b89caa0db68"),
-            Map.entry("src/main/java/benchmark/palisade/CandidateApplication.java", "8d20fb4f2b11de529ce30ae9f846abb45ce1e937fe0dd14563c7490de5625725"),
+            Map.entry("src/main/java/benchmark/palisade/CandidateApplication.java", "9ff867ae444682e0ac7c97faa768fd91b2c10007b0ba5fa38286d988f0583bdb"),
+            Map.entry("src/main/java/benchmark/palisade/BlankCandidateUi.java", "3572c409cb50db029e245e1af247824461dc47f73ff46f26211bc02912cece59"),
             Map.entry("src/main/java/benchmark/palisade/CandidateState.java", "88157890ecdfb4a4e7f2fee028d99d1f9940ff84d21dcd2445f73945ba5a2fd6"),
             Map.entry("src/main/java/benchmark/palisade/CandidateUi.java", "fe93166097d0a357b85452a09f91fd7c2690e8d4f7d6648bc426456741c10eb7"));
     private static final Pattern RESERVED_TYPE_DECLARATION = Pattern.compile(
-            "\\b(?:class|record|interface|enum)\\s+(?:CandidateLauncher|BenchmarkControl|CandidateApplication|CandidateState|CandidateUi)\\b");
+            "\\b(?:class|record|interface|enum)\\s+(?:CandidateLauncher|BenchmarkControl|CandidateApplication|BlankCandidateUi|CandidateState|CandidateUi)\\b");
     private static final ObjectMapper JSON = new ObjectMapper(JsonFactory.builder()
             .streamReadConstraints(StreamReadConstraints.builder()
                     .maxNestingDepth(32).maxStringLength(65_536).maxNumberLength(128)

@@ -153,12 +153,19 @@ def require_protocol_amendment(manifest):
 def validate_treatment_symmetry(prepared):
     manifest = json_file(prepared / "benchmark-manifest.json")
     require_protocol_amendment(manifest)
+    expected = RUNNER._treatment_inputs()
+    if manifest.get("treatmentCommonInstructionHash") != expected["commonHash"]:
+        raise ValueError("prepared build-access contract is not current")
     if len(manifest["runs"]) != 6 or len({run["initialCandidateHash"] for run in manifest["runs"]}) != 1:
         raise ValueError("prepared candidates are not six identical neutral templates")
     for pair in (1, 2, 3):
         arms = {run["treatment"]: run for run in manifest["runs"] if run["pair"] == pair}
         baseline = prepared / arms["baseline"]["workspace"]
         harness = prepared / arms["harness"]["workspace"]
+        for treatment, arm in arms.items():
+            if (arm.get("treatmentAppendixHash")
+                    != expected[treatment]["appendixHash"]):
+                raise ValueError("prepared treatment appendix is not current")
         marker = "## Treatment appendix\n"
         baseline_common, baseline_appendix = (baseline / "INSTRUCTIONS.md").read_text().split(marker, 1)
         harness_common, harness_appendix = (harness / "INSTRUCTIONS.md").read_text().split(marker, 1)

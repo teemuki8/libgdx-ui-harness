@@ -54,6 +54,27 @@ public final class HarnessCli {
         new Lwjgl3Application(new HarnessApplication(), configuration);
     }
 
+    static CandidateUi loadCandidate() {
+        Class<?> type;
+        try {
+            type = Class.forName(CANDIDATE_CLASS);
+        } catch (ClassNotFoundException absent) {
+            return new BlankCandidateUi();
+        }
+        if (!CandidateUi.class.isAssignableFrom(type)) {
+            throw new IllegalStateException(CANDIDATE_CLASS + " must implement CandidateUi");
+        }
+        try {
+            return (CandidateUi) type.getConstructor().newInstance();
+        } catch (NoSuchMethodException failure) {
+            throw new IllegalStateException(
+                    CANDIDATE_CLASS + " must have a public no-argument constructor", failure);
+        } catch (InstantiationException | IllegalAccessException
+                | InvocationTargetException failure) {
+            throw new IllegalStateException("Could not construct candidate", failure);
+        }
+    }
+
     /** Consumes bounded NDJSON until EOF and emits one bounded JSON response per input line. */
     public static void run(HarnessBridge bridge, InputStream input, OutputStream output) {
         Objects.requireNonNull(bridge, "bridge");
@@ -282,25 +303,5 @@ public final class HarnessCli {
             return Objects.requireNonNull(candidate.stage(), "candidate.stage()");
         }
 
-        private static CandidateUi loadCandidate() {
-            Class<?> type;
-            try {
-                type = Class.forName(CANDIDATE_CLASS);
-            } catch (ClassNotFoundException failure) {
-                throw new IllegalStateException("Candidate class is missing", failure);
-            }
-            if (!CandidateUi.class.isAssignableFrom(type)) {
-                throw new IllegalStateException(CANDIDATE_CLASS + " must implement CandidateUi");
-            }
-            try {
-                return (CandidateUi) type.getConstructor().newInstance();
-            } catch (NoSuchMethodException failure) {
-                throw new IllegalStateException(
-                        CANDIDATE_CLASS + " must have a public no-argument constructor", failure);
-            } catch (InstantiationException | IllegalAccessException
-                    | InvocationTargetException failure) {
-                throw new IllegalStateException("Could not construct candidate", failure);
-            }
-        }
     }
 }

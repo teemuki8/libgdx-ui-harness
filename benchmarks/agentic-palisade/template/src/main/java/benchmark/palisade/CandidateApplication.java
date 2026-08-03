@@ -89,23 +89,4 @@ public final class CandidateApplication extends ApplicationAdapter {
         }
     }
 
-    private static final class BlankCandidateUi implements CandidateUi {
-        private final Stage stage = new Stage();
-
-        @Override public Stage stage() {
-            return stage;
-        }
-
-        @Override public void showInitial() {
-            stage.clear();
-        }
-
-        @Override public CandidateState snapshotState() {
-            return CandidateState.empty();
-        }
-
-        @Override public void dispose() {
-            stage.dispose();
-        }
-    }
 }

@@ -191,6 +191,15 @@ Before any treatment work begins, precommit exactly three matched pairs (six run
 
 Within each matched pair, use the same corpus version, task starting point, execution environment, and evaluation procedure. Harness availability and its accompanying instructions are the only treatment difference: one run receives the libGDX UI harness and instructions for using it, while its matched run receives neither. Prompts, tools, inputs, time limits, refinement opportunities, evaluator exposure, and human intervention must otherwise remain identical.
 
+Build access is part of the shared treatment contract. Both arms receive the same
+explicit repository Gradle Wrapper path and equivalent compile, test, and finite
+launch commands. The harness init script, bridge sources, qualified harness
+dependencies, and MCP operations are the only allowed build/launch differences.
+A preflight must compile, test, and launch one untouched candidate-bound pair
+offline before measured execution. A batch without this proof is invalid as
+comparative evidence; in particular, the first sealed 1.1.0 batch is retained
+only as non-comparative diagnostic evidence.
+
 ## Blinding
 
 Roles are separated:

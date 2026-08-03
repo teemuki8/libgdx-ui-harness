@@ -65,10 +65,18 @@ qualification_command = (
     "xvfb-run -a python3 benchmarks/agentic-palisade/scripts/"
     "qualify-pipeline.py --output \"$RUNNER_TEMP/agentic-palisade-qualification\""
 )
+symmetry_preflight = (
+    "xvfb-run -a python3 \\\n"
+    "            benchmarks/agentic-palisade/scripts/treatment-preflight.py"
+)
 require(qualification_command in ci,
         "CI must execute the deterministic Agentic Palisade qualification under Xvfb")
 require(ci.count(qualification_command) == 1,
         "CI must execute the paid-agent-free qualification exactly once")
+require(symmetry_preflight in ci,
+        "CI must execute the offline treatment build and launch preflight")
+require(ci.count(symmetry_preflight) == 1,
+        "CI must execute the treatment symmetry preflight exactly once")
 template_native_test = (
     "xvfb-run -a ./gradlew -p benchmarks/agentic-palisade/template test"
 )

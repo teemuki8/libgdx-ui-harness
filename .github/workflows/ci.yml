@@ -133,6 +133,23 @@ jobs:
           python3 benchmarks/agentic-palisade/scripts/test-blinding.py
           ./gradlew -p benchmarks/agentic-palisade/evaluator test --no-daemon --console=plain --warning-mode=fail
           xvfb-run -a ./gradlew -p benchmarks/agentic-palisade/template test --no-daemon --console=plain --warning-mode=fail
+      - name: Prove symmetric treatment build and launch access offline
+        shell: bash
+        run: |
+          candidate_version='1.1.0-candidate.ci'
+          candidate_repository="$RUNNER_TEMP/agentic-palisade-candidate-maven"
+          preflight_cache="$RUNNER_TEMP/agentic-palisade-gradle-cache"
+          GRADLE_USER_HOME="$preflight_cache" ./gradlew \
+            -PreleaseVersion="$candidate_version" \
+            -Dmaven.repo.local="$candidate_repository" \
+            publishToMavenLocal --no-daemon --console=plain --warning-mode=fail
+          xvfb-run -a python3 \
+            benchmarks/agentic-palisade/scripts/treatment-preflight.py \
+            --output "$RUNNER_TEMP/agentic-palisade-treatment-preflight" \
+            --candidate-maven-repository "$candidate_repository" \
+            --candidate-version "$candidate_version" \
+            --gradle-user-home "$preflight_cache" \
+            --seed-dependencies
       - name: Qualify the full synthetic pipeline
         run: xvfb-run -a python3 benchmarks/agentic-palisade/scripts/qualify-pipeline.py --output "$RUNNER_TEMP/agentic-palisade-qualification"
       - name: Retain failed qualification evidence
@@ -142,7 +159,9 @@ jobs:
           name: failed-agentic-palisade-qualification
           if-no-files-found: warn
           retention-days: 14
-          path: ${{ runner.temp }}/agentic-palisade-qualification/**
+          path: |
+            ${{ runner.temp }}/agentic-palisade-qualification/**
+            ${{ runner.temp }}/agentic-palisade-treatment-preflight/**
 
   dependency-security:
     name: Locked and verified dependencies
