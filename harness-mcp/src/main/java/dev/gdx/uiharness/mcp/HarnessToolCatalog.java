@@ -889,7 +889,7 @@ public final class HarnessToolCatalog {
                 "differingPixels", integer(0, 33_554_432L),
                 "meanAbsoluteError", number(0, 255)),
                 List.of(
-                        "category", "controlId", "x", "y", "width", "height",
+                        "category", "x", "y", "width", "height",
                         "differingPixels", "meanAbsoluteError"));
     }
 

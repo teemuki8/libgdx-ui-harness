@@ -2418,7 +2418,7 @@
               "type" : "integer"
             }
           },
-          "required" : [ "category", "controlId", "x", "y", "width", "height", "differingPixels", "meanAbsoluteError" ],
+          "required" : [ "category", "x", "y", "width", "height", "differingPixels", "meanAbsoluteError" ],
           "type" : "object"
         },
         "maxItems" : 256,
