@@ -1,7 +1,9 @@
 package benchmark.palisade;
 
 import com.badlogic.gdx.scenes.scene2d.Stage;
+import dev.gdx.uiharness.core.action.Harness;
 import dev.gdx.uiharness.core.capture.CapturedImage;
+import dev.gdx.uiharness.core.contract.StateActionContract;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.locator.StrictResolution;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
@@ -109,9 +111,28 @@ public final class HarnessBridge implements AutoCloseable {
                 Thread.ofVirtual().name("palisade-harness-protocol-", 0).factory());
         HarnessProtocolService.Session session = new HarnessProtocolService.Session(
                 sceneHarness, locators, waits, capture, new CapabilitySet(CAPABILITIES), traces);
-        HarnessProtocolService.ContractProvider contracts = deadline -> scheduler.submit(
-                () -> sceneSession.stateActionContract(revision.get(), frame.get()),
-                deadline);
+        HarnessProtocolService.ContractProvider contracts =
+                new HarnessProtocolService.ContractProvider() {
+                    @Override public CompletionStage<StateActionContract> snapshot(
+                            Deadline deadline) {
+                        return scheduler.submit(
+                                () -> sceneSession.stateActionContract(
+                                        revision.get(), frame.get()),
+                                deadline);
+                    }
+
+                    @Override public CompletionStage<HarnessProtocolService.SnapshotEvidence>
+                            snapshotWith(Harness ignored, Deadline deadline) {
+                        return scheduler.submit(() -> {
+                            long currentRevision = revision.get();
+                            long currentFrame = frame.get();
+                            return new HarnessProtocolService.SnapshotEvidence(
+                                    sceneSession.snapshot(currentRevision, currentFrame),
+                                    sceneSession.stateActionContract(
+                                            currentRevision, currentFrame));
+                        }, deadline);
+                    }
+                };
         Map<String, VisualReference> references = visualReferences(Path.of("."));
         String viewportId = "desktop-" + stage.getViewport().getScreenWidth()
                 + "x" + stage.getViewport().getScreenHeight();
