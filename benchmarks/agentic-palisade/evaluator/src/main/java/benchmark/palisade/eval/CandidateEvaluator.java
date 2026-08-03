@@ -57,7 +57,7 @@ public final class CandidateEvaluator {
             Map.entry("src/main/java/benchmark/palisade/BenchmarkControl.java", "a013cf41c0bf214dddefa4a378fe6627801c6b7ec87c3f4110f1eea96908c01e"),
             Map.entry("src/main/java/benchmark/palisade/CandidateApplication.java", "01d92020ba840feb8ee1ccf1cbab6d876e3d120f1985ecd41a322c61ea612c2b"),
             Map.entry("src/main/java/benchmark/palisade/BlankCandidateUi.java", "3572c409cb50db029e245e1af247824461dc47f73ff46f26211bc02912cece59"),
-            Map.entry("src/main/java/benchmark/palisade/TrustedStructuralProbe.java", "5eb23c0b5865db3dae8e48081ec2f658928a8a38d2bde4ae57bddbaf3749a4bc"),
+            Map.entry("src/main/java/benchmark/palisade/TrustedStructuralProbe.java", "306df337e504158efc13eec8ef421093180fb949310a64e6c6ebbc1445729b44"),
             Map.entry("src/main/java/benchmark/palisade/CandidateState.java", "88157890ecdfb4a4e7f2fee028d99d1f9940ff84d21dcd2445f73945ba5a2fd6"),
             Map.entry("src/main/java/benchmark/palisade/CandidateUi.java", "fe93166097d0a357b85452a09f91fd7c2690e8d4f7d6648bc426456741c10eb7"));
     private static final Pattern RESERVED_TYPE_DECLARATION = Pattern.compile(

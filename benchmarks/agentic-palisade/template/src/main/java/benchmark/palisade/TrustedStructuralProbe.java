@@ -2,6 +2,7 @@ package benchmark.palisade;
 
 import com.badlogic.gdx.graphics.Pixmap;
 import com.badlogic.gdx.graphics.g2d.GlyphLayout;
+import com.badlogic.gdx.math.Rectangle;
 import com.badlogic.gdx.math.Vector2;
 import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Group;
@@ -103,11 +104,19 @@ final class TrustedStructuralProbe {
             String owner = ancestor(actor, "scroll");
             Rect visible = visual.intersection(viewport);
             Actor scroll = owner == null ? null : actors.get(owner);
-            String clipOwner = scroll instanceof Group group
-                    && group.getCullingArea() != null ? owner : null;
-            if (clipOwner != null) {
+            String clipOwner = null;
+            if (scroll instanceof Group group && group.getCullingArea() != null) {
+                clipOwner = owner;
+                Rectangle cullingArea = group.getCullingArea();
                 visible = visible.intersection(bounds(
-                        scroll, stage, framebuffer.getWidth(), framebuffer.getHeight()));
+                        group,
+                        cullingArea.x,
+                        cullingArea.y,
+                        cullingArea.width,
+                        cullingArea.height,
+                        stage,
+                        framebuffer.getWidth(),
+                        framebuffer.getHeight()));
             }
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("controlId", id);
@@ -164,9 +173,23 @@ final class TrustedStructuralProbe {
 
     private static Rect bounds(
             Actor actor, Stage stage, double framebufferWidth, double framebufferHeight) {
-        Vector2 first = actor.localToStageCoordinates(new Vector2(0, 0));
+        return bounds(actor, 0, 0, actor.getWidth(), actor.getHeight(), stage,
+                framebufferWidth, framebufferHeight);
+    }
+
+    private static Rect bounds(
+            Actor actor,
+            double localX,
+            double localY,
+            double localWidth,
+            double localHeight,
+            Stage stage,
+            double framebufferWidth,
+            double framebufferHeight) {
+        Vector2 first = actor.localToStageCoordinates(
+                new Vector2((float) localX, (float) localY));
         Vector2 second = actor.localToStageCoordinates(
-                new Vector2(actor.getWidth(), actor.getHeight()));
+                new Vector2((float) (localX + localWidth), (float) (localY + localHeight)));
         double scaleX = framebufferWidth / stage.getViewport().getWorldWidth();
         double scaleY = framebufferHeight / stage.getViewport().getWorldHeight();
         double x = Math.min(first.x, second.x) * scaleX;
