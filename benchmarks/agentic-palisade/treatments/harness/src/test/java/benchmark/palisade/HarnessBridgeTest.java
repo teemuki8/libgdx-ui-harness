@@ -246,6 +246,10 @@ final class HarnessBridgeTest {
 
         @Override public void create() {
             try {
+                CandidateUi untouched = HarnessCli.loadCandidate();
+                assertNotNull(untouched.stage());
+                assertEquals(CandidateState.empty(), untouched.snapshotState());
+                untouched.dispose();
                 stage = new Stage(new ScreenViewport());
                 stage.getViewport().update(1280, 720, true);
                 Actor button = new Actor();

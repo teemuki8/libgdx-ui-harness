@@ -433,6 +433,40 @@ class DryRunTest(unittest.TestCase):
                     "## Treatment appendix\n", 1)
                 self.assertEqual(baseline_common, harness_common)
                 self.assertNotEqual(baseline_appendix, harness_appendix)
+                self.assertIn("../../../gradlew", baseline_common)
+                self.assertIn("authorized exception", baseline_common)
+                self.assertIn(
+                    "../../../gradlew -p . classes --no-daemon "
+                    "--console=plain --warning-mode=fail",
+                    baseline_appendix,
+                )
+                self.assertIn(
+                    "../../../gradlew -p . test --no-daemon "
+                    "--console=plain --warning-mode=fail",
+                    baseline_appendix,
+                )
+                normalized_harness = harness_appendix.replace(
+                    " --init-script ../treatments/harness/build-overlay.gradle.kts",
+                    "",
+                )
+                self.assertIn(
+                    "../../../gradlew -p . classes --no-daemon "
+                    "--console=plain --warning-mode=fail",
+                    normalized_harness,
+                )
+                self.assertIn(
+                    "../../../gradlew -p . test --no-daemon "
+                    "--console=plain --warning-mode=fail",
+                    normalized_harness,
+                )
+                self.assertEqual(3, baseline_appendix.count("../../../gradlew"))
+                self.assertEqual(3, harness_appendix.count("../../../gradlew"))
+                self.assertNotIn("build-overlay.gradle.kts", baseline_appendix)
+                self.assertIn("build-overlay.gradle.kts", harness_appendix)
+                for candidate in (baseline, harness):
+                    wrapper = candidate.parents[2] / "gradlew"
+                    self.assertTrue(wrapper.is_file())
+                    self.assertTrue(os.access(wrapper, os.X_OK))
                 self.assertFalse((baseline.parent / "treatments" / "harness").exists())
                 self.assertTrue((harness.parent / "treatments" / "harness" / "build-overlay.gradle.kts").is_file())
                 self.assertEqual(

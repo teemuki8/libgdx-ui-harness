@@ -13,6 +13,7 @@ import unittest
 
 HERE = Path(__file__).resolve().parent
 QUALIFIER = HERE / "qualify-pipeline.py"
+RUNNER = HERE / "run-benchmark.py"
 
 
 def load_qualifier():
@@ -88,6 +89,31 @@ class QualificationTest(unittest.TestCase):
             with self.subTest(manifest=manifest):
                 with self.assertRaisesRegex(ValueError, "protocol amendment"):
                     QUALIFICATION.require_protocol_amendment(manifest)
+
+    def test_treatment_symmetry_rejects_historical_build_access_hashes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prepared = Path(temporary) / "prepared"
+            completed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--output", str(prepared),
+                    "--model", "openai-codex/gpt-5.6-sol:medium",
+                    "--max-time", "45m", "--pairs", "3", "--dry-run",
+                ],
+                cwd=HERE.parent,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            manifest_path = prepared / "benchmark-manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["treatmentCommonInstructionHash"] = "0" * 64
+            manifest_path.chmod(0o644)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "build-access contract"):
+                QUALIFICATION.validate_treatment_symmetry(prepared)
 
     def test_exact_production_pipeline_qualifies_expected_failures_and_tamper_rejection(self):
         with tempfile.TemporaryDirectory() as temporary:

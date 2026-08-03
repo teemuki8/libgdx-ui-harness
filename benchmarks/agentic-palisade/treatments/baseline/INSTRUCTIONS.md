@@ -7,12 +7,34 @@ Do not inspect a reference checkout, evaluator internals, non-public fixtures, c
 Implement the public `CandidateState.values().stateAction` and `structuralUsability` evidence contracts on every completed frame. A visually working UI with omitted, partial, aliased, or differently nested evidence is incomplete.
 Keep finite command files and other trace inputs outside Gradle's `build/` directory so a later `clean` cannot remove evidence referenced by the session trace.
 
+The runner installs the repository-owned Gradle Wrapper at `../../../gradlew`.
+Executing that exact path is an authorized exception to the prohibition on
+inspecting parent directories. Do not use a system Gradle installation, another
+wrapper, or a network dependency source. Each treatment appendix gives the exact
+compile, test, and finite launch commands for that arm; the harness overlay and
+bridge are the only approved command difference.
+
 ## Treatment appendix
 
-Use the treatment-neutral local workflow already present in the template:
+Use the treatment-neutral candidate launcher already present in the template.
+Compile and test with the authorized wrapper:
+
+```text
+../../../gradlew -p . classes --no-daemon --console=plain --warning-mode=fail
+../../../gradlew -p . test --no-daemon --console=plain --warning-mode=fail
+```
+
+For each finite launch, write the bounded commands to `commands.ndjson`, choose
+a fresh evidence directory, and run:
+
+```text
+../../../gradlew -p . run --args='--commands commands.ndjson --evidence evidence' --no-daemon --console=plain --warning-mode=fail
+```
+
+The local workflow is:
 
 1. Implement or refine the candidate UI.
-2. Build and launch it with a finite bounded command file and an evidence directory.
+2. Compile, test, and launch it with the exact commands above.
 3. Inspect process logs, `results.ndjson`, and the completed-frame PNGs under `captures/`.
 4. Compare only against the public protocol, corpus, and approved reference observations, then refine the code.
 
