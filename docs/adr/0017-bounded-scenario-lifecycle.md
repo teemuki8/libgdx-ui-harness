@@ -27,8 +27,12 @@ identities, start and ready frame/revision pairs, selected profile, elapsed time
 cleanup status, and the closed terminal failure category when present.
 
 Restart-required display and backend changes remain behind the optional host-owned
-`RegisteredLaunchCoordinator`. Its public contract accepts a registered profile ID and deadline
-only and returns a closed success-or-failure outcome. Host launch commands remain private.
+`RegisteredLaunchCoordinator`. Its public contract accepts the already validated bounded
+`ScenarioRequest`, including its registered profile ID, and returns either a closed failure or the
+replacement context's terminal `ScenarioResult` with an opaque bounded reconnect identity. The
+host privately owns commands, launch, transport, and reconnect. The replaced process reports the
+handoff outcome only; it does not execute the pending scenario and cannot invent replacement
+identities.
 
 Protocol V1 adds the closed `scenario-list` and `scenario-start` command/result variants. MCP adds
 `ui_scenarios` and `ui_scenario_start`. A start request accepts only a scenario ID, seed, bounded
@@ -44,11 +48,13 @@ unavailable terminal outcome when either required boundary is absent. Existing s
 
 ## Consequences
 
-- Applications retain ownership of lifecycle hooks, resources, and any process recreation.
-- Callers can select only host-registered identities and bounded deterministic data.
+- Applications retain ownership of lifecycle hooks and resources. A coordinator accepting a
+  restart handoff owns scenario execution in a distinct replacement process/session context.
+- Callers can select only host-registered identities and bounded deterministic data; launch and
+  transport inputs never enter protocol or MCP.
 - Identical configuration maps have stable ordering and digest inputs independent of caller map
   iteration order.
-- Scenario and registered launch attempts have finite, serializable terminal outcome sets.
+- Scenario and registered restart handoff attempts have finite, serializable terminal outcome sets.
 - Sessions that do not register scenarios retain their existing inspection and control behavior.
 - Protocol V1 and the MCP catalog grow additively by two allowlisted operations.
 

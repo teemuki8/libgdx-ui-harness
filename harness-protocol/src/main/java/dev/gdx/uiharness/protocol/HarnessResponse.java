@@ -651,15 +651,24 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         }
 
         /** One completed scenario lifecycle with bounded terminal evidence. */
-        record Completed(ScenarioResultData scenario) implements ScenarioStartOutcome {
-            /** Converts core terminal evidence to its transport projection. */
+        record Completed(
+                ScenarioResultData scenario, String reconnectIdentity) implements ScenarioStartOutcome {
+            /** Converts in-process core terminal evidence to its transport projection. */
             public Completed(ScenarioResult result) {
-                this(ScenarioResultData.fromCore(result));
+                this(ScenarioResultData.fromCore(result), null);
             }
 
-            /** Requires terminal scenario evidence. */
+            /** Converts replacement core evidence and its opaque host reconnect identity. */
+            public Completed(ScenarioResult result, String reconnectIdentity) {
+                this(ScenarioResultData.fromCore(result), reconnectIdentity);
+            }
+
+            /** Requires terminal scenario evidence and bounds an optional reconnect identity. */
             public Completed {
                 scenario = Objects.requireNonNull(scenario, "scenario");
+                if (reconnectIdentity != null) {
+                    ProtocolJson.requireIdentifier(reconnectIdentity, "reconnectIdentity");
+                }
             }
         }
     }

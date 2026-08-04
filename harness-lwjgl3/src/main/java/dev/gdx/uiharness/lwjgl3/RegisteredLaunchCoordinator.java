@@ -1,55 +1,39 @@
 package dev.gdx.uiharness.lwjgl3;
 
-import dev.gdx.uiharness.core.time.Deadline;
-import java.time.Duration;
+import dev.gdx.uiharness.core.scenario.ScenarioRequest;
+import dev.gdx.uiharness.core.scenario.ScenarioResult;
+import java.util.Objects;
 import java.util.concurrent.CompletionStage;
 
 /**
- * Optional host-owned boundary for selecting an allowlisted LWJGL3 restart profile.
+ * Optional host-owned boundary for transferring a validated scenario to a replacement host
+ * context.
  *
- * <p>The host implementation owns all process-launch details. Callers provide only a registered
- * profile identifier and a deadline, and remain responsible for scheduling deadline expiry.
+ * <p>The host implementation privately owns launch, transport, command, and reconnect details.
+ * Callers provide only the already bounded registered request.
  */
 @FunctionalInterface
 public interface RegisteredLaunchCoordinator {
-    CompletionStage<LaunchOutcome> restart(String registeredProfileId, Deadline deadline);
+    CompletionStage<HandoffOutcome> restart(ScenarioRequest request);
 
-    /** Closed terminal outcome for a registered restart attempt. */
-    sealed interface LaunchOutcome permits LaunchResult, LaunchFailure {}
+    /** Closed terminal outcome for a registered restart handoff. */
+    sealed interface HandoffOutcome permits HandoffResult, HandoffFailure {}
 
     /** Terminal failures that do not expose replacement identities. */
-    enum LaunchFailure implements LaunchOutcome {
+    enum HandoffFailure implements HandoffOutcome {
         UNKNOWN_PROFILE,
         INCOMPATIBLE_APPLICATION,
         DEADLINE,
         CANCELLED
     }
 
-    /** Immutable successful restart evidence containing identities, never launch instructions. */
-    record LaunchResult(
-            int schemaVersion,
-            String profileId,
-            String applicationId,
-            String previousProcessId,
-            String processId,
-            String previousSessionId,
-            String sessionId,
-            Duration elapsed) implements LaunchOutcome {
-        public LaunchResult {
-            schemaVersion = LaunchProfile.supportedSchemaVersion(schemaVersion);
-            profileId = LaunchProfile.identifier(profileId, "profileId");
-            applicationId = LaunchProfile.identifier(applicationId, "applicationId");
-            previousProcessId = LaunchProfile.identifier(previousProcessId, "previousProcessId");
-            processId = LaunchProfile.identifier(processId, "processId");
-            previousSessionId = LaunchProfile.identifier(previousSessionId, "previousSessionId");
-            sessionId = LaunchProfile.identifier(sessionId, "sessionId");
-            if (previousProcessId.equals(processId)) {
-                throw new IllegalArgumentException("processId must identify a replacement process");
-            }
-            if (previousSessionId.equals(sessionId)) {
-                throw new IllegalArgumentException("sessionId must identify a replacement session");
-            }
-            elapsed = LaunchProfile.timing(elapsed, "elapsed");
+    /** Terminal replacement result and the host's opaque bounded reconnect identity. */
+    record HandoffResult(
+            ScenarioResult scenario, String reconnectIdentity) implements HandoffOutcome {
+        public HandoffResult {
+            scenario = Objects.requireNonNull(scenario, "scenario");
+            reconnectIdentity = LaunchProfile.identifier(
+                    reconnectIdentity, "reconnectIdentity");
         }
     }
 }

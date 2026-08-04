@@ -3,15 +3,17 @@ package dev.gdx.uiharness.lwjgl3;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import dev.gdx.uiharness.core.scenario.ScenarioRequest;
+import dev.gdx.uiharness.core.scenario.ScenarioResult;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import java.lang.reflect.RecordComponent;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
@@ -19,119 +21,109 @@ class RegisteredLaunchCoordinatorTest {
     private static final MonotonicClock CLOCK = () -> 0L;
 
     @Test
-    void aKnownCompatibleProfileReturnsReplacementIdentities() {
+    void aKnownCompatibleProfileReturnsReplacementScenarioResultAndReconnectIdentity() {
         var coordinator = coordinator("sample-app");
 
-        var outcome = coordinator.restart("hidpi", deadline()).toCompletableFuture().join();
-        var result = assertInstanceOf(RegisteredLaunchCoordinator.LaunchResult.class, outcome);
+        var outcome = coordinator.restart(request("hidpi", deadline())).toCompletableFuture().join();
+        var result = assertInstanceOf(RegisteredLaunchCoordinator.HandoffResult.class, outcome);
 
-        assertEquals(1, result.schemaVersion());
-        assertEquals("hidpi", result.profileId());
-        assertEquals("sample-app", result.applicationId());
-        assertEquals("process-before", result.previousProcessId());
-        assertEquals("process-after", result.processId());
-        assertEquals("session-before", result.previousSessionId());
-        assertEquals("session-after", result.sessionId());
-        assertNotEquals(result.previousProcessId(), result.processId());
-        assertNotEquals(result.previousSessionId(), result.sessionId());
+        assertEquals("process-after", result.scenario().processId());
+        assertEquals("session-after", result.scenario().sessionId());
+        assertEquals("reconnect-after", result.reconnectIdentity());
     }
 
     @Test
     void anUnknownProfileReturnsAProductionFailureOutcome() {
-        var outcome = coordinator("sample-app").restart("unregistered", deadline())
+        var outcome = coordinator("sample-app").restart(request("unregistered", deadline()))
                 .toCompletableFuture().join();
 
-        assertEquals(RegisteredLaunchCoordinator.LaunchFailure.UNKNOWN_PROFILE, outcome);
+        assertEquals(RegisteredLaunchCoordinator.HandoffFailure.UNKNOWN_PROFILE, outcome);
     }
 
     @Test
     void anApplicationIncompatibleProfileReturnsAProductionFailureOutcome() {
-        var outcome = coordinator("other-app").restart("hidpi", deadline())
+        var outcome = coordinator("other-app").restart(request("hidpi", deadline()))
                 .toCompletableFuture().join();
 
-        assertEquals(RegisteredLaunchCoordinator.LaunchFailure.INCOMPATIBLE_APPLICATION, outcome);
+        assertEquals(RegisteredLaunchCoordinator.HandoffFailure.INCOMPATIBLE_APPLICATION, outcome);
     }
 
     @Test
     void expiredDeadlinesReturnAProductionFailureOutcome() {
         var expired = Deadline.after(CLOCK, Duration.ZERO);
 
-        var outcome = coordinator("sample-app").restart("hidpi", expired)
+        var outcome = coordinator("sample-app").restart(request("hidpi", expired))
                 .toCompletableFuture().join();
 
-        assertEquals(RegisteredLaunchCoordinator.LaunchFailure.DEADLINE, outcome);
+        assertEquals(RegisteredLaunchCoordinator.HandoffFailure.DEADLINE, outcome);
     }
 
     @Test
     void hostCancellationReturnsAProductionFailureOutcome() {
-        RegisteredLaunchCoordinator coordinator = (profileId, deadline) ->
+        RegisteredLaunchCoordinator coordinator = request ->
                 java.util.concurrent.CompletableFuture.completedFuture(
-                        RegisteredLaunchCoordinator.LaunchFailure.CANCELLED);
+                        RegisteredLaunchCoordinator.HandoffFailure.CANCELLED);
 
-        var outcome = coordinator.restart("hidpi", deadline()).toCompletableFuture().join();
+        var outcome = coordinator.restart(request("hidpi", deadline())).toCompletableFuture().join();
 
-        assertEquals(RegisteredLaunchCoordinator.LaunchFailure.CANCELLED, outcome);
+        assertEquals(RegisteredLaunchCoordinator.HandoffFailure.CANCELLED, outcome);
     }
 
     @Test
-    void publicRecordsContainOnlySafeIdentifiersAndTiming() {
+    void publicHandoffContainsOnlyTheValidatedRequestResultAndOpaqueIdentity() {
         Set<String> forbidden = Set.of(
                 "command", "path", "environment", "className", "launchArguments", "arguments");
 
         assertFalse(componentNames(LaunchProfile.class).stream().anyMatch(forbidden::contains));
-        assertFalse(componentNames(RegisteredLaunchCoordinator.LaunchResult.class).stream()
+        assertFalse(componentNames(RegisteredLaunchCoordinator.HandoffResult.class).stream()
                 .anyMatch(forbidden::contains));
         assertEquals(Set.of("schemaVersion", "id", "applicationId"),
                 Set.copyOf(componentNames(LaunchProfile.class)));
-        assertEquals(Set.of("schemaVersion", "profileId", "applicationId", "previousProcessId",
-                        "processId", "previousSessionId", "sessionId", "elapsed"),
-                Set.copyOf(componentNames(RegisteredLaunchCoordinator.LaunchResult.class)));
+        assertEquals(Set.of("scenario", "reconnectIdentity"),
+                Set.copyOf(componentNames(RegisteredLaunchCoordinator.HandoffResult.class)));
     }
 
     @Test
-    void profilesAndResultsEnforceVersionIdentifiersReplacementAndMaximumTiming() {
-        assertThrows(IllegalArgumentException.class, () -> new LaunchProfile(2, "hidpi", "sample-app"));
-        assertThrows(IllegalArgumentException.class, () -> new LaunchProfile(1, " ", "sample-app"));
+    void handoffResultRequiresBoundedReconnectIdentity() {
         assertThrows(IllegalArgumentException.class,
-                () -> result("same", "same", "session-before", "session-after", Duration.ZERO));
+                () -> new RegisteredLaunchCoordinator.HandoffResult(scenarioResult(), " "));
         assertThrows(IllegalArgumentException.class,
-                () -> result("process-before", "process-after", "same", "same", Duration.ZERO));
-        assertThrows(IllegalArgumentException.class,
-                () -> result("process-before", "process-after", "session-before", "session-after",
-                        Duration.ofMinutes(10).plusNanos(1)));
+                () -> new RegisteredLaunchCoordinator.HandoffResult(
+                        scenarioResult(), "x".repeat(257)));
     }
 
     private static RegisteredLaunchCoordinator coordinator(String activeApplicationId) {
         Map<String, LaunchProfile> allowlist = Map.of(
                 "hidpi", new LaunchProfile(1, "hidpi", "sample-app"));
-        return (profileId, deadline) -> {
-            LaunchProfile profile = allowlist.get(profileId);
+        return request -> {
+            LaunchProfile profile = allowlist.get(request.profileId());
             if (profile == null) {
                 return java.util.concurrent.CompletableFuture.completedFuture(
-                        RegisteredLaunchCoordinator.LaunchFailure.UNKNOWN_PROFILE);
+                        RegisteredLaunchCoordinator.HandoffFailure.UNKNOWN_PROFILE);
             }
             if (!profile.applicationId().equals(activeApplicationId)) {
                 return java.util.concurrent.CompletableFuture.completedFuture(
-                        RegisteredLaunchCoordinator.LaunchFailure.INCOMPATIBLE_APPLICATION);
+                        RegisteredLaunchCoordinator.HandoffFailure.INCOMPATIBLE_APPLICATION);
             }
-            if (deadline.isExpired()) {
+            if (request.deadline().isExpired()) {
                 return java.util.concurrent.CompletableFuture.completedFuture(
-                        RegisteredLaunchCoordinator.LaunchFailure.DEADLINE);
+                        RegisteredLaunchCoordinator.HandoffFailure.DEADLINE);
             }
-            return java.util.concurrent.CompletableFuture.completedFuture(result(
-                    "process-before", "process-after", "session-before", "session-after", Duration.ZERO));
+            return java.util.concurrent.CompletableFuture.completedFuture(
+                    new RegisteredLaunchCoordinator.HandoffResult(
+                            scenarioResult(), "reconnect-after"));
         };
     }
 
-    private static RegisteredLaunchCoordinator.LaunchResult result(
-            String previousProcessId,
-            String processId,
-            String previousSessionId,
-            String sessionId,
-            Duration elapsed) {
-        return new RegisteredLaunchCoordinator.LaunchResult(
-                1, "hidpi", "sample-app", previousProcessId, processId,
-                previousSessionId, sessionId, elapsed);
+    private static ScenarioRequest request(String profileId, Deadline deadline) {
+        return new ScenarioRequest(1, "known", 7, Map.of(), profileId, deadline);
+    }
+
+    private static ScenarioResult scenarioResult() {
+        return new ScenarioResult(
+                1, "known", "v1", "digest", 7, "sample-app", "process-after",
+                "session-after", 1, 1, 2, 2, "hidpi", "ready", Duration.ZERO,
+                1, true, Optional.empty());
     }
 
     private static Deadline deadline() {

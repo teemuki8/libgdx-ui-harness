@@ -372,7 +372,8 @@ public final class HarnessToolCatalog {
                         List.of("kind", "reason")),
                 object(Map.of(
                         "kind", Map.of("const", "completed", "type", "string"),
-                        "scenario", scenarioResultSchema()),
+                        "scenario", scenarioResultSchema(),
+                        "reconnectIdentity", string(1, MAX_IDENTIFIER)),
                         List.of("kind", "scenario"))));
     }
 

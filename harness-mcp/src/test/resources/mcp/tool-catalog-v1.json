@@ -4425,6 +4425,11 @@
               "const" : "completed",
               "type" : "string"
             },
+            "reconnectIdentity" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            },
             "scenario" : {
               "additionalProperties" : false,
               "properties" : {

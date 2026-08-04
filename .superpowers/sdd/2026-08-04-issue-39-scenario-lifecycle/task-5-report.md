@@ -101,3 +101,31 @@ host-owned reconnect handle. The existing MCP connection is the old process's
 stdio, so spawning a child cannot transfer the request or return the child
 result without a private host transport/proxy boundary. Relabeling the old
 `Stage` and runner would continue to fabricate replacement evidence.
+
+## Authorized restart handoff
+
+### Red
+
+`./gradlew :harness-lwjgl3:test --tests '*RegisteredLaunchCoordinatorTest' --no-daemon --console=plain --warning-mode=fail`
+
+Failed as expected at compilation because the authorized `restart(ScenarioRequest)` handoff,
+`HandoffResult`, and `HandoffFailure` API did not exist.
+
+`./gradlew :harness-fixtures:test --tests '*ScenarioLifecycleFixtureTest' --no-daemon --console=plain --warning-mode=fail`
+
+Failed first because the fixture still used the removed identity-only coordinator API, then failed
+MCP output validation because the closed completed-result schema did not yet allow the reconnect
+identity. After that schema was added, the cancellation/next-start assertion exposed that the host
+had to await replacement-context cleanup before accepting another handoff.
+
+### Green
+
+`./gradlew :harness-lwjgl3:test --tests '*RegisteredLaunchCoordinatorTest' :harness-scene2d:test --tests '*Scene2dScenarioRunnerTest' :harness-protocol:test :harness-mcp:test :harness-fixtures:test --tests '*ScenarioLifecycleFixtureTest' --no-daemon --console=plain --warning-mode=fail`
+
+Passed: `BUILD SUCCESSFUL in 9s`, 26 actionable tasks (2 executed, 24 up-to-date).
+
+The coordinator now accepts only the validated bounded `ScenarioRequest` and returns the
+replacement context's terminal `ScenarioResult` with an opaque bounded reconnect identity. The
+real fixture creates a distinct Stage, Scene2D session, scheduler, registry, lifecycle, and runner
+for every handoff. The old Stage retains its mutated fields, proving it did not execute the pending
+request after handoff.
