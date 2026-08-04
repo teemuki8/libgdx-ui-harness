@@ -8,3 +8,7 @@
 
 5. Task 1 review fix RED: `./gradlew :harness-core:test --tests dev.gdx.uiharness.core.assertion.AssertionEvaluatorTest` — BUILD FAILED; both zero-area target and zero-area other cases failed (10 tests completed, 2 failed).
 6. Task 1 review fix GREEN: `./gradlew :harness-core:test --tests dev.gdx.uiharness.core.assertion.AssertionEvaluatorTest` — BUILD SUCCESSFUL (3 actionable tasks).
+
+7. Task 2 RED: `./gradlew :harness-core:test --tests dev.gdx.uiharness.core.assertion.AssertionEngineTest` — BUILD FAILED in `compileTestJava` because `AssertionEngine` did not exist.
+8. Task 2 GREEN: `./gradlew :harness-core:test --tests dev.gdx.uiharness.core.assertion.AssertionEngineTest` — BUILD SUCCESSFUL (3 actionable tasks).
+9. Task 2 concern: expiry is observed at registration or a completed-frame callback because the asynchronous API has no scheduler; frame registration rejection and signal closure complete the returned stage exceptionally.
