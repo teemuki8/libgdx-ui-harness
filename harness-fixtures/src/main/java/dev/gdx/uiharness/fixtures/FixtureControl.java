@@ -6,6 +6,7 @@ import com.badlogic.gdx.scenes.scene2d.ui.TextField;
 import dev.gdx.uiharness.core.action.Action;
 import dev.gdx.uiharness.core.action.ActionResult;
 import dev.gdx.uiharness.core.action.Harness;
+import dev.gdx.uiharness.core.assertion.DeadlineWakeup;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
@@ -176,7 +177,8 @@ public final class FixtureControl implements AutoCloseable {
         publisher = new StorePublisher(artifactStore, proofRoot);
         traces = new ReferenceTraceController(traceRoot, publisher);
         tracingHarness = new TracingHarness(sceneHarness, traces);
-        waits = new WaitEngine(this::snapshotForWait, locators, clock, clock);
+        waits = new WaitEngine(this::snapshotForWait, locators, clock, clock,
+                DeadlineWakeup.scheduledBy(scenarioDeadlines));
         protocolExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-protocol-", 0).factory());
         terminationExecutor = Executors.newThreadPerTaskExecutor(

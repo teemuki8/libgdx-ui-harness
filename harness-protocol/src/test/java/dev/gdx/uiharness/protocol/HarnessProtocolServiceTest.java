@@ -433,7 +433,8 @@ final class HarnessProtocolServiceTest {
             HarnessProtocolService.TraceController traces) {
         LocatorEngine locators = new StrictResolution();
         FrameSignal frames = listener -> () -> {};
-        WaitEngine waits = new WaitEngine(() -> SNAPSHOT, locators, CLOCK, frames);
+        WaitEngine waits = new WaitEngine(
+                () -> SNAPSHOT, locators, CLOCK, frames, (delay, wakeup) -> () -> {});
         CapabilitySet capabilities = new CapabilitySet(List.of("action", "capabilities", "query",
                 "screenshot", "snapshot", "trace", "ui_assert", "wait"));
         return new HarnessProtocolService.Session(

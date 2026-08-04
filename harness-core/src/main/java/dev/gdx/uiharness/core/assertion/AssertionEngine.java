@@ -28,24 +28,42 @@ public final class AssertionEngine {
         evaluator = new AssertionEvaluator(locators);
     }
 
-    /** Evaluates until the assertion passes or its monotonic deadline is reached. */
+    /**
+     * Evaluates until the assertion passes or its monotonic deadline is reached.
+     *
+     * @deprecated Callers serving assertions must inject a deadline wake-up.
+     */
+    @Deprecated
     public CompletionStage<AssertionResult> assertThat(
             Supplier<SemanticSnapshot> snapshots,
             AssertionRequest request,
             FrameSignal frames,
             MonotonicClock clock) {
+        return assertThat(snapshots, request, frames, clock, (delay, wakeup) -> () -> {});
+    }
+
+    /** Evaluates with a cancellable deadline wake-up independent of frame delivery. */
+    public CompletionStage<AssertionResult> assertThat(
+            Supplier<SemanticSnapshot> snapshots,
+            AssertionRequest request,
+            FrameSignal frames,
+            MonotonicClock clock,
+            DeadlineWakeup deadlineWakeup) {
         Objects.requireNonNull(snapshots, "snapshots");
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(frames, "frames");
         Objects.requireNonNull(clock, "clock");
+        Objects.requireNonNull(deadlineWakeup, "deadlineWakeup");
         if (request.deadline().clock() != clock) {
             throw new IllegalArgumentException("deadline uses a different monotonic clock");
         }
 
-        State state = new State(snapshots, request);
+        State state = new State(snapshots, request, deadlineWakeup);
+        state.result.whenComplete((ignored, failure) -> state.closeResources());
         try {
             FrameSignal.Subscription subscription = frames.subscribe(state);
             state.registered(subscription);
+            state.scheduleDeadline();
         } catch (Throwable failure) {
             state.rejectRegistration(failure);
         }
@@ -56,8 +74,10 @@ public final class AssertionEngine {
         private final Supplier<SemanticSnapshot> snapshots;
         private final AssertionRequest request;
         private final CompletableFuture<AssertionResult> result = new CompletableFuture<>();
+        private final DeadlineWakeup deadlineWakeup;
         private final ArrayDeque<FrameSignal.Frame> pending = new ArrayDeque<>();
         private FrameSignal.Subscription subscription;
+        private DeadlineWakeup.Registration deadlineRegistration;
         private boolean registered = true;
         private boolean draining;
         private boolean registrationRejected;
@@ -72,9 +92,13 @@ public final class AssertionEngine {
         private Map<UiAssertion.StableProperty, Object> lastProperties;
         private int stableCount;
 
-        State(Supplier<SemanticSnapshot> snapshots, AssertionRequest request) {
+        State(
+                Supplier<SemanticSnapshot> snapshots,
+                AssertionRequest request,
+                DeadlineWakeup deadlineWakeup) {
             this.snapshots = snapshots;
             this.request = request;
+            this.deadlineWakeup = deadlineWakeup;
         }
 
         void registered(FrameSignal.Subscription registeredSubscription) {
@@ -89,7 +113,7 @@ public final class AssertionEngine {
             }
             ensureInitial();
             drain();
-            closeIfDone();
+            closeResources();
         }
 
         void rejectRegistration(Throwable failure) {
@@ -97,6 +121,41 @@ public final class AssertionEngine {
                 registrationRejected = true;
             }
             result.completeExceptionally(failure);
+        }
+
+        void scheduleDeadline() {
+            if (result.isDone()) return;
+            DeadlineWakeup.Registration registration;
+            try {
+                registration = Objects.requireNonNull(
+                        deadlineWakeup.schedule(request.deadline().remaining(), this::onDeadlineWakeup),
+                        "deadline wake-up registration");
+            } catch (Throwable failure) {
+                result.completeExceptionally(failure);
+                return;
+            }
+            synchronized (this) {
+                if (result.isDone()) {
+                    registration.cancel();
+                } else {
+                    deadlineRegistration = registration;
+                }
+            }
+        }
+
+        private void onDeadlineWakeup() {
+            DeadlineWakeup.Registration expiredRegistration;
+            synchronized (this) {
+                expiredRegistration = deadlineRegistration;
+                deadlineRegistration = null;
+                if (result.isDone()) return;
+            }
+            if (expiredRegistration != null) expiredRegistration.cancel();
+            if (request.deadline().isExpired()) {
+                completeAtDeadline();
+            } else {
+                scheduleDeadline();
+            }
         }
 
         @Override public void onFrame(FrameSignal.Frame frame) {
@@ -186,7 +245,7 @@ public final class AssertionEngine {
                 }
                 evaluateFrame();
             }
-            closeIfDone();
+            closeResources();
         }
 
         private void evaluateFrame() {
@@ -278,14 +337,18 @@ public final class AssertionEngine {
             }
         }
 
-        private void closeIfDone() {
-            FrameSignal.Subscription toClose;
+        private void closeResources() {
+            FrameSignal.Subscription framesToClose;
+            DeadlineWakeup.Registration deadlineToCancel;
             synchronized (this) {
-                if (!result.isDone() || subscription == null) return;
-                toClose = subscription;
+                if (!result.isDone()) return;
+                framesToClose = subscription;
                 subscription = null;
+                deadlineToCancel = deadlineRegistration;
+                deadlineRegistration = null;
             }
-            toClose.close();
+            if (framesToClose != null) framesToClose.close();
+            if (deadlineToCancel != null) deadlineToCancel.cancel();
         }
     }
 }

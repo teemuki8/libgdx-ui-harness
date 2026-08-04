@@ -693,7 +693,7 @@ public final class HarnessToolCatalog {
                         Map.entry("outcome", enumString("passed", "failed")),
                         Map.entry("locator", Map.of("$ref", "#/$defs/locator")),
                         Map.entry("assertion", Map.of("$ref", "#/$defs/assertion")),
-                        Map.entry("nodeId", string(1, MAX_IDENTIFIER)),
+                        Map.entry("nodeId", string(0, MAX_IDENTIFIER)),
                         Map.entry("expected", string(0, ProtocolJson.MAX_STRING_LENGTH)),
                         Map.entry("lastObserved", string(0, ProtocolJson.MAX_STRING_LENGTH)),
                         Map.entry("actionability", enumString("satisfied", "retryable")),

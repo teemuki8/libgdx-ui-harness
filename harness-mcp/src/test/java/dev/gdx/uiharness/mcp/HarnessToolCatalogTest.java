@@ -261,6 +261,42 @@ final class HarnessToolCatalogTest {
                 .valid());
     }
 
+    @Test void assertionOutputAcceptsEmptySetLevelNodeIdForCountEvidence() {
+        Map<String, Object> output = Map.ofEntries(
+                Map.entry("kind", "assertion-result"),
+                Map.entry("schemaVersion", 1),
+                Map.entry("outcome", "passed"),
+                Map.entry("locator", Map.of("kind", "role", "role", "button")),
+                Map.entry("assertion", Map.of("kind", "count-equals", "expected", 0)),
+                Map.entry("nodeId", ""),
+                Map.entry("expected", "count equals 0"),
+                Map.entry("lastObserved", "0"),
+                Map.entry("actionability", "satisfied"),
+                Map.entry("revision", 1),
+                Map.entry("frame", 1),
+                Map.entry("elapsedMillis", 0),
+                Map.entry("candidates", List.of()),
+                Map.entry("progress", Map.of(
+                        "status", "unavailable",
+                        "dimensions", Map.of(),
+                        "ruleId", "progress-fingerprint/v1")),
+                Map.entry("recovery", Map.of(
+                        "policyVersion", "recovery-policy/v1",
+                        "consumedBefore", 0,
+                        "consumed", 0,
+                        "limit", 3,
+                        "remainingBefore", 3,
+                        "remaining", 3,
+                        "elapsedMillis", 0,
+                        "maxWallTimeMillis", 30_000,
+                        "terminatingRule", "success/v1")),
+                Map.entry("truncated", false));
+
+        var validation = McpJsonDefaults.getSchemaValidator()
+                .validate(catalog.tool("ui_assert").outputSchema(), output);
+        assertTrue(validation.valid(), validation.toString());
+    }
+
     @Test void catalogContainsNoPathExecutionReflectionOrCodeParameters() throws Exception {
         String json = ProtocolJson.mapper().writeValueAsString(catalog.tools().stream()
                 .map(McpSchema.Tool::inputSchema)

@@ -1,6 +1,7 @@
 package dev.gdx.uiharness.core.wait;
 
 import dev.gdx.uiharness.core.assertion.AssertionEngine;
+import dev.gdx.uiharness.core.assertion.DeadlineWakeup;
 import dev.gdx.uiharness.core.assertion.AssertionRequest;
 import dev.gdx.uiharness.core.assertion.AssertionResult;
 import dev.gdx.uiharness.core.error.ErrorCode;
@@ -31,28 +32,49 @@ public final class WaitEngine implements AutoCloseable {
     private final LocatorEngine locators;
     private final MonotonicClock clock;
     private final FrameSignal frames;
+    private final DeadlineWakeup assertionDeadlines;
     private final Object lifecycle = new Object();
     private final Set<WaitState> activeWaits =
             Collections.newSetFromMap(new IdentityHashMap<>());
     private boolean open = true;
 
-    /** Creates a wait engine in one monotonic time domain. */
+    /**
+     * Creates a wait engine in one monotonic time domain.
+     *
+     * @deprecated Use the overload with assertion deadline wake-ups when serving ui_assert.
+     */
+    @Deprecated
     public WaitEngine(
             Supplier<SemanticSnapshot> snapshots,
             LocatorEngine locators,
             MonotonicClock clock,
             FrameSignal frames) {
+        this(snapshots, locators, clock, frames, null);
+    }
+
+    /** Creates a wait engine with independent, cancellable assertion deadline wake-ups. */
+    public WaitEngine(
+            Supplier<SemanticSnapshot> snapshots,
+            LocatorEngine locators,
+            MonotonicClock clock,
+            FrameSignal frames,
+            DeadlineWakeup assertionDeadlines) {
         this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
         this.locators = Objects.requireNonNull(locators, "locators");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.frames = Objects.requireNonNull(frames, "frames");
+        this.assertionDeadlines = assertionDeadlines;
     }
     /**
      * Evaluates a declarative assertion using this engine's production snapshot, frame, locator,
      * and monotonic-time boundaries.
      */
     public CompletionStage<AssertionResult> assertThat(AssertionRequest request) {
-        return new AssertionEngine(locators).assertThat(snapshots, request, frames, clock);
+        if (assertionDeadlines == null) {
+            throw new IllegalStateException("ui_assert requires a deadline wake-up");
+        }
+        return new AssertionEngine(locators)
+                .assertThat(snapshots, request, frames, clock, assertionDeadlines);
     }
 
 

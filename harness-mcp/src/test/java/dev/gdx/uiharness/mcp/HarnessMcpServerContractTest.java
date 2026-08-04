@@ -817,7 +817,8 @@ final class HarnessMcpServerContractTest {
     private static HarnessProtocolService service(RecordingHarness harness) {
         LocatorEngine locators = new StrictResolution();
         FrameSignal frames = listener -> () -> {};
-        WaitEngine waits = new WaitEngine(() -> SNAPSHOT, locators, CLOCK, frames);
+        WaitEngine waits = new WaitEngine(
+                () -> SNAPSHOT, locators, CLOCK, frames, (delay, wakeup) -> () -> {});
         CapabilitySet capabilities = new CapabilitySet(List.of(
                 "action", "capabilities", "query", "screenshot", "snapshot", "trace",
                 "ui_assert", "wait"));

@@ -1,6 +1,7 @@
 package dev.gdx.uiharness.core.assertion;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -23,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
@@ -122,6 +124,75 @@ final class AssertionEngineTest {
         assertEquals(AssertionResult.Status.FAILED, failure.status());
         assertEquals("waiting", failure.evidence().observed());
         assertEquals(10_000_000L, failure.elapsedNanos());
+    }
+
+    @Test void deadlineWakeupCompletesWithoutAnotherFrameAtExactMonotonicExpiry() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        ManualDeadlineWakeup wakeups = new ManualDeadlineWakeup();
+        CompletionStage<AssertionResult> result = engine.assertThat(
+                () -> snapshot(1, 1, node("target", "target", "waiting", 0)),
+                request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock, wakeups);
+
+        wakeups.fire();
+        assertFalse(result.toCompletableFuture().isDone());
+        assertEquals(2, wakeups.registrations());
+
+        clock.advanceMillis(10);
+        wakeups.fire();
+
+        AssertionResult failure = result.toCompletableFuture().join();
+        assertEquals(AssertionResult.Status.FAILED, failure.status());
+        assertEquals(10_000_000L, failure.elapsedNanos());
+        assertEquals(1, frames.closedSubscriptions());
+        assertEquals(2, wakeups.cancelledRegistrations());
+    }
+
+    @Test void callerCancellationClosesFrameSubscriptionAndDeadlineRegistration() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        ManualDeadlineWakeup wakeups = new ManualDeadlineWakeup();
+        CompletableFuture<AssertionResult> result = engine.assertThat(
+                () -> snapshot(1, 1, node("target", "target", "waiting", 0)),
+                request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock, wakeups)
+                .toCompletableFuture();
+
+        result.cancel(false);
+
+        assertEquals(1, frames.closedSubscriptions());
+        assertEquals(1, wakeups.cancelledRegistrations());
+    }
+
+    @Test void completionBeforeFrameRegistrationStillClosesReturnedSubscription() {
+        FakeClock clock = new FakeClock();
+        ManualDeadlineWakeup wakeups = new ManualDeadlineWakeup();
+        AtomicInteger closes = new AtomicInteger();
+        FrameSignal frames = listener -> {
+            listener.onFrame(new FrameSignal.Frame(1, 1));
+            return closes::incrementAndGet;
+        };
+        AtomicInteger reads = new AtomicInteger();
+
+        CompletionStage<AssertionResult> result = engine.assertThat(() -> snapshot(1, 1,
+                        node("target", "target", reads.getAndIncrement() == 0 ? "waiting" : "ready", 0)),
+                request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock, wakeups);
+
+        assertEquals(AssertionResult.Status.PASSED, result.toCompletableFuture().join().status());
+        assertEquals(1, closes.get());
+    }
+
+    @Test void completionBeforeDeadlineRegistrationCancelsReturnedRegistration() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        ImmediateDeadlineWakeup wakeups = new ImmediateDeadlineWakeup(clock);
+
+        CompletionStage<AssertionResult> result = engine.assertThat(
+                () -> snapshot(1, 1, node("target", "target", "waiting", 0)),
+                request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock, wakeups);
+
+        assertEquals(AssertionResult.Status.FAILED, result.toCompletableFuture().join().status());
+        assertEquals(1, wakeups.cancelledRegistrations());
+        assertEquals(1, frames.closedSubscriptions());
     }
 
     @Test void stableForFramesComparesOnlyDeclaredPropertiesAcrossCompletedFrames() {
@@ -316,6 +387,64 @@ final class AssertionEngineTest {
         @Override public long nanoTime() { return nanos; }
 
         void advanceMillis(long millis) { nanos += Duration.ofMillis(millis).toNanos(); }
+    }
+
+    private static final class ManualDeadlineWakeup implements DeadlineWakeup {
+        private final List<TestRegistration> registrations = new java.util.ArrayList<>();
+
+        @Override public Registration schedule(Duration delay, Runnable wakeup) {
+            TestRegistration registration = new TestRegistration(wakeup);
+            registrations.add(registration);
+            return registration;
+        }
+
+        void fire() {
+            registrations.get(registrations.size() - 1).wakeup.run();
+        }
+
+        int registrations() {
+            return registrations.size();
+        }
+
+        int cancelledRegistrations() {
+            return (int) registrations.stream().filter(TestRegistration::cancelled).count();
+        }
+
+        private static final class TestRegistration implements Registration {
+            private final Runnable wakeup;
+            private boolean cancelled;
+
+            TestRegistration(Runnable wakeup) {
+                this.wakeup = wakeup;
+            }
+
+            @Override public void cancel() {
+                cancelled = true;
+            }
+
+            boolean cancelled() {
+                return cancelled;
+            }
+        }
+    }
+
+    private static final class ImmediateDeadlineWakeup implements DeadlineWakeup {
+        private final FakeClock clock;
+        private int cancelled;
+
+        ImmediateDeadlineWakeup(FakeClock clock) {
+            this.clock = clock;
+        }
+
+        @Override public Registration schedule(Duration delay, Runnable wakeup) {
+            clock.advanceMillis(delay.toMillis());
+            wakeup.run();
+            return () -> cancelled++;
+        }
+
+        int cancelledRegistrations() {
+            return cancelled;
+        }
     }
 
     private static class TestFrames implements FrameSignal {
