@@ -88,6 +88,42 @@ final class AssertionEngineTest {
         assertEquals(10_000_000L, failure.elapsedNanos());
     }
 
+    @Test void preservesInitialFailedEvidenceWhenEvaluationCrossesTheExactDeadline() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+
+        CompletionStage<AssertionResult> result = engine.assertThat(() -> {
+            clock.advanceMillis(10);
+            return snapshot(1, 1, node("target", "target", "waiting", 0));
+        }, request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock);
+
+        AssertionResult failure = result.toCompletableFuture().join();
+        assertEquals(AssertionResult.Status.FAILED, failure.status());
+        assertEquals("waiting", failure.evidence().observed());
+        assertEquals(10_000_000L, failure.elapsedNanos());
+    }
+
+    @Test void replacesPriorResolutionFailureWithResolvedEvidenceWhenEvaluationCrossesDeadline() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        AtomicInteger reads = new AtomicInteger();
+        CompletionStage<AssertionResult> result = engine.assertThat(() -> {
+            if (reads.getAndIncrement() == 0) {
+                return snapshot(1, 1,
+                        node("a", "target", "", 0), node("b", "target", "", 0));
+            }
+            clock.advanceMillis(10);
+            return snapshot(2, 2, node("target", "target", "waiting", 0));
+        }, request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock);
+
+        frames.emit(2, 2);
+
+        AssertionResult failure = result.toCompletableFuture().join();
+        assertEquals(AssertionResult.Status.FAILED, failure.status());
+        assertEquals("waiting", failure.evidence().observed());
+        assertEquals(10_000_000L, failure.elapsedNanos());
+    }
+
     @Test void stableForFramesComparesOnlyDeclaredPropertiesAcrossCompletedFrames() {
         FakeClock clock = new FakeClock();
         TestFrames frames = new TestFrames();

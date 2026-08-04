@@ -255,12 +255,14 @@ public final class AssertionEngine {
         }
 
         private void accept(AssertionResult attempt) {
+            lastResolutionFailure = null;
+            if (attempt.status() == AssertionResult.Status.FAILED) {
+                lastFailure = attempt;
+            }
             if (request.deadline().isExpired()) {
                 completeAtDeadline();
             } else if (attempt.status() == AssertionResult.Status.PASSED) {
                 result.complete(attempt);
-            } else {
-                lastFailure = attempt;
             }
         }
 
