@@ -67,6 +67,7 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
     @Override public void create() {
         screen = new ReferenceScreen(benchmarkScenario, benchmarkDelayMillis);
         control = new FixtureControl(screen.stage(), processRoot);
+        screen.attachAssertionFrameControl(control::withholdAssertionFrames);
         screen.attachSemantics(control.semantics());
         Gdx.input.setInputProcessor(screen.stage());
         control.startMcp(System.in, System.out);

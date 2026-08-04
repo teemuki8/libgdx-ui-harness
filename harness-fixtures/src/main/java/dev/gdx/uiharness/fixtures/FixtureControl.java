@@ -36,6 +36,7 @@ import dev.gdx.uiharness.core.trace.TraceEvent;
 import dev.gdx.uiharness.core.trace.TraceManifest;
 import dev.gdx.uiharness.core.trace.TraceRecorder;
 import dev.gdx.uiharness.core.wait.WaitEngine;
+import dev.gdx.uiharness.core.wait.FrameSignal;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
 import dev.gdx.uiharness.lwjgl3.LaunchProfile;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3ScreenCapture;
@@ -135,6 +136,7 @@ public final class FixtureControl implements AutoCloseable {
     private final ScheduledExecutorService scenarioDeadlines;
     private final ExecutorService replacementExecutor;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicBoolean withholdAssertionFrames = new AtomicBoolean();
     private final AtomicBoolean withholdScenarioFrames = new AtomicBoolean();
     private final RegisteredLaunchCoordinator launchCoordinator;
     private HarnessMcpServer server;
@@ -177,10 +179,11 @@ public final class FixtureControl implements AutoCloseable {
         publisher = new StorePublisher(artifactStore, proofRoot);
         traces = new ReferenceTraceController(traceRoot, publisher);
         tracingHarness = new TracingHarness(sceneHarness, traces);
-        waits = new WaitEngine(this::snapshotForWait, locators, clock, clock,
-                DeadlineWakeup.scheduledBy(scenarioDeadlines));
         protocolExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-protocol-", 0).factory());
+        waits = new WaitEngine(this::snapshotForWait, locators, clock,
+                asynchronousFrames(clock, protocolExecutor),
+                DeadlineWakeup.scheduledBy(scenarioDeadlines));
         terminationExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-mcp-termination-", 0).factory());
     }
@@ -189,6 +192,11 @@ public final class FixtureControl implements AutoCloseable {
     public dev.gdx.uiharness.scene2d.Semantics semantics() {
         return sceneSession.semantics();
     }
+    /** Stops assertion frame notifications while the deterministic clock keeps advancing. */
+    public void withholdAssertionFrames() {
+        withholdAssertionFrames.set(true);
+    }
+
 
     /** Starts the production MCP server over this process's stdio streams. */
     public void startMcp(InputStream input, OutputStream output) {
@@ -407,6 +415,21 @@ public final class FixtureControl implements AutoCloseable {
         } catch (IOException failure) {
             throw new IllegalArgumentException("Unable to create fixture directories", failure);
         }
+    }
+
+    private FrameSignal asynchronousFrames(
+            FrameSignal source, ExecutorService executor) {
+        return listener -> source.subscribe(new FrameSignal.FrameListener() {
+            @Override public void onFrame(FrameSignal.Frame frame) {
+                if (!withholdAssertionFrames.get()) {
+                    executor.submit(() -> listener.onFrame(frame));
+                }
+            }
+
+            @Override public void onClosed() {
+                executor.submit(listener::onClosed);
+            }
+        });
     }
 
 
