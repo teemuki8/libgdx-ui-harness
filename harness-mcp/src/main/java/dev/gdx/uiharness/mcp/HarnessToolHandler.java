@@ -184,6 +184,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             case "ui_snapshot" -> "snapshot";
             case "ui_query" -> "query";
             case "ui_action" -> "action";
+            case "ui_assert" -> "assert";
             case "ui_wait" -> "wait";
             case "ui_screenshot" -> "screenshot";
             case "ui_inspect_compare" -> "inspect-compare";
@@ -297,6 +298,28 @@ public final class HarnessToolHandler implements AutoCloseable {
             content.put("observedState", action.observedState());
             content.put("evidence", action.evidence());
             offloadLarge(content, encoded, "application/json", "evidence");
+            return Map.copyOf(content);
+        }
+        if (result instanceof HarnessResponse.Result.Assertion assertion) {
+            LinkedHashMap<String, Object> content = content("assertion-result");
+            content.put("schemaVersion", assertion.schemaVersion());
+            content.put("outcome", assertion.outcome());
+            content.put("locator", COMMAND_MAPPER.convertValue(assertion.locator(), Map.class));
+            content.put("assertion",
+                    COMMAND_MAPPER.convertValue(assertion.assertion(), Map.class));
+            content.put("nodeId", assertion.nodeId());
+            content.put("expected", assertion.expected());
+            content.put("lastObserved", assertion.lastObserved());
+            content.put("actionability", assertion.actionability());
+            content.put("revision", assertion.revision());
+            content.put("frame", assertion.frame());
+            content.put("elapsedMillis", assertion.elapsedMillis());
+            content.put("candidates", assertion.candidates());
+            content.put("truncated", assertion.truncated());
+            if (assertion.traceId() != null) {
+                content.put("traceId", assertion.traceId());
+            }
+            offloadLarge(content, encoded, "application/json", "candidates");
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.Wait wait) {

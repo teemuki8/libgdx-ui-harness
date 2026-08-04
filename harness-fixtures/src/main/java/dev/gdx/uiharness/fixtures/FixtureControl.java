@@ -6,6 +6,7 @@ import com.badlogic.gdx.scenes.scene2d.ui.TextField;
 import dev.gdx.uiharness.core.action.Action;
 import dev.gdx.uiharness.core.action.ActionResult;
 import dev.gdx.uiharness.core.action.Harness;
+import dev.gdx.uiharness.core.assertion.DeadlineWakeup;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
@@ -17,6 +18,7 @@ import dev.gdx.uiharness.core.layout.LayoutQuiescencePolicy;
 import dev.gdx.uiharness.core.layout.LayoutReference;
 import dev.gdx.uiharness.core.layout.LayoutStabilitySample;
 import dev.gdx.uiharness.core.visual.VisualPolicy;
+import dev.gdx.uiharness.core.assertion.AssertionSnapshotSource;
 import dev.gdx.uiharness.core.visual.VisualReference;
 import dev.gdx.uiharness.core.typography.CoordinateSpace;
 import dev.gdx.uiharness.core.typography.TypographyControlReference;
@@ -34,6 +36,7 @@ import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.trace.TraceEvent;
 import dev.gdx.uiharness.core.trace.TraceManifest;
 import dev.gdx.uiharness.core.trace.TraceRecorder;
+import dev.gdx.uiharness.core.wait.FrameSignal;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
 import dev.gdx.uiharness.lwjgl3.LaunchProfile;
@@ -110,7 +113,7 @@ public final class FixtureControl implements AutoCloseable {
     private static final Duration ARTIFACT_LIFETIME = Duration.ofHours(1);
     private static final List<String> CAPABILITIES = List.of(
             "action", "compare", "query", "scenario-list", "scenario-start",
-            "screenshot", "snapshot", "layout", "trace", "typography", "wait");
+            "screenshot", "snapshot", "layout", "trace", "typography", "ui_assert", "wait");
 
     private final Path processRoot;
     private final Path artifactRoot;
@@ -134,6 +137,7 @@ public final class FixtureControl implements AutoCloseable {
     private final ScheduledExecutorService scenarioDeadlines;
     private final ExecutorService replacementExecutor;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicBoolean withholdAssertionFrames = new AtomicBoolean();
     private final AtomicBoolean withholdScenarioFrames = new AtomicBoolean();
     private final RegisteredLaunchCoordinator launchCoordinator;
     private HarnessMcpServer server;
@@ -176,9 +180,37 @@ public final class FixtureControl implements AutoCloseable {
         publisher = new StorePublisher(artifactStore, proofRoot);
         traces = new ReferenceTraceController(traceRoot, publisher);
         tracingHarness = new TracingHarness(sceneHarness, traces);
-        waits = new WaitEngine(this::snapshotForWait, locators, clock, clock);
         protocolExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-protocol-", 0).factory());
+        FrameSignal assertionFrames = listener -> fence.subscribe(new FrameSignal.FrameListener() {
+            @Override public void onFrame(FrameSignal.Frame frame) {
+                if (!withholdAssertionFrames.get()) {
+                    listener.onFrame(frame);
+                }
+            }
+
+            @Override public void onClosed() {
+                listener.onClosed();
+            }
+        });
+        AssertionSnapshotSource assertionSnapshots = new AssertionSnapshotSource() {
+            @Override public SemanticSnapshot currentSnapshot() {
+                return snapshotForWait();
+            }
+
+            @Override public SemanticSnapshot snapshotFor(FrameSignal.Frame frame) {
+                if (!scheduler.isOwnerThread()) {
+                    throw new IllegalStateException(
+                            "completed-frame assertion snapshot must be captured on render thread");
+                }
+                SemanticSnapshot snapshot =
+                        sceneSession.snapshot(frame.revision(), frame.frame());
+                traces.snapshot(snapshot, "assert");
+                return snapshot;
+            }
+        };
+        waits = new WaitEngine(this::snapshotForWait, assertionSnapshots, locators, clock,
+                assertionFrames, DeadlineWakeup.scheduledBy(scenarioDeadlines));
         terminationExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-mcp-termination-", 0).factory());
     }
@@ -187,6 +219,11 @@ public final class FixtureControl implements AutoCloseable {
     public dev.gdx.uiharness.scene2d.Semantics semantics() {
         return sceneSession.semantics();
     }
+    /** Stops assertion frame notifications while the deterministic clock keeps advancing. */
+    public void withholdAssertionFrames() {
+        withholdAssertionFrames.set(true);
+    }
+
 
     /** Starts the production MCP server over this process's stdio streams. */
     public void startMcp(InputStream input, OutputStream output) {
@@ -408,11 +445,17 @@ public final class FixtureControl implements AutoCloseable {
     }
 
 
+
     private SemanticSnapshot snapshotForWait() {
-        SemanticSnapshot snapshot = scheduler.submit(
-                () -> sceneSession.snapshot(clock.revision(), clock.frame()),
-                Deadline.after(clock, Duration.ofSeconds(30)))
-                .toCompletableFuture().join();
+        SemanticSnapshot snapshot;
+        if (scheduler.isOwnerThread()) {
+            snapshot = sceneSession.snapshot(clock.revision(), clock.frame());
+        } else {
+            snapshot = scheduler.submit(
+                    () -> sceneSession.snapshot(clock.revision(), clock.frame()),
+                    Deadline.after(clock, Duration.ofSeconds(30)))
+                    .toCompletableFuture().join();
+        }
         traces.snapshot(snapshot, "wait");
         return snapshot;
     }

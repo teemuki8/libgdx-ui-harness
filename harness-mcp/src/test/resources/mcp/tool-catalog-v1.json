@@ -1245,6 +1245,970 @@
 }, {
   "inputSchema" : {
     "$defs" : {
+      "assertion" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "visible",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "hidden",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "enabled",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "disabled",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "focused",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "checked",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "expected" : {
+              "maxLength" : 16384,
+              "minLength" : 0,
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "text-equals",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "expected" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "expected" : {
+              "maxLength" : 16384,
+              "minLength" : 0,
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "text-contains",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "expected" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "expected" : {
+              "maximum" : 2147483647,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "kind" : {
+              "const" : "count-equals",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "expected" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "bounds-inside-viewport",
+              "type" : "string"
+            },
+            "viewport" : {
+              "additionalProperties" : false,
+              "properties" : {
+                "height" : {
+                  "maximum" : 1.7976931348623157E308,
+                  "minimum" : 0.0,
+                  "type" : "number"
+                },
+                "width" : {
+                  "maximum" : 1.7976931348623157E308,
+                  "minimum" : 0.0,
+                  "type" : "number"
+                },
+                "x" : {
+                  "maximum" : 1.7976931348623157E308,
+                  "minimum" : -1.7976931348623157E308,
+                  "type" : "number"
+                },
+                "y" : {
+                  "maximum" : 1.7976931348623157E308,
+                  "minimum" : -1.7976931348623157E308,
+                  "type" : "number"
+                }
+              },
+              "required" : [ "x", "y", "width", "height" ],
+              "type" : "object"
+            }
+          },
+          "required" : [ "kind", "viewport" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "does-not-overlap",
+              "type" : "string"
+            },
+            "other" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "other" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "frames" : {
+              "maximum" : 10000,
+              "minimum" : 1,
+              "type" : "integer"
+            },
+            "kind" : {
+              "const" : "stable-for-frames",
+              "type" : "string"
+            },
+            "properties" : {
+              "items" : {
+                "enum" : [ "bounds", "text", "accessible-name", "visible", "enabled", "checked", "focused" ],
+                "type" : "string"
+              },
+              "maxItems" : 7,
+              "minItems" : 1,
+              "type" : "array",
+              "uniqueItems" : true
+            }
+          },
+          "required" : [ "kind", "frames", "properties" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "accessible-name-exists",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        } ]
+      },
+      "filter" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "name",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "has",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "has-text",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "expected" : {
+              "type" : "boolean"
+            },
+            "kind" : {
+              "const" : "state",
+              "type" : "string"
+            },
+            "state" : {
+              "enum" : [ "visible", "touchable", "enabled", "checked", "selected", "expanded", "editable", "focused", "focusable", "clipped", "viewport-intersecting", "hit-target" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "state", "expected" ],
+          "type" : "object"
+        } ]
+      },
+      "locator" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "role",
+              "type" : "string"
+            },
+            "role" : {
+              "enum" : [ "generic", "group", "button", "checkbox", "radio-button", "text-field", "text-area", "label", "image", "list", "list-item", "select", "slider", "progress-bar", "scroll-pane", "window", "dialog", "menu", "menu-item", "tooltip" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "role" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "field" : {
+              "enum" : [ "text", "label" ],
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "text",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "field", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "test-id",
+              "type" : "string"
+            },
+            "testId" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "testId" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "field" : {
+              "enum" : [ "name", "type" ],
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "actor",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "field", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "anchor" : {
+              "$ref" : "#/$defs/locator"
+            },
+            "kind" : {
+              "const" : "relation",
+              "type" : "string"
+            },
+            "relation" : {
+              "enum" : [ "child", "descendant", "parent", "sibling" ],
+              "type" : "string"
+            },
+            "target" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "anchor", "target", "relation" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "filter" : {
+              "$ref" : "#/$defs/filter"
+            },
+            "kind" : {
+              "const" : "filter",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator", "filter" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "index" : {
+              "maximum" : 2147483647,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "kind" : {
+              "const" : "index",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator", "index" ],
+          "type" : "object"
+        } ]
+      },
+      "textMatch" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "mode" : {
+            "enum" : [ "exact", "case-insensitive-exact", "substring", "regex" ],
+            "type" : "string"
+          },
+          "source" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          }
+        },
+        "required" : [ "mode", "source" ],
+        "type" : "object"
+      }
+    },
+    "additionalProperties" : false,
+    "properties" : {
+      "assertion" : {
+        "$ref" : "#/$defs/assertion"
+      },
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "locator" : {
+        "$ref" : "#/$defs/locator"
+      },
+      "schemaVersion" : {
+        "const" : 1,
+        "type" : "integer"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId", "schemaVersion", "locator", "assertion", "deadlineMillis" ],
+    "type" : "object"
+  },
+  "name" : "ui_assert",
+  "outputSchema" : {
+    "$defs" : {
+      "assertion" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "visible",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "hidden",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "enabled",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "disabled",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "focused",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "checked",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "expected" : {
+              "maxLength" : 16384,
+              "minLength" : 0,
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "text-equals",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "expected" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "expected" : {
+              "maxLength" : 16384,
+              "minLength" : 0,
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "text-contains",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "expected" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "expected" : {
+              "maximum" : 2147483647,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "kind" : {
+              "const" : "count-equals",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "expected" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "bounds-inside-viewport",
+              "type" : "string"
+            },
+            "viewport" : {
+              "additionalProperties" : false,
+              "properties" : {
+                "height" : {
+                  "maximum" : 1.7976931348623157E308,
+                  "minimum" : 0.0,
+                  "type" : "number"
+                },
+                "width" : {
+                  "maximum" : 1.7976931348623157E308,
+                  "minimum" : 0.0,
+                  "type" : "number"
+                },
+                "x" : {
+                  "maximum" : 1.7976931348623157E308,
+                  "minimum" : -1.7976931348623157E308,
+                  "type" : "number"
+                },
+                "y" : {
+                  "maximum" : 1.7976931348623157E308,
+                  "minimum" : -1.7976931348623157E308,
+                  "type" : "number"
+                }
+              },
+              "required" : [ "x", "y", "width", "height" ],
+              "type" : "object"
+            }
+          },
+          "required" : [ "kind", "viewport" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "does-not-overlap",
+              "type" : "string"
+            },
+            "other" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "other" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "frames" : {
+              "maximum" : 10000,
+              "minimum" : 1,
+              "type" : "integer"
+            },
+            "kind" : {
+              "const" : "stable-for-frames",
+              "type" : "string"
+            },
+            "properties" : {
+              "items" : {
+                "enum" : [ "bounds", "text", "accessible-name", "visible", "enabled", "checked", "focused" ],
+                "type" : "string"
+              },
+              "maxItems" : 7,
+              "minItems" : 1,
+              "type" : "array",
+              "uniqueItems" : true
+            }
+          },
+          "required" : [ "kind", "frames", "properties" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "accessible-name-exists",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        } ]
+      },
+      "filter" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "name",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "has",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "has-text",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "expected" : {
+              "type" : "boolean"
+            },
+            "kind" : {
+              "const" : "state",
+              "type" : "string"
+            },
+            "state" : {
+              "enum" : [ "visible", "touchable", "enabled", "checked", "selected", "expanded", "editable", "focused", "focusable", "clipped", "viewport-intersecting", "hit-target" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "state", "expected" ],
+          "type" : "object"
+        } ]
+      },
+      "locator" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "role",
+              "type" : "string"
+            },
+            "role" : {
+              "enum" : [ "generic", "group", "button", "checkbox", "radio-button", "text-field", "text-area", "label", "image", "list", "list-item", "select", "slider", "progress-bar", "scroll-pane", "window", "dialog", "menu", "menu-item", "tooltip" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "role" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "field" : {
+              "enum" : [ "text", "label" ],
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "text",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "field", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "test-id",
+              "type" : "string"
+            },
+            "testId" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "testId" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "field" : {
+              "enum" : [ "name", "type" ],
+              "type" : "string"
+            },
+            "kind" : {
+              "const" : "actor",
+              "type" : "string"
+            },
+            "match" : {
+              "$ref" : "#/$defs/textMatch"
+            }
+          },
+          "required" : [ "kind", "field", "match" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "anchor" : {
+              "$ref" : "#/$defs/locator"
+            },
+            "kind" : {
+              "const" : "relation",
+              "type" : "string"
+            },
+            "relation" : {
+              "enum" : [ "child", "descendant", "parent", "sibling" ],
+              "type" : "string"
+            },
+            "target" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "anchor", "target", "relation" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "filter" : {
+              "$ref" : "#/$defs/filter"
+            },
+            "kind" : {
+              "const" : "filter",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator", "filter" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "index" : {
+              "maximum" : 2147483647,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "kind" : {
+              "const" : "index",
+              "type" : "string"
+            },
+            "locator" : {
+              "$ref" : "#/$defs/locator"
+            }
+          },
+          "required" : [ "kind", "locator", "index" ],
+          "type" : "object"
+        } ]
+      },
+      "textMatch" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "mode" : {
+            "enum" : [ "exact", "case-insensitive-exact", "substring", "regex" ],
+            "type" : "string"
+          },
+          "source" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          }
+        },
+        "required" : [ "mode", "source" ],
+        "type" : "object"
+      }
+    },
+    "additionalProperties" : false,
+    "properties" : {
+      "actionability" : {
+        "enum" : [ "satisfied", "retryable" ],
+        "type" : "string"
+      },
+      "assertion" : {
+        "$ref" : "#/$defs/assertion"
+      },
+      "candidates" : {
+        "items" : {
+          "additionalProperties" : {
+            "maxLength" : 16384,
+            "minLength" : 0,
+            "type" : "string"
+          },
+          "maxProperties" : 256,
+          "type" : "object"
+        },
+        "maxItems" : 1000,
+        "type" : "array"
+      },
+      "elapsedMillis" : {
+        "maximum" : 120000,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "expected" : {
+        "maxLength" : 16384,
+        "minLength" : 0,
+        "type" : "string"
+      },
+      "frame" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "kind" : {
+        "const" : "assertion-result",
+        "type" : "string"
+      },
+      "lastObserved" : {
+        "maxLength" : 16384,
+        "minLength" : 0,
+        "type" : "string"
+      },
+      "locator" : {
+        "$ref" : "#/$defs/locator"
+      },
+      "nodeId" : {
+        "maxLength" : 256,
+        "minLength" : 0,
+        "type" : "string"
+      },
+      "outcome" : {
+        "enum" : [ "passed", "failed" ],
+        "type" : "string"
+      },
+      "progress" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "dimensions" : {
+            "additionalProperties" : {
+              "enum" : [ "changed", "unchanged", "unavailable" ],
+              "type" : "string"
+            },
+            "maxProperties" : 32,
+            "type" : "object"
+          },
+          "ruleId" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "status" : {
+            "enum" : [ "available", "unavailable" ],
+            "type" : "string"
+          }
+        },
+        "required" : [ "status", "dimensions", "ruleId" ],
+        "type" : "object"
+      },
+      "recovery" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "consumed" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "consumedBefore" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "elapsedMillis" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "limit" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "maxWallTimeMillis" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "policyVersion" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "remaining" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "remainingBefore" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "terminatingRule" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          }
+        },
+        "required" : [ "policyVersion", "consumedBefore", "consumed", "limit", "remainingBefore", "remaining", "elapsedMillis", "maxWallTimeMillis", "terminatingRule" ],
+        "type" : "object"
+      },
+      "revision" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "schemaVersion" : {
+        "const" : 1,
+        "type" : "integer"
+      },
+      "traceId" : {
+        "maxLength" : 16384,
+        "type" : [ "string", "null" ]
+      },
+      "truncated" : {
+        "type" : "boolean"
+      }
+    },
+    "required" : [ "kind", "progress", "recovery", "schemaVersion", "outcome", "locator", "assertion", "nodeId", "expected", "lastObserved", "actionability", "revision", "frame", "elapsedMillis", "candidates", "truncated" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "$defs" : {
       "filter" : {
         "oneOf" : [ {
           "additionalProperties" : false,

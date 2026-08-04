@@ -11,6 +11,9 @@ import dev.gdx.uiharness.core.action.Harness;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
+import dev.gdx.uiharness.core.assertion.AssertionEvidence;
+import dev.gdx.uiharness.core.assertion.AssertionResult;
+import dev.gdx.uiharness.core.assertion.AssertionSnapshotSource;
 import dev.gdx.uiharness.core.contract.ContractVersion;
 import dev.gdx.uiharness.core.contract.StateActionContract;
 import dev.gdx.uiharness.core.error.ErrorCode;
@@ -81,6 +84,18 @@ final class HarnessProtocolServiceTest {
         assertResult(service, new Command.Action(roleLocator(),
                 new Command.ActionSpec.Click(0, 0, false)),
                 HarnessResponse.Result.Action.class);
+        HarnessResponse.Result.Assertion assertion = assertInstanceOf(
+                HarnessResponse.Result.Assertion.class,
+                success(service, new Command.Assert(1,
+                        new Command.LocatorSpec.TestId("save"),
+                        new Command.AssertionSpec.Enabled())).result());
+        assertEquals("passed", assertion.outcome());
+        assertEquals("enabled=true", assertion.lastObserved());
+        assertEquals("true", assertion.expected());
+        assertEquals(1, assertion.revision());
+        assertEquals(1, assertion.frame());
+        assertEquals(List.of(), assertion.candidates());
+        assertFalse(assertion.truncated());
         assertResult(service, new Command.Wait(roleLocator(), Command.WaitCondition.PRESENT),
                 HarnessResponse.Result.Wait.class);
         assertResult(service, new Command.Screenshot(null, 10, 10, 100, 1024),
@@ -96,6 +111,29 @@ final class HarnessProtocolServiceTest {
         assertEquals(1, traceStarts.get());
         assertEquals(1, traceStops.get());
         assertEquals(Duration.ofMillis(500), harness.lastDeadline.get().timeout());
+    }
+
+    @Test void mapsPreFrameStabilityDeadlineEvidenceAsFailedAssertion() {
+        Command.Assert command = new Command.Assert(
+                1,
+                new Command.LocatorSpec.TestId("save"),
+                new Command.AssertionSpec.StableForFrames(3, List.of("text")));
+        AssertionResult core = new AssertionResult(
+                AssertionResult.Status.FAILED,
+                new AssertionEvidence("save-node", "3 completed frames", "0/3", 7, 9),
+                Duration.ofMillis(10).toNanos());
+
+        HarnessResponse.Result.Assertion assertion =
+                HarnessResponse.Result.Assertion.fromCore(command, core);
+
+        assertEquals("failed", assertion.outcome());
+        assertEquals("retryable", assertion.actionability());
+        assertEquals("save-node", assertion.nodeId());
+        assertEquals("3 completed frames", assertion.expected());
+        assertEquals("0/3", assertion.lastObserved());
+        assertEquals(7, assertion.revision());
+        assertEquals(9, assertion.frame());
+        assertEquals(10, assertion.elapsedMillis());
     }
 
     @Test void rejectsUnknownSessionWithoutInvokingBackend() {
@@ -421,9 +459,21 @@ final class HarnessProtocolServiceTest {
             HarnessProtocolService.TraceController traces) {
         LocatorEngine locators = new StrictResolution();
         FrameSignal frames = listener -> () -> {};
-        WaitEngine waits = new WaitEngine(() -> SNAPSHOT, locators, CLOCK, frames);
+        AssertionSnapshotSource assertionSnapshots = new AssertionSnapshotSource() {
+            @Override public SemanticSnapshot currentSnapshot() {
+                return SNAPSHOT;
+            }
+
+            @Override public SemanticSnapshot snapshotFor(FrameSignal.Frame frame) {
+                return new SemanticSnapshot(
+                        frame.revision(), frame.frame(), SNAPSHOT.rootId(), SNAPSHOT.nodes());
+            }
+        };
+        WaitEngine waits = new WaitEngine(
+                () -> SNAPSHOT, assertionSnapshots, locators, CLOCK, frames,
+                (delay, wakeup) -> () -> {});
         CapabilitySet capabilities = new CapabilitySet(List.of("action", "capabilities", "query",
-                "screenshot", "snapshot", "trace", "wait"));
+                "screenshot", "snapshot", "trace", "ui_assert", "wait"));
         return new HarnessProtocolService.Session(
                 harness, locators, waits, capture, capabilities, traces);
     }
@@ -438,7 +488,7 @@ final class HarnessProtocolServiceTest {
         return new HarnessProtocolService.Session(
                 basic.harness(), basic.locators(), basic.waits(), basic.capture(),
                 new CapabilitySet(List.of("action", "capabilities", "query", "scenario-list",
-                        "scenario-start", "screenshot", "snapshot", "trace", "wait")),
+                        "scenario-start", "screenshot", "snapshot", "trace", "ui_assert", "wait")),
                 basic.traces(), Optional.of(registry), Optional.of(coordinator));
     }
 

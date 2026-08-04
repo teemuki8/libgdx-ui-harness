@@ -1,0 +1,694 @@
+package dev.gdx.uiharness.core.assertion;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import dev.gdx.uiharness.core.error.ErrorCode;
+import dev.gdx.uiharness.core.error.HarnessException;
+import dev.gdx.uiharness.core.locator.Locator;
+import dev.gdx.uiharness.core.model.Bounds;
+import dev.gdx.uiharness.core.model.Role;
+import dev.gdx.uiharness.core.model.SemanticNode;
+import dev.gdx.uiharness.core.model.SemanticSnapshot;
+import dev.gdx.uiharness.core.model.SemanticState;
+import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.MonotonicClock;
+import dev.gdx.uiharness.core.wait.FrameSignal;
+import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
+import org.junit.jupiter.api.Test;
+
+final class AssertionEngineTest {
+    private static final DeadlineWakeup NEVER_FIRES = (delay, wakeup) -> () -> {};
+
+    private final AssertionEngine engine = new AssertionEngine();
+
+    @Test void retriesWithAFreshSnapshotAndStrictResolutionOnEveryCompletedFrame() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        ArrayDeque<SemanticSnapshot> supplied = new ArrayDeque<>(List.of(
+                snapshot(1, 0, node("old", "other", "waiting", 0)),
+                snapshot(2, 1, node("target", "target", "ready", 0))));
+        AtomicInteger reads = new AtomicInteger();
+
+        CompletionStage<AssertionResult> result = engine.assertThat(source(() -> {
+            reads.incrementAndGet();
+            return supplied.remove();
+        }), request(clock, new UiAssertion.TextEquals("ready"), 100), frames, clock, NEVER_FIRES);
+        assertEquals(1, reads.get());
+        frames.emit(2, 1);
+
+        assertEquals(AssertionResult.Status.PASSED, result.toCompletableFuture().join().status());
+        assertEquals(2, reads.get());
+    }
+
+    @Test void failsAtTheExactMonotonicDeadlineWithExplicitElapsedTime() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        CompletionStage<AssertionResult> result = engine.assertThat(source(() -> snapshot(1, 1, node("target", "target", "waiting", 0))), request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock, NEVER_FIRES);
+
+        clock.advanceMillis(10);
+        frames.emit(2, 2);
+
+        AssertionResult failure = result.toCompletableFuture().join();
+        assertEquals(AssertionResult.Status.FAILED, failure.status());
+        assertEquals(10_000_000L, failure.elapsedNanos());
+        assertEquals("waiting", failure.evidence().observed());
+        assertEquals(1, frames.closedSubscriptions());
+    }
+
+    @Test void rejectsAPassWhenSnapshotEvaluationCrossesTheExactDeadline() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        AtomicInteger reads = new AtomicInteger();
+        CompletionStage<AssertionResult> result = engine.assertThat(source(() -> {
+            if (reads.getAndIncrement() == 0) {
+                return snapshot(1, 1, node("target", "target", "waiting", 0));
+            }
+            clock.advanceMillis(10);
+            return snapshot(2, 2, node("target", "target", "ready", 0));
+        }), request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock, NEVER_FIRES);
+
+        frames.emit(2, 2);
+
+        AssertionResult failure = result.toCompletableFuture().join();
+        assertEquals(AssertionResult.Status.FAILED, failure.status());
+        assertEquals("waiting", failure.evidence().observed());
+        assertEquals(10_000_000L, failure.elapsedNanos());
+    }
+
+    @Test void preservesInitialFailedEvidenceWhenEvaluationCrossesTheExactDeadline() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+
+        CompletionStage<AssertionResult> result = engine.assertThat(source(() -> {
+            clock.advanceMillis(10);
+            return snapshot(1, 1, node("target", "target", "waiting", 0));
+        }), request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock, NEVER_FIRES);
+
+        AssertionResult failure = result.toCompletableFuture().join();
+        assertEquals(AssertionResult.Status.FAILED, failure.status());
+        assertEquals("waiting", failure.evidence().observed());
+        assertEquals(10_000_000L, failure.elapsedNanos());
+    }
+
+    @Test void replacesPriorResolutionFailureWithResolvedEvidenceWhenEvaluationCrossesDeadline() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        AtomicInteger reads = new AtomicInteger();
+        CompletionStage<AssertionResult> result = engine.assertThat(source(() -> {
+            if (reads.getAndIncrement() == 0) {
+                return snapshot(1, 1,
+                        node("a", "target", "", 0), node("b", "target", "", 0));
+            }
+            clock.advanceMillis(10);
+            return snapshot(2, 2, node("target", "target", "waiting", 0));
+        }), request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock, NEVER_FIRES);
+
+        frames.emit(2, 2);
+
+        AssertionResult failure = result.toCompletableFuture().join();
+        assertEquals(AssertionResult.Status.FAILED, failure.status());
+        assertEquals("waiting", failure.evidence().observed());
+        assertEquals(10_000_000L, failure.elapsedNanos());
+    }
+
+    @Test void deadlineWakeupCompletesWithoutAnotherFrameAtExactMonotonicExpiry() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        ManualDeadlineWakeup wakeups = new ManualDeadlineWakeup();
+        CompletionStage<AssertionResult> result = engine.assertThat(source(() -> snapshot(1, 1, node("target", "target", "waiting", 0))), request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock, wakeups);
+
+        wakeups.fire();
+        assertFalse(result.toCompletableFuture().isDone());
+        assertEquals(2, wakeups.registrations());
+
+        clock.advanceMillis(10);
+        wakeups.fire();
+
+        AssertionResult failure = result.toCompletableFuture().join();
+        assertEquals(AssertionResult.Status.FAILED, failure.status());
+        assertEquals(10_000_000L, failure.elapsedNanos());
+        assertEquals(1, frames.closedSubscriptions());
+        assertEquals(2, wakeups.cancelledRegistrations());
+    }
+
+    @Test void stableDeadlineBeforeFirstCompletedFrameReturnsInitialSnapshotEvidence() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        ManualDeadlineWakeup wakeups = new ManualDeadlineWakeup();
+        CompletionStage<AssertionResult> result = engine.assertThat(
+                source(() -> snapshot(7, 9, node("target-node", "target", "same", 0))),
+                request(clock, new UiAssertion.StableForFrames(3,
+                        Set.of(UiAssertion.StableProperty.TEXT)), 10),
+                frames, clock, wakeups);
+
+        clock.advanceMillis(10);
+        wakeups.fire();
+
+        AssertionResult failure = result.toCompletableFuture().join();
+        assertEquals(AssertionResult.Status.FAILED, failure.status());
+        assertEquals("target-node", failure.evidence().nodeId());
+        assertEquals("3 completed frames", failure.evidence().expected());
+        assertEquals("0/3", failure.evidence().observed());
+        assertEquals(7, failure.evidence().revision());
+        assertEquals(9, failure.evidence().frame());
+    }
+
+    @Test void stableDeadlinePreservesInitialStrictLocatorFailure() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        ManualDeadlineWakeup wakeups = new ManualDeadlineWakeup();
+        SemanticSnapshot ambiguous = snapshot(7, 9,
+                node("first", "target", "same", 0),
+                node("second", "target", "same", 0));
+        CompletionStage<AssertionResult> result = engine.assertThat(
+                source(() -> ambiguous),
+                request(clock, new UiAssertion.StableForFrames(3,
+                        Set.of(UiAssertion.StableProperty.TEXT)), 10),
+                frames, clock, wakeups);
+
+        clock.advanceMillis(10);
+        wakeups.fire();
+
+        CompletionException completion = assertThrows(CompletionException.class,
+                () -> result.toCompletableFuture().join());
+        HarnessException strict = assertInstanceOf(HarnessException.class, completion.getCause());
+        assertEquals(ErrorCode.STRICTNESS_VIOLATION, strict.code());
+    }
+
+    @Test void callerCancellationClosesFrameSubscriptionAndDeadlineRegistration() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        ManualDeadlineWakeup wakeups = new ManualDeadlineWakeup();
+        CompletableFuture<AssertionResult> result = engine.assertThat(source(() -> snapshot(1, 1, node("target", "target", "waiting", 0))), request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock, wakeups)
+                .toCompletableFuture();
+
+        result.cancel(false);
+
+        assertEquals(1, frames.closedSubscriptions());
+        assertEquals(1, wakeups.cancelledRegistrations());
+    }
+
+    @Test void completionBeforeFrameRegistrationStillClosesReturnedSubscription() {
+        FakeClock clock = new FakeClock();
+        ManualDeadlineWakeup wakeups = new ManualDeadlineWakeup();
+        AtomicInteger closes = new AtomicInteger();
+        FrameSignal frames = listener -> {
+            listener.onFrame(new FrameSignal.Frame(1, 1));
+            return closes::incrementAndGet;
+        };
+        AtomicInteger reads = new AtomicInteger();
+
+        CompletionStage<AssertionResult> result = engine.assertThat(source(() -> snapshot(1, 1,
+                        node("target", "target", reads.getAndIncrement() == 0 ? "waiting" : "ready", 0))), request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock, wakeups);
+
+        assertEquals(AssertionResult.Status.PASSED, result.toCompletableFuture().join().status());
+        assertEquals(1, closes.get());
+    }
+
+    @Test void completionBeforeDeadlineRegistrationCancelsReturnedRegistration() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        ImmediateDeadlineWakeup wakeups = new ImmediateDeadlineWakeup(clock);
+
+        CompletionStage<AssertionResult> result = engine.assertThat(source(() -> snapshot(1, 1, node("target", "target", "waiting", 0))), request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock, wakeups);
+
+        assertEquals(AssertionResult.Status.FAILED, result.toCompletableFuture().join().status());
+        assertEquals(1, wakeups.cancelledRegistrations());
+        assertEquals(1, frames.closedSubscriptions());
+    }
+
+    @Test void repeatedSynchronousEarlyWakeupsRescheduleWithoutRecursionOrLeaks() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        RepeatedSynchronousDeadlineWakeup wakeups =
+                new RepeatedSynchronousDeadlineWakeup(clock, 1_000);
+
+        CompletionStage<AssertionResult> result = engine.assertThat(source(() -> snapshot(1, 1, node("target", "target", "waiting", 0))), request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock, wakeups);
+
+        assertEquals(AssertionResult.Status.FAILED, result.toCompletableFuture().join().status());
+        assertEquals(1, wakeups.maximumScheduleDepth());
+        assertEquals(1_001, wakeups.registrations());
+        assertEquals(1_001, wakeups.cancelledRegistrations());
+        assertEquals(1, frames.closedSubscriptions());
+    }
+
+    @Test void evaluatesEachDeliveredFrameAgainstItsCorrelatedImmutableSnapshot() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        CountDownLatch readingFirstFrame = new CountDownLatch(1);
+        CountDownLatch releaseFirstFrame = new CountDownLatch(1);
+        AssertionSnapshotSource snapshots = new AssertionSnapshotSource() {
+            @Override public SemanticSnapshot currentSnapshot() {
+                return snapshot(0, 0, node("target", "target", "waiting", 0));
+            }
+
+            @Override public SemanticSnapshot snapshotFor(FrameSignal.Frame frame) {
+                if (frame.frame() == 1) {
+                    readingFirstFrame.countDown();
+                    await(releaseFirstFrame);
+                    return snapshot(1, 1, node("target", "target", "waiting", 0));
+                }
+                return snapshot(2, 2, node("target", "target", "ready", 0));
+            }
+        };
+        CompletionStage<AssertionResult> result = engine.assertThat(source(snapshots), request(clock, new UiAssertion.TextEquals("ready"), 100), frames, clock, NEVER_FIRES);
+
+        Thread first = new Thread(() -> frames.emit(1, 1));
+        first.start();
+        await(readingFirstFrame);
+        frames.emit(2, 2);
+        releaseFirstFrame.countDown();
+        join(first);
+
+        AssertionResult passed = result.toCompletableFuture().join();
+        assertEquals(2, passed.evidence().revision());
+        assertEquals(2, passed.evidence().frame());
+    }
+
+    @Test void rejectsSnapshotWhoseIdentityDoesNotMatchTheDeliveredFrame() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        AssertionSnapshotSource snapshots = new AssertionSnapshotSource() {
+            @Override public SemanticSnapshot currentSnapshot() {
+                return snapshot(0, 0, node("target", "target", "waiting", 0));
+            }
+
+            @Override public SemanticSnapshot snapshotFor(FrameSignal.Frame frame) {
+                return snapshot(frame.revision() + 1, frame.frame(),
+                        node("target", "target", "ready", 0));
+            }
+        };
+        CompletionStage<AssertionResult> result = engine.assertThat(source(snapshots), request(clock, new UiAssertion.TextEquals("ready"), 100), frames, clock, NEVER_FIRES);
+
+        frames.emit(1, 1);
+
+        CompletionException completion = assertThrows(CompletionException.class,
+                () -> result.toCompletableFuture().join());
+        IllegalStateException mismatch =
+                assertInstanceOf(IllegalStateException.class, completion.getCause());
+        assertTrue(mismatch.getMessage().contains("delivered frame"));
+        assertEquals(1, frames.closedSubscriptions());
+    }
+
+    @Test void pendingFrameLimitFailsTerminallyWithoutEvictionAndClosesRegistrations() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        ManualDeadlineWakeup wakeups = new ManualDeadlineWakeup();
+        CountDownLatch readingFirstFrame = new CountDownLatch(1);
+        CountDownLatch releaseFirstFrame = new CountDownLatch(1);
+        AssertionSnapshotSource snapshots = new AssertionSnapshotSource() {
+            @Override public SemanticSnapshot currentSnapshot() {
+                return snapshot(0, 0, node("target", "target", "waiting", 0));
+            }
+
+            @Override public SemanticSnapshot snapshotFor(FrameSignal.Frame frame) {
+                if (frame.frame() == 1) {
+                    readingFirstFrame.countDown();
+                    await(releaseFirstFrame);
+                }
+                return snapshot(frame.revision(), frame.frame(),
+                        node("target", "target", "waiting", 0));
+            }
+        };
+        CompletionStage<AssertionResult> result = engine.assertThat(source(snapshots), request(clock, new UiAssertion.TextEquals("ready"), 100), frames, clock, wakeups);
+
+        Thread first = new Thread(() -> frames.emit(1, 1));
+        first.start();
+        await(readingFirstFrame);
+        for (int identity = 2; identity <= 66; identity++) {
+            frames.emit(identity, identity);
+        }
+
+        CompletionException completion = assertThrows(CompletionException.class,
+                () -> result.toCompletableFuture().join());
+        HarnessException overflow =
+                assertInstanceOf(HarnessException.class, completion.getCause());
+        assertEquals(ErrorCode.LIMIT_EXCEEDED, overflow.code());
+        assertEquals("64", overflow.evidence().details().get("limit"));
+        assertEquals(1, frames.closedSubscriptions());
+        assertEquals(1, wakeups.cancelledRegistrations());
+        releaseFirstFrame.countDown();
+        join(first);
+    }
+
+    @Test void stableForFramesComparesOnlyDeclaredPropertiesAcrossCompletedFrames() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        ArrayDeque<SemanticSnapshot> supplied = new ArrayDeque<>(List.of(
+                snapshot(0, 0, node("target", "target", "same", 0)),
+                snapshot(1, 1, node("target", "target", "same", 10)),
+                snapshot(2, 2, node("target", "target", "same", 20)),
+                snapshot(3, 3, node("target", "target", "same", 30))));
+        CompletionStage<AssertionResult> result = engine.assertThat(source(supplied::remove), request(clock, new UiAssertion.StableForFrames(3,
+                Set.of(UiAssertion.StableProperty.TEXT)), 100), frames, clock, NEVER_FIRES);
+
+        frames.emit(1, 1);
+        frames.emit(2, 2);
+        assertTrue(!result.toCompletableFuture().isDone());
+        frames.emit(3, 3);
+
+        AssertionResult passed = result.toCompletableFuture().join();
+        assertEquals(AssertionResult.Status.PASSED, passed.status());
+        assertEquals(3, passed.evidence().frame());
+        assertTrue(passed.evidence().observed().contains("3/3"));
+    }
+
+    @Test void stabilityResetsToOneWhenASelectedPropertyChanges() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        ArrayDeque<SemanticSnapshot> supplied = new ArrayDeque<>(List.of(
+                snapshot(0, 0, node("target", "target", "initial", 0)),
+                snapshot(1, 1, node("target", "target", "a", 0)),
+                snapshot(2, 2, node("target", "target", "b", 0)),
+                snapshot(3, 3, node("target", "target", "b", 0)),
+                snapshot(4, 4, node("target", "target", "b", 0))));
+        CompletionStage<AssertionResult> result = engine.assertThat(source(supplied::remove), request(clock, new UiAssertion.StableForFrames(3,
+                Set.of(UiAssertion.StableProperty.TEXT)), 100), frames, clock, NEVER_FIRES);
+
+        frames.emit(1, 1);
+        frames.emit(2, 2);
+        frames.emit(3, 3);
+        assertTrue(!result.toCompletableFuture().isDone());
+        frames.emit(4, 4);
+        assertEquals(AssertionResult.Status.PASSED, result.toCompletableFuture().join().status());
+    }
+
+    @Test void stableFramesUseTheSnapshotCorrelatedToEachDeliveredFrame() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        CountDownLatch readingFirstFrame = new CountDownLatch(1);
+        CountDownLatch releaseFirstFrame = new CountDownLatch(1);
+        AssertionSnapshotSource snapshots = new AssertionSnapshotSource() {
+            @Override public SemanticSnapshot currentSnapshot() {
+                return snapshot(0, 0, node("target", "target", "initial", 0));
+            }
+
+            @Override public SemanticSnapshot snapshotFor(FrameSignal.Frame frame) {
+                if (frame.frame() == 1) {
+                    readingFirstFrame.countDown();
+                    await(releaseFirstFrame);
+                }
+                String text = frame.frame() == 1 ? "first" : "later";
+                return snapshot(frame.revision(), frame.frame(),
+                        node("target", "target", text, 0));
+            }
+        };
+        CompletionStage<AssertionResult> result = engine.assertThat(source(snapshots),
+                request(clock, new UiAssertion.StableForFrames(2,
+                        Set.of(UiAssertion.StableProperty.TEXT)), 100),
+                frames, clock, NEVER_FIRES);
+
+        Thread first = new Thread(() -> frames.emit(1, 1));
+        first.start();
+        await(readingFirstFrame);
+        frames.emit(2, 2);
+        releaseFirstFrame.countDown();
+        join(first);
+        assertFalse(result.toCompletableFuture().isDone());
+        frames.emit(3, 3);
+
+        AssertionResult passed = result.toCompletableFuture().join();
+        assertEquals(3, passed.evidence().frame());
+        assertEquals("2/2", passed.evidence().observed());
+    }
+
+    @Test void rejectsStableFrameCountsAboveTheBound() {
+        assertThrows(IllegalArgumentException.class, () -> new UiAssertion.StableForFrames(
+                UiAssertion.MAX_STABLE_FRAMES + 1, Set.of(UiAssertion.StableProperty.TEXT)));
+    }
+
+    @Test void immediateFrameCallbacksAreDrainedIterativelyRatherThanRecursively() {
+        FakeClock clock = new FakeClock();
+        ImmediateFrames frames = new ImmediateFrames(20_000);
+        AtomicInteger revision = new AtomicInteger();
+        CompletionStage<AssertionResult> result = engine.assertThat(source(() -> {
+            int attempt = revision.getAndIncrement();
+            return snapshot(attempt, attempt,
+                    node("target", "target", attempt == 20_000 ? "ready" : "waiting", 0));
+        }), request(clock, new UiAssertion.TextEquals("ready"), 100), frames, clock, NEVER_FIRES);
+        assertEquals(AssertionResult.Status.PASSED, result.toCompletableFuture().join().status());
+        assertEquals(20_001, revision.get());
+    }
+
+    @Test void rejectedFrameRegistrationCompletesTheStageExceptionally() {
+        FakeClock clock = new FakeClock();
+        IllegalStateException rejected = new IllegalStateException("closed");
+        CompletionStage<AssertionResult> result = engine.assertThat(source(() -> snapshot(0, 0, node("target", "target", "waiting", 0))), request(clock, new UiAssertion.Visible(), 100), listener -> {
+            throw rejected;
+        }, clock, NEVER_FIRES);
+        CompletionException thrown = assertThrows(CompletionException.class,
+                () -> result.toCompletableFuture().join());
+        assertEquals(rejected, thrown.getCause());
+    }
+
+    @Test void closureWaitsForAlreadyAcceptedFramesToDrain() {
+        FakeClock clock = new FakeClock();
+        CountDownLatch evaluatingFrame = new CountDownLatch(1);
+        CountDownLatch releaseEvaluation = new CountDownLatch(1);
+        FrameSignal frames = listener -> {
+            Thread callback = new Thread(() -> listener.onFrame(new FrameSignal.Frame(1, 1)));
+            callback.start();
+            await(evaluatingFrame);
+            listener.onClosed();
+            releaseEvaluation.countDown();
+            join(callback);
+            return () -> {};
+        };
+        AtomicInteger reads = new AtomicInteger();
+        CompletionStage<AssertionResult> result = engine.assertThat(source(() -> {
+            int read = reads.getAndIncrement();
+            if (read == 1) {
+                evaluatingFrame.countDown();
+                await(releaseEvaluation);
+            }
+            return snapshot(read, read,
+                    node("target", "target", read == 1 ? "ready" : "waiting", 0));
+        }), request(clock, new UiAssertion.TextEquals("ready"), 100), frames, clock, NEVER_FIRES);
+
+        assertEquals(AssertionResult.Status.PASSED, result.toCompletableFuture().join().status());
+        assertEquals(2, reads.get());
+    }
+
+    @Test void finalStrictResolutionFailureIsPropagatedWithBoundedCandidates() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        SemanticSnapshot many = snapshot(1, 1,
+                node("a", "target", "", 0), node("b", "target", "", 0));
+        CompletionStage<AssertionResult> result = engine.assertThat(source(() -> many), request(clock, new UiAssertion.Visible(), 10), frames, clock, NEVER_FIRES);
+        clock.advanceMillis(10);
+        frames.emit(2, 2);
+
+        CompletionException completion = assertThrows(CompletionException.class,
+                () -> result.toCompletableFuture().join());
+        HarnessException strict = assertInstanceOf(HarnessException.class, completion.getCause());
+        assertEquals(ErrorCode.STRICTNESS_VIOLATION, strict.code());
+        assertTrue(strict.evidence().candidates().size() <= 20);
+    }
+
+    private static AssertionRequest request(FakeClock clock, UiAssertion assertion, long millis) {
+        return new AssertionRequest(AssertionRequest.SCHEMA_VERSION, Locator.testId("target"), assertion,
+                Deadline.after(clock, Duration.ofMillis(millis)));
+    }
+
+    private static SemanticSnapshot snapshot(long revision, long frame, SemanticNode... children) {
+        Bounds bounds = new Bounds(0, 0, 100, 100);
+        List<String> ids = java.util.Arrays.stream(children).map(SemanticNode::id).toList();
+        SemanticNode root = new SemanticNode("root", null, ids, Role.GROUP, "Root", "", null,
+                "root", null, "Group", state(true), bounds, bounds, bounds, 0, Map.of());
+        Map<String, SemanticNode> nodes = new LinkedHashMap<>();
+        nodes.put("root", root);
+        for (SemanticNode child : children) {
+            nodes.put(child.id(), child);
+        }
+        return new SemanticSnapshot(revision, frame, "root", nodes);
+    }
+
+    private static SemanticNode node(String id, String testId, String text, double x) {
+        Bounds bounds = new Bounds(x, 0, 10, 10);
+        return new SemanticNode(id, "root", List.of(), Role.BUTTON, "Name", text, null, testId,
+                null, "TextButton", state(true), bounds, bounds, bounds, 0, Map.of());
+    }
+
+    private static SemanticState state(boolean visible) {
+        return new SemanticState(visible, true, Optional.of(true), Optional.of(false),
+                Optional.empty(), Optional.empty(), Optional.empty(), false, true, 1, false, true, true);
+    }
+
+    private static AssertionSnapshotSource source(Supplier<SemanticSnapshot> snapshots) {
+        return new AssertionSnapshotSource() {
+            @Override public SemanticSnapshot currentSnapshot() {
+                return snapshots.get();
+            }
+
+            @Override public SemanticSnapshot snapshotFor(FrameSignal.Frame frame) {
+                return snapshots.get();
+            }
+        };
+    }
+
+    private static AssertionSnapshotSource source(AssertionSnapshotSource snapshots) {
+        return snapshots;
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(interrupted);
+        }
+    }
+
+    private static void join(Thread thread) {
+        try {
+            thread.join();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(interrupted);
+        }
+    }
+    private static final class FakeClock implements MonotonicClock {
+        private long nanos;
+        @Override public long nanoTime() { return nanos; }
+
+        void advanceMillis(long millis) { nanos += Duration.ofMillis(millis).toNanos(); }
+    }
+
+    private static final class ManualDeadlineWakeup implements DeadlineWakeup {
+        private final List<TestRegistration> registrations = new java.util.ArrayList<>();
+
+        @Override public Registration schedule(Duration delay, Runnable wakeup) {
+            TestRegistration registration = new TestRegistration(wakeup);
+            registrations.add(registration);
+            return registration;
+        }
+
+        void fire() {
+            registrations.get(registrations.size() - 1).wakeup.run();
+        }
+
+        int registrations() {
+            return registrations.size();
+        }
+
+        int cancelledRegistrations() {
+            return (int) registrations.stream().filter(TestRegistration::cancelled).count();
+        }
+
+        private static final class TestRegistration implements Registration {
+            private final Runnable wakeup;
+            private boolean cancelled;
+
+            TestRegistration(Runnable wakeup) {
+                this.wakeup = wakeup;
+            }
+
+            @Override public void cancel() {
+                cancelled = true;
+            }
+
+            boolean cancelled() {
+                return cancelled;
+            }
+        }
+    }
+
+    private static final class ImmediateDeadlineWakeup implements DeadlineWakeup {
+        private final FakeClock clock;
+        private int cancelled;
+
+        ImmediateDeadlineWakeup(FakeClock clock) {
+            this.clock = clock;
+        }
+
+        @Override public Registration schedule(Duration delay, Runnable wakeup) {
+            clock.advanceMillis(delay.toMillis());
+            wakeup.run();
+            return () -> cancelled++;
+        }
+
+        int cancelledRegistrations() {
+            return cancelled;
+        }
+    }
+
+    private static final class RepeatedSynchronousDeadlineWakeup implements DeadlineWakeup {
+        private final FakeClock clock;
+        private int earlyCallbacksRemaining;
+        private int scheduleDepth;
+        private int maximumScheduleDepth;
+        private int registrations;
+        private int cancelled;
+
+        RepeatedSynchronousDeadlineWakeup(FakeClock clock, int earlyCallbacks) {
+            this.clock = clock;
+            earlyCallbacksRemaining = earlyCallbacks;
+        }
+
+        @Override public Registration schedule(Duration delay, Runnable wakeup) {
+            scheduleDepth++;
+            maximumScheduleDepth = Math.max(maximumScheduleDepth, scheduleDepth);
+            if (earlyCallbacksRemaining-- == 0) {
+                clock.advanceMillis(delay.toMillis());
+            }
+            wakeup.run();
+            registrations++;
+            scheduleDepth--;
+            return () -> cancelled++;
+        }
+
+        int maximumScheduleDepth() {
+            return maximumScheduleDepth;
+        }
+
+        int registrations() {
+            return registrations;
+        }
+
+        int cancelledRegistrations() {
+            return cancelled;
+        }
+    }
+
+    private static class TestFrames implements FrameSignal {
+        private FrameListener listener;
+        private int closed;
+        @Override public Subscription subscribe(FrameListener listener) {
+            this.listener = listener;
+            return () -> {
+                this.listener = null;
+                closed++;
+            };
+        }
+        void emit(long revision, long frame) { listener.onFrame(new Frame(revision, frame)); }
+        int closedSubscriptions() { return closed; }
+    }
+
+    private static final class ImmediateFrames extends TestFrames {
+        private final int callbacks;
+        ImmediateFrames(int callbacks) { this.callbacks = callbacks; }
+        @Override public Subscription subscribe(FrameListener listener) {
+            Subscription subscription = super.subscribe(listener);
+            for (int i = 1; i <= callbacks; i++) {
+                listener.onFrame(new Frame(i, i));
+            }
+            return subscription;
+        }
+    }
+}

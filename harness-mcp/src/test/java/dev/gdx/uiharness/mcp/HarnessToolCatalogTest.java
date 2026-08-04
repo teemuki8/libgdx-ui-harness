@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Test;
 
 final class HarnessToolCatalogTest {
     private static final Set<String> APPROVED = Set.of(
-            "ui_sessions", "ui_snapshot", "ui_query", "ui_action", "ui_wait",
+            "ui_sessions", "ui_snapshot", "ui_query", "ui_action", "ui_assert", "ui_wait",
             "ui_screenshot", "ui_inspect_compare", "ui_typography_diagnose",
             "ui_layout_diagnose", "ui_trace_start", "ui_trace_stop", "ui_capabilities",
             "ui_scenarios", "ui_scenario_start");
@@ -27,7 +27,7 @@ final class HarnessToolCatalogTest {
 
     @Test void exposesOnlyTheApprovedBoundedTools() {
         assertEquals(APPROVED, catalog.toolNames());
-        assertEquals(14, catalog.tools().size());
+        assertEquals(15, catalog.tools().size());
         for (McpSchema.Tool tool : catalog.tools()) {
             assertEquals("object", tool.inputSchema().get("type"));
             assertEquals(false, tool.inputSchema().get("additionalProperties"));
@@ -131,6 +131,48 @@ final class HarnessToolCatalogTest {
                         .collect(java.util.stream.Collectors.toSet()));
     }
 
+    @Test void assertionSchemaAcceptsExactlyAllThirteenClosedVersionedVariants() {
+        List<Map<String, Object>> assertions = List.of(
+                Map.of("kind", "visible"),
+                Map.of("kind", "hidden"),
+                Map.of("kind", "enabled"),
+                Map.of("kind", "disabled"),
+                Map.of("kind", "focused"),
+                Map.of("kind", "checked"),
+                Map.of("kind", "text-equals", "expected", "Ready"),
+                Map.of("kind", "text-contains", "expected", "ead"),
+                Map.of("kind", "count-equals", "expected", 2),
+                Map.of("kind", "bounds-inside-viewport", "viewport",
+                        Map.of("x", 0, "y", 0, "width", 800, "height", 600)),
+                Map.of("kind", "does-not-overlap", "other",
+                        Map.of("kind", "test-id", "testId", "dialog")),
+                Map.of("kind", "stable-for-frames", "frames", 3,
+                        "properties", List.of("bounds", "accessible-name")),
+                Map.of("kind", "accessible-name-exists"));
+        Map<String, Object> base = Map.of(
+                "sessionId", "game",
+                "schemaVersion", 1,
+                "deadlineMillis", 500,
+                "locator", Map.of("kind", "test-id", "testId", "save"));
+        for (Map<String, Object> assertion : assertions) {
+            assertValid("ui_assert", with(base, "assertion", assertion));
+        }
+        assertInvalid("ui_assert", with(base, "assertion", Map.of("kind", "future")));
+        assertInvalid("ui_assert", with(base, "schemaVersion", 2));
+        assertInvalid("ui_assert", with(base, "assertion",
+                Map.of("kind", "visible", "surprise", true)));
+        assertInvalid("ui_assert", with(base, "locator", Map.of(
+                "kind", "filter",
+                "locator", Map.of("kind", "role", "role", "button"),
+                "filter", Map.of("kind", "has", "locator", Map.of(
+                        "kind", "test-id", "testId", "child", "surprise", true)))));
+        assertInvalid("ui_assert", with(base, "assertion", Map.of(
+                "kind", "does-not-overlap",
+                "other", Map.of("kind", "index",
+                        "locator", Map.of("kind", "role", "role", "dialog",
+                                "surprise", true), "index", 0))));
+    }
+
     @Test void schemasRejectMalformedAndArbitraryExecutionInputs() {
         assertInvalid("ui_action", Map.of("sessionId", "game", "method", "java.lang.Runtime.exec"));
         assertInvalid("ui_action", Map.of("sessionId", "game", "script", "System.exit(0)"));
@@ -217,6 +259,42 @@ final class HarnessToolCatalogTest {
         assertTrue(McpJsonDefaults.getSchemaValidator()
                 .validate(catalog.tool("ui_inspect_compare").outputSchema(), output)
                 .valid());
+    }
+
+    @Test void assertionOutputAcceptsEmptySetLevelNodeIdForCountEvidence() {
+        Map<String, Object> output = Map.ofEntries(
+                Map.entry("kind", "assertion-result"),
+                Map.entry("schemaVersion", 1),
+                Map.entry("outcome", "passed"),
+                Map.entry("locator", Map.of("kind", "role", "role", "button")),
+                Map.entry("assertion", Map.of("kind", "count-equals", "expected", 0)),
+                Map.entry("nodeId", ""),
+                Map.entry("expected", "count equals 0"),
+                Map.entry("lastObserved", "0"),
+                Map.entry("actionability", "satisfied"),
+                Map.entry("revision", 1),
+                Map.entry("frame", 1),
+                Map.entry("elapsedMillis", 0),
+                Map.entry("candidates", List.of()),
+                Map.entry("progress", Map.of(
+                        "status", "unavailable",
+                        "dimensions", Map.of(),
+                        "ruleId", "progress-fingerprint/v1")),
+                Map.entry("recovery", Map.of(
+                        "policyVersion", "recovery-policy/v1",
+                        "consumedBefore", 0,
+                        "consumed", 0,
+                        "limit", 3,
+                        "remainingBefore", 3,
+                        "remaining", 3,
+                        "elapsedMillis", 0,
+                        "maxWallTimeMillis", 30_000,
+                        "terminatingRule", "success/v1")),
+                Map.entry("truncated", false));
+
+        var validation = McpJsonDefaults.getSchemaValidator()
+                .validate(catalog.tool("ui_assert").outputSchema(), output);
+        assertTrue(validation.valid(), validation.toString());
     }
 
     @Test void catalogContainsNoPathExecutionReflectionOrCodeParameters() throws Exception {

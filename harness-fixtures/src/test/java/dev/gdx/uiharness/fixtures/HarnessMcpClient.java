@@ -49,9 +49,9 @@ final class HarnessMcpClient implements Closeable {
         }
         client.notify("notifications/initialized", Map.of());
         JsonNode listed = client.request("tools/list", Map.of());
-        if (listed.path("tools").size() != 14) {
+        if (listed.path("tools").size() != 15) {
             client.close();
-            throw new IllegalStateException("Expected the fourteen production tools: " + listed);
+            throw new IllegalStateException("Expected the fifteen production tools: " + listed);
         }
         return client;
     }
@@ -68,6 +68,47 @@ final class HarnessMcpClient implements Closeable {
         ArrayList<String> capabilities = new ArrayList<>();
         content.path("capabilities").forEach(item -> capabilities.add(item.asText()));
         return List.copyOf(capabilities);
+    }
+
+    JsonNode assertThat(
+            String sessionId,
+            Map<String, Object> locator,
+            Map<String, Object> assertion,
+            long deadlineMillis) throws Exception {
+        JsonNode content = call("ui_assert", assertionArguments(
+                sessionId, locator, assertion, deadlineMillis));
+        requireKind(content, "assertion-result");
+        return content;
+    }
+
+    JsonNode assertFailure(
+            String sessionId,
+            Map<String, Object> locator,
+            Map<String, Object> assertion,
+            long deadlineMillis) throws Exception {
+        JsonNode result = request("tools/call", Map.of(
+                "name", "ui_assert",
+                "arguments", assertionArguments(
+                        sessionId, locator, assertion, deadlineMillis)));
+        if (!result.path("isError").asBoolean()) {
+            throw new IllegalStateException("Expected MCP assertion failure: " + result);
+        }
+        JsonNode content = result.path("structuredContent");
+        requireKind(content, "error");
+        return content;
+    }
+
+    private static Map<String, Object> assertionArguments(
+            String sessionId,
+            Map<String, Object> locator,
+            Map<String, Object> assertion,
+            long deadlineMillis) {
+        return Map.of(
+                "sessionId", sessionId,
+                "schemaVersion", 1,
+                "locator", locator,
+                "assertion", assertion,
+                "deadlineMillis", deadlineMillis);
     }
 
     JsonNode scenarios(String sessionId) throws Exception {
@@ -231,6 +272,16 @@ final class HarnessMcpClient implements Closeable {
                 "sessionId", sessionId,
                 "locator", testIdLocator(testId))));
         return match.path("text").asText();
+    }
+
+    QueryEvidence singleEvidenceByTestId(String sessionId, String testId) throws Exception {
+        JsonNode content = call("ui_query", Map.of(
+                "sessionId", sessionId,
+                "locator", testIdLocator(testId)));
+        JsonNode match = singleMatch(content);
+        return new QueryEvidence(
+                match.path("id").asText(),
+                match.path("text").asText());
     }
 
     Screenshot screenshot(String sessionId) throws Exception {
@@ -581,6 +632,8 @@ final class HarnessMcpClient implements Closeable {
             Artifact current,
             Artifact evidence,
             String reports) {}
+
+    record QueryEvidence(String nodeId, String text) {}
 
     record Snapshot(long revision, long frame, String rootId, int nodeCount) {}
 

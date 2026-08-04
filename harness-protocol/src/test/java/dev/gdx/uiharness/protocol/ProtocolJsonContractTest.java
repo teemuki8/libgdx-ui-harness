@@ -37,8 +37,8 @@ final class ProtocolJsonContractTest {
 
         assertEquals(Set.of(Command.Sessions.class, Command.Capabilities.class,
                 Command.Snapshot.class, Command.Query.class, Command.Action.class,
-                Command.Wait.class, Command.Screenshot.class, Command.TraceStart.class,
-                Command.TraceStop.class, Command.ScenarioList.class,
+                Command.Assert.class, Command.Wait.class, Command.Screenshot.class,
+                Command.TraceStart.class, Command.TraceStop.class, Command.ScenarioList.class,
                 Command.ScenarioStart.class), variants);
         String encoded = ProtocolJson.mapper().writeValueAsString(
                 ProtocolJson.mapper().treeToValue(contracts.get(4).get("value"),
@@ -67,6 +67,7 @@ final class ProtocolJsonContractTest {
                 HarnessResponse.Result.Snapshot.class,
                 HarnessResponse.Result.Query.class,
                 HarnessResponse.Result.Action.class,
+                HarnessResponse.Result.Assertion.class,
                 HarnessResponse.Result.Wait.class,
                 HarnessResponse.Result.Screenshot.class,
                 HarnessResponse.Result.TraceStarted.class,
@@ -161,6 +162,90 @@ final class ProtocolJsonContractTest {
             assertNotTypeMetadata(ProtocolJson.mapper().writeValueAsString(source));
             command.action().toCore();
         }
+    }
+
+    @Test void everyAssertionVariantRoundTripsWithClosedKebabCaseDiscriminators()
+            throws Exception {
+        List<String> variants = List.of(
+                "{\"kind\":\"visible\"}",
+                "{\"kind\":\"hidden\"}",
+                "{\"kind\":\"enabled\"}",
+                "{\"kind\":\"disabled\"}",
+                "{\"kind\":\"focused\"}",
+                "{\"kind\":\"checked\"}",
+                "{\"kind\":\"text-equals\",\"expected\":\"Ready\"}",
+                "{\"kind\":\"text-contains\",\"expected\":\"ead\"}",
+                "{\"kind\":\"count-equals\",\"expected\":2}",
+                "{\"kind\":\"bounds-inside-viewport\",\"viewport\":"
+                        + "{\"x\":0.0,\"y\":0.0,\"width\":800.0,\"height\":600.0}}",
+                "{\"kind\":\"does-not-overlap\",\"other\":"
+                        + "{\"kind\":\"test-id\",\"testId\":\"dialog\"}}",
+                "{\"kind\":\"stable-for-frames\",\"frames\":3,"
+                        + "\"properties\":[\"bounds\",\"accessible-name\"]}",
+                "{\"kind\":\"accessible-name-exists\"}");
+
+        for (String assertion : variants) {
+            String json = requestWithCommand(
+                    "{\"type\":\"assert\",\"schemaVersion\":1,"
+                            + "\"locator\":{\"kind\":\"test-id\",\"testId\":\"save\"},"
+                            + "\"assertion\":" + assertion + "}");
+            HarnessRequest decoded =
+                    ProtocolJson.mapper().readValue(json, HarnessRequest.class);
+            assertInstanceOf(Command.Assert.class, decoded.command());
+            assertEquals(json, ProtocolJson.mapper().writeValueAsString(decoded));
+        }
+    }
+
+    @Test void assertionUnionRejectsUnknownVariantsFieldsAndVersionsRecursively() {
+        List<String> invalidCommands = List.of(
+                "{\"type\":\"assert\",\"schemaVersion\":2,"
+                        + "\"locator\":{\"kind\":\"test-id\",\"testId\":\"save\"},"
+                        + "\"assertion\":{\"kind\":\"visible\"}}",
+                "{\"type\":\"assert\",\"schemaVersion\":1,"
+                        + "\"locator\":{\"kind\":\"test-id\",\"testId\":\"save\"},"
+                        + "\"assertion\":{\"kind\":\"future\"}}",
+                "{\"type\":\"assert\",\"schemaVersion\":1,"
+                        + "\"locator\":{\"kind\":\"test-id\",\"testId\":\"save\"},"
+                        + "\"assertion\":{\"kind\":\"visible\",\"surprise\":true}}",
+                "{\"type\":\"assert\",\"schemaVersion\":1,"
+                        + "\"locator\":{\"kind\":\"filter\","
+                        + "\"locator\":{\"kind\":\"role\",\"role\":\"button\",\"surprise\":true},"
+                        + "\"filter\":{\"kind\":\"has\",\"locator\":"
+                        + "{\"kind\":\"test-id\",\"testId\":\"child\"}}},"
+                        + "\"assertion\":{\"kind\":\"visible\"}}",
+                "{\"type\":\"assert\",\"schemaVersion\":1,"
+                        + "\"locator\":{\"kind\":\"test-id\",\"testId\":\"save\"},"
+                        + "\"assertion\":{\"kind\":\"does-not-overlap\",\"other\":"
+                        + "{\"kind\":\"filter\",\"locator\":{\"kind\":\"role\",\"role\":\"dialog\"},"
+                        + "\"filter\":{\"kind\":\"has\",\"locator\":"
+                        + "{\"kind\":\"test-id\",\"testId\":\"child\",\"surprise\":true}}}}}");
+        for (String command : invalidCommands) {
+            assertThrows(JsonProcessingException.class,
+                    () -> ProtocolJson.mapper().readValue(
+                            requestWithCommand(command), HarnessRequest.class));
+        }
+    }
+
+    @Test void assertionEvidencePreservesBoundsTruncationAndOptionalTrace() throws Exception {
+        Command.LocatorSpec locator = new Command.LocatorSpec.TestId("save");
+        Command.AssertionSpec assertion = new Command.AssertionSpec.TextEquals("Ready");
+        HarnessResponse.Result.Assertion bounded = new HarnessResponse.Result.Assertion(
+                1, "failed", locator, assertion, "save", "Ready", "Loading",
+                "retryable", 7, 9, 500,
+                List.of(Map.of("nodeId", "candidate")), true, "trace-7");
+        JsonNode json = ProtocolJson.mapper().valueToTree(bounded);
+        assertEquals("trace-7", json.path("traceId").asText());
+        assertTrue(json.path("truncated").asBoolean());
+        assertEquals(1, json.path("candidates").size());
+
+        List<Map<String, String>> oversized = java.util.stream.IntStream.rangeClosed(0, 1_000)
+                .mapToObj(index -> Map.of("nodeId", "candidate-" + index)).toList();
+        assertThrows(IllegalArgumentException.class, () -> new HarnessResponse.Result.Assertion(
+                1, "failed", locator, assertion, "save", "Ready", "Loading",
+                "retryable", 7, 9, 500, oversized, true, null));
+        assertThrows(IllegalArgumentException.class, () -> new HarnessResponse.Result.Assertion(
+                2, "failed", locator, assertion, "save", "Ready", "Loading",
+                "retryable", 7, 9, 500, List.of(), false, null));
     }
 
     @Test void rejectsUnknownNestedResponseAndErrorUnionNames() {

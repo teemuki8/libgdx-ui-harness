@@ -795,8 +795,8 @@ public final class BenchmarkRunner {
             }
             client.notify("notifications/initialized", Map.of());
             JsonNode tools = client.request("tools/list", Map.of());
-            if (tools.path("tools").size() != 14) {
-                throw new IllegalStateException("Expected fourteen production MCP tools");
+            if (tools.path("tools").size() != 15) {
+                throw new IllegalStateException("Expected fifteen production MCP tools");
             }
             return client;
         }

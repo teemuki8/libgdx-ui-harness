@@ -12,6 +12,7 @@ import dev.gdx.uiharness.core.action.Harness;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
+import dev.gdx.uiharness.core.assertion.AssertionSnapshotSource;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.locator.StrictResolution;
@@ -89,6 +90,35 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test void assertionToolRoutesThroughProductionEngineWithCompleteEvidence() {
+        try (HarnessToolHandler handler = new HarnessToolHandler(
+                service(new RecordingHarness()), new RecordingArtifacts())) {
+            McpSchema.CallToolResult result = handler.handle(call("ui_assert", Map.of(
+                    "sessionId", "game",
+                    "schemaVersion", 1,
+                    "deadlineMillis", 500,
+                    "locator", Map.of("kind", "test-id", "testId", "save"),
+                    "assertion", Map.of("kind", "enabled"))))
+                    .block(Duration.ofSeconds(10));
+
+            assertNotNull(result);
+            assertFalse(result.isError());
+            Map<String, Object> content = structured(result);
+            assertEquals("assertion-result", content.get("kind"));
+            assertEquals("passed", content.get("outcome"));
+            assertEquals(Map.of("kind", "test-id", "testId", "save"),
+                    content.get("locator"));
+            assertEquals(Map.of("kind", "enabled"), content.get("assertion"));
+            assertEquals("true", content.get("expected"));
+            assertEquals("enabled=true", content.get("lastObserved"));
+            assertEquals("satisfied", content.get("actionability"));
+            assertEquals(1, ((Number) content.get("revision")).longValue());
+            assertEquals(1, ((Number) content.get("frame")).longValue());
+            assertEquals(List.of(), content.get("candidates"));
+            assertEquals(false, content.get("truncated"));
+        }
+    }
+
     @Test void capabilityAndSnapshotResultsAreCompact() {
         try (HarnessToolHandler handler = new HarnessToolHandler(
                 service(new RecordingHarness()), new RecordingArtifacts())) {
@@ -98,7 +128,9 @@ final class HarnessMcpServerContractTest {
             assertTrue(((List<?>) structured(capabilities).get("capabilities")).contains("action"));
             assertEquals("operation-catalog/v1",
                     structured(capabilities).get("catalogSchemaVersion"));
-            assertEquals(14, ((List<?>) structured(capabilities).get("operations")).size());
+            assertEquals(15, ((List<?>) structured(capabilities).get("operations")).size());
+            assertTrue(((List<?>) structured(capabilities).get("capabilities"))
+                    .contains("ui_assert"));
             assertTrue(String.valueOf(structured(capabilities).get("operations"))
                     .contains("maxWidth=1280"));
             assertTrue(String.valueOf(structured(capabilities).get("operations"))
@@ -677,7 +709,7 @@ final class HarnessMcpServerContractTest {
             send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}");
             JsonNode listed = read(reader);
-            assertEquals(14, listed.at("/result/tools").size());
+            assertEquals(15, listed.at("/result/tools").size());
 
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
                     + "\"params\":{\"name\":\"ui_action\",\"arguments\":{"
@@ -786,9 +818,22 @@ final class HarnessMcpServerContractTest {
     private static HarnessProtocolService service(RecordingHarness harness) {
         LocatorEngine locators = new StrictResolution();
         FrameSignal frames = listener -> () -> {};
-        WaitEngine waits = new WaitEngine(() -> SNAPSHOT, locators, CLOCK, frames);
+        AssertionSnapshotSource assertionSnapshots = new AssertionSnapshotSource() {
+            @Override public SemanticSnapshot currentSnapshot() {
+                return SNAPSHOT;
+            }
+
+            @Override public SemanticSnapshot snapshotFor(FrameSignal.Frame frame) {
+                return new SemanticSnapshot(
+                        frame.revision(), frame.frame(), SNAPSHOT.rootId(), SNAPSHOT.nodes());
+            }
+        };
+        WaitEngine waits = new WaitEngine(
+                () -> SNAPSHOT, assertionSnapshots, locators, CLOCK, frames,
+                (delay, wakeup) -> () -> {});
         CapabilitySet capabilities = new CapabilitySet(List.of(
-                "action", "capabilities", "query", "screenshot", "snapshot", "trace", "wait"));
+                "action", "capabilities", "query", "screenshot", "snapshot", "trace",
+                "ui_assert", "wait"));
         ScreenCapture capture = new ScreenCapture() {
             @Override public CompletionStage<CapturedImage> capture(
                     CaptureRequest request, Deadline deadline) {

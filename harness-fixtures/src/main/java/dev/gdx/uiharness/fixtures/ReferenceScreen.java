@@ -54,6 +54,9 @@ public final class ReferenceScreen implements AutoCloseable {
     private Label bodyCaption;
     private TextField username;
     private TextField password;
+    private final Array<Label> assertionCandidates = new Array<>();
+    private Label assertionState;
+    private Runnable withholdAssertionFrames = () -> {};
     private Semantics semantics;
 
     /** Creates the stable reference workflow without benchmark-only actors. */
@@ -71,6 +74,7 @@ public final class ReferenceScreen implements AutoCloseable {
         buildSignIn();
         buildSettings();
         buildTransformedOverlap();
+        buildAssertionFixture();
         if (benchmarkScenario != null) {
             buildBenchmarkScenario();
         }
@@ -79,6 +83,11 @@ public final class ReferenceScreen implements AutoCloseable {
     /** Returns the application-owned Stage. */
     public Stage stage() {
         return stage;
+    }
+
+    /** Registers the fixture control invoked by the existing Open dialog behavior. */
+    public void attachAssertionFrameControl(Runnable control) {
+        withholdAssertionFrames = java.util.Objects.requireNonNull(control, "control");
     }
 
     /** Installs semantic metadata required by stable MCP locators. */
@@ -106,6 +115,10 @@ public final class ReferenceScreen implements AutoCloseable {
                 new LayoutMetadata("scrolling-list"));
         tag(bodyCaption, "body-caption", "Transforms and overlap");
         semantics.setTypography(bodyCaption, typographyMetadata());
+        tag(assertionState, "assertion-state", "Assertion state");
+        for (Label candidate : assertionCandidates) {
+            tag(candidate, "assertion-candidate", "Assertion candidate");
+        }
         benchmarkTags.forEach((actor, metadata) ->
                 tag(actor, metadata.testId(), metadata.accessibleName()));
     }
@@ -162,6 +175,7 @@ public final class ReferenceScreen implements AutoCloseable {
         submit.addListener(new ChangeListener() {
             @Override public void changed(ChangeEvent event, Actor actor) {
                 replaceSignInWithWelcome();
+                startAssertionTransitions();
             }
         });
 
@@ -405,8 +419,48 @@ public final class ReferenceScreen implements AutoCloseable {
             tag(message, "welcome-message", "Welcome message");
         }
     }
+    private void buildAssertionFixture() {
+        assertionState = assertionLabel("initial");
+        stage.addActor(assertionState);
+        for (int index = 0; index < 12; index++) {
+            Label candidate = new Label("candidate-" + index, skin);
+            candidate.setVisible(false);
+            assertionCandidates.add(candidate);
+            stage.addActor(candidate);
+        }
+    }
+
+    private void startAssertionTransitions() {
+        stage.getRoot().addAction(Actions.sequence(
+                Actions.run(() -> replaceAssertionState("changing-1")),
+                Actions.delay(0.016f),
+                Actions.run(() -> replaceAssertionState("changing-2")),
+                Actions.delay(0.016f),
+                Actions.run(() -> replaceAssertionState("ready"))));
+    }
+
+    private void replaceAssertionState(String text) {
+        assertionState.remove();
+        Label identitySpacer = new Label("", skin);
+        identitySpacer.setVisible(false);
+        stage.addActor(identitySpacer);
+        assertionState = assertionLabel(text);
+        stage.addActor(assertionState);
+        if (semantics != null) {
+            tag(assertionState, "assertion-state", "Assertion state");
+        }
+    }
+
+    private Label assertionLabel(String text) {
+        Label label = new Label(text, skin);
+        label.setName("assertion-state");
+        label.setVisible(false);
+        return label;
+    }
+
 
     private void showDialog() {
+        withholdAssertionFrames.run();
         Dialog dialog = new Dialog("Reference dialog", skin);
         dialog.setName("reference-dialog");
         dialog.text("All interactions arrived through MCP.");
