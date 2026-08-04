@@ -37,6 +37,10 @@ public record NavigationRequest(
         requireBound(maxSteps, MAX_STEPS, "maxSteps");
         requireBound(maxActors, MAX_ACTORS, "maxActors");
         requireBound(maxResultBytes, MAX_BYTES, "maxResultBytes");
+        if (maxResultBytes < NavigationResult.minimumWireSizeUpperBound()) {
+            throw new IllegalArgumentException(
+                    "maxResultBytes cannot contain the minimum navigation result");
+        }
         requireBound(maxEvidenceBytes, MAX_BYTES, "maxEvidenceBytes");
         Objects.requireNonNull(deadline, "deadline");
         if (deadline.isZero()) {
@@ -51,6 +55,16 @@ public record NavigationRequest(
             NavigationStep.requireIdentity(identity, "knownFocusable");
             if (!identities.add(identity)) {
                 throw new IllegalArgumentException("duplicate focusable identity: " + identity);
+            }
+        }
+        for (int index = 1; index < steps.size(); index++) {
+            NavigationStep previous = steps.get(index - 1);
+            NavigationStep next = steps.get(index);
+            if (!Objects.equals(previous.afterIdentity(), next.beforeIdentity())
+                    || previous.afterFrame() != next.beforeFrame()
+                    || previous.afterRevision() != next.beforeRevision()) {
+                throw new IllegalArgumentException(
+                        "adjacent navigation steps must have continuous identity, frame, and revision");
             }
         }
         for (NavigationStep step : steps) {

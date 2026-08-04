@@ -1,6 +1,5 @@
 package dev.gdx.uiharness.core.navigation;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -14,7 +13,7 @@ public final class NavigationValidator {
         Objects.requireNonNull(request, "request");
         List<String> orderedKnown = request.knownFocusables().stream().sorted().toList();
         List<String> boundedKnown = boundedIdentities(orderedKnown, request.maxEvidenceBytes());
-        boolean evidenceTruncated = boundedKnown.size() != orderedKnown.size();
+        boolean truncated = boundedKnown.size() != orderedKnown.size();
 
         List<NavigationStep> accepted = new ArrayList<>();
         Set<String> visited = new HashSet<>();
@@ -28,19 +27,18 @@ public final class NavigationValidator {
         }
 
         NavigationReason reason = request.deadlineExpired() ? NavigationReason.DEADLINE : null;
-        int resultBytes = 0;
+        int observedSteps = 0;
         for (NavigationStep step : request.steps()) {
             if (reason != null) {
                 break;
             }
-            int stepBytes = encodedSize(step);
-            if (accepted.size() == request.maxSteps()
-                    || resultBytes + stepBytes > request.maxResultBytes()) {
+            if (observedSteps == request.maxSteps()) {
                 reason = NavigationReason.TRUNCATED;
+                truncated = true;
                 break;
             }
             accepted.add(step);
-            resultBytes += stepBytes;
+            observedSteps++;
             if (step.input().isController() && !request.controllerSupported()) {
                 reason = NavigationReason.UNSUPPORTED_CONTROLLER_PATH;
                 break;
@@ -71,21 +69,52 @@ public final class NavigationValidator {
                 .toList();
         List<String> boundedUnreachable = boundedIdentities(
                 unreachable, Math.max(0, request.maxEvidenceBytes() - encodedSize(boundedKnown)));
-        evidenceTruncated |= boundedUnreachable.size() != unreachable.size();
+        truncated |= boundedUnreachable.size() != unreachable.size();
         if (reason == null) {
             reason = unreachable.isEmpty()
                     ? NavigationReason.COMPLETE
                     : NavigationReason.UNREACHABLE_CONTROL;
         }
-        if (evidenceTruncated && (reason == NavigationReason.COMPLETE
-                || reason == NavigationReason.UNREACHABLE_CONTROL)) {
-            reason = NavigationReason.TRUNCATED;
-        }
 
         NavigationPath path = new NavigationPath(
                 NavigationPath.SCHEMA_VERSION, defaultFocus, accepted, reason);
-        return new NavigationResult(
-                NavigationResult.SCHEMA_VERSION, path, boundedKnown, boundedUnreachable);
+        NavigationResult result = new NavigationResult(
+                NavigationResult.SCHEMA_VERSION, path, boundedKnown, boundedUnreachable, truncated);
+        return boundResult(result, request.maxResultBytes());
+    }
+
+    private static NavigationResult boundResult(NavigationResult result, int byteBudget) {
+        if (result.wireSizeUpperBound() <= byteBudget) {
+            return result;
+        }
+
+        String defaultFocus = result.path().defaultFocusIdentity();
+        List<NavigationStep> steps = new ArrayList<>(result.path().steps());
+        List<String> known = new ArrayList<>(result.knownFocusables());
+        List<String> unreachable = new ArrayList<>(result.unreachableFocusables());
+        NavigationResult bounded;
+        do {
+            if (!unreachable.isEmpty()) {
+                unreachable.remove(unreachable.size() - 1);
+            } else if (!known.isEmpty()) {
+                known.remove(known.size() - 1);
+            } else if (!steps.isEmpty()) {
+                steps.remove(steps.size() - 1);
+            } else if (defaultFocus != null) {
+                defaultFocus = null;
+            } else {
+                throw new IllegalArgumentException(
+                        "maxResultBytes cannot contain the minimum navigation result");
+            }
+            NavigationPath path = new NavigationPath(
+                    NavigationPath.SCHEMA_VERSION,
+                    defaultFocus,
+                    steps,
+                    result.path().reason());
+            bounded = new NavigationResult(
+                    NavigationResult.SCHEMA_VERSION, path, known, unreachable, true);
+        } while (bounded.wireSizeUpperBound() > byteBudget);
+        return bounded;
     }
 
     private static List<String> boundedIdentities(List<String> identities, int byteBudget) {
@@ -102,12 +131,6 @@ public final class NavigationValidator {
         return List.copyOf(result);
     }
 
-    private static int encodedSize(NavigationStep step) {
-        return 40
-                + encodedSize(step.beforeIdentity())
-                + encodedSize(step.afterIdentity())
-                + encodedSize(step.modalBoundaryId());
-    }
 
     private static int encodedSize(List<String> values) {
         int size = 0;
@@ -118,7 +141,7 @@ public final class NavigationValidator {
     }
 
     private static int encodedSize(String value) {
-        return value == null ? 0 : value.getBytes(StandardCharsets.UTF_8).length;
+        return value == null ? 0 : Math.multiplyExact(value.length(), 6);
     }
 
     private record FocusState(String identity, String modalBoundaryId) {}
