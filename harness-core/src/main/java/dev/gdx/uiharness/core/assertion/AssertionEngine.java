@@ -28,19 +28,6 @@ public final class AssertionEngine {
         evaluator = new AssertionEvaluator(locators);
     }
 
-    /**
-     * Evaluates until the assertion passes or its monotonic deadline is reached.
-     *
-     * @deprecated Callers serving assertions must inject a deadline wake-up.
-     */
-    @Deprecated
-    public CompletionStage<AssertionResult> assertThat(
-            Supplier<SemanticSnapshot> snapshots,
-            AssertionRequest request,
-            FrameSignal frames,
-            MonotonicClock clock) {
-        return assertThat(snapshots, request, frames, clock, (delay, wakeup) -> () -> {});
-    }
 
     /** Evaluates with a cancellable deadline wake-up independent of frame delivery. */
     public CompletionStage<AssertionResult> assertThat(
@@ -78,6 +65,8 @@ public final class AssertionEngine {
         private final ArrayDeque<FrameSignal.Frame> pending = new ArrayDeque<>();
         private FrameSignal.Subscription subscription;
         private DeadlineWakeup.Registration deadlineRegistration;
+        private boolean deadlineScheduling;
+        private boolean deadlineSignalPending;
         private boolean registered = true;
         private boolean draining;
         private boolean registrationRejected;
@@ -124,37 +113,82 @@ public final class AssertionEngine {
         }
 
         void scheduleDeadline() {
-            if (result.isDone()) return;
-            DeadlineWakeup.Registration registration;
-            try {
-                registration = Objects.requireNonNull(
-                        deadlineWakeup.schedule(request.deadline().remaining(), this::onDeadlineWakeup),
-                        "deadline wake-up registration");
-            } catch (Throwable failure) {
-                result.completeExceptionally(failure);
-                return;
-            }
             synchronized (this) {
-                if (result.isDone()) {
-                    registration.cancel();
-                } else {
-                    deadlineRegistration = registration;
+                if (result.isDone() || deadlineScheduling) {
+                    return;
                 }
+                deadlineScheduling = true;
             }
+            scheduleDeadlineLoop(false);
         }
 
         private void onDeadlineWakeup() {
-            DeadlineWakeup.Registration expiredRegistration;
             synchronized (this) {
-                expiredRegistration = deadlineRegistration;
-                deadlineRegistration = null;
-                if (result.isDone()) return;
+                if (result.isDone()) {
+                    return;
+                }
+                deadlineSignalPending = true;
+                if (deadlineScheduling) {
+                    return;
+                }
+                deadlineScheduling = true;
             }
-            if (expiredRegistration != null) expiredRegistration.cancel();
-            if (request.deadline().isExpired()) {
-                completeAtDeadline();
-            } else {
-                scheduleDeadline();
+            scheduleDeadlineLoop(true);
+        }
+
+        private void scheduleDeadlineLoop(boolean consumeSignal) {
+            while (true) {
+                if (consumeSignal) {
+                    DeadlineWakeup.Registration expiredRegistration;
+                    synchronized (this) {
+                        deadlineSignalPending = false;
+                        expiredRegistration = deadlineRegistration;
+                        deadlineRegistration = null;
+                    }
+                    if (expiredRegistration != null) {
+                        expiredRegistration.cancel();
+                    }
+                    if (request.deadline().isExpired()) {
+                        synchronized (this) {
+                            deadlineScheduling = false;
+                        }
+                        completeAtDeadline();
+                        return;
+                    }
+                }
+
+                DeadlineWakeup.Registration registration;
+                try {
+                    registration = Objects.requireNonNull(
+                            deadlineWakeup.schedule(
+                                    request.deadline().remaining(), this::onDeadlineWakeup),
+                            "deadline wake-up registration");
+                } catch (Throwable failure) {
+                    synchronized (this) {
+                        deadlineScheduling = false;
+                    }
+                    result.completeExceptionally(failure);
+                    return;
+                }
+
+                boolean cancel;
+                synchronized (this) {
+                    cancel = result.isDone();
+                    if (!cancel) {
+                        deadlineRegistration = registration;
+                    }
+                    consumeSignal = deadlineSignalPending;
+                    if (!consumeSignal) {
+                        deadlineScheduling = false;
+                    }
+                }
+                if (cancel) {
+                    registration.cancel();
+                    return;
+                }
+                if (!consumeSignal) {
+                    return;
+                }
             }
         }
 
