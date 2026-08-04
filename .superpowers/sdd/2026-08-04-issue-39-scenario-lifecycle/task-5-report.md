@@ -129,3 +129,40 @@ replacement context's terminal `ScenarioResult` with an opaque bounded reconnect
 real fixture creates a distinct Stage, Scene2D session, scheduler, registry, lifecycle, and runner
 for every handoff. The old Stage retains its mutated fields, proving it did not execute the pending
 request after handoff.
+
+## Fix round 2
+
+### Red
+
+`./gradlew :harness-fixtures:test --tests '*ReplacementProcessCoordinatorTest' --no-daemon --console=plain --warning-mode=fail`
+
+Failed at compilation because the fixture-private replacement process coordinator did not exist.
+The deterministic controlled-executor regression cancels before the queued launch action and
+asserts that the replacement JVM launcher is never invoked.
+
+`./gradlew :harness-fixtures:test --tests '*ScenarioLifecycleFixtureTest' --no-daemon --console=plain --warning-mode=fail`
+
+Failed with the existing in-process `ReplacementContext`: the asserted real replacement
+process/session/reconnect identity prefixes were absent.
+
+### Green
+
+`./gradlew :harness-lwjgl3:test --tests '*RegisteredLaunchCoordinatorTest' :harness-fixtures:test --tests '*ScenarioLifecycleFixtureTest' --tests '*ReplacementProcessCoordinatorTest' --tests '*ReplacementProcessTest' --no-daemon --console=plain --warning-mode=fail`
+
+Passed: `BUILD SUCCESSFUL in 13s`, 18 actionable tasks (1 executed, 17 up-to-date).
+
+The restart profile now launches a dedicated JVM main class over a fixture-private, 64 KiB-bounded
+single-line stdin/stdout contract. Fixture host code alone constructs the Java executable,
+classpath, platform flag, and main class. Only the validated `ScenarioRequest` is transferred.
+The child independently owns its LWJGL3 application, Stage, controlled clock, Scene2D session,
+scheduler, registry, lifecycle, and scenario runner; it advances its own frame loop and returns its
+terminal `ScenarioResult` with PID-derived process, session, and reconnect identities. The parent
+never creates or drives replacement Scene2D state.
+
+Cancellation is checked before launch, forwarded after launch, and always closes the owned child
+process. Deadline and abnormal-exit paths terminalize the handoff and tear down the process without
+polling sleeps.
+
+### Concerns
+
+None.

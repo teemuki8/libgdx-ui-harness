@@ -14,8 +14,6 @@ final class ScenarioLifecycleFixtureTest {
     private static final String SESSION_ID = "reference-ui";
     private static final String PROFILE_ID = "desktop-restart-1280x720";
 
-    private static final String REPLACEMENT_PROCESS_ID = "reference-ui-restarted-1";
-    private static final String REPLACEMENT_SESSION_ID = "reference-ui-restarted-1";
     @Test
     @Timeout(120)
     void registeredLifecycleRunsThroughProductionMcpAndCleansEveryTerminalPath() throws Exception {
@@ -50,9 +48,12 @@ final class ScenarioLifecycleFixtureTest {
                     > firstResult.path("startRevision").asLong());
             assertEquals("reference-reset:42:clean",
                     firstResult.path("startStateIdentity").asText());
-            assertEquals(REPLACEMENT_PROCESS_ID, firstResult.path("processId").asText());
-            assertEquals(REPLACEMENT_SESSION_ID, firstResult.path("sessionId").asText());
-            assertEquals("fixture-reconnect-1", first.path("reconnectIdentity").asText());
+            assertTrue(firstResult.path("processId").asText().startsWith("replacement-process-"));
+            assertTrue(firstResult.path("sessionId").asText().startsWith("replacement-session-"));
+            assertFalse(firstResult.path("processId").asText()
+                    .equals(firstResult.path("sessionId").asText()));
+            assertTrue(first.path("reconnectIdentity").asText()
+                    .startsWith("replacement-reconnect-"));
             assertEquals("mutable value", client.singleTextByTestId(SESSION_ID, "username"));
 
             client.fillByLabel(SESSION_ID, "Username", "changed again");

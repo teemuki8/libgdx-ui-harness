@@ -124,7 +124,7 @@ public final class FixtureControl implements AutoCloseable {
     private final Scene2dSession sceneSession;
     private final Scene2dHarness sceneHarness;
     private final ScenarioRegistry scenarios;
-    private final AtomicReference<ReplacementContext> replacement = new AtomicReference<>();
+    private final ReplacementProcessCoordinator replacementCoordinator;
     private final Lwjgl3FrameFence fence;
     private final Lwjgl3ScreenCapture capture;
     private final WaitEngine waits;
@@ -135,10 +135,10 @@ public final class FixtureControl implements AutoCloseable {
     private final ExecutorService protocolExecutor;
     private final ExecutorService terminationExecutor;
     private final ScheduledExecutorService scenarioDeadlines;
+    private final ExecutorService replacementExecutor;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean withholdScenarioFrames = new AtomicBoolean();
     private final RegisteredLaunchCoordinator launchCoordinator;
-    private final AtomicLong replacementSequence = new AtomicLong();
     private HarnessMcpServer server;
     private Future<?> terminationTask;
 
@@ -166,7 +166,11 @@ public final class FixtureControl implements AutoCloseable {
         scenarios.register(scenario("incompatible-reference", "another-application"), lifecycle);
         scenarioDeadlines = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofPlatform().name("reference-scenario-deadline").factory());
-        launchCoordinator = this::restartInReplacementContext;
+        replacementExecutor = Executors.newThreadPerTaskExecutor(
+                Thread.ofVirtual().name("reference-replacement-launch-", 0).factory());
+        replacementCoordinator = new ReplacementProcessCoordinator(
+                RESTART_PROFILE.id(), replacementExecutor, ReplacementProcess::launch);
+        launchCoordinator = replacementCoordinator;
         fence = new Lwjgl3FrameFence(64);
         capture = new Lwjgl3ScreenCapture(fence, sceneSession::snapshot);
         LocatorEngine locators = new StrictResolution();
@@ -248,10 +252,7 @@ public final class FixtureControl implements AutoCloseable {
 
     /** Publishes identity for the framebuffer that was just rendered. */
     public void afterDraw() {
-        ReplacementContext active = replacement.get();
-        if (active != null) {
-            active.completedFrame();
-        }
+        // Replacement JVM owns and advances its own LWJGL3 frame loop.
         fence.completedFrame(clock.revision(), clock.frame());
     }
 
@@ -265,10 +266,7 @@ public final class FixtureControl implements AutoCloseable {
         failure = closeResource(waits, failure);
         failure = closeResource(capture, failure);
         failure = closeResource(fence, failure);
-        ReplacementContext activeReplacement = replacement.getAndSet(null);
-        if (activeReplacement != null) {
-            failure = closeResource(activeReplacement, failure);
-        }
+        failure = closeResource(replacementCoordinator, failure);
         failure = closeResource(sceneHarness, failure);
         failure = closeResource(sceneSession, failure);
         failure = closeResource(scheduler, failure);
@@ -278,6 +276,7 @@ public final class FixtureControl implements AutoCloseable {
         failure = closeResource(artifactStore, failure);
         failure = closeResource(protocolExecutor, failure);
         failure = closeResource(scenarioDeadlines, failure);
+        failure = closeResource(replacementExecutor, failure);
         failure = closeResource(terminationExecutor, failure);
         failure = deleteOwnedDirectories(failure);
         if (terminationTask != null && !terminationTask.isDone()) {
@@ -285,7 +284,7 @@ public final class FixtureControl implements AutoCloseable {
                     new IllegalStateException("MCP termination virtual thread did not stop"));
         }
         if (!protocolExecutor.isTerminated() || !terminationExecutor.isTerminated()
-                || !scenarioDeadlines.isTerminated()) {
+                || !scenarioDeadlines.isTerminated() || !replacementExecutor.isTerminated()) {
             failure = append(failure,
                     new IllegalStateException("fixture executors did not terminate"));
         }
@@ -325,53 +324,6 @@ public final class FixtureControl implements AutoCloseable {
         return mapped;
     }
 
-    private CompletionStage<RegisteredLaunchCoordinator.HandoffOutcome>
-            restartInReplacementContext(ScenarioRequest request) {
-        if (!RESTART_PROFILE.id().equals(request.profileId())) {
-            return CompletableFuture.completedFuture(
-                    RegisteredLaunchCoordinator.HandoffFailure.UNKNOWN_PROFILE);
-        }
-        if (request.deadline().isExpired()) {
-            return CompletableFuture.completedFuture(
-                    RegisteredLaunchCoordinator.HandoffFailure.DEADLINE);
-        }
-        AtomicReference<ReplacementContext> launched = new AtomicReference<>();
-        AtomicBoolean cancelled = new AtomicBoolean();
-        CompletableFuture<RegisteredLaunchCoordinator.HandoffOutcome> result =
-                new CompletableFuture<>() {
-                    @Override public boolean cancel(boolean mayInterruptIfRunning) {
-                        cancelled.set(true);
-                        ReplacementContext context = launched.get();
-                        return context == null || context.cancel();
-                    }
-                };
-        ReplacementContext current = replacement.get();
-        CompletionStage<Void> ready = current == null
-                ? CompletableFuture.completedFuture(null)
-                : current.completion;
-        ready.whenComplete((ignored, priorFailure) ->
-                scheduler.submit(() -> {
-                    long sequence = replacementSequence.incrementAndGet();
-                    ReplacementContext context = new ReplacementContext(request, sequence);
-                    if (!replacement.compareAndSet(null, context)) {
-                        context.close();
-                        throw new IllegalStateException("replacement context already active");
-                    }
-                    launched.set(context);
-                    if (cancelled.get()) {
-                        context.cancel();
-                    }
-                    return context;
-                }, request.deadline()).thenCompose(ReplacementContext::start)
-                        .whenComplete((outcome, failure) -> {
-                            if (failure != null) {
-                                result.completeExceptionally(failure);
-                            } else {
-                                result.complete(outcome);
-                            }
-                        }));
-        return result;
-    }
 
     private static ScenarioDefinition scenario(String id, String applicationId) {
         return scenario(id, applicationId, Duration.ofSeconds(5));
@@ -387,101 +339,6 @@ public final class FixtureControl implements AutoCloseable {
                 List.of(RESTART_PROFILE.id()),
                 1,
                 maxDuration);
-    }
-    private final class ReplacementContext implements AutoCloseable {
-        private final ScenarioRequest request;
-        private final long sequence;
-        private final Stage stage = new Stage();
-        private final Scene2dSession session = new Scene2dSession(stage);
-        private final RenderThreadScheduler replacementScheduler = new RenderThreadScheduler(32);
-        private final Scene2dScenarioRunner runner;
-        private CompletableFuture<dev.gdx.uiharness.core.scenario.ScenarioResult> scenario;
-        private final CompletableFuture<Void> completion = new CompletableFuture<>();
-        private boolean closed;
-
-        ReplacementContext(ScenarioRequest request, long sequence) {
-            this.request = request;
-            this.sequence = sequence;
-            ScenarioRegistry replacementRegistry = new ScenarioRegistry();
-            replacementRegistry.register(
-                    scenarios.require(request.scenarioId()).definition(),
-                    new ReplacementScenarioLifecycle());
-            runner = new Scene2dScenarioRunner(
-                    replacementRegistry, replacementScheduler, clock, (delay, signal) -> {
-                        var scheduled = scenarioDeadlines.schedule(
-                                signal,
-                                delay.plus(Duration.ofMillis(100)).toNanos(),
-                                TimeUnit.NANOSECONDS);
-                        return () -> scheduled.cancel(false);
-                    });
-        }
-
-        CompletionStage<RegisteredLaunchCoordinator.HandoffOutcome> start() {
-            scenario = runner.start(
-                    request,
-                    APPLICATION_ID,
-                    "reference-ui-restarted-" + sequence,
-                    "reference-ui-restarted-" + sequence).toCompletableFuture();
-            return scenario.thenApply(result ->
-                    new RegisteredLaunchCoordinator.HandoffResult(
-                            result, "fixture-reconnect-" + sequence));
-        }
-
-        boolean cancel() {
-            return scenario != null && scenario.cancel(false);
-        }
-
-        void completedFrame() {
-            replacementScheduler.drain();
-            stage.act(FIXED_STEP.toNanos() / 1_000_000_000f);
-            stage.draw();
-            if (!Boolean.parseBoolean(request.configuration()
-                    .getOrDefault("withholdCompletedFrames", "false"))) {
-                session.completedFrame(runner, clock.revision(), clock.frame());
-            }
-            if (scenario != null && scenario.isDone()) {
-                replacement.compareAndSet(this, null);
-                close();
-            }
-        }
-
-        @Override public void close() {
-            if (closed) {
-                return;
-            }
-            closed = true;
-            runner.close();
-            session.close();
-            replacementScheduler.close();
-            stage.dispose();
-            completion.complete(null);
-        }
-    }
-
-    private static final class ReplacementScenarioLifecycle implements ScenarioLifecycle {
-        private final IdentityHashMap<ScenarioRequest, Integer> readiness = new IdentityHashMap<>();
-
-        @Override public void setup(ScenarioRequest request) {
-            readiness.put(request, 0);
-        }
-
-        @Override public void reset(ScenarioRequest request) {}
-
-        @Override public boolean ready(ScenarioRequest request) {
-            int completedFrames = readiness.compute(
-                    request, (ignored, current) -> current == null ? 1 : current + 1);
-            return !"never-ready".equals(request.scenarioId()) && completedFrames >= 2;
-        }
-
-        @Override public String startStateIdentity(
-                ScenarioRequest request, SemanticSnapshot snapshot) {
-            return request.scenarioId() + ":" + request.seed() + ":"
-                    + request.configuration().getOrDefault("mode", "default");
-        }
-
-        @Override public void cleanup(ScenarioRequest request) {
-            readiness.remove(request);
-        }
     }
 
 
