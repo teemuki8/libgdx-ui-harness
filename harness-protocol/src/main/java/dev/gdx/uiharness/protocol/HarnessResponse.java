@@ -1,6 +1,8 @@
 package dev.gdx.uiharness.protocol;
 
 import com.fasterxml.jackson.annotation.JsonSubTypes;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import dev.gdx.uiharness.core.action.ActionResult;
 import dev.gdx.uiharness.core.capture.CapturedImage;
@@ -17,6 +19,7 @@ import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.locator.QueryResult;
 import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
+import dev.gdx.uiharness.core.scenario.ScenarioFailure;
 import dev.gdx.uiharness.core.scenario.ScenarioResult;
 import dev.gdx.uiharness.core.model.Bounds;
 import dev.gdx.uiharness.core.model.SemanticNode;
@@ -699,6 +702,65 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         }
     }
 
+    /** Closed wire projection of core terminal scenario failures. */
+    enum ScenarioFailureData {
+        UNKNOWN_SCENARIO("unknown-scenario"),
+        INCOMPATIBLE_SCENARIO("incompatible-scenario"),
+        UNSUPPORTED_PROFILE("unsupported-profile"),
+        SETUP_REJECTED("setup-rejected"),
+        RESET_REJECTED("reset-rejected"),
+        READINESS_DEADLINE("readiness-deadline"),
+        PROCESS_REPLACED("process-replaced"),
+        SESSION_REPLACED("session-replaced"),
+        STALE_REVISION("stale-revision"),
+        CLEANUP_FAILED("cleanup-failed"),
+        NONDETERMINISTIC_INITIAL_STATE("nondeterministic-initial-state"),
+        DISPATCH_FAILED("dispatch-failed"),
+        CANCELLED("cancelled");
+
+        private final String wireName;
+
+        ScenarioFailureData(String wireName) {
+            this.wireName = wireName;
+        }
+
+        /** Returns the stable protocol spelling. */
+        @JsonValue
+        public String wireName() {
+            return wireName;
+        }
+
+        /** Resolves only recognized protocol spellings. */
+        @JsonCreator
+        public static ScenarioFailureData fromWireName(String wireName) {
+            for (ScenarioFailureData value : values()) {
+                if (value.wireName.equals(wireName)) {
+                    return value;
+                }
+            }
+            throw new IllegalArgumentException("Unknown scenario failure " + wireName);
+        }
+
+        /** Exhaustively projects one core failure to its transport value. */
+        static ScenarioFailureData fromCore(ScenarioFailure failure) {
+            return switch (failure) {
+                case UNKNOWN_SCENARIO -> UNKNOWN_SCENARIO;
+                case INCOMPATIBLE_SCENARIO -> INCOMPATIBLE_SCENARIO;
+                case UNSUPPORTED_PROFILE -> UNSUPPORTED_PROFILE;
+                case SETUP_REJECTED -> SETUP_REJECTED;
+                case RESET_REJECTED -> RESET_REJECTED;
+                case READINESS_DEADLINE -> READINESS_DEADLINE;
+                case PROCESS_REPLACED -> PROCESS_REPLACED;
+                case SESSION_REPLACED -> SESSION_REPLACED;
+                case STALE_REVISION -> STALE_REVISION;
+                case CLEANUP_FAILED -> CLEANUP_FAILED;
+                case NONDETERMINISTIC_INITIAL_STATE -> NONDETERMINISTIC_INITIAL_STATE;
+                case DISPATCH_FAILED -> DISPATCH_FAILED;
+                case CANCELLED -> CANCELLED;
+            };
+        }
+    }
+
     /** Bounded terminal scenario execution evidence. */
     record ScenarioResultData(
             int schemaVersion,
@@ -718,7 +780,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             long elapsedMillis,
             int setupAttempts,
             boolean cleanupCompleted,
-            String failure) {
+            ScenarioFailureData failure) {
         /** Validates public result bounds and terminal correlation. */
         public ScenarioResultData {
             if (schemaVersion != ScenarioDefinition.SCHEMA_VERSION) {
@@ -742,9 +804,6 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                 throw new IllegalArgumentException(
                         "successful scenario readiness precedes its start evidence");
             }
-            if (failure != null) {
-                ProtocolJson.requireIdentifier(failure, "failure");
-            }
         }
 
         static ScenarioResultData fromCore(ScenarioResult result) {
@@ -755,8 +814,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                     result.startRevision(), result.readyFrame(), result.readyRevision(),
                     result.profileId(), result.startStateIdentity(), result.elapsed().toMillis(),
                     result.setupAttempts(), result.cleanupCompleted(),
-                    result.failure().map(value ->
-                            value.name().toLowerCase(Locale.ROOT).replace('_', '-')).orElse(null));
+                    result.failure().map(ScenarioFailureData::fromCore).orElse(null));
         }
     }
 

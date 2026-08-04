@@ -214,7 +214,8 @@ final class ProtocolJsonContractTest {
                 () -> new Command.ScenarioStart("known", 7, oversized, "desktop"));
     }
 
-    @Test void scenarioDeadlineMaximumIsInclusiveAndFailureEvidenceMayPrecedeReadiness() {
+    @Test void scenarioDeadlineMaximumIsInclusiveAndFailureEvidenceMayPrecedeReadiness()
+            throws Exception {
         Command.ScenarioStart command =
                 new Command.ScenarioStart("known", 7, Map.of(), "desktop");
         new HarnessRequest(
@@ -225,9 +226,25 @@ final class ProtocolJsonContractTest {
         HarnessResponse.ScenarioResultData failed = new HarnessResponse.ScenarioResultData(
                 1, "known", "v1", "digest", 7, "game", "process", "game",
                 10, 20, 0, 0, "desktop", "unavailable", 25, 1, true,
-                "readiness-deadline");
-        assertEquals("readiness-deadline", failed.failure());
+                HarnessResponse.ScenarioFailureData.READINESS_DEADLINE);
+        assertEquals("readiness-deadline", failed.failure().wireName());
+        assertTrue(ProtocolJson.mapper().writeValueAsString(failed)
+                .contains("\"failure\":\"readiness-deadline\""));
     }
+    @Test void scenarioResultRejectsUnknownTerminalFailure() {
+        String unknownFailure = "{\"schemaVersion\":1,\"scenarioId\":\"known\","
+                + "\"definitionVersion\":\"v1\",\"configurationDigest\":\"digest\","
+                + "\"seed\":7,\"applicationId\":\"game\",\"processId\":\"process\","
+                + "\"sessionId\":\"game\",\"startFrame\":10,\"startRevision\":20,"
+                + "\"readyFrame\":0,\"readyRevision\":0,\"profileId\":\"desktop\","
+                + "\"startStateIdentity\":\"unavailable\",\"elapsedMillis\":25,"
+                + "\"setupAttempts\":1,\"cleanupCompleted\":true,"
+                + "\"failure\":\"future-failure\"}";
+
+        assertThrows(JsonProcessingException.class, () -> ProtocolJson.mapper().readValue(
+                unknownFailure, HarnessResponse.ScenarioResultData.class));
+    }
+
 
     @Test void mapperCallersCannotMutateCanonicalConfiguration() {
         var callerMapper = ProtocolJson.mapper();

@@ -349,12 +349,10 @@ public final class HarnessToolCatalog {
                 Map.entry("elapsedMillis", integer(0, 600_000)),
                 Map.entry("setupAttempts", integer(0, 16)),
                 Map.entry("cleanupCompleted", Map.of("type", "boolean")),
-                Map.entry("failure", enumString(
-                        "unknown-scenario", "incompatible-scenario", "unsupported-profile",
-                        "setup-rejected", "reset-rejected", "readiness-deadline",
-                        "process-replaced", "session-replaced", "stale-revision",
-                        "cleanup-failed", "nondeterministic-initial-state",
-                        "dispatch-failed", "cancelled"))),
+                Map.entry("failure", enumString(java.util.Arrays.stream(
+                                HarnessResponse.ScenarioFailureData.values())
+                        .map(HarnessResponse.ScenarioFailureData::wireName)
+                        .toArray(String[]::new)))),
                 List.of("schemaVersion", "scenarioId", "definitionVersion",
                         "configurationDigest", "seed", "applicationId", "processId",
                         "sessionId", "startFrame", "startRevision", "readyFrame",
