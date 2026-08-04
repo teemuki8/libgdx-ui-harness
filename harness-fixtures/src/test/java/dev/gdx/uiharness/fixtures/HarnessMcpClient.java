@@ -49,9 +49,9 @@ final class HarnessMcpClient implements Closeable {
         }
         client.notify("notifications/initialized", Map.of());
         JsonNode listed = client.request("tools/list", Map.of());
-        if (listed.path("tools").size() != 12) {
+        if (listed.path("tools").size() != 14) {
             client.close();
-            throw new IllegalStateException("Expected the twelve production tools: " + listed);
+            throw new IllegalStateException("Expected the fourteen production tools: " + listed);
         }
         return client;
     }
@@ -68,6 +68,55 @@ final class HarnessMcpClient implements Closeable {
         ArrayList<String> capabilities = new ArrayList<>();
         content.path("capabilities").forEach(item -> capabilities.add(item.asText()));
         return List.copyOf(capabilities);
+    }
+
+    JsonNode scenarios(String sessionId) throws Exception {
+        JsonNode content = call("ui_scenarios", Map.of("sessionId", sessionId));
+        requireKind(content, "scenarios-result");
+        return content;
+    }
+
+    JsonNode startScenario(
+            String sessionId,
+            String scenarioId,
+            long seed,
+            Map<String, String> configuration,
+            String profileId,
+            long deadlineMillis) throws Exception {
+        JsonNode content = call("ui_scenario_start", Map.of(
+                "sessionId", sessionId,
+                "scenarioId", scenarioId,
+                "seed", seed,
+                "configuration", configuration,
+                "profileId", profileId,
+                "deadlineMillis", deadlineMillis));
+        requireKind(content, "scenario-start-result");
+        return content.path("outcome");
+    }
+
+    void cancelScenario(
+            String sessionId, String scenarioId, String profileId, long deadlineMillis)
+            throws Exception {
+        long cancelledId = ++requestId;
+        send(Map.of(
+                "jsonrpc", "2.0",
+                "id", cancelledId,
+                "method", "tools/call",
+                "params", Map.of(
+                        "name", "ui_scenario_start",
+                        "arguments", Map.of(
+                                "sessionId", sessionId,
+                                "scenarioId", scenarioId,
+                                "seed", 0,
+                                "configuration", Map.of(),
+                                "profileId", profileId,
+                                "deadlineMillis", deadlineMillis))));
+        notify("notifications/cancelled", Map.of(
+                "requestId", cancelledId, "reason", "fixture cancellation"));
+        JsonNode pong = request("ping", Map.of());
+        if (!pong.isObject()) {
+            throw new IllegalStateException("MCP ping failed after cancellation");
+        }
     }
 
     Snapshot snapshot(String sessionId) throws Exception {
