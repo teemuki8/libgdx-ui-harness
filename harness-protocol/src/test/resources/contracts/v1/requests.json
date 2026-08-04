@@ -7,5 +7,7 @@
   {"name":"wait","value":{"version":{"major":1,"minor":0},"sessionId":"game","requestId":"req-wait","deadlineMillis":1000,"command":{"type":"wait","locator":{"kind":"test-id","testId":"ready"},"condition":"visible"}}},
   {"name":"screenshot","value":{"version":{"major":1,"minor":0},"sessionId":"game","requestId":"req-screenshot","deadlineMillis":1000,"command":{"type":"screenshot","locator":{"kind":"actor","field":"name","match":{"mode":"exact","source":"dialog"}},"maxWidth":1920,"maxHeight":1080,"maxPixels":2073600,"maxPngBytes":4194304}}},
   {"name":"trace-start","value":{"version":{"major":1,"minor":0},"sessionId":"game","requestId":"req-trace-start","deadlineMillis":1000,"command":{"type":"trace-start","maxDurationMillis":30000,"maxBytes":1048576}}},
-  {"name":"trace-stop","value":{"version":{"major":1,"minor":0},"sessionId":"game","requestId":"req-trace-stop","deadlineMillis":1000,"command":{"type":"trace-stop"}}}
+  {"name":"trace-stop","value":{"version":{"major":1,"minor":0},"sessionId":"game","requestId":"req-trace-stop","deadlineMillis":1000,"command":{"type":"trace-stop"}}},
+  {"name":"scenario-list","value":{"version":{"major":1,"minor":0},"sessionId":"game","requestId":"req-scenario-list","deadlineMillis":1000,"command":{"type":"scenario-list"}}},
+  {"name":"scenario-start","value":{"version":{"major":1,"minor":0},"sessionId":"game","requestId":"req-scenario-start","deadlineMillis":600000,"command":{"type":"scenario-start","scenarioId":"main-menu","seed":7,"configuration":{"difficulty":"normal","locale":"en"},"profileId":"desktop"}}}
 ]

@@ -16,6 +16,8 @@ import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.locator.QueryResult;
+import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
+import dev.gdx.uiharness.core.scenario.ScenarioResult;
 import dev.gdx.uiharness.core.model.Bounds;
 import dev.gdx.uiharness.core.model.SemanticNode;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
@@ -99,12 +101,14 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                 name = "typography-diagnostic"),
         @JsonSubTypes.Type(value = Result.LayoutDiagnostic.class, name = "layout-diagnostic"),
         @JsonSubTypes.Type(value = Result.TraceStarted.class, name = "trace-started"),
-        @JsonSubTypes.Type(value = Result.TraceStopped.class, name = "trace-stopped")
+        @JsonSubTypes.Type(value = Result.TraceStopped.class, name = "trace-stopped"),
+        @JsonSubTypes.Type(value = Result.ScenarioList.class, name = "scenario-list"),
+        @JsonSubTypes.Type(value = Result.ScenarioStart.class, name = "scenario-start")
     })
     sealed interface Result permits Result.Sessions, Result.Capabilities, Result.Snapshot,
             Result.Query, Result.Action, Result.Wait, Result.Screenshot, Result.TraceStarted,
             Result.InspectCompare, Result.TypographyDiagnostic, Result.LayoutDiagnostic,
-            Result.TraceStopped {
+            Result.TraceStopped, Result.ScenarioList, Result.ScenarioStart {
         /** Active session catalog. */
         record Sessions(List<SessionInfo> sessions) implements Result {
             /** Defensively copies the session catalog. */
@@ -118,6 +122,30 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             /** Retains canonical capability ordering. */
             public Capabilities {
                 capabilities = new CapabilitySet(capabilities).capabilities();
+            }
+        }
+
+        /** Bounded registered scenarios, or an explicit unavailable catalog. */
+        record ScenarioList(boolean available, List<ScenarioDefinitionData> scenarios)
+                implements Result {
+            /** Copies the stable scenario catalog and enforces unavailable consistency. */
+            public ScenarioList {
+                scenarios = List.copyOf(Objects.requireNonNull(scenarios, "scenarios"));
+                if (!available && !scenarios.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "unavailable scenario catalog must be empty");
+                }
+                if (scenarios.size() > 256) {
+                    throw new IllegalArgumentException("scenario catalog exceeds 256 entries");
+                }
+            }
+        }
+
+        /** Closed terminal outcome of one scenario start request. */
+        record ScenarioStart(ScenarioStartOutcome outcome) implements Result {
+            /** Requires one terminal outcome. */
+            public ScenarioStart {
+                outcome = Objects.requireNonNull(outcome, "outcome");
             }
         }
 
@@ -591,6 +619,144 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             return evidence.stream()
                     .map(item -> copyBoundedMap(item, name))
                     .toList();
+        }
+    }
+
+    /** Closed terminal outcomes for a protocol scenario start. */
+    @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "kind")
+    @JsonSubTypes({
+        @JsonSubTypes.Type(value = ScenarioStartOutcome.Unavailable.class, name = "unavailable"),
+        @JsonSubTypes.Type(value = ScenarioStartOutcome.Rejected.class, name = "rejected"),
+        @JsonSubTypes.Type(value = ScenarioStartOutcome.Completed.class, name = "completed")
+    })
+    sealed interface ScenarioStartOutcome permits ScenarioStartOutcome.Unavailable,
+            ScenarioStartOutcome.Rejected, ScenarioStartOutcome.Completed {
+        /** The selected session has no scenario registry or coordinator. */
+        record Unavailable() implements ScenarioStartOutcome {}
+
+        /** The registered boundary rejected the selected identity before execution. */
+        record Rejected(String reason) implements ScenarioStartOutcome {
+            private static final Set<String> REASONS = Set.of(
+                    "unknown-scenario", "incompatible-scenario", "unsupported-profile");
+
+            /** Restricts rejections to the closed pre-execution failure set. */
+            public Rejected {
+                if (!REASONS.contains(reason)) {
+                    throw new IllegalArgumentException("unknown scenario rejection: " + reason);
+                }
+            }
+        }
+
+        /** One completed scenario lifecycle with bounded terminal evidence. */
+        record Completed(ScenarioResultData scenario) implements ScenarioStartOutcome {
+            /** Converts core terminal evidence to its transport projection. */
+            public Completed(ScenarioResult result) {
+                this(ScenarioResultData.fromCore(result));
+            }
+
+            /** Requires terminal scenario evidence. */
+            public Completed {
+                scenario = Objects.requireNonNull(scenario, "scenario");
+            }
+        }
+    }
+
+    /** Bounded wire metadata for an application-registered scenario. */
+    record ScenarioDefinitionData(
+            int schemaVersion,
+            String id,
+            String definitionVersion,
+            String applicationId,
+            List<String> supportedProfileIds,
+            int maxSetupAttempts,
+            long maxDurationMillis) {
+        /** Validates and copies definition metadata. */
+        public ScenarioDefinitionData {
+            if (schemaVersion != ScenarioDefinition.SCHEMA_VERSION) {
+                throw new IllegalArgumentException("schemaVersion must be 1");
+            }
+            ProtocolJson.requireIdentifier(id, "id");
+            ProtocolJson.requireText(definitionVersion, "definitionVersion");
+            ProtocolJson.requireIdentifier(applicationId, "applicationId");
+            supportedProfileIds =
+                    List.copyOf(Objects.requireNonNull(supportedProfileIds, "supportedProfileIds"));
+            if (supportedProfileIds.size() > 256) {
+                throw new IllegalArgumentException("supportedProfileIds exceeds 256 entries");
+            }
+            supportedProfileIds.forEach(
+                    profile -> ProtocolJson.requireIdentifier(profile, "supportedProfileId"));
+            if (maxSetupAttempts < 1 || maxSetupAttempts > 16
+                    || maxDurationMillis <= 0 || maxDurationMillis > 600_000) {
+                throw new IllegalArgumentException("scenario definition bounds are invalid");
+            }
+        }
+
+        static ScenarioDefinitionData fromCore(ScenarioDefinition definition) {
+            return new ScenarioDefinitionData(
+                    definition.schemaVersion(), definition.id(), definition.definitionVersion(),
+                    definition.applicationId(), definition.supportedProfileIds(),
+                    definition.maxSetupAttempts(), definition.maxDuration().toMillis());
+        }
+    }
+
+    /** Bounded terminal scenario execution evidence. */
+    record ScenarioResultData(
+            int schemaVersion,
+            String scenarioId,
+            String definitionVersion,
+            String configurationDigest,
+            long seed,
+            String applicationId,
+            String processId,
+            String sessionId,
+            long startFrame,
+            long startRevision,
+            long readyFrame,
+            long readyRevision,
+            String profileId,
+            String startStateIdentity,
+            long elapsedMillis,
+            int setupAttempts,
+            boolean cleanupCompleted,
+            String failure) {
+        /** Validates public result bounds and terminal correlation. */
+        public ScenarioResultData {
+            if (schemaVersion != ScenarioDefinition.SCHEMA_VERSION) {
+                throw new IllegalArgumentException("schemaVersion must be 1");
+            }
+            ProtocolJson.requireIdentifier(scenarioId, "scenarioId");
+            ProtocolJson.requireText(definitionVersion, "definitionVersion");
+            ProtocolJson.requireText(configurationDigest, "configurationDigest");
+            ProtocolJson.requireIdentifier(applicationId, "applicationId");
+            ProtocolJson.requireIdentifier(processId, "processId");
+            ProtocolJson.requireIdentifier(sessionId, "sessionId");
+            ProtocolJson.requireIdentifier(profileId, "profileId");
+            ProtocolJson.requireText(startStateIdentity, "startStateIdentity");
+            if (startFrame < 0 || startRevision < 0 || readyFrame < 0 || readyRevision < 0
+                    || elapsedMillis < 0 || elapsedMillis > 600_000
+                    || setupAttempts < 0 || setupAttempts > 16) {
+                throw new IllegalArgumentException("scenario result bounds are invalid");
+            }
+            if (failure == null
+                    && (readyFrame < startFrame || readyRevision < startRevision)) {
+                throw new IllegalArgumentException(
+                        "successful scenario readiness precedes its start evidence");
+            }
+            if (failure != null) {
+                ProtocolJson.requireIdentifier(failure, "failure");
+            }
+        }
+
+        static ScenarioResultData fromCore(ScenarioResult result) {
+            return new ScenarioResultData(
+                    result.schemaVersion(), result.scenarioId(), result.definitionVersion(),
+                    result.configurationDigest(), result.seed(), result.applicationId(),
+                    result.processId(), result.sessionId(), result.startFrame(),
+                    result.startRevision(), result.readyFrame(), result.readyRevision(),
+                    result.profileId(), result.startStateIdentity(), result.elapsed().toMillis(),
+                    result.setupAttempts(), result.cleanupCompleted(),
+                    result.failure().map(value ->
+                            value.name().toLowerCase(Locale.ROOT).replace('_', '-')).orElse(null));
         }
     }
 

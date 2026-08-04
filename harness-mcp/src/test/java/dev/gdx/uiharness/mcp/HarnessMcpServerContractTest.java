@@ -98,7 +98,7 @@ final class HarnessMcpServerContractTest {
             assertTrue(((List<?>) structured(capabilities).get("capabilities")).contains("action"));
             assertEquals("operation-catalog/v1",
                     structured(capabilities).get("catalogSchemaVersion"));
-            assertEquals(12, ((List<?>) structured(capabilities).get("operations")).size());
+            assertEquals(14, ((List<?>) structured(capabilities).get("operations")).size());
             assertTrue(String.valueOf(structured(capabilities).get("operations"))
                     .contains("maxWidth=1280"));
             assertTrue(String.valueOf(structured(capabilities).get("operations"))
@@ -113,7 +113,40 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test void scenarioToolsDecodeOnlyRegisteredIdentifiersAndBoundedInputs() {
+        AtomicReference<HarnessRequest> observed = new AtomicReference<>();
+        HarnessResponse response = new HarnessResponse.Success(
+                ProtocolVersion.V1, "mcp-1", "game",
+                new HarnessResponse.Result.ScenarioStart(
+                        new HarnessResponse.ScenarioStartOutcome.Unavailable()));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    observed.set(request);
+                    return CompletableFuture.completedFuture(response);
+                }, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_scenario_start",
+                    Map.of(
+                            "sessionId", "game",
+                            "scenarioId", "main-menu",
+                            "seed", 7,
+                            "configuration", Map.of("locale", "en"),
+                            "profileId", "desktop",
+                            "deadlineMillis", 600_000)))
+                    .block(Duration.ofSeconds(10));
+
+            assertFalse(result.isError());
+            assertEquals(600_000, observed.get().deadlineMillis());
+            Command.ScenarioStart command =
+                    (Command.ScenarioStart) observed.get().command();
+            assertEquals("main-menu", command.scenarioId());
+            assertEquals(Map.of("locale", "en"), command.configuration());
+            assertEquals("desktop", command.profileId());
+        }
+    }
+
     @Test void screenshotAndLargeResultsUseInjectedOpaqueArtifactReferences() {
+
         RecordingArtifacts artifacts = new RecordingArtifacts();
         try (HarnessToolHandler handler = new HarnessToolHandler(service(new RecordingHarness()), artifacts)) {
             McpSchema.CallToolResult screenshot = handler.handle(call("ui_screenshot", Map.of(
@@ -642,7 +675,7 @@ final class HarnessMcpServerContractTest {
             send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}");
             JsonNode listed = read(reader);
-            assertEquals(12, listed.at("/result/tools").size());
+            assertEquals(14, listed.at("/result/tools").size());
 
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
                     + "\"params\":{\"name\":\"ui_action\",\"arguments\":{"

@@ -24,6 +24,11 @@ import dev.gdx.uiharness.core.model.Role;
 import dev.gdx.uiharness.core.model.SemanticNode;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.model.SemanticState;
+import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
+import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
+import dev.gdx.uiharness.core.scenario.ScenarioLifecycle;
+import dev.gdx.uiharness.core.scenario.ScenarioRequest;
+import dev.gdx.uiharness.core.scenario.ScenarioResult;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import dev.gdx.uiharness.core.wait.FrameSignal;
@@ -38,6 +43,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 final class HarnessProtocolServiceTest {
@@ -302,6 +308,107 @@ final class HarnessProtocolServiceTest {
         assertEquals(0, snapshotReads.get());
     }
 
+    @Test void scenarioOperationsAreExplicitlyUnavailableWithoutRegistration() {
+        HarnessProtocolService service = service(
+                new RecordingHarness(), new RecordingCapture(),
+                HarnessProtocolService.TraceController.unsupported());
+
+        HarnessResponse.Result.ScenarioList listed = assertInstanceOf(
+                HarnessResponse.Result.ScenarioList.class,
+                success(service, new Command.ScenarioList()).result());
+        HarnessResponse.Result.ScenarioStart started = assertInstanceOf(
+                HarnessResponse.Result.ScenarioStart.class,
+                success(service, scenarioStart("known")).result());
+
+        assertFalse(listed.available());
+        assertTrue(listed.scenarios().isEmpty());
+        assertInstanceOf(HarnessResponse.ScenarioStartOutcome.Unavailable.class,
+                started.outcome());
+    }
+
+    @Test void registeredScenarioOperationsListRouteAndRejectUnknownIdsTerminally() {
+        ScenarioRegistry registry = new ScenarioRegistry();
+        registry.register(definition("known"), new NoOpScenarioLifecycle());
+        AtomicBoolean invoked = new AtomicBoolean();
+        HarnessProtocolService.ScenarioCoordinator coordinator = request -> {
+            invoked.set(true);
+            return CompletableFuture.completedFuture(
+                    new HarnessResponse.ScenarioStartOutcome.Completed(scenarioResult()));
+        };
+        HarnessProtocolService.Session registered = session(
+                new RecordingHarness(), new RecordingCapture(),
+                HarnessProtocolService.TraceController.unsupported(), registry, coordinator);
+        HarnessProtocolService service = new HarnessProtocolService(
+                Map.of("game", registered), CLOCK, Runnable::run);
+
+        HarnessResponse.Result.ScenarioList listed = assertInstanceOf(
+                HarnessResponse.Result.ScenarioList.class,
+                success(service, new Command.ScenarioList()).result());
+        HarnessResponse.Result.ScenarioStart started = assertInstanceOf(
+                HarnessResponse.Result.ScenarioStart.class,
+                success(service, scenarioStart("known")).result());
+        HarnessResponse.Result.ScenarioStart unknown = assertInstanceOf(
+                HarnessResponse.Result.ScenarioStart.class,
+                success(service, scenarioStart("missing")).result());
+
+        assertTrue(listed.available());
+        assertEquals(List.of("known"),
+                listed.scenarios().stream().map(HarnessResponse.ScenarioDefinitionData::id).toList());
+        assertInstanceOf(HarnessResponse.ScenarioStartOutcome.Completed.class, started.outcome());
+        HarnessResponse.ScenarioStartOutcome.Rejected rejected = assertInstanceOf(
+                HarnessResponse.ScenarioStartOutcome.Rejected.class, unknown.outcome());
+        assertEquals("unknown-scenario", rejected.reason());
+        assertTrue(invoked.get());
+    }
+
+    @Test void registryWithoutCoordinatorListsDefinitionsButStartRemainsUnavailable() {
+        ScenarioRegistry registry = new ScenarioRegistry();
+        registry.register(definition("known"), new NoOpScenarioLifecycle());
+        HarnessProtocolService.Session basic = session(
+                new RecordingHarness(), new RecordingCapture(),
+                HarnessProtocolService.TraceController.unsupported());
+        HarnessProtocolService.Session registered = new HarnessProtocolService.Session(
+                basic.harness(), basic.locators(), basic.waits(), basic.capture(),
+                basic.capabilities(), basic.traces(), Optional.of(registry), Optional.empty());
+        HarnessProtocolService service = new HarnessProtocolService(
+                Map.of("game", registered), CLOCK, Runnable::run);
+
+        HarnessResponse.Result.ScenarioList listed = assertInstanceOf(
+                HarnessResponse.Result.ScenarioList.class,
+                success(service, new Command.ScenarioList()).result());
+        HarnessResponse.Result.ScenarioStart started = assertInstanceOf(
+                HarnessResponse.Result.ScenarioStart.class,
+                success(service, scenarioStart("known")).result());
+
+        assertTrue(listed.available());
+        assertEquals(1, listed.scenarios().size());
+        assertInstanceOf(HarnessResponse.ScenarioStartOutcome.Unavailable.class,
+                started.outcome());
+    }
+
+    @Test void coordinatorIncompatibleRejectionRemainsAClosedTerminalOutcome() {
+        ScenarioRegistry registry = new ScenarioRegistry();
+        registry.register(definition("known"), new NoOpScenarioLifecycle());
+        HarnessProtocolService.ScenarioCoordinator coordinator = request ->
+                CompletableFuture.completedFuture(
+                        new HarnessResponse.ScenarioStartOutcome.Rejected(
+                                "incompatible-scenario"));
+        HarnessProtocolService service = new HarnessProtocolService(
+                Map.of("game", session(
+                        new RecordingHarness(), new RecordingCapture(),
+                        HarnessProtocolService.TraceController.unsupported(),
+                        registry, coordinator)),
+                CLOCK, Runnable::run);
+
+        HarnessResponse.Result.ScenarioStart result = assertInstanceOf(
+                HarnessResponse.Result.ScenarioStart.class,
+                success(service, scenarioStart("known")).result());
+        HarnessResponse.ScenarioStartOutcome.Rejected rejected = assertInstanceOf(
+                HarnessResponse.ScenarioStartOutcome.Rejected.class, result.outcome());
+
+        assertEquals("incompatible-scenario", rejected.reason());
+    }
+
     private static HarnessProtocolService service(RecordingHarness harness,
             RecordingCapture capture, HarnessProtocolService.TraceController traces) {
         return new HarnessProtocolService(Map.of("game", session(harness, capture, traces)),
@@ -319,6 +426,42 @@ final class HarnessProtocolServiceTest {
                 "screenshot", "snapshot", "trace", "wait"));
         return new HarnessProtocolService.Session(
                 harness, locators, waits, capture, capabilities, traces);
+    }
+
+    private static HarnessProtocolService.Session session(
+            RecordingHarness harness,
+            RecordingCapture capture,
+            HarnessProtocolService.TraceController traces,
+            ScenarioRegistry registry,
+            HarnessProtocolService.ScenarioCoordinator coordinator) {
+        HarnessProtocolService.Session basic = session(harness, capture, traces);
+        return new HarnessProtocolService.Session(
+                basic.harness(), basic.locators(), basic.waits(), basic.capture(),
+                new CapabilitySet(List.of("action", "capabilities", "query", "scenario-list",
+                        "scenario-start", "screenshot", "snapshot", "trace", "wait")),
+                basic.traces(), Optional.of(registry), Optional.of(coordinator));
+    }
+
+    private static HarnessResponse.Success success(
+            HarnessProtocolService service, Command command) {
+        return assertInstanceOf(
+                HarnessResponse.Success.class, await(service.execute(request(command))));
+    }
+
+    private static Command.ScenarioStart scenarioStart(String id) {
+        return new Command.ScenarioStart(id, 7, Map.of("locale", "en"), "desktop");
+    }
+
+    private static ScenarioDefinition definition(String id) {
+        return new ScenarioDefinition(
+                1, id, "v1", "game", List.of("desktop"), 2, Duration.ofMinutes(10));
+    }
+
+    private static ScenarioResult scenarioResult() {
+        return new ScenarioResult(
+                1, "known", "v1", "digest", 7, "game", "process-1", "game",
+                1, 1, 2, 2, "desktop", "ready", Duration.ofMillis(10), 1, true,
+                Optional.empty());
     }
 
     private static void assertResult(HarnessProtocolService service, Command command,
@@ -388,6 +531,19 @@ final class HarnessProtocolServiceTest {
             }
             return CompletableFuture.completedFuture(SNAPSHOT);
         }
+    }
+
+    private static final class NoOpScenarioLifecycle implements ScenarioLifecycle {
+        @Override public void setup(ScenarioRequest request) {}
+        @Override public void reset(ScenarioRequest request) {}
+        @Override public boolean ready(ScenarioRequest request) {
+            return true;
+        }
+        @Override public String startStateIdentity(
+                ScenarioRequest request, SemanticSnapshot snapshot) {
+            return "ready";
+        }
+        @Override public void cleanup(ScenarioRequest request) {}
     }
 
     private static final class RecordingCapture implements ScreenCapture {

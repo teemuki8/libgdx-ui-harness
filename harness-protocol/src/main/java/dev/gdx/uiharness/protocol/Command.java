@@ -6,6 +6,9 @@ import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.LocatorFilter;
 import dev.gdx.uiharness.core.locator.TextMatch;
+import java.util.Collections;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.Locale;
 import java.util.Objects;
 
@@ -23,17 +26,44 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.TypographyDiagnose.class, name = "typography-diagnose"),
     @JsonSubTypes.Type(value = Command.LayoutDiagnose.class, name = "layout-diagnose"),
     @JsonSubTypes.Type(value = Command.TraceStart.class, name = "trace-start"),
-    @JsonSubTypes.Type(value = Command.TraceStop.class, name = "trace-stop")
+    @JsonSubTypes.Type(value = Command.TraceStop.class, name = "trace-stop"),
+    @JsonSubTypes.Type(value = Command.ScenarioList.class, name = "scenario-list"),
+    @JsonSubTypes.Type(value = Command.ScenarioStart.class, name = "scenario-start")
 })
 public sealed interface Command permits Command.Sessions, Command.Capabilities, Command.Snapshot,
         Command.Query, Command.Action, Command.Wait, Command.Screenshot, Command.TraceStart,
         Command.InspectCompare, Command.TypographyDiagnose, Command.LayoutDiagnose,
-        Command.TraceStop {
+        Command.TraceStop, Command.ScenarioList, Command.ScenarioStart {
     /** Lists active sessions. */
     record Sessions() implements Command {}
 
     /** Reads capabilities for the selected session. */
     record Capabilities() implements Command {}
+
+    /** Lists bounded application-registered scenario definitions. */
+    record ScenarioList() implements Command {}
+
+    /** Starts one registered scenario with canonical bounded inputs. */
+    record ScenarioStart(
+            String scenarioId,
+            long seed,
+            Map<String, String> configuration,
+            String profileId) implements Command {
+        /** Validates identifiers and canonical configuration bounds. */
+        public ScenarioStart {
+            ProtocolJson.requireIdentifier(scenarioId, "scenarioId");
+            ProtocolJson.requireIdentifier(profileId, "profileId");
+            Objects.requireNonNull(configuration, "configuration");
+            if (configuration.size() > 256) {
+                throw new IllegalArgumentException("configuration exceeds 256 entries");
+            }
+            TreeMap<String, String> canonical = new TreeMap<>();
+            configuration.forEach((key, value) -> canonical.put(
+                    ProtocolJson.requireIdentifier(key, "configuration key"),
+                    ProtocolJson.requireText(value, "configuration value")));
+            configuration = Collections.unmodifiableMap(canonical);
+        }
+    }
 
     /** Captures a fresh semantic snapshot. */
     record Snapshot() implements Command {}

@@ -38,7 +38,8 @@ final class ProtocolJsonContractTest {
         assertEquals(Set.of(Command.Sessions.class, Command.Capabilities.class,
                 Command.Snapshot.class, Command.Query.class, Command.Action.class,
                 Command.Wait.class, Command.Screenshot.class, Command.TraceStart.class,
-                Command.TraceStop.class), variants);
+                Command.TraceStop.class, Command.ScenarioList.class,
+                Command.ScenarioStart.class), variants);
         String encoded = ProtocolJson.mapper().writeValueAsString(
                 ProtocolJson.mapper().treeToValue(contracts.get(4).get("value"),
                         HarnessRequest.class));
@@ -69,7 +70,9 @@ final class ProtocolJsonContractTest {
                 HarnessResponse.Result.Wait.class,
                 HarnessResponse.Result.Screenshot.class,
                 HarnessResponse.Result.TraceStarted.class,
-                HarnessResponse.Result.TraceStopped.class), variants);
+                HarnessResponse.Result.TraceStopped.class,
+                HarnessResponse.Result.ScenarioList.class,
+                HarnessResponse.Result.ScenarioStart.class), variants);
     }
 
     @Test void everyV1ErrorGoldenRoundTripsCanonically() throws Exception {
@@ -193,6 +196,39 @@ final class ProtocolJsonContractTest {
         assertThrows(JsonProcessingException.class,
                 () -> ProtocolJson.mapper().readValue(malformed, HarnessRequest.class));
     }
+
+    @Test void scenarioStartRejectsUnknownExecutionFieldsAndOverLimitConfiguration() {
+        for (String field : List.of("command", "path", "environment", "class", "launchArguments")) {
+            String json = requestWithCommand(
+                    "{\"type\":\"scenario-start\","
+                            + "\"scenarioId\":\"known\",\"seed\":7,\"configuration\":{},"
+                            + "\"profileId\":\"desktop\",\"" + field + "\":\"attack\"}");
+            assertThrows(JsonProcessingException.class,
+                    () -> ProtocolJson.mapper().readValue(json, HarnessRequest.class), field);
+        }
+        Map<String, String> oversized = new HashMap<>();
+        for (int index = 0; index <= 256; index++) {
+            oversized.put("key-" + index, "value");
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> new Command.ScenarioStart("known", 7, oversized, "desktop"));
+    }
+
+    @Test void scenarioDeadlineMaximumIsInclusiveAndFailureEvidenceMayPrecedeReadiness() {
+        Command.ScenarioStart command =
+                new Command.ScenarioStart("known", 7, Map.of(), "desktop");
+        new HarnessRequest(
+                ProtocolVersion.V1, "game", "request", 600_000, command);
+        assertThrows(IllegalArgumentException.class, () -> new HarnessRequest(
+                ProtocolVersion.V1, "game", "request", 600_001, command));
+
+        HarnessResponse.ScenarioResultData failed = new HarnessResponse.ScenarioResultData(
+                1, "known", "v1", "digest", 7, "game", "process", "game",
+                10, 20, 0, 0, "desktop", "unavailable", 25, 1, true,
+                "readiness-deadline");
+        assertEquals("readiness-deadline", failed.failure());
+    }
+
     @Test void mapperCallersCannotMutateCanonicalConfiguration() {
         var callerMapper = ProtocolJson.mapper();
         callerMapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);

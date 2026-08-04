@@ -7,6 +7,8 @@ import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
+import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
+import dev.gdx.uiharness.core.scenario.ScenarioRequest;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.MonotonicClock;
@@ -19,6 +21,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -205,6 +208,45 @@ public final class HarnessProtocolService {
             return RoutedOperation.completed(new HarnessResponse.Result.Capabilities(
                     session.capabilities().capabilities()));
         }
+        if (command instanceof Command.ScenarioList) {
+            if (session.scenarioRegistry().isEmpty()) {
+                return RoutedOperation.completed(
+                        new HarnessResponse.Result.ScenarioList(false, List.of()));
+            }
+            List<HarnessResponse.ScenarioDefinitionData> definitions =
+                    session.scenarioRegistry().orElseThrow().definitions().stream()
+                            .map(HarnessResponse.ScenarioDefinitionData::fromCore)
+                            .toList();
+            return RoutedOperation.completed(
+                    new HarnessResponse.Result.ScenarioList(true, definitions));
+        }
+        if (command instanceof Command.ScenarioStart start) {
+            if (session.scenarioRegistry().isEmpty()
+                    || session.scenarioCoordinator().isEmpty()) {
+                return RoutedOperation.completed(new HarnessResponse.Result.ScenarioStart(
+                        new HarnessResponse.ScenarioStartOutcome.Unavailable()));
+            }
+            ScenarioRegistry.RegisteredScenario registered;
+            try {
+                registered =
+                        session.scenarioRegistry().orElseThrow().require(start.scenarioId());
+            } catch (IllegalArgumentException unknown) {
+                return RoutedOperation.completed(new HarnessResponse.Result.ScenarioStart(
+                        new HarnessResponse.ScenarioStartOutcome.Rejected("unknown-scenario")));
+            }
+            if (!registered.definition().supportedProfileIds().contains(start.profileId())) {
+                return RoutedOperation.completed(new HarnessResponse.Result.ScenarioStart(
+                        new HarnessResponse.ScenarioStartOutcome.Rejected("unsupported-profile")));
+            }
+            ScenarioRequest scenarioRequest = new ScenarioRequest(
+                    dev.gdx.uiharness.core.scenario.ScenarioDefinition.SCHEMA_VERSION,
+                    start.scenarioId(), start.seed(), start.configuration(), start.profileId(),
+                    deadline);
+            return RoutedOperation.map(
+                    session.scenarioCoordinator().orElseThrow().start(scenarioRequest),
+                    HarnessResponse.Result.ScenarioStart::new);
+        }
+
 
         requireCapability(session, capability(command));
         if (command instanceof Command.Snapshot) {
@@ -316,6 +358,12 @@ public final class HarnessProtocolService {
         }
         if (command instanceof Command.LayoutDiagnose) {
             return "layout";
+        }
+        if (command instanceof Command.ScenarioList) {
+            return "scenario-list";
+        }
+        if (command instanceof Command.ScenarioStart) {
+            return "scenario-start";
         }
         return "trace";
     }
@@ -542,8 +590,22 @@ public final class HarnessProtocolService {
             WaitEngine waits,
             ScreenCapture capture,
             CapabilitySet capabilities,
-            TraceController traces) {
-        /** Validates all required session operations. */
+            TraceController traces,
+            Optional<ScenarioRegistry> scenarioRegistry,
+            Optional<ScenarioCoordinator> scenarioCoordinator) {
+        /** Retains source compatibility for sessions without scenario lifecycle registration. */
+        public Session(
+                Harness harness,
+                LocatorEngine locators,
+                WaitEngine waits,
+                ScreenCapture capture,
+                CapabilitySet capabilities,
+                TraceController traces) {
+            this(harness, locators, waits, capture, capabilities, traces,
+                    Optional.empty(), Optional.empty());
+        }
+
+        /** Validates all required session operations and optional scenario registration. */
         public Session {
             harness = Objects.requireNonNull(harness, "harness");
             locators = Objects.requireNonNull(locators, "locators");
@@ -551,6 +613,9 @@ public final class HarnessProtocolService {
             capture = Objects.requireNonNull(capture, "capture");
             capabilities = Objects.requireNonNull(capabilities, "capabilities");
             traces = Objects.requireNonNull(traces, "traces");
+            scenarioRegistry = Objects.requireNonNull(scenarioRegistry, "scenarioRegistry");
+            scenarioCoordinator =
+                    Objects.requireNonNull(scenarioCoordinator, "scenarioCoordinator");
         }
     }
 
@@ -582,6 +647,13 @@ public final class HarnessProtocolService {
                 }
             };
         }
+    }
+
+    /** Optional application-owned scenario execution boundary for one session. */
+    @FunctionalInterface
+    public interface ScenarioCoordinator {
+        /** Starts one validated registered scenario and returns one closed terminal outcome. */
+        CompletionStage<HarnessResponse.ScenarioStartOutcome> start(ScenarioRequest request);
     }
 
     /** Render-thread-safe source of the public evaluator-complete contract. */

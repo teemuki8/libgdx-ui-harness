@@ -20,16 +20,20 @@ public record HarnessRequest(
         Command command) {
     /** Maximum accepted relative deadline. */
     public static final long MAX_DEADLINE_MILLIS = 120_000;
+    /** Inclusive maximum for a bounded scenario lifecycle request. */
+    public static final long MAX_SCENARIO_DEADLINE_MILLIS = 600_000;
 
     /** Validates all request envelope fields before execution. */
     public HarnessRequest {
         version = Objects.requireNonNull(version, "version");
         ProtocolJson.requireIdentifier(sessionId, "sessionId");
         ProtocolJson.requireIdentifier(requestId, "requestId");
-        if (deadlineMillis <= 0 || deadlineMillis > MAX_DEADLINE_MILLIS) {
-            throw new IllegalArgumentException(
-                    "deadlineMillis must be between 1 and " + MAX_DEADLINE_MILLIS);
-        }
         command = Objects.requireNonNull(command, "command");
+        long maximum = command instanceof Command.ScenarioStart
+                ? MAX_SCENARIO_DEADLINE_MILLIS : MAX_DEADLINE_MILLIS;
+        if (deadlineMillis <= 0 || deadlineMillis > maximum) {
+            throw new IllegalArgumentException(
+                    "deadlineMillis must be between 1 and " + maximum);
+        }
     }
 }

@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 
-/** Immutable catalog of the twelve allowlisted MCP tools and their bounded JSON schemas. */
+/** Immutable catalog of the fourteen allowlisted MCP tools and their bounded JSON schemas. */
 public final class HarnessToolCatalog {
     private static final int MAX_IDENTIFIER = 256;
     private static final Map<String, Object> ARTIFACT_SCHEMA = object(Map.of(
@@ -241,6 +241,26 @@ public final class HarnessToolCatalog {
                                 "eventCount", integer(0, Long.MAX_VALUE),
                                 "bytes", integer(0, 64L * 1_024 * 1_024)),
                                 List.of("traceId", "traceReference", "eventCount", "bytes"))),
+                tool("ui_scenarios", "List application-registered bounded scenarios",
+                        sessionInput(Map.of(), List.of()),
+                        output("scenarios-result", Map.of(
+                                "available", Map.of("type", "boolean"),
+                                "scenarios", array(scenarioDefinitionSchema(), 256)),
+                                List.of("available", "scenarios"))),
+                tool("ui_scenario_start",
+                        "Start one registered scenario using only bounded deterministic inputs",
+                        sessionInput(Map.of(
+                                "scenarioId", string(1, MAX_IDENTIFIER),
+                                "seed", integer(Long.MIN_VALUE, Long.MAX_VALUE),
+                                "configuration", configurationSchema(),
+                                "profileId", string(1, MAX_IDENTIFIER),
+                                "deadlineMillis", integer(
+                                        1, HarnessRequest.MAX_SCENARIO_DEADLINE_MILLIS)),
+                                List.of("scenarioId", "seed", "configuration", "profileId",
+                                        "deadlineMillis")),
+                        output("scenario-start-result", Map.of(
+                                "outcome", scenarioStartOutcomeSchema()),
+                                List.of("outcome"))),
                 tool("ui_capabilities", "Discover capabilities for one harness session",
                         sessionInput(Map.of(), List.of()),
                         output("capabilities-result", Map.ofEntries(
@@ -287,6 +307,75 @@ public final class HarnessToolCatalog {
                 List.of(
                         "settled", "status", "stableFrameCount",
                         "elapsedMillis", "sampleCount"));
+    }
+
+    private static Map<String, Object> configurationSchema() {
+        return Map.of(
+                "type", "object",
+                "additionalProperties", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                "propertyNames", string(1, MAX_IDENTIFIER),
+                "maxProperties", 256);
+    }
+
+    private static Map<String, Object> scenarioDefinitionSchema() {
+        return object(Map.of(
+                "schemaVersion", Map.of("const", 1, "type", "integer"),
+                "id", string(1, MAX_IDENTIFIER),
+                "definitionVersion", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                "applicationId", string(1, MAX_IDENTIFIER),
+                "supportedProfileIds", array(string(1, MAX_IDENTIFIER), 256),
+                "maxSetupAttempts", integer(1, 16),
+                "maxDurationMillis", integer(1, 600_000)),
+                List.of("schemaVersion", "id", "definitionVersion", "applicationId",
+                        "supportedProfileIds", "maxSetupAttempts", "maxDurationMillis"));
+    }
+
+    private static Map<String, Object> scenarioResultSchema() {
+        return object(Map.ofEntries(
+                Map.entry("schemaVersion", Map.of("const", 1, "type", "integer")),
+                Map.entry("scenarioId", string(1, MAX_IDENTIFIER)),
+                Map.entry("definitionVersion", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                Map.entry("configurationDigest", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                Map.entry("seed", integer(Long.MIN_VALUE, Long.MAX_VALUE)),
+                Map.entry("applicationId", string(1, MAX_IDENTIFIER)),
+                Map.entry("processId", string(1, MAX_IDENTIFIER)),
+                Map.entry("sessionId", string(1, MAX_IDENTIFIER)),
+                Map.entry("startFrame", integer(0, Long.MAX_VALUE)),
+                Map.entry("startRevision", integer(0, Long.MAX_VALUE)),
+                Map.entry("readyFrame", integer(0, Long.MAX_VALUE)),
+                Map.entry("readyRevision", integer(0, Long.MAX_VALUE)),
+                Map.entry("profileId", string(1, MAX_IDENTIFIER)),
+                Map.entry("startStateIdentity", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                Map.entry("elapsedMillis", integer(0, 600_000)),
+                Map.entry("setupAttempts", integer(0, 16)),
+                Map.entry("cleanupCompleted", Map.of("type", "boolean")),
+                Map.entry("failure", enumString(
+                        "unknown-scenario", "incompatible-scenario", "unsupported-profile",
+                        "setup-rejected", "reset-rejected", "readiness-deadline",
+                        "process-replaced", "session-replaced", "stale-revision",
+                        "cleanup-failed", "nondeterministic-initial-state",
+                        "dispatch-failed", "cancelled"))),
+                List.of("schemaVersion", "scenarioId", "definitionVersion",
+                        "configurationDigest", "seed", "applicationId", "processId",
+                        "sessionId", "startFrame", "startRevision", "readyFrame",
+                        "readyRevision", "profileId", "startStateIdentity", "elapsedMillis",
+                        "setupAttempts", "cleanupCompleted"));
+    }
+
+    private static Map<String, Object> scenarioStartOutcomeSchema() {
+        return Map.of("oneOf", List.of(
+                object(Map.of("kind", Map.of("const", "unavailable", "type", "string")),
+                        List.of("kind")),
+                object(Map.of(
+                        "kind", Map.of("const", "rejected", "type", "string"),
+                        "reason", enumString(
+                                "unknown-scenario", "incompatible-scenario",
+                                "unsupported-profile")),
+                        List.of("kind", "reason")),
+                object(Map.of(
+                        "kind", Map.of("const", "completed", "type", "string"),
+                        "scenario", scenarioResultSchema()),
+                        List.of("kind", "scenario"))));
     }
 
     /** Returns catalog order used by MCP tools/list. */
@@ -486,6 +575,14 @@ public final class HarnessToolCatalog {
                 "maxDurationMillis", 30_000,
                 "maxBytes", 1_048_576)));
         values.put("ui_trace_stop", List.of(session));
+        values.put("ui_scenarios", List.of(session));
+        values.put("ui_scenario_start", List.of(Map.of(
+                "sessionId", "SESSION",
+                "scenarioId", "SCENARIO",
+                "seed", 0,
+                "configuration", Map.of(),
+                "profileId", "PROFILE",
+                "deadlineMillis", 600_000)));
         values.put("ui_capabilities", List.of(session));
         return Map.copyOf(values);
     }
