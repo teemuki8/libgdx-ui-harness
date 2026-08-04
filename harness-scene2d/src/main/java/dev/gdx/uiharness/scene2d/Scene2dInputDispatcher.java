@@ -10,19 +10,32 @@ import dev.gdx.uiharness.core.action.Action;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
+import dev.gdx.uiharness.core.navigation.NavigationInput;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Predicate;
 
 /** Converts actor-relative actions to screen coordinates and routes them through libGDX input APIs. */
 public final class Scene2dInputDispatcher {
     private final Stage stage;
     private final InputProcessor input;
     private final Vector2 point = new Vector2();
+    private final Predicate<NavigationInput> controllerInput;
 
     /** Uses the explicitly configured input processor; it may be a Stage or an InputMultiplexer. */
     public Scene2dInputDispatcher(Stage stage, InputProcessor input) {
+        this(stage, input, ignored -> false);
+    }
+
+    /**
+     * Uses an optional application-provided controller bridge. The bridge must route into the
+     * application's configured controller handling and returns whether it accepted the input.
+     */
+    public Scene2dInputDispatcher(
+            Stage stage, InputProcessor input, Predicate<NavigationInput> controllerInput) {
         this.stage = Objects.requireNonNull(stage, "stage");
         this.input = Objects.requireNonNull(input, "input");
+        this.controllerInput = Objects.requireNonNull(controllerInput, "controllerInput");
     }
 
     /** Dispatches at the actor's transformed center. */
@@ -31,6 +44,42 @@ public final class Scene2dInputDispatcher {
         Vector2 center = new CoordinateMapper(stage).localToStage(
                 actor, actor.getWidth() * 0.5f, actor.getHeight() * 0.5f);
         dispatchAt(actor, action, center.x, center.y);
+    }
+
+    /**
+     * Routes one navigation input through the configured libGDX input integration.
+     *
+     * @return false only when a controller input has no application wiring
+     */
+    public boolean dispatch(NavigationInput navigationInput) {
+        Objects.requireNonNull(navigationInput, "navigationInput");
+        if (navigationInput.isController()) {
+            return controllerInput.test(navigationInput);
+        }
+        switch (navigationInput) {
+            case SHIFT_TAB -> {
+                input.keyDown(Keys.SHIFT_LEFT);
+                input.keyDown(Keys.TAB);
+                input.keyUp(Keys.TAB);
+                input.keyUp(Keys.SHIFT_LEFT);
+            }
+            default -> {
+                int keycode = switch (navigationInput) {
+                    case TAB -> Keys.TAB;
+                    case UP -> Keys.UP;
+                    case DOWN -> Keys.DOWN;
+                    case LEFT -> Keys.LEFT;
+                    case RIGHT -> Keys.RIGHT;
+                    case ESCAPE -> Keys.ESCAPE;
+                    case BACK -> Keys.BACK;
+                    default -> throw new IllegalArgumentException(
+                            "unsupported keyboard navigation input: " + navigationInput);
+                };
+                input.keyDown(keycode);
+                input.keyUp(keycode);
+            }
+        }
+        return true;
     }
 
     /** Dispatches at a previously validated stage-space point during the same render-thread turn. */
