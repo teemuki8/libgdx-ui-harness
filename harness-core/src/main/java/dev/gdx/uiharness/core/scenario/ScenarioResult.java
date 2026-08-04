@@ -6,6 +6,7 @@ import java.util.Optional;
 
 /** Immutable terminal evidence from one scenario start. */
 public record ScenarioResult(
+        int schemaVersion,
         String scenarioId,
         String definitionVersion,
         String configurationDigest,
@@ -24,6 +25,7 @@ public record ScenarioResult(
         boolean cleanupCompleted,
         Optional<ScenarioFailure> failure) {
     public ScenarioResult {
+        schemaVersion = ScenarioDefinition.supportedSchemaVersion(schemaVersion);
         scenarioId = ScenarioDefinition.identifier(scenarioId, "scenarioId");
         definitionVersion = ScenarioDefinition.text(definitionVersion, "definitionVersion");
         configurationDigest = ScenarioDefinition.text(configurationDigest, "configurationDigest");
@@ -32,10 +34,7 @@ public record ScenarioResult(
         sessionId = ScenarioDefinition.identifier(sessionId, "sessionId");
         profileId = ScenarioDefinition.identifier(profileId, "profileId");
         startStateIdentity = ScenarioDefinition.text(startStateIdentity, "startStateIdentity");
-        Objects.requireNonNull(elapsed, "elapsed");
-        if (elapsed.isNegative()) {
-            throw new IllegalArgumentException("elapsed must not be negative");
-        }
+        elapsed = ScenarioDefinition.duration(elapsed, "elapsed", true);
         if (setupAttempts < 0 || setupAttempts > ScenarioDefinition.MAX_SETUP_ATTEMPTS) {
             throw new IllegalArgumentException("setupAttempts must be between 0 and 16");
         }

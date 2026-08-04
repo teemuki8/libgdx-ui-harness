@@ -14,15 +14,15 @@ public record ScenarioDefinition(
         List<String> supportedProfileIds,
         int maxSetupAttempts,
         Duration maxDuration) {
+    public static final int SCHEMA_VERSION = 1;
     static final int MAX_IDENTIFIER_LENGTH = 256;
     static final int MAX_STRING_LENGTH = 16_384;
     static final int MAX_ENTRIES = 256;
     static final int MAX_SETUP_ATTEMPTS = 16;
+    static final Duration MAX_DURATION = Duration.ofMinutes(10);
 
     public ScenarioDefinition {
-        if (schemaVersion <= 0) {
-            throw new IllegalArgumentException("schemaVersion must be positive");
-        }
+        schemaVersion = supportedSchemaVersion(schemaVersion);
         id = identifier(id, "id");
         definitionVersion = text(definitionVersion, "definitionVersion");
         applicationId = identifier(applicationId, "applicationId");
@@ -40,10 +40,15 @@ public record ScenarioDefinition(
         if (maxSetupAttempts < 1 || maxSetupAttempts > MAX_SETUP_ATTEMPTS) {
             throw new IllegalArgumentException("maxSetupAttempts must be between 1 and 16");
         }
-        Objects.requireNonNull(maxDuration, "maxDuration");
-        if (maxDuration.isZero() || maxDuration.isNegative()) {
-            throw new IllegalArgumentException("maxDuration must be positive");
+        maxDuration = duration(maxDuration, "maxDuration", false);
+    }
+
+    static int supportedSchemaVersion(int value) {
+        if (value != SCHEMA_VERSION) {
+            throw new IllegalArgumentException(
+                    "schemaVersion must be the supported version " + SCHEMA_VERSION);
         }
+        return value;
     }
 
     static String identifier(String value, String name) {
@@ -64,6 +69,18 @@ public record ScenarioDefinition(
         }
         if (value.length() > MAX_STRING_LENGTH) {
             throw new IllegalArgumentException(name + " exceeds 16384 characters");
+        }
+        return value;
+    }
+
+    static Duration duration(Duration value, String name, boolean allowZero) {
+        Objects.requireNonNull(value, name);
+        if (value.isNegative() || (!allowZero && value.isZero())) {
+            throw new IllegalArgumentException(
+                    name + (allowZero ? " must not be negative" : " must be positive"));
+        }
+        if (value.compareTo(MAX_DURATION) > 0) {
+            throw new IllegalArgumentException(name + " exceeds PT10M");
         }
         return value;
     }
