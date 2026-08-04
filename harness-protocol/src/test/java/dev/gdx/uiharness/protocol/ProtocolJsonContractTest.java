@@ -38,7 +38,8 @@ final class ProtocolJsonContractTest {
         assertEquals(Set.of(Command.Sessions.class, Command.Capabilities.class,
                 Command.Snapshot.class, Command.Query.class, Command.Action.class,
                 Command.Wait.class, Command.Screenshot.class, Command.TraceStart.class,
-                Command.TraceStop.class), variants);
+                Command.TraceStop.class, Command.ScenarioList.class,
+                Command.ScenarioStart.class), variants);
         String encoded = ProtocolJson.mapper().writeValueAsString(
                 ProtocolJson.mapper().treeToValue(contracts.get(4).get("value"),
                         HarnessRequest.class));
@@ -69,7 +70,9 @@ final class ProtocolJsonContractTest {
                 HarnessResponse.Result.Wait.class,
                 HarnessResponse.Result.Screenshot.class,
                 HarnessResponse.Result.TraceStarted.class,
-                HarnessResponse.Result.TraceStopped.class), variants);
+                HarnessResponse.Result.TraceStopped.class,
+                HarnessResponse.Result.ScenarioList.class,
+                HarnessResponse.Result.ScenarioStart.class), variants);
     }
 
     @Test void everyV1ErrorGoldenRoundTripsCanonically() throws Exception {
@@ -85,6 +88,28 @@ final class ProtocolJsonContractTest {
         }
 
         assertEquals(Set.of(ProtocolError.Code.values()), codes);
+    }
+
+    @Test void scenarioStartFailuresUseClosedDistinctWireOutcomes() throws Exception {
+        HarnessResponse.Success deadline = new HarnessResponse.Success(
+                ProtocolVersion.V1, "request", "game",
+                new HarnessResponse.Result.ScenarioStart(
+                        new HarnessResponse.ScenarioStartOutcome.Failed("deadline")));
+        HarnessResponse.Success cancelled = new HarnessResponse.Success(
+                ProtocolVersion.V1, "request", "game",
+                new HarnessResponse.Result.ScenarioStart(
+                        new HarnessResponse.ScenarioStartOutcome.Failed("cancelled")));
+
+        assertEquals(
+                "{\"status\":\"ok\",\"version\":{\"major\":1,\"minor\":0},"
+                        + "\"requestId\":\"request\",\"sessionId\":\"game\","
+                        + "\"result\":{\"type\":\"scenario-start\","
+                        + "\"outcome\":{\"kind\":\"failed\",\"reason\":\"deadline\"}}}",
+                ProtocolJson.mapper().writeValueAsString(deadline));
+        assertEquals("cancelled",
+                ProtocolJson.mapper().valueToTree(cancelled).at("/result/outcome/reason").asText());
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.ScenarioStartOutcome.Failed("deadline-exceeded"));
     }
 
     @Test void everyNestedLocatorFilterAndActionUnionUsesStableNames() throws Exception {
@@ -193,6 +218,61 @@ final class ProtocolJsonContractTest {
         assertThrows(JsonProcessingException.class,
                 () -> ProtocolJson.mapper().readValue(malformed, HarnessRequest.class));
     }
+
+    @Test void scenarioStartRejectsUnknownExecutionFieldsAndOverLimitConfiguration() {
+        for (String field : List.of("command", "path", "environment", "class", "launchArguments")) {
+            String json = requestWithCommand(
+                    "{\"type\":\"scenario-start\","
+                            + "\"scenarioId\":\"known\",\"seed\":7,\"configuration\":{},"
+                            + "\"profileId\":\"desktop\",\"" + field + "\":\"attack\"}");
+            assertThrows(JsonProcessingException.class,
+                    () -> ProtocolJson.mapper().readValue(json, HarnessRequest.class), field);
+        }
+        Map<String, String> oversized = new HashMap<>();
+        for (int index = 0; index <= 256; index++) {
+            oversized.put("key-" + index, "value");
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> new Command.ScenarioStart("known", 7, oversized, "desktop"));
+    }
+
+    @Test void scenarioDeadlineMaximumIsInclusiveAndFailureEvidenceMayPrecedeReadiness()
+            throws Exception {
+        Command.ScenarioStart command =
+                new Command.ScenarioStart("known", 7, Map.of(), "desktop");
+        new HarnessRequest(
+                ProtocolVersion.V1, "game", "request", 600_000, command);
+        assertThrows(IllegalArgumentException.class, () -> new HarnessRequest(
+                ProtocolVersion.V1, "game", "request", 600_001, command));
+
+        HarnessResponse.ScenarioResultData failed = new HarnessResponse.ScenarioResultData(
+                1, "known", "v1", "digest", 7, "game", "process", "game",
+                10, 20, 0, 0, "desktop", "unavailable", 25, 1, true,
+                HarnessResponse.ScenarioFailureData.READINESS_DEADLINE);
+        assertEquals("readiness-deadline", failed.failure().wireName());
+        assertTrue(ProtocolJson.mapper().writeValueAsString(failed)
+                .contains("\"failure\":\"readiness-deadline\""));
+        assertEquals(
+                HarnessResponse.ScenarioFailureData.READINESS_REJECTED,
+                HarnessResponse.ScenarioFailureData.fromWireName("readiness-rejected"));
+        assertEquals("\"readiness-rejected\"", ProtocolJson.mapper().writeValueAsString(
+                HarnessResponse.ScenarioFailureData.READINESS_REJECTED));
+    }
+    @Test void scenarioResultRejectsUnknownTerminalFailure() {
+        String unknownFailure = "{\"schemaVersion\":1,\"scenarioId\":\"known\","
+                + "\"definitionVersion\":\"v1\",\"configurationDigest\":\"digest\","
+                + "\"seed\":7,\"applicationId\":\"game\",\"processId\":\"process\","
+                + "\"sessionId\":\"game\",\"startFrame\":10,\"startRevision\":20,"
+                + "\"readyFrame\":0,\"readyRevision\":0,\"profileId\":\"desktop\","
+                + "\"startStateIdentity\":\"unavailable\",\"elapsedMillis\":25,"
+                + "\"setupAttempts\":1,\"cleanupCompleted\":true,"
+                + "\"failure\":\"future-failure\"}";
+
+        assertThrows(JsonProcessingException.class, () -> ProtocolJson.mapper().readValue(
+                unknownFailure, HarnessResponse.ScenarioResultData.class));
+    }
+
+
     @Test void mapperCallersCannotMutateCanonicalConfiguration() {
         var callerMapper = ProtocolJson.mapper();
         callerMapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);

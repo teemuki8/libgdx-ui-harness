@@ -37,8 +37,9 @@ final class ReferenceApplicationSmokeTest {
                 try (HarnessMcpClient agent = HarnessMcpClient.connect(app)) {
                     assertEquals(List.of(SESSION_ID), agent.sessions());
                     assertEquals(List.of(
-                                    "action", "compare", "layout", "query", "screenshot",
-                                    "snapshot", "trace", "typography", "wait"),
+                                    "action", "compare", "layout", "query", "scenario-list",
+                                    "scenario-start", "screenshot", "snapshot", "trace",
+                                    "typography", "wait"),
                             agent.capabilities(SESSION_ID));
                     HarnessMcpClient.Layout layout = agent.layout(SESSION_ID);
                     assertEquals("conformant", layout.status(), layout.reports());

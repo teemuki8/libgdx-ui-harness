@@ -2,6 +2,7 @@ package dev.gdx.uiharness.fixtures;
 
 import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.scenes.scene2d.Stage;
+import com.badlogic.gdx.scenes.scene2d.ui.TextField;
 import dev.gdx.uiharness.core.action.Action;
 import dev.gdx.uiharness.core.action.ActionResult;
 import dev.gdx.uiharness.core.action.Harness;
@@ -25,13 +26,19 @@ import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.locator.StrictResolution;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
+import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
+import dev.gdx.uiharness.core.scenario.ScenarioLifecycle;
+import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
+import dev.gdx.uiharness.core.scenario.ScenarioRequest;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.trace.TraceEvent;
 import dev.gdx.uiharness.core.trace.TraceManifest;
 import dev.gdx.uiharness.core.trace.TraceRecorder;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
+import dev.gdx.uiharness.lwjgl3.LaunchProfile;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3ScreenCapture;
+import dev.gdx.uiharness.lwjgl3.RegisteredLaunchCoordinator;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3VisualComparator;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3TypographyRasterComparator;
 import dev.gdx.uiharness.mcp.ArtifactReference;
@@ -67,17 +74,20 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -91,12 +101,16 @@ public final class FixtureControl implements AutoCloseable {
     private static final String REFERENCE_ID = "reference-screen";
     private static final String TYPOGRAPHY_REFERENCE_ID = "reference-typography";
     private static final String LAYOUT_REFERENCE_ID = "reference-layout";
+    private static final String PROCESS_ID = "reference-ui-process";
+    private static final LaunchProfile RESTART_PROFILE =
+            new LaunchProfile(LaunchProfile.SCHEMA_VERSION,
+                    "desktop-restart-1280x720", APPLICATION_ID);
 
     private static final Duration FIXED_STEP = Duration.ofMillis(16);
     private static final Duration ARTIFACT_LIFETIME = Duration.ofHours(1);
     private static final List<String> CAPABILITIES = List.of(
-            "action", "compare", "query", "screenshot", "snapshot",
-            "layout", "trace", "typography", "wait");
+            "action", "compare", "query", "scenario-list", "scenario-start",
+            "screenshot", "snapshot", "layout", "trace", "typography", "wait");
 
     private final Path processRoot;
     private final Path artifactRoot;
@@ -106,6 +120,8 @@ public final class FixtureControl implements AutoCloseable {
     private final RenderThreadScheduler scheduler;
     private final Scene2dSession sceneSession;
     private final Scene2dHarness sceneHarness;
+    private final ScenarioRegistry scenarios;
+    private final ReplacementProcessCoordinator replacementCoordinator;
     private final Lwjgl3FrameFence fence;
     private final Lwjgl3ScreenCapture capture;
     private final WaitEngine waits;
@@ -115,7 +131,11 @@ public final class FixtureControl implements AutoCloseable {
     private final Harness tracingHarness;
     private final ExecutorService protocolExecutor;
     private final ExecutorService terminationExecutor;
+    private final ScheduledExecutorService scenarioDeadlines;
+    private final ExecutorService replacementExecutor;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicBoolean withholdScenarioFrames = new AtomicBoolean();
+    private final RegisteredLaunchCoordinator launchCoordinator;
     private HarnessMcpServer server;
     private Future<?> terminationTask;
 
@@ -134,6 +154,20 @@ public final class FixtureControl implements AutoCloseable {
         sceneSession = new Scene2dSession(stage);
         sceneHarness = new Scene2dHarness(stage, stage, sceneSession, scheduler, clock,
                 clock::revision, clock::frame);
+        scenarios = new ScenarioRegistry();
+        ReferenceScenarioLifecycle lifecycle =
+                new ReferenceScenarioLifecycle(stage, withholdScenarioFrames);
+        scenarios.register(scenario("reference-reset", APPLICATION_ID), lifecycle);
+        scenarios.register(scenario(
+                "never-ready", APPLICATION_ID, Duration.ofMillis(100)), lifecycle);
+        scenarios.register(scenario("incompatible-reference", "another-application"), lifecycle);
+        scenarioDeadlines = Executors.newSingleThreadScheduledExecutor(
+                Thread.ofPlatform().name("reference-scenario-deadline").factory());
+        replacementExecutor = Executors.newThreadPerTaskExecutor(
+                Thread.ofVirtual().name("reference-replacement-launch-", 0).factory());
+        replacementCoordinator = new ReplacementProcessCoordinator(
+                RESTART_PROFILE.id(), replacementExecutor, ReplacementProcess::launch);
+        launchCoordinator = replacementCoordinator;
         fence = new Lwjgl3FrameFence(64);
         capture = new Lwjgl3ScreenCapture(fence, sceneSession::snapshot);
         LocatorEngine locators = new StrictResolution();
@@ -163,7 +197,8 @@ public final class FixtureControl implements AutoCloseable {
         ScreenCapture tracingCapture = new TracingCapture(capture, traces);
         HarnessProtocolService.Session session = new HarnessProtocolService.Session(
                 tracingHarness, new StrictResolution(), waits, tracingCapture,
-                capabilities, traces);
+                capabilities, traces, Optional.of(scenarios),
+                Optional.of(this::startScenario));
         VisualReference reference = reference();
         VisualPolicy policy = new VisualPolicy(
                 "reference-smoke", 1, 1280L * 720, 0.125, true, true);
@@ -214,6 +249,7 @@ public final class FixtureControl implements AutoCloseable {
 
     /** Publishes identity for the framebuffer that was just rendered. */
     public void afterDraw() {
+        // Replacement JVM owns and advances its own LWJGL3 frame loop.
         fence.completedFrame(clock.revision(), clock.frame());
     }
 
@@ -227,6 +263,7 @@ public final class FixtureControl implements AutoCloseable {
         failure = closeResource(waits, failure);
         failure = closeResource(capture, failure);
         failure = closeResource(fence, failure);
+        failure = closeResource(replacementCoordinator, failure);
         failure = closeResource(sceneHarness, failure);
         failure = closeResource(sceneSession, failure);
         failure = closeResource(scheduler, failure);
@@ -235,18 +272,127 @@ public final class FixtureControl implements AutoCloseable {
         failure = closeResource(publisher, failure);
         failure = closeResource(artifactStore, failure);
         failure = closeResource(protocolExecutor, failure);
+        failure = closeResource(scenarioDeadlines, failure);
+        failure = closeResource(replacementExecutor, failure);
         failure = closeResource(terminationExecutor, failure);
         failure = deleteOwnedDirectories(failure);
         if (terminationTask != null && !terminationTask.isDone()) {
             failure = append(failure,
                     new IllegalStateException("MCP termination virtual thread did not stop"));
         }
-        if (!protocolExecutor.isTerminated() || !terminationExecutor.isTerminated()) {
+        if (!protocolExecutor.isTerminated() || !terminationExecutor.isTerminated()
+                || !scenarioDeadlines.isTerminated() || !replacementExecutor.isTerminated()) {
             failure = append(failure,
-                    new IllegalStateException("fixture virtual-thread executors did not terminate"));
+                    new IllegalStateException("fixture executors did not terminate"));
         }
         if (failure != null) {
             throw failure;
+        }
+    }
+
+    private CompletionStage<HarnessResponse.ScenarioStartOutcome> startScenario(
+            ScenarioRequest request) {
+        if (!scenarios.require(request.scenarioId()).definition()
+                .applicationId().equals(APPLICATION_ID)) {
+            return CompletableFuture.completedFuture(
+                    new HarnessResponse.ScenarioStartOutcome.Rejected(
+                            "incompatible-scenario"));
+        }
+        CompletableFuture<RegisteredLaunchCoordinator.HandoffOutcome> source =
+                launchCoordinator.restart(request).toCompletableFuture();
+        CompletableFuture<HarnessResponse.ScenarioStartOutcome> mapped =
+                new CompletableFuture<>() {
+                    @Override public boolean cancel(boolean mayInterruptIfRunning) {
+                        return source.cancel(mayInterruptIfRunning)
+                                && super.cancel(mayInterruptIfRunning);
+                    }
+                };
+        source.whenComplete((outcome, failure) -> {
+            if (failure != null) {
+                mapped.completeExceptionally(failure);
+            } else if (outcome instanceof RegisteredLaunchCoordinator.HandoffResult handoff) {
+                mapped.complete(new HarnessResponse.ScenarioStartOutcome.Completed(
+                        handoff.scenario(), handoff.reconnectIdentity()));
+            } else if (outcome instanceof RegisteredLaunchCoordinator.HandoffFailure handoffFailure) {
+                mapped.complete(mapHandoffFailure(handoffFailure));
+            }
+        });
+        return mapped;
+    }
+
+    static HarnessResponse.ScenarioStartOutcome mapHandoffFailure(
+            RegisteredLaunchCoordinator.HandoffFailure failure) {
+        return switch (failure) {
+            case UNKNOWN_PROFILE ->
+                    new HarnessResponse.ScenarioStartOutcome.Rejected("unsupported-profile");
+            case INCOMPATIBLE_APPLICATION ->
+                    new HarnessResponse.ScenarioStartOutcome.Rejected("incompatible-scenario");
+            case DEADLINE -> new HarnessResponse.ScenarioStartOutcome.Failed("deadline");
+            case CANCELLED -> new HarnessResponse.ScenarioStartOutcome.Failed("cancelled");
+        };
+    }
+
+
+    private static ScenarioDefinition scenario(String id, String applicationId) {
+        return scenario(id, applicationId, Duration.ofSeconds(5));
+    }
+
+    private static ScenarioDefinition scenario(
+            String id, String applicationId, Duration maxDuration) {
+        return new ScenarioDefinition(
+                ScenarioDefinition.SCHEMA_VERSION,
+                id,
+                "1",
+                applicationId,
+                List.of(RESTART_PROFILE.id()),
+                1,
+                maxDuration);
+    }
+
+
+    private static final class ReferenceScenarioLifecycle implements ScenarioLifecycle {
+        private final Stage stage;
+        private final AtomicBoolean withholdScenarioFrames;
+        private final IdentityHashMap<ScenarioRequest, Integer> readiness = new IdentityHashMap<>();
+
+        ReferenceScenarioLifecycle(Stage stage, AtomicBoolean withholdScenarioFrames) {
+            this.stage = stage;
+            this.withholdScenarioFrames = withholdScenarioFrames;
+        }
+
+        @Override public void setup(ScenarioRequest request) {
+            readiness.put(request, 0);
+            withholdScenarioFrames.set(Boolean.parseBoolean(
+                    request.configuration().getOrDefault("withholdCompletedFrames", "false")));
+        }
+
+        @Override public void reset(ScenarioRequest request) {
+            textField("username").setText("");
+            textField("password").setText("");
+            stage.unfocusAll();
+        }
+
+        @Override public boolean ready(ScenarioRequest request) {
+            int completedFrames = readiness.compute(
+                    request, (ignored, current) -> current == null ? 1 : current + 1);
+            return !"never-ready".equals(request.scenarioId()) && completedFrames >= 2;
+        }
+
+        @Override public String startStateIdentity(
+                ScenarioRequest request, SemanticSnapshot snapshot) {
+            return request.scenarioId() + ":" + request.seed() + ":"
+                    + request.configuration().getOrDefault("mode", "default");
+        }
+
+        @Override public void cleanup(ScenarioRequest request) {
+            readiness.remove(request);
+            withholdScenarioFrames.set(false);
+            textField("password").setText(request.scenarioId() + ":cleaned");
+        }
+
+        private TextField textField(String name) {
+            return (TextField) Objects.requireNonNull(
+                    stage.getRoot().findActor(name), "fixture actor " + name);
         }
     }
 

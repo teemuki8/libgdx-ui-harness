@@ -20,13 +20,14 @@ final class HarnessToolCatalogTest {
     private static final Set<String> APPROVED = Set.of(
             "ui_sessions", "ui_snapshot", "ui_query", "ui_action", "ui_wait",
             "ui_screenshot", "ui_inspect_compare", "ui_typography_diagnose",
-            "ui_layout_diagnose", "ui_trace_start", "ui_trace_stop", "ui_capabilities");
+            "ui_layout_diagnose", "ui_trace_start", "ui_trace_stop", "ui_capabilities",
+            "ui_scenarios", "ui_scenario_start");
 
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
 
     @Test void exposesOnlyTheApprovedBoundedTools() {
         assertEquals(APPROVED, catalog.toolNames());
-        assertEquals(12, catalog.tools().size());
+        assertEquals(14, catalog.tools().size());
         for (McpSchema.Tool tool : catalog.tools()) {
             assertEquals("object", tool.inputSchema().get("type"));
             assertEquals(false, tool.inputSchema().get("additionalProperties"));
@@ -146,6 +147,29 @@ final class HarnessToolCatalogTest {
                         "force", false)));
     }
 
+    @Test void scenarioStartSchemaAcceptsOnlyBoundedRegisteredInputs() {
+        Map<String, Object> valid = Map.of(
+                "sessionId", "game",
+                "scenarioId", "main-menu",
+                "seed", 7,
+                "configuration", Map.of("locale", "en"),
+                "profileId", "desktop",
+                "deadlineMillis", 600_000);
+        assertValid("ui_scenario_start", valid);
+        assertInvalid("ui_scenario_start", with(valid, "command", "java -jar game.jar"));
+        assertInvalid("ui_scenario_start", with(valid, "path", "/tmp/game"));
+        assertInvalid("ui_scenario_start", with(valid, "environment", Map.of("TOKEN", "secret")));
+        assertInvalid("ui_scenario_start", with(valid, "class", "example.Game"));
+        assertInvalid("ui_scenario_start", with(valid, "launchArguments", List.of("--unsafe")));
+        Map<String, String> oversized = new java.util.LinkedHashMap<>();
+        for (int index = 0; index <= 256; index++) {
+            oversized.put("key-" + index, "value");
+        }
+        assertInvalid("ui_scenario_start", with(valid, "configuration", oversized));
+        assertValid("ui_scenario_start", with(valid, "deadlineMillis", 600_000));
+        assertInvalid("ui_scenario_start", with(valid, "deadlineMillis", 600_001));
+    }
+
     @Test void recursiveLocatorCeilingsFitInsideProtocolLimits() {
         assertTrue(HarnessToolHandler.MAX_LOCATOR_DEPTH
                 < ProtocolJson.MAX_NESTING_DEPTH);
@@ -200,11 +224,19 @@ final class HarnessToolCatalogTest {
                 .map(McpSchema.Tool::inputSchema)
                 .toList());
         for (String forbidden : List.of("\"path\"", "\"command\"", "\"method\"",
-                "\"script\"", "\"code\"", "\"class\"", "reflection")) {
+                "\"script\"", "\"code\"", "\"class\"", "\"environment\"",
+                "\"launchArguments\"", "reflection")) {
             assertFalse(json.contains(forbidden), forbidden);
         }
         assertTrue(json.contains("maxDurationMillis"));
         assertTrue(json.contains("maxPngBytes"));
+    }
+
+    private static Map<String, Object> with(
+            Map<String, Object> source, String key, Object value) {
+        Map<String, Object> copy = new java.util.LinkedHashMap<>(source);
+        copy.put(key, value);
+        return copy;
     }
 
     private void assertValid(String name, Map<String, Object> arguments) {

@@ -19,6 +19,7 @@ import dev.gdx.uiharness.core.typography.TypographyObservation;
 /** Non-owning semantic extraction session attached to one Scene2D stage. */
 public final class Scene2dSession implements AutoCloseable {
     private final Stage stage;
+    private final Thread ownerThread = Thread.currentThread();
     private final Semantics semantics;
     private final ActorAdapterRegistry adapters;
     private final Scene2dSnapshotter snapshotter;
@@ -58,6 +59,15 @@ public final class Scene2dSession implements AutoCloseable {
     public SemanticSnapshot snapshot(long revision, long frame) {
         requireOpen();
         return snapshotter.snapshot(stage, revision, frame);
+    }
+
+    /** Captures and publishes one completed semantic frame to a scenario runner. */
+    public void completedFrame(Scene2dScenarioRunner runner, long revision, long frame) {
+        if (Thread.currentThread() != ownerThread) {
+            throw new IllegalStateException(
+                    "completed scenario frames must be captured on the owning render thread");
+        }
+        Objects.requireNonNull(runner, "runner").completedFrame(snapshot(revision, frame));
     }
 
     /** Captures the evaluator-complete contract after a completed frame. */

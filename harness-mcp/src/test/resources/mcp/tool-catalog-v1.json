@@ -4198,6 +4198,448 @@
     "required" : [ "sessionId" ],
     "type" : "object"
   },
+  "name" : "ui_scenarios",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "available" : {
+        "type" : "boolean"
+      },
+      "kind" : {
+        "const" : "scenarios-result",
+        "type" : "string"
+      },
+      "progress" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "dimensions" : {
+            "additionalProperties" : {
+              "enum" : [ "changed", "unchanged", "unavailable" ],
+              "type" : "string"
+            },
+            "maxProperties" : 32,
+            "type" : "object"
+          },
+          "ruleId" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "status" : {
+            "enum" : [ "available", "unavailable" ],
+            "type" : "string"
+          }
+        },
+        "required" : [ "status", "dimensions", "ruleId" ],
+        "type" : "object"
+      },
+      "recovery" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "consumed" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "consumedBefore" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "elapsedMillis" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "limit" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "maxWallTimeMillis" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "policyVersion" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "remaining" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "remainingBefore" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "terminatingRule" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          }
+        },
+        "required" : [ "policyVersion", "consumedBefore", "consumed", "limit", "remainingBefore", "remaining", "elapsedMillis", "maxWallTimeMillis", "terminatingRule" ],
+        "type" : "object"
+      },
+      "scenarios" : {
+        "items" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "applicationId" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "definitionVersion" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "id" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "maxDurationMillis" : {
+              "maximum" : 600000,
+              "minimum" : 1,
+              "type" : "integer"
+            },
+            "maxSetupAttempts" : {
+              "maximum" : 16,
+              "minimum" : 1,
+              "type" : "integer"
+            },
+            "schemaVersion" : {
+              "const" : 1,
+              "type" : "integer"
+            },
+            "supportedProfileIds" : {
+              "items" : {
+                "maxLength" : 256,
+                "minLength" : 1,
+                "type" : "string"
+              },
+              "maxItems" : 256,
+              "type" : "array"
+            }
+          },
+          "required" : [ "schemaVersion", "id", "definitionVersion", "applicationId", "supportedProfileIds", "maxSetupAttempts", "maxDurationMillis" ],
+          "type" : "object"
+        },
+        "maxItems" : 256,
+        "type" : "array"
+      }
+    },
+    "required" : [ "kind", "progress", "recovery", "available", "scenarios" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "configuration" : {
+        "additionalProperties" : {
+          "maxLength" : 16384,
+          "minLength" : 1,
+          "type" : "string"
+        },
+        "maxProperties" : 256,
+        "propertyNames" : {
+          "maxLength" : 256,
+          "minLength" : 1,
+          "type" : "string"
+        },
+        "type" : "object"
+      },
+      "deadlineMillis" : {
+        "maximum" : 600000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "profileId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "scenarioId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "seed" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : -9223372036854775808,
+        "type" : "integer"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId", "scenarioId", "seed", "configuration", "profileId", "deadlineMillis" ],
+    "type" : "object"
+  },
+  "name" : "ui_scenario_start",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "kind" : {
+        "const" : "scenario-start-result",
+        "type" : "string"
+      },
+      "outcome" : {
+        "oneOf" : [ {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "unavailable",
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "rejected",
+              "type" : "string"
+            },
+            "reason" : {
+              "enum" : [ "unknown-scenario", "incompatible-scenario", "unsupported-profile" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "reason" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "failed",
+              "type" : "string"
+            },
+            "reason" : {
+              "enum" : [ "deadline", "cancelled" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "reason" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
+              "const" : "completed",
+              "type" : "string"
+            },
+            "reconnectIdentity" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "scenario" : {
+              "additionalProperties" : false,
+              "properties" : {
+                "applicationId" : {
+                  "maxLength" : 256,
+                  "minLength" : 1,
+                  "type" : "string"
+                },
+                "cleanupCompleted" : {
+                  "type" : "boolean"
+                },
+                "configurationDigest" : {
+                  "maxLength" : 16384,
+                  "minLength" : 1,
+                  "type" : "string"
+                },
+                "definitionVersion" : {
+                  "maxLength" : 16384,
+                  "minLength" : 1,
+                  "type" : "string"
+                },
+                "elapsedMillis" : {
+                  "maximum" : 600000,
+                  "minimum" : 0,
+                  "type" : "integer"
+                },
+                "failure" : {
+                  "enum" : [ "unknown-scenario", "incompatible-scenario", "unsupported-profile", "setup-rejected", "reset-rejected", "readiness-rejected", "readiness-deadline", "process-replaced", "session-replaced", "stale-revision", "cleanup-failed", "nondeterministic-initial-state", "dispatch-failed", "cancelled" ],
+                  "type" : "string"
+                },
+                "processId" : {
+                  "maxLength" : 256,
+                  "minLength" : 1,
+                  "type" : "string"
+                },
+                "profileId" : {
+                  "maxLength" : 256,
+                  "minLength" : 1,
+                  "type" : "string"
+                },
+                "readyFrame" : {
+                  "maximum" : 9223372036854775807,
+                  "minimum" : 0,
+                  "type" : "integer"
+                },
+                "readyRevision" : {
+                  "maximum" : 9223372036854775807,
+                  "minimum" : 0,
+                  "type" : "integer"
+                },
+                "scenarioId" : {
+                  "maxLength" : 256,
+                  "minLength" : 1,
+                  "type" : "string"
+                },
+                "schemaVersion" : {
+                  "const" : 1,
+                  "type" : "integer"
+                },
+                "seed" : {
+                  "maximum" : 9223372036854775807,
+                  "minimum" : -9223372036854775808,
+                  "type" : "integer"
+                },
+                "sessionId" : {
+                  "maxLength" : 256,
+                  "minLength" : 1,
+                  "type" : "string"
+                },
+                "setupAttempts" : {
+                  "maximum" : 16,
+                  "minimum" : 0,
+                  "type" : "integer"
+                },
+                "startFrame" : {
+                  "maximum" : 9223372036854775807,
+                  "minimum" : 0,
+                  "type" : "integer"
+                },
+                "startRevision" : {
+                  "maximum" : 9223372036854775807,
+                  "minimum" : 0,
+                  "type" : "integer"
+                },
+                "startStateIdentity" : {
+                  "maxLength" : 16384,
+                  "minLength" : 1,
+                  "type" : "string"
+                }
+              },
+              "required" : [ "schemaVersion", "scenarioId", "definitionVersion", "configurationDigest", "seed", "applicationId", "processId", "sessionId", "startFrame", "startRevision", "readyFrame", "readyRevision", "profileId", "startStateIdentity", "elapsedMillis", "setupAttempts", "cleanupCompleted" ],
+              "type" : "object"
+            }
+          },
+          "required" : [ "kind", "scenario" ],
+          "type" : "object"
+        } ]
+      },
+      "progress" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "dimensions" : {
+            "additionalProperties" : {
+              "enum" : [ "changed", "unchanged", "unavailable" ],
+              "type" : "string"
+            },
+            "maxProperties" : 32,
+            "type" : "object"
+          },
+          "ruleId" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "status" : {
+            "enum" : [ "available", "unavailable" ],
+            "type" : "string"
+          }
+        },
+        "required" : [ "status", "dimensions", "ruleId" ],
+        "type" : "object"
+      },
+      "recovery" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "consumed" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "consumedBefore" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "elapsedMillis" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "limit" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "maxWallTimeMillis" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "policyVersion" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "remaining" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "remainingBefore" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "terminatingRule" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          }
+        },
+        "required" : [ "policyVersion", "consumedBefore", "consumed", "limit", "remainingBefore", "remaining", "elapsedMillis", "maxWallTimeMillis", "terminatingRule" ],
+        "type" : "object"
+      }
+    },
+    "required" : [ "kind", "progress", "recovery", "outcome" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId" ],
+    "type" : "object"
+  },
   "name" : "ui_capabilities",
   "outputSchema" : {
     "additionalProperties" : false,
