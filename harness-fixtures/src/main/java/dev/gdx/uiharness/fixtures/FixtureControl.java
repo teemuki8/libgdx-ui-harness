@@ -58,7 +58,6 @@ import dev.gdx.uiharness.scene2d.ControlledStageClock;
 import dev.gdx.uiharness.scene2d.LayoutCaptureContext;
 import dev.gdx.uiharness.scene2d.RenderThreadScheduler;
 import dev.gdx.uiharness.scene2d.Scene2dHarness;
-import dev.gdx.uiharness.scene2d.Scene2dScenarioRunner;
 import dev.gdx.uiharness.scene2d.Scene2dSession;
 import dev.gdx.uiharness.scene2d.TypographyCaptureContext;
 import java.io.IOException;
@@ -89,11 +88,9 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
 /** Owns deterministic render hooks and every cross-module resource for one fixture process. */
 public final class FixtureControl implements AutoCloseable {

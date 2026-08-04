@@ -138,12 +138,24 @@ public final class ReplacementScenarioHost extends ApplicationAdapter {
     }
 
     @Override public void dispose() {
-        if (runner != null) runner.close();
-        if (session != null) session.close();
-        if (scheduler != null) scheduler.close();
-        if (clock != null) clock.close();
-        if (deadlines != null) deadlines.close();
-        if (stage != null) stage.dispose();
+        if (runner != null) {
+            runner.close();
+        }
+        if (session != null) {
+            session.close();
+        }
+        if (scheduler != null) {
+            scheduler.close();
+        }
+        if (clock != null) {
+            clock.close();
+        }
+        if (deadlines != null) {
+            deadlines.close();
+        }
+        if (stage != null) {
+            stage.dispose();
+        }
     }
 
     private static final class Lifecycle implements ScenarioLifecycle {
