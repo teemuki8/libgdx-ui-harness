@@ -123,6 +123,88 @@ final class Scene2dScenarioRunnerTest {
             assertTrue(result.cleanupCompleted());
         }
     }
+    @Test void rejectedInitialSubmissionTerminalizesWithoutCleanup() {
+        try (Fixture fixture = new Fixture(1)) {
+            AtomicReference<Thread> cleanupThread = new AtomicReference<>();
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never") {
+                @Override public void cleanup(ScenarioRequest request) {
+                    cleanupThread.set(Thread.currentThread());
+                }
+            });
+            fixture.scheduler.close();
+
+            ScenarioResult result =
+                    fixture.start(Duration.ofSeconds(1)).toCompletableFuture().join();
+
+            assertEquals(ScenarioFailure.DISPATCH_FAILED, result.failure().orElseThrow());
+            assertFalse(result.cleanupCompleted());
+            assertEquals(null, cleanupThread.get());
+        }
+    }
+
+    @Test void rejectedFrameSubmissionTerminalizesWithoutCleanup() {
+        try (Fixture fixture = new Fixture(1)) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(1));
+            fixture.scheduler.drain();
+            fixture.scheduler.close();
+
+            fixture.session.completedFrame(fixture.runner, 1, 1);
+
+            ScenarioResult result = started.toCompletableFuture().join();
+            assertEquals(ScenarioFailure.DISPATCH_FAILED, result.failure().orElseThrow());
+            assertFalse(result.cleanupCompleted());
+        }
+    }
+
+    @Test void rejectedCancellationSubmissionTerminalizesInsteadOfRemainingCancelling() {
+        try (Fixture fixture = new Fixture(1)) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(1));
+            fixture.scheduler.drain();
+            fixture.scheduler.close();
+
+            assertTrue(started.toCompletableFuture().cancel(false));
+
+            ScenarioResult result = started.toCompletableFuture().join();
+            assertEquals(ScenarioFailure.DISPATCH_FAILED, result.failure().orElseThrow());
+            assertFalse(result.cleanupCompleted());
+        }
+    }
+
+    @Test void deadlineExpirySchedulesRenderThreadCleanupWithoutAnotherFrame() {
+        try (Fixture fixture = new Fixture()) {
+            AtomicReference<Thread> cleanupThread = new AtomicReference<>();
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never") {
+                @Override public void cleanup(ScenarioRequest request) {
+                    cleanupThread.set(Thread.currentThread());
+                }
+            });
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofMillis(10));
+            fixture.scheduler.drain();
+
+            fixture.clock.advance(Duration.ofMillis(10));
+            fixture.deadlines.expire();
+            assertFalse(started.toCompletableFuture().isDone());
+            fixture.scheduler.drain();
+
+            ScenarioResult result = started.toCompletableFuture().join();
+            assertEquals(ScenarioFailure.READINESS_DEADLINE, result.failure().orElseThrow());
+            assertEquals(Thread.currentThread(), cleanupThread.get());
+            assertTrue(result.cleanupCompleted());
+        }
+    }
+
+    @Test void terminalCompletionInvalidatesScheduledDeadline() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready"));
+
+            fixture.complete(fixture.start(Duration.ofSeconds(1)));
+
+            assertTrue(fixture.deadlines.cancelled);
+        }
+    }
+
 
     @Test void repeatedInputsRetainIdentityOrReportNondeterminism() {
         try (Fixture fixture = new Fixture()) {
@@ -181,16 +263,42 @@ final class Scene2dScenarioRunnerTest {
             hookThreads.add(Thread.currentThread());
         }
     }
+    private static final class ManualDeadlineScheduler
+            implements Scene2dScenarioDeadlineScheduler {
+        private Runnable task;
+        private boolean cancelled;
+
+        @Override public Cancellation schedule(Duration delay, Runnable task) {
+            this.task = task;
+            return () -> cancelled = true;
+        }
+
+        void expire() {
+            if (!cancelled) {
+                task.run();
+            }
+        }
+    }
+
 
     private static final class Fixture implements AutoCloseable {
         private static final Duration STEP = Duration.ofMillis(10);
         final Stage stage = Scene2dTestSupport.stage();
         final ControlledStageClock clock = new ControlledStageClock(stage, STEP);
-        final RenderThreadScheduler scheduler = new RenderThreadScheduler(16);
+        final RenderThreadScheduler scheduler;
+        final ManualDeadlineScheduler deadlines = new ManualDeadlineScheduler();
         final Scene2dSession session = new Scene2dSession(stage);
         final ScenarioRegistry registry = new ScenarioRegistry();
-        final Scene2dScenarioRunner runner =
-                new Scene2dScenarioRunner(registry, scheduler, clock);
+        final Scene2dScenarioRunner runner;
+
+        Fixture() {
+            this(16);
+        }
+
+        Fixture(int schedulerCapacity) {
+            scheduler = new RenderThreadScheduler(schedulerCapacity);
+            runner = new Scene2dScenarioRunner(registry, scheduler, clock, deadlines);
+        }
 
         void register(ScenarioLifecycle lifecycle) {
             registry.register(

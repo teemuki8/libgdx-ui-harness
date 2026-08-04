@@ -30,16 +30,21 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
     private final ScenarioRegistry registry;
     private final RenderThreadScheduler scheduler;
     private final MonotonicClock clock;
+    private final Scene2dScenarioDeadlineScheduler deadlineScheduler;
     private final Object lifecycle = new Object();
     private final ArrayList<Run> active = new ArrayList<>();
     private final Map<InputIdentity, String> startStateIdentities = new LinkedHashMap<>();
     private boolean open = true;
 
     public Scene2dScenarioRunner(
-            ScenarioRegistry registry, RenderThreadScheduler scheduler, MonotonicClock clock) {
+            ScenarioRegistry registry,
+            RenderThreadScheduler scheduler,
+            MonotonicClock clock,
+            Scene2dScenarioDeadlineScheduler deadlineScheduler) {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.deadlineScheduler = Objects.requireNonNull(deadlineScheduler, "deadlineScheduler");
     }
 
     /** Starts one bounded scenario run; lifecycle work is dispatched to the render thread. */
@@ -67,10 +72,11 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             }
             active.add(run);
         }
-        scheduler.submit(() -> {
+        observeSubmission(run, scheduler.submit(() -> {
             run.begin();
             return null;
-        }, dispatchDeadline());
+        }, dispatchDeadline()));
+        run.armDeadline();
         return run.result;
     }
 
@@ -82,10 +88,10 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             runs = active.toArray(Run[]::new);
         }
         for (Run run : runs) {
-            scheduler.submit(() -> {
+            observeSubmission(run, scheduler.submit(() -> {
                 run.observe(snapshot);
                 return null;
-            }, dispatchDeadline());
+            }, dispatchDeadline()));
         }
     }
 
@@ -106,6 +112,14 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
     private Deadline dispatchDeadline() {
         return Deadline.after(clock, INTERNAL_DISPATCH_TIMEOUT);
     }
+    private void observeSubmission(Run run, CompletionStage<?> submission) {
+        submission.whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                run.dispatchFailed();
+            }
+        });
+    }
+
 
     private void finished(Run run) {
         synchronized (lifecycle) {
@@ -132,6 +146,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         private int setupAttempts;
         private String stateIdentity = "unavailable";
 
+        private Scene2dScenarioDeadlineScheduler.Cancellation deadlineCancellation;
         Run(
                 ScenarioRequest request,
                 ScenarioDefinition definition,
@@ -148,6 +163,40 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             configurationDigest = digest(request.configuration());
             inputIdentity = new InputIdentity(
                     request.scenarioId(), request.seed(), configurationDigest, request.profileId());
+        }
+
+        void armDeadline() {
+            Duration delay = request.deadline().remaining();
+            Duration maximumRemaining = definition.maxDuration().minus(elapsed());
+            if (maximumRemaining.isNegative()) {
+                maximumRemaining = Duration.ZERO;
+            }
+            if (maximumRemaining.compareTo(delay) < 0) {
+                delay = maximumRemaining;
+            }
+            Scene2dScenarioDeadlineScheduler.Cancellation scheduled =
+                    deadlineScheduler.schedule(delay, this::deadlineReached);
+            synchronized (this) {
+                if (phase == Phase.TERMINAL) {
+                    scheduled.cancel();
+                } else {
+                    deadlineCancellation = scheduled;
+                }
+            }
+        }
+
+        private void deadlineReached() {
+            synchronized (this) {
+                if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
+                    return;
+                }
+            }
+            observeSubmission(this, scheduler.submit(() -> {
+                if (expired()) {
+                    terminate(ScenarioFailure.READINESS_DEADLINE);
+                }
+                return null;
+            }, dispatchDeadline()));
         }
 
         void begin() {
@@ -234,10 +283,10 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 }
                 phase = Phase.CANCELLING;
             }
-            scheduler.submit(() -> {
+            observeSubmission(this, scheduler.submit(() -> {
                 terminate(ScenarioFailure.CANCELLED);
                 return null;
-            }, dispatchDeadline());
+            }, dispatchDeadline()));
             return true;
         }
 
@@ -245,6 +294,16 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             return request.deadline().isExpired()
                     || elapsed().compareTo(definition.maxDuration()) >= 0;
         }
+        private void dispatchFailed() {
+            synchronized (this) {
+                if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
+                    return;
+                }
+                phase = Phase.TERMINAL;
+            }
+            completeTerminal(ScenarioFailure.DISPATCH_FAILED, false);
+        }
+
 
         private void terminate(ScenarioFailure failure) {
             synchronized (this) {
@@ -262,6 +321,18 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             }
             synchronized (this) {
                 phase = Phase.TERMINAL;
+            }
+            completeTerminal(failure, cleaned);
+        }
+
+        private void completeTerminal(ScenarioFailure failure, boolean cleaned) {
+            Scene2dScenarioDeadlineScheduler.Cancellation scheduled;
+            synchronized (this) {
+                scheduled = deadlineCancellation;
+                deadlineCancellation = null;
+            }
+            if (scheduled != null) {
+                scheduled.cancel();
             }
             result.complete(new ScenarioResult(
                     ScenarioDefinition.SCHEMA_VERSION,
