@@ -147,6 +147,50 @@ final class AssertionEngineTest {
         assertEquals(2, wakeups.cancelledRegistrations());
     }
 
+    @Test void stableDeadlineBeforeFirstCompletedFrameReturnsInitialSnapshotEvidence() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        ManualDeadlineWakeup wakeups = new ManualDeadlineWakeup();
+        CompletionStage<AssertionResult> result = engine.assertThat(
+                source(() -> snapshot(7, 9, node("target-node", "target", "same", 0))),
+                request(clock, new UiAssertion.StableForFrames(3,
+                        Set.of(UiAssertion.StableProperty.TEXT)), 10),
+                frames, clock, wakeups);
+
+        clock.advanceMillis(10);
+        wakeups.fire();
+
+        AssertionResult failure = result.toCompletableFuture().join();
+        assertEquals(AssertionResult.Status.FAILED, failure.status());
+        assertEquals("target-node", failure.evidence().nodeId());
+        assertEquals("3 completed frames", failure.evidence().expected());
+        assertEquals("0/3", failure.evidence().observed());
+        assertEquals(7, failure.evidence().revision());
+        assertEquals(9, failure.evidence().frame());
+    }
+
+    @Test void stableDeadlinePreservesInitialStrictLocatorFailure() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        ManualDeadlineWakeup wakeups = new ManualDeadlineWakeup();
+        SemanticSnapshot ambiguous = snapshot(7, 9,
+                node("first", "target", "same", 0),
+                node("second", "target", "same", 0));
+        CompletionStage<AssertionResult> result = engine.assertThat(
+                source(() -> ambiguous),
+                request(clock, new UiAssertion.StableForFrames(3,
+                        Set.of(UiAssertion.StableProperty.TEXT)), 10),
+                frames, clock, wakeups);
+
+        clock.advanceMillis(10);
+        wakeups.fire();
+
+        CompletionException completion = assertThrows(CompletionException.class,
+                () -> result.toCompletableFuture().join());
+        HarnessException strict = assertInstanceOf(HarnessException.class, completion.getCause());
+        assertEquals(ErrorCode.STRICTNESS_VIOLATION, strict.code());
+    }
+
     @Test void callerCancellationClosesFrameSubscriptionAndDeadlineRegistration() {
         FakeClock clock = new FakeClock();
         TestFrames frames = new TestFrames();

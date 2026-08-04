@@ -264,8 +264,12 @@ public final class AssertionEngine {
             }
             try {
                 SemanticSnapshot snapshot = currentSnapshot();
-                if (request.assertion() instanceof UiAssertion.StableForFrames) {
-                    locators.resolveStrict(snapshot, request.locator());
+                if (request.assertion() instanceof UiAssertion.StableForFrames stable) {
+                    SemanticNode node = locators.resolveStrict(snapshot, request.locator());
+                    lastFailure = new AssertionResult(AssertionResult.Status.FAILED,
+                            new AssertionEvidence(node.id(), stable.frames() + " completed frames",
+                                    "0/" + stable.frames(), snapshot.revision(), snapshot.frame()),
+                            request.deadline().elapsed().toNanos());
                 } else {
                     accept(evaluator.evaluate(snapshot, request));
                 }

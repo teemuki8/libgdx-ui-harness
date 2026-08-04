@@ -11,6 +11,8 @@ import dev.gdx.uiharness.core.action.Harness;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
+import dev.gdx.uiharness.core.assertion.AssertionEvidence;
+import dev.gdx.uiharness.core.assertion.AssertionResult;
 import dev.gdx.uiharness.core.assertion.AssertionSnapshotSource;
 import dev.gdx.uiharness.core.contract.ContractVersion;
 import dev.gdx.uiharness.core.contract.StateActionContract;
@@ -109,6 +111,29 @@ final class HarnessProtocolServiceTest {
         assertEquals(1, traceStarts.get());
         assertEquals(1, traceStops.get());
         assertEquals(Duration.ofMillis(500), harness.lastDeadline.get().timeout());
+    }
+
+    @Test void mapsPreFrameStabilityDeadlineEvidenceAsFailedAssertion() {
+        Command.Assert command = new Command.Assert(
+                1,
+                new Command.LocatorSpec.TestId("save"),
+                new Command.AssertionSpec.StableForFrames(3, List.of("text")));
+        AssertionResult core = new AssertionResult(
+                AssertionResult.Status.FAILED,
+                new AssertionEvidence("save-node", "3 completed frames", "0/3", 7, 9),
+                Duration.ofMillis(10).toNanos());
+
+        HarnessResponse.Result.Assertion assertion =
+                HarnessResponse.Result.Assertion.fromCore(command, core);
+
+        assertEquals("failed", assertion.outcome());
+        assertEquals("retryable", assertion.actionability());
+        assertEquals("save-node", assertion.nodeId());
+        assertEquals("3 completed frames", assertion.expected());
+        assertEquals("0/3", assertion.lastObserved());
+        assertEquals(7, assertion.revision());
+        assertEquals(9, assertion.frame());
+        assertEquals(10, assertion.elapsedMillis());
     }
 
     @Test void rejectsUnknownSessionWithoutInvokingBackend() {
