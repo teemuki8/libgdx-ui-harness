@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -65,6 +66,26 @@ final class AssertionEngineTest {
         assertEquals(10_000_000L, failure.elapsedNanos());
         assertEquals("waiting", failure.evidence().observed());
         assertEquals(1, frames.closedSubscriptions());
+    }
+
+    @Test void rejectsAPassWhenSnapshotEvaluationCrossesTheExactDeadline() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        AtomicInteger reads = new AtomicInteger();
+        CompletionStage<AssertionResult> result = engine.assertThat(() -> {
+            if (reads.getAndIncrement() == 0) {
+                return snapshot(1, 1, node("target", "target", "waiting", 0));
+            }
+            clock.advanceMillis(10);
+            return snapshot(2, 2, node("target", "target", "ready", 0));
+        }, request(clock, new UiAssertion.TextEquals("ready"), 10), frames, clock);
+
+        frames.emit(2, 2);
+
+        AssertionResult failure = result.toCompletableFuture().join();
+        assertEquals(AssertionResult.Status.FAILED, failure.status());
+        assertEquals("waiting", failure.evidence().observed());
+        assertEquals(10_000_000L, failure.elapsedNanos());
     }
 
     @Test void stableForFramesComparesOnlyDeclaredPropertiesAcrossCompletedFrames() {
@@ -111,6 +132,31 @@ final class AssertionEngineTest {
         assertEquals(AssertionResult.Status.PASSED, result.toCompletableFuture().join().status());
     }
 
+    @Test void stableForFramesIgnoresDistinctSignalsForTheSameCompletedSnapshot() {
+        FakeClock clock = new FakeClock();
+        TestFrames frames = new TestFrames();
+        AtomicInteger reads = new AtomicInteger();
+        CompletionStage<AssertionResult> result = engine.assertThat(() -> {
+            int read = reads.getAndIncrement();
+            long identity = read <= 3 ? 1 : read - 2;
+            return snapshot(identity, identity, node("target", "target", "same", 0));
+        }, request(clock, new UiAssertion.StableForFrames(3,
+                Set.of(UiAssertion.StableProperty.TEXT)), 100), frames, clock);
+
+        frames.emit(1, 1);
+        frames.emit(2, 2);
+        frames.emit(3, 3);
+        assertTrue(!result.toCompletableFuture().isDone());
+        frames.emit(4, 4);
+        assertTrue(!result.toCompletableFuture().isDone());
+        frames.emit(5, 5);
+
+        AssertionResult passed = result.toCompletableFuture().join();
+        assertEquals(AssertionResult.Status.PASSED, passed.status());
+        assertEquals(3, passed.evidence().frame());
+        assertEquals(6, reads.get());
+    }
+
     @Test void rejectsStableFrameCountsAboveTheBound() {
         assertThrows(IllegalArgumentException.class, () -> new UiAssertion.StableForFrames(
                 UiAssertion.MAX_STABLE_FRAMES + 1, Set.of(UiAssertion.StableProperty.TEXT)));
@@ -138,6 +184,34 @@ final class AssertionEngineTest {
         CompletionException thrown = assertThrows(CompletionException.class,
                 () -> result.toCompletableFuture().join());
         assertEquals(rejected, thrown.getCause());
+    }
+
+    @Test void closureWaitsForAlreadyAcceptedFramesToDrain() {
+        FakeClock clock = new FakeClock();
+        CountDownLatch evaluatingFrame = new CountDownLatch(1);
+        CountDownLatch releaseEvaluation = new CountDownLatch(1);
+        FrameSignal frames = listener -> {
+            Thread callback = new Thread(() -> listener.onFrame(new FrameSignal.Frame(1, 1)));
+            callback.start();
+            await(evaluatingFrame);
+            listener.onClosed();
+            releaseEvaluation.countDown();
+            join(callback);
+            return () -> {};
+        };
+        AtomicInteger reads = new AtomicInteger();
+        CompletionStage<AssertionResult> result = engine.assertThat(() -> {
+            int read = reads.getAndIncrement();
+            if (read == 1) {
+                evaluatingFrame.countDown();
+                await(releaseEvaluation);
+            }
+            return snapshot(read, read,
+                    node("target", "target", read == 1 ? "ready" : "waiting", 0));
+        }, request(clock, new UiAssertion.TextEquals("ready"), 100), frames, clock);
+
+        assertEquals(AssertionResult.Status.PASSED, result.toCompletableFuture().join().status());
+        assertEquals(2, reads.get());
     }
 
     @Test void finalStrictResolutionFailureIsPropagatedWithBoundedCandidates() {
@@ -184,9 +258,27 @@ final class AssertionEngineTest {
                 Optional.empty(), Optional.empty(), Optional.empty(), false, true, 1, false, true, true);
     }
 
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(interrupted);
+        }
+    }
+
+    private static void join(Thread thread) {
+        try {
+            thread.join();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(interrupted);
+        }
+    }
     private static final class FakeClock implements MonotonicClock {
         private long nanos;
         @Override public long nanoTime() { return nanos; }
+
         void advanceMillis(long millis) { nanos += Duration.ofMillis(millis).toNanos(); }
     }
 

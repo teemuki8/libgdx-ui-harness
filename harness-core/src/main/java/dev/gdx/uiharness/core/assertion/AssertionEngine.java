@@ -62,9 +62,13 @@ public final class AssertionEngine {
         private boolean draining;
         private boolean registrationRejected;
         private boolean initialEvaluated;
+        private boolean closed;
         private AssertionResult lastFailure;
         private Throwable lastResolutionFailure;
         private FrameSignal.Frame lastFrame;
+        private boolean hasStableSnapshot;
+        private long lastStableRevision;
+        private long lastStableFrame;
         private Map<UiAssertion.StableProperty, Object> lastProperties;
         private int stableCount;
 
@@ -108,9 +112,14 @@ public final class AssertionEngine {
         }
 
         @Override public void onClosed() {
-            result.completeExceptionally(new IllegalStateException(
-                    "frame signal closed before assertion completed"));
-            closeIfDone();
+            boolean start;
+            synchronized (this) {
+                if (result.isDone()) return;
+                closed = true;
+                start = registered && !draining;
+                if (start) draining = true;
+            }
+            if (start) drainOwned();
         }
 
         private void ensureInitial() {
@@ -138,6 +147,7 @@ public final class AssertionEngine {
             } catch (Throwable failure) {
                 lastResolutionFailure = failure;
             }
+            if (request.deadline().isExpired()) completeAtDeadline();
         }
 
         private void drain() {
@@ -160,6 +170,10 @@ public final class AssertionEngine {
                     }
                     frame = pending.pollFirst();
                     if (frame == null) {
+                        if (closed) {
+                            result.completeExceptionally(new IllegalStateException(
+                                    "frame signal closed before assertion completed"));
+                        }
                         draining = false;
                         break;
                     }
@@ -189,9 +203,18 @@ public final class AssertionEngine {
                 stableCount = 0;
                 lastProperties = null;
             }
+            if (request.deadline().isExpired()) completeAtDeadline();
         }
 
         private void evaluateStable(SemanticSnapshot snapshot, UiAssertion.StableForFrames stable) {
+            if (hasStableSnapshot
+                    && lastStableRevision == snapshot.revision()
+                    && lastStableFrame == snapshot.frame()) {
+                return;
+            }
+            hasStableSnapshot = true;
+            lastStableRevision = snapshot.revision();
+            lastStableFrame = snapshot.frame();
             SemanticNode node = locators.resolveStrict(snapshot, request.locator());
             Map<UiAssertion.StableProperty, Object> properties = selectedProperties(node, stable);
             stableCount = properties.equals(lastProperties) ? stableCount + 1 : 1;
@@ -201,7 +224,9 @@ public final class AssertionEngine {
                     snapshot.revision(), snapshot.frame());
             lastFailure = new AssertionResult(AssertionResult.Status.FAILED, evidence,
                     request.deadline().elapsed().toNanos());
-            if (stableCount >= stable.frames()) {
+            if (request.deadline().isExpired()) {
+                completeAtDeadline();
+            } else if (stableCount >= stable.frames()) {
                 result.complete(new AssertionResult(AssertionResult.Status.PASSED, evidence,
                         request.deadline().elapsed().toNanos()));
             }
@@ -230,8 +255,13 @@ public final class AssertionEngine {
         }
 
         private void accept(AssertionResult attempt) {
-            if (attempt.status() == AssertionResult.Status.PASSED) result.complete(attempt);
-            else lastFailure = attempt;
+            if (request.deadline().isExpired()) {
+                completeAtDeadline();
+            } else if (attempt.status() == AssertionResult.Status.PASSED) {
+                result.complete(attempt);
+            } else {
+                lastFailure = attempt;
+            }
         }
 
         private void completeAtDeadline() {
