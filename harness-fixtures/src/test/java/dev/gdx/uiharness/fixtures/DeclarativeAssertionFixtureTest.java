@@ -57,6 +57,9 @@ final class DeclarativeAssertionFixtureTest {
                 assertTrue(deadline.path("frame").asLong() >= frameBeforeDeadline);
                 assertTrue(client.snapshot(SESSION_ID).frame() > deadline.path("frame").asLong(),
                         "the deadline must fire without another assertion frame signal");
+                HarnessMcpClient.Screenshot screenshot = client.screenshot(SESSION_ID);
+                assertEquals(1280, screenshot.width(),
+                        "withheld assertion notifications must not strand shared frame-fence consumers");
 
                 JsonNode count = client.assertThat(SESSION_ID, testId("assertion-candidate"),
                         Map.of("kind", "count-equals", "expected", 12), 1_000);

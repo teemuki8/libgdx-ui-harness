@@ -35,6 +35,7 @@ import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.trace.TraceEvent;
 import dev.gdx.uiharness.core.trace.TraceManifest;
 import dev.gdx.uiharness.core.trace.TraceRecorder;
+import dev.gdx.uiharness.core.wait.FrameSignal;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
 import dev.gdx.uiharness.lwjgl3.LaunchProfile;
@@ -180,7 +181,18 @@ public final class FixtureControl implements AutoCloseable {
         tracingHarness = new TracingHarness(sceneHarness, traces);
         protocolExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-protocol-", 0).factory());
-        waits = new WaitEngine(this::snapshotForWait, locators, clock, fence,
+        FrameSignal assertionFrames = listener -> fence.subscribe(new FrameSignal.FrameListener() {
+            @Override public void onFrame(FrameSignal.Frame frame) {
+                if (!withholdAssertionFrames.get()) {
+                    listener.onFrame(frame);
+                }
+            }
+
+            @Override public void onClosed() {
+                listener.onClosed();
+            }
+        });
+        waits = new WaitEngine(this::snapshotForWait, locators, clock, assertionFrames,
                 DeadlineWakeup.scheduledBy(scenarioDeadlines));
         terminationExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-mcp-termination-", 0).factory());
@@ -258,9 +270,7 @@ public final class FixtureControl implements AutoCloseable {
     /** Publishes identity for the framebuffer that was just rendered. */
     public void afterDraw() {
         // Replacement JVM owns and advances its own LWJGL3 frame loop.
-        if (!withholdAssertionFrames.get()) {
-            fence.completedFrame(clock.revision(), clock.frame());
-        }
+        fence.completedFrame(clock.revision(), clock.frame());
     }
 
     /** Closes every resource in dependency order and removes its server-owned directories. */

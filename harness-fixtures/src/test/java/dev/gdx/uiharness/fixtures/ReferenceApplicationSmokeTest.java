@@ -39,7 +39,7 @@ final class ReferenceApplicationSmokeTest {
                     assertEquals(List.of(
                                     "action", "compare", "layout", "query", "scenario-list",
                                     "scenario-start", "screenshot", "snapshot", "trace",
-                                    "typography", "wait"),
+                                    "typography", "ui_assert", "wait"),
                             agent.capabilities(SESSION_ID));
                     HarnessMcpClient.Layout layout = agent.layout(SESSION_ID);
                     assertEquals("conformant", layout.status(), layout.reports());
