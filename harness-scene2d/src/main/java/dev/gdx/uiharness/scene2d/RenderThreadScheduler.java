@@ -33,6 +33,11 @@ public final class RenderThreadScheduler implements AutoCloseable {
         this.capacity = capacity;
     }
 
+    /** Returns whether the caller is this scheduler's immutable owning render thread. */
+    public boolean isOwnerThread() {
+        return Thread.currentThread() == ownerThread;
+    }
+
     /** Enqueues work for the owning render thread, including queue time in its deadline. */
     public <T> CompletionStage<T> submit(Callable<T> callable, Deadline deadline) {
         ScheduledCommand<T> command = new ScheduledCommand<>(

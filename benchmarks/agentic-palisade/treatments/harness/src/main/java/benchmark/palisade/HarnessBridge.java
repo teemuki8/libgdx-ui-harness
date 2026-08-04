@@ -233,6 +233,9 @@ public final class HarnessBridge implements AutoCloseable {
     }
 
     private SemanticSnapshot snapshotForWait() {
+        if (scheduler.isOwnerThread()) {
+            return sceneSession.snapshot(revision.get(), frame.get());
+        }
         return scheduler.submit(
                 () -> sceneSession.snapshot(revision.get(), frame.get()),
                 Deadline.after(clock, Duration.ofSeconds(30)))

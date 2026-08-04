@@ -35,10 +35,14 @@ final class DeclarativeAssertionFixtureTest {
                 assertTrue(stable.path("frame").asLong() >= initialFrame + 3,
                         "three ordered completed rendered-frame identities must be observed");
                 assertTrue(stable.path("lastObserved").asText().contains("3/3"));
-                HarnessMcpClient.Snapshot afterStable = client.snapshot(SESSION_ID);
-                assertEquals("ready", client.singleTextByTestId(SESSION_ID, "assertion-state"));
-                assertTrue(afterStable.frame() >= stable.path("frame").asLong(),
-                        "assertion evidence must not run ahead of the rendered fixture");
+                HarnessMcpClient.QueryEvidence reconstructed =
+                        client.singleEvidenceByTestId(SESSION_ID, "assertion-state");
+                assertEquals(stable.path("revision").asLong(), stable.path("frame").asLong(),
+                        "completed fence revision and frame must identify the same rendered step");
+                assertTrue(client.snapshot(SESSION_ID).frame() >= stable.path("frame").asLong());
+                assertEquals("ready", reconstructed.text());
+                assertFalse(reconstructed.nodeId().isBlank(),
+                        "the reconstructed actor must remain queryable through the MCP path");
                 assertNotEquals(initialNode, stable.path("nodeId").asText(),
                         "the assertion must resolve the reconstructed actor rather than cache identity");
 

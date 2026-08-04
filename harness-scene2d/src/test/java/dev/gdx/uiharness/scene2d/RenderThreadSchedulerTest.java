@@ -251,6 +251,15 @@ final class RenderThreadSchedulerTest {
         assertEquals(ErrorCode.LIMIT_EXCEEDED, error.code());
     }
 
+    @Test void reportsWhetherCallerIsTheOwningRenderThread() {
+        RenderThreadScheduler scheduler = new RenderThreadScheduler(1);
+
+        assertTrue(scheduler.isOwnerThread());
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            assertFalse(CompletableFuture.supplyAsync(scheduler::isOwnerThread, executor).join());
+        }
+    }
+
     @Test void onlyOwningRenderThreadMayDrain() {
         RenderThreadScheduler scheduler = new RenderThreadScheduler(1);
 

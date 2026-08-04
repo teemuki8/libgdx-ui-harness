@@ -36,7 +36,6 @@ import dev.gdx.uiharness.core.trace.TraceEvent;
 import dev.gdx.uiharness.core.trace.TraceManifest;
 import dev.gdx.uiharness.core.trace.TraceRecorder;
 import dev.gdx.uiharness.core.wait.WaitEngine;
-import dev.gdx.uiharness.core.wait.FrameSignal;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
 import dev.gdx.uiharness.lwjgl3.LaunchProfile;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3ScreenCapture;
@@ -127,7 +126,6 @@ public final class FixtureControl implements AutoCloseable {
     private final Lwjgl3FrameFence fence;
     private final Lwjgl3ScreenCapture capture;
     private final WaitEngine waits;
-    private final SerialFrameSignal assertionFrames;
     private final FileArtifactStore artifactStore;
     private final StorePublisher publisher;
     private final ReferenceTraceController traces;
@@ -182,8 +180,7 @@ public final class FixtureControl implements AutoCloseable {
         tracingHarness = new TracingHarness(sceneHarness, traces);
         protocolExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-protocol-", 0).factory());
-        assertionFrames = new SerialFrameSignal(fence, () -> !withholdAssertionFrames.get());
-        waits = new WaitEngine(this::snapshotForWait, locators, clock, assertionFrames,
+        waits = new WaitEngine(this::snapshotForWait, locators, clock, fence,
                 DeadlineWakeup.scheduledBy(scenarioDeadlines));
         terminationExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-mcp-termination-", 0).factory());
@@ -261,7 +258,9 @@ public final class FixtureControl implements AutoCloseable {
     /** Publishes identity for the framebuffer that was just rendered. */
     public void afterDraw() {
         // Replacement JVM owns and advances its own LWJGL3 frame loop.
-        fence.completedFrame(clock.revision(), clock.frame());
+        if (!withholdAssertionFrames.get()) {
+            fence.completedFrame(clock.revision(), clock.frame());
+        }
     }
 
     /** Closes every resource in dependency order and removes its server-owned directories. */
@@ -272,7 +271,6 @@ public final class FixtureControl implements AutoCloseable {
         RuntimeException failure = null;
         failure = closeResource(server, failure);
         failure = closeResource(waits, failure);
-        failure = closeResource(assertionFrames, failure);
         failure = closeResource(capture, failure);
         failure = closeResource(fence, failure);
         failure = closeResource(replacementCoordinator, failure);
@@ -422,10 +420,15 @@ public final class FixtureControl implements AutoCloseable {
 
 
     private SemanticSnapshot snapshotForWait() {
-        SemanticSnapshot snapshot = scheduler.submit(
-                () -> sceneSession.snapshot(clock.revision(), clock.frame()),
-                Deadline.after(clock, Duration.ofSeconds(30)))
-                .toCompletableFuture().join();
+        SemanticSnapshot snapshot;
+        if (scheduler.isOwnerThread()) {
+            snapshot = sceneSession.snapshot(clock.revision(), clock.frame());
+        } else {
+            snapshot = scheduler.submit(
+                    () -> sceneSession.snapshot(clock.revision(), clock.frame()),
+                    Deadline.after(clock, Duration.ofSeconds(30)))
+                    .toCompletableFuture().join();
+        }
         traces.snapshot(snapshot, "wait");
         return snapshot;
     }

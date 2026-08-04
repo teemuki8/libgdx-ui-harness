@@ -274,6 +274,16 @@ final class HarnessMcpClient implements Closeable {
         return match.path("text").asText();
     }
 
+    QueryEvidence singleEvidenceByTestId(String sessionId, String testId) throws Exception {
+        JsonNode content = call("ui_query", Map.of(
+                "sessionId", sessionId,
+                "locator", testIdLocator(testId)));
+        JsonNode match = singleMatch(content);
+        return new QueryEvidence(
+                match.path("id").asText(),
+                match.path("text").asText());
+    }
+
     Screenshot screenshot(String sessionId) throws Exception {
         JsonNode content = call("ui_screenshot", Map.of(
                 "sessionId", sessionId,
@@ -622,6 +632,8 @@ final class HarnessMcpClient implements Closeable {
             Artifact current,
             Artifact evidence,
             String reports) {}
+
+    record QueryEvidence(String nodeId, String text) {}
 
     record Snapshot(long revision, long frame, String rootId, int nodeCount) {}
 
