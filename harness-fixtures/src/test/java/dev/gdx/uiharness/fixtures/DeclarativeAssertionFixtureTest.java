@@ -24,6 +24,7 @@ final class DeclarativeAssertionFixtureTest {
                 JsonNode initial = client.assertThat(SESSION_ID, testId("assertion-state"),
                         Map.of("kind", "text-equals", "expected", "initial"), 1_000);
                 String initialNode = initial.path("nodeId").asText();
+                long initialFrame = initial.path("frame").asLong();
 
                 client.clickByRoleAndName(SESSION_ID, "button", "Sign in");
                 JsonNode stable = client.assertThat(SESSION_ID, testId("assertion-state"),
@@ -31,8 +32,13 @@ final class DeclarativeAssertionFixtureTest {
                                 "properties", List.of("text", "bounds", "visible")),
                         2_000);
                 assertEquals("passed", stable.path("outcome").asText());
+                assertTrue(stable.path("frame").asLong() >= initialFrame + 3,
+                        "three ordered completed rendered-frame identities must be observed");
                 assertTrue(stable.path("lastObserved").asText().contains("3/3"));
+                HarnessMcpClient.Snapshot afterStable = client.snapshot(SESSION_ID);
                 assertEquals("ready", client.singleTextByTestId(SESSION_ID, "assertion-state"));
+                assertTrue(afterStable.frame() >= stable.path("frame").asLong(),
+                        "assertion evidence must not run ahead of the rendered fixture");
                 assertNotEquals(initialNode, stable.path("nodeId").asText(),
                         "the assertion must resolve the reconstructed actor rather than cache identity");
 

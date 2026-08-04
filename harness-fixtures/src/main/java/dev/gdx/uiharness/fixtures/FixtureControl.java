@@ -127,6 +127,7 @@ public final class FixtureControl implements AutoCloseable {
     private final Lwjgl3FrameFence fence;
     private final Lwjgl3ScreenCapture capture;
     private final WaitEngine waits;
+    private final SerialFrameSignal assertionFrames;
     private final FileArtifactStore artifactStore;
     private final StorePublisher publisher;
     private final ReferenceTraceController traces;
@@ -181,8 +182,8 @@ public final class FixtureControl implements AutoCloseable {
         tracingHarness = new TracingHarness(sceneHarness, traces);
         protocolExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-protocol-", 0).factory());
-        waits = new WaitEngine(this::snapshotForWait, locators, clock,
-                asynchronousFrames(clock, protocolExecutor),
+        assertionFrames = new SerialFrameSignal(fence, () -> !withholdAssertionFrames.get());
+        waits = new WaitEngine(this::snapshotForWait, locators, clock, assertionFrames,
                 DeadlineWakeup.scheduledBy(scenarioDeadlines));
         terminationExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-mcp-termination-", 0).factory());
@@ -271,6 +272,7 @@ public final class FixtureControl implements AutoCloseable {
         RuntimeException failure = null;
         failure = closeResource(server, failure);
         failure = closeResource(waits, failure);
+        failure = closeResource(assertionFrames, failure);
         failure = closeResource(capture, failure);
         failure = closeResource(fence, failure);
         failure = closeResource(replacementCoordinator, failure);
@@ -417,20 +419,6 @@ public final class FixtureControl implements AutoCloseable {
         }
     }
 
-    private FrameSignal asynchronousFrames(
-            FrameSignal source, ExecutorService executor) {
-        return listener -> source.subscribe(new FrameSignal.FrameListener() {
-            @Override public void onFrame(FrameSignal.Frame frame) {
-                if (!withholdAssertionFrames.get()) {
-                    executor.submit(() -> listener.onFrame(frame));
-                }
-            }
-
-            @Override public void onClosed() {
-                executor.submit(listener::onClosed);
-            }
-        });
-    }
 
 
     private SemanticSnapshot snapshotForWait() {
