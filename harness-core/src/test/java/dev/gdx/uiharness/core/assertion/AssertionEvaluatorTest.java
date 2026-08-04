@@ -173,7 +173,9 @@ final class AssertionEvaluatorTest {
                 rootBounds, rootBounds, rootBounds, 0, Map.of());
         Map<String, SemanticNode> nodes = new LinkedHashMap<>();
         nodes.put("root", root);
-        for (SemanticNode child : children) nodes.put(child.id(), child);
+        for (SemanticNode child : children) {
+            nodes.put(child.id(), child);
+        }
         return new SemanticSnapshot(7, 11, "root", nodes);
     }
 

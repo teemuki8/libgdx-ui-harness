@@ -382,7 +382,9 @@ final class AssertionEngineTest {
                 "root", null, "Group", state(true), bounds, bounds, bounds, 0, Map.of());
         Map<String, SemanticNode> nodes = new LinkedHashMap<>();
         nodes.put("root", root);
-        for (SemanticNode child : children) nodes.put(child.id(), child);
+        for (SemanticNode child : children) {
+            nodes.put(child.id(), child);
+        }
         return new SemanticSnapshot(revision, frame, "root", nodes);
     }
 
@@ -522,7 +524,10 @@ final class AssertionEngineTest {
         private int closed;
         @Override public Subscription subscribe(FrameListener listener) {
             this.listener = listener;
-            return () -> { this.listener = null; closed++; };
+            return () -> {
+                this.listener = null;
+                closed++;
+            };
         }
         void emit(long revision, long frame) { listener.onFrame(new Frame(revision, frame)); }
         int closedSubscriptions() { return closed; }
@@ -533,7 +538,9 @@ final class AssertionEngineTest {
         ImmediateFrames(int callbacks) { this.callbacks = callbacks; }
         @Override public Subscription subscribe(FrameListener listener) {
             Subscription subscription = super.subscribe(listener);
-            for (int i = 1; i <= callbacks; i++) listener.onFrame(new Frame(i, i));
+            for (int i = 1; i <= callbacks; i++) {
+                listener.onFrame(new Frame(i, i));
+            }
             return subscription;
         }
     }

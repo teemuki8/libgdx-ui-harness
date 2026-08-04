@@ -31,7 +31,9 @@ public sealed interface UiAssertion permits UiAssertion.Visible, UiAssertion.Hid
 
     record CountEquals(int expected) implements UiAssertion {
         public CountEquals {
-            if (expected < 0) throw new IllegalArgumentException("expected must be non-negative");
+            if (expected < 0) {
+                throw new IllegalArgumentException("expected must be non-negative");
+            }
         }
     }
 
@@ -52,7 +54,9 @@ public sealed interface UiAssertion permits UiAssertion.Visible, UiAssertion.Hid
                 throw new IllegalArgumentException("frames must be between 1 and " + MAX_STABLE_FRAMES);
             }
             properties = Set.copyOf(Objects.requireNonNull(properties, "properties"));
-            if (properties.isEmpty()) throw new IllegalArgumentException("properties must not be empty");
+            if (properties.isEmpty()) {
+                throw new IllegalArgumentException("properties must not be empty");
+            }
         }
     }
 

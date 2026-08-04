@@ -61,7 +61,9 @@ public final class AssertionEvaluator {
     }
 
     private static Evaluation optionalBoolean(Optional<Boolean> actual, boolean expected, String label) {
-        if (actual.isEmpty()) return new Evaluation(false, Boolean.toString(expected), label + "=unsupported");
+        if (actual.isEmpty()) {
+            return new Evaluation(false, Boolean.toString(expected), label + "=unsupported");
+        }
         return booleanValue(actual.get(), expected, label);
     }
 

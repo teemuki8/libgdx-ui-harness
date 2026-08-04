@@ -196,35 +196,51 @@ public final class AssertionEngine {
             Objects.requireNonNull(frame, "frame");
             boolean start;
             synchronized (this) {
-                if (result.isDone()) return;
+                if (result.isDone()) {
+                    return;
+                }
                 pending.addLast(frame);
                 start = registered && !draining;
-                if (start) draining = true;
+                if (start) {
+                    draining = true;
+                }
             }
-            if (start) drainOwned();
+            if (start) {
+                drainOwned();
+            }
         }
 
         @Override public void onClosed() {
             boolean start;
             synchronized (this) {
-                if (result.isDone()) return;
+                if (result.isDone()) {
+                    return;
+                }
                 closed = true;
                 start = registered && !draining;
-                if (start) draining = true;
+                if (start) {
+                    draining = true;
+                }
             }
-            if (start) drainOwned();
+            if (start) {
+                drainOwned();
+            }
         }
 
         private void ensureInitial() {
             synchronized (this) {
-                if (initialEvaluated) return;
+                if (initialEvaluated) {
+                    return;
+                }
                 initialEvaluated = true;
             }
             evaluateInitial();
         }
 
         private void evaluateInitial() {
-            if (result.isDone()) return;
+            if (result.isDone()) {
+                return;
+            }
             if (request.deadline().isExpired()) {
                 completeAtDeadline();
                 return;
@@ -240,12 +256,16 @@ public final class AssertionEngine {
             } catch (Throwable failure) {
                 lastResolutionFailure = failure;
             }
-            if (request.deadline().isExpired()) completeAtDeadline();
+            if (request.deadline().isExpired()) {
+                completeAtDeadline();
+            }
         }
 
         private void drain() {
             synchronized (this) {
-                if (draining || result.isDone()) return;
+                if (draining || result.isDone()) {
+                    return;
+                }
                 draining = true;
             }
             drainOwned();
@@ -271,7 +291,9 @@ public final class AssertionEngine {
                         break;
                     }
                 }
-                if (lastFrame != null && lastFrame.equals(frame)) continue;
+                if (lastFrame != null && lastFrame.equals(frame)) {
+                    continue;
+                }
                 lastFrame = frame;
                 if (request.deadline().isExpired()) {
                     completeAtDeadline();
@@ -296,7 +318,9 @@ public final class AssertionEngine {
                 stableCount = 0;
                 lastProperties = null;
             }
-            if (request.deadline().isExpired()) completeAtDeadline();
+            if (request.deadline().isExpired()) {
+                completeAtDeadline();
+            }
         }
 
         private void evaluateStable(SemanticSnapshot snapshot, UiAssertion.StableForFrames stable) {
@@ -375,14 +399,20 @@ public final class AssertionEngine {
             FrameSignal.Subscription framesToClose;
             DeadlineWakeup.Registration deadlineToCancel;
             synchronized (this) {
-                if (!result.isDone()) return;
+                if (!result.isDone()) {
+                    return;
+                }
                 framesToClose = subscription;
                 subscription = null;
                 deadlineToCancel = deadlineRegistration;
                 deadlineRegistration = null;
             }
-            if (framesToClose != null) framesToClose.close();
-            if (deadlineToCancel != null) deadlineToCancel.cancel();
+            if (framesToClose != null) {
+                framesToClose.close();
+            }
+            if (deadlineToCancel != null) {
+                deadlineToCancel.cancel();
+            }
         }
     }
 }

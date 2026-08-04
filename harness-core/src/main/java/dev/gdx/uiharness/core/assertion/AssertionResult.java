@@ -7,7 +7,9 @@ public record AssertionResult(Status status, AssertionEvidence evidence, long el
     public AssertionResult {
         Objects.requireNonNull(status, "status");
         Objects.requireNonNull(evidence, "evidence");
-        if (elapsedNanos < 0) throw new IllegalArgumentException("elapsedNanos must be non-negative");
+        if (elapsedNanos < 0) {
+            throw new IllegalArgumentException("elapsedNanos must be non-negative");
+        }
     }
 
     public enum Status { PASSED, FAILED }
