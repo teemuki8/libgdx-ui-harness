@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 
-/** Immutable catalog of the fourteen allowlisted MCP tools and their bounded JSON schemas. */
+/** Immutable catalog of the fifteen allowlisted MCP tools and their bounded JSON schemas. */
 public final class HarnessToolCatalog {
     private static final int MAX_IDENTIFIER = 256;
     private static final Map<String, Object> ARTIFACT_SCHEMA = object(Map.of(
@@ -63,6 +63,8 @@ public final class HarnessToolCatalog {
                                 "evidence", evidenceSchema(),
                                 "artifact", ARTIFACT_SCHEMA),
                                 List.of("beforeRevision", "afterRevision", "observedState"))),
+                tool("ui_assert", "Evaluate one bounded declarative UI assertion",
+                        assertionInput(), assertionOutput()),
                 tool("ui_wait", "Wait for a bounded semantic condition",
                         locatorInput(Map.of("condition", enumString("present", "visible")),
                                 List.of("condition")),
@@ -532,6 +534,7 @@ public final class HarnessToolCatalog {
                                 "kind", "pointer", "phase", "move",
                                 "offsetX", 0, "offsetY", 0,
                                 "pointer", 0, "button", 0, "force", false))));
+        values.put("ui_assert", assertionExamples(roleButton));
         values.put("ui_wait", List.of(Map.of(
                 "sessionId", "SESSION", "locator", roleButton,
                 "condition", "visible")));
@@ -590,6 +593,33 @@ public final class HarnessToolCatalog {
         return Map.copyOf(values);
     }
 
+    private static List<Map<String, Object>> assertionExamples(
+            Map<String, Object> locator) {
+        List<Map<String, Object>> assertions = List.of(
+                Map.of("kind", "visible"),
+                Map.of("kind", "hidden"),
+                Map.of("kind", "enabled"),
+                Map.of("kind", "disabled"),
+                Map.of("kind", "focused"),
+                Map.of("kind", "checked"),
+                Map.of("kind", "text-equals", "expected", "Ready"),
+                Map.of("kind", "text-contains", "expected", "ead"),
+                Map.of("kind", "count-equals", "expected", 1),
+                Map.of("kind", "bounds-inside-viewport", "viewport",
+                        Map.of("x", 0, "y", 0, "width", 1280, "height", 720)),
+                Map.of("kind", "does-not-overlap", "other",
+                        Map.of("kind", "test-id", "testId", "dialog")),
+                Map.of("kind", "stable-for-frames", "frames", 3,
+                        "properties", List.of("bounds")),
+                Map.of("kind", "accessible-name-exists"));
+        return assertions.stream().map(assertion -> Map.<String, Object>of(
+                "sessionId", "SESSION",
+                "schemaVersion", 1,
+                "deadlineMillis", 30_000,
+                "locator", locator,
+                "assertion", assertion)).toList();
+    }
+
     private static McpSchema.Tool tool(String name, String description,
             Map<String, Object> input, Map<String, Object> output) {
         return McpSchema.Tool.builder(name, input)
@@ -641,6 +671,84 @@ public final class HarnessToolCatalog {
         LinkedHashMap<String, Object> schema = new LinkedHashMap<>(object(properties, allRequired));
         customizer.accept(schema);
         return Map.copyOf(schema);
+    }
+
+    private static Map<String, Object> assertionInput() {
+        LinkedHashMap<String, Object> definitions = new LinkedHashMap<>(locatorDefinitions());
+        definitions.put("assertion", assertionSchema());
+        return envelope(Map.of(
+                "schemaVersion", Map.of("type", "integer", "const", 1),
+                "locator", Map.of("$ref", "#/$defs/locator"),
+                "assertion", Map.of("$ref", "#/$defs/assertion")),
+                List.of("schemaVersion", "locator", "assertion", "deadlineMillis"),
+                true,
+                schema -> schema.put("$defs", Map.copyOf(definitions)));
+    }
+
+    private static Map<String, Object> assertionOutput() {
+        LinkedHashMap<String, Object> schema = new LinkedHashMap<>(output(
+                "assertion-result",
+                Map.ofEntries(
+                        Map.entry("schemaVersion", Map.of("type", "integer", "const", 1)),
+                        Map.entry("outcome", enumString("passed", "failed")),
+                        Map.entry("locator", Map.of("$ref", "#/$defs/locator")),
+                        Map.entry("assertion", Map.of("$ref", "#/$defs/assertion")),
+                        Map.entry("nodeId", string(1, MAX_IDENTIFIER)),
+                        Map.entry("expected", string(0, ProtocolJson.MAX_STRING_LENGTH)),
+                        Map.entry("lastObserved", string(0, ProtocolJson.MAX_STRING_LENGTH)),
+                        Map.entry("actionability", enumString("satisfied", "retryable")),
+                        Map.entry("revision", integer(0, Long.MAX_VALUE)),
+                        Map.entry("frame", integer(0, Long.MAX_VALUE)),
+                        Map.entry("elapsedMillis", integer(0, HarnessRequest.MAX_DEADLINE_MILLIS)),
+                        Map.entry("candidates", array(evidenceSchema(), 1_000)),
+                        Map.entry("truncated", Map.of("type", "boolean")),
+                        Map.entry("traceId", nullableString())),
+                List.of("schemaVersion", "outcome", "locator", "assertion", "nodeId",
+                        "expected", "lastObserved", "actionability", "revision", "frame",
+                        "elapsedMillis", "candidates", "truncated")));
+        LinkedHashMap<String, Object> definitions = new LinkedHashMap<>(locatorDefinitions());
+        definitions.put("assertion", assertionSchema());
+        schema.put("$defs", Map.copyOf(definitions));
+        return Map.copyOf(schema);
+    }
+
+    private static Map<String, Object> assertionSchema() {
+        Map<String, Object> locatorRef = Map.of("$ref", "#/$defs/locator");
+        Map<String, Object> viewport = object(Map.of(
+                "x", number(-Double.MAX_VALUE, Double.MAX_VALUE),
+                "y", number(-Double.MAX_VALUE, Double.MAX_VALUE),
+                "width", number(0, Double.MAX_VALUE),
+                "height", number(0, Double.MAX_VALUE)),
+                List.of("x", "y", "width", "height"));
+        return Map.of("oneOf", List.of(
+                tagged("visible", Map.of(), List.of()),
+                tagged("hidden", Map.of(), List.of()),
+                tagged("enabled", Map.of(), List.of()),
+                tagged("disabled", Map.of(), List.of()),
+                tagged("focused", Map.of(), List.of()),
+                tagged("checked", Map.of(), List.of()),
+                tagged("text-equals", Map.of(
+                        "expected", string(0, ProtocolJson.MAX_STRING_LENGTH)),
+                        List.of("expected")),
+                tagged("text-contains", Map.of(
+                        "expected", string(0, ProtocolJson.MAX_STRING_LENGTH)),
+                        List.of("expected")),
+                tagged("count-equals", Map.of(
+                        "expected", integer(0, Integer.MAX_VALUE)), List.of("expected")),
+                tagged("bounds-inside-viewport", Map.of("viewport", viewport),
+                        List.of("viewport")),
+                tagged("does-not-overlap", Map.of("other", locatorRef), List.of("other")),
+                tagged("stable-for-frames", Map.of(
+                        "frames", integer(1, 10_000),
+                        "properties", Map.of(
+                                "type", "array",
+                                "items", enumString("bounds", "text", "accessible-name",
+                                        "visible", "enabled", "checked", "focused"),
+                                "minItems", 1,
+                                "maxItems", 7,
+                                "uniqueItems", true)),
+                        List.of("frames", "properties")),
+                tagged("accessible-name-exists", Map.of(), List.of())));
     }
 
     private static Map<String, Object> locatorDefinitions() {

@@ -81,6 +81,18 @@ final class HarnessProtocolServiceTest {
         assertResult(service, new Command.Action(roleLocator(),
                 new Command.ActionSpec.Click(0, 0, false)),
                 HarnessResponse.Result.Action.class);
+        HarnessResponse.Result.Assertion assertion = assertInstanceOf(
+                HarnessResponse.Result.Assertion.class,
+                success(service, new Command.Assert(1,
+                        new Command.LocatorSpec.TestId("save"),
+                        new Command.AssertionSpec.Enabled())).result());
+        assertEquals("passed", assertion.outcome());
+        assertEquals("enabled=true", assertion.lastObserved());
+        assertEquals("true", assertion.expected());
+        assertEquals(1, assertion.revision());
+        assertEquals(1, assertion.frame());
+        assertEquals(List.of(), assertion.candidates());
+        assertFalse(assertion.truncated());
         assertResult(service, new Command.Wait(roleLocator(), Command.WaitCondition.PRESENT),
                 HarnessResponse.Result.Wait.class);
         assertResult(service, new Command.Screenshot(null, 10, 10, 100, 1024),
@@ -423,7 +435,7 @@ final class HarnessProtocolServiceTest {
         FrameSignal frames = listener -> () -> {};
         WaitEngine waits = new WaitEngine(() -> SNAPSHOT, locators, CLOCK, frames);
         CapabilitySet capabilities = new CapabilitySet(List.of("action", "capabilities", "query",
-                "screenshot", "snapshot", "trace", "wait"));
+                "screenshot", "snapshot", "trace", "ui_assert", "wait"));
         return new HarnessProtocolService.Session(
                 harness, locators, waits, capture, capabilities, traces);
     }
@@ -438,7 +450,7 @@ final class HarnessProtocolServiceTest {
         return new HarnessProtocolService.Session(
                 basic.harness(), basic.locators(), basic.waits(), basic.capture(),
                 new CapabilitySet(List.of("action", "capabilities", "query", "scenario-list",
-                        "scenario-start", "screenshot", "snapshot", "trace", "wait")),
+                        "scenario-start", "screenshot", "snapshot", "trace", "ui_assert", "wait")),
                 basic.traces(), Optional.of(registry), Optional.of(coordinator));
     }
 

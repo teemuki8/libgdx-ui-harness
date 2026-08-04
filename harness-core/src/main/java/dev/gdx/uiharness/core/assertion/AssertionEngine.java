@@ -23,7 +23,7 @@ public final class AssertionEngine {
         this(new StrictResolution());
     }
 
-    AssertionEngine(LocatorEngine locators) {
+    public AssertionEngine(LocatorEngine locators) {
         this.locators = Objects.requireNonNull(locators, "locators");
         evaluator = new AssertionEvaluator(locators);
     }

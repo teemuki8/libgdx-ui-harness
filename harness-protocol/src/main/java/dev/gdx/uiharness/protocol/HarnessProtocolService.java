@@ -272,6 +272,11 @@ public final class HarnessProtocolService {
                             action.action().toCore(), deadline),
                     HarnessResponse.Result.Action::fromCore);
         }
+        if (command instanceof Command.Assert assertion) {
+            return RoutedOperation.map(
+                    session.waits().assertThat(assertion.toCore(deadline)),
+                    result -> HarnessResponse.Result.Assertion.fromCore(assertion, result));
+        }
         if (command instanceof Command.Wait wait) {
             return RoutedOperation.map(submitInterruptibly(() ->
                             session.waits().await(wait.locator().toCore(),
@@ -343,6 +348,9 @@ public final class HarnessProtocolService {
         }
         if (command instanceof Command.Action) {
             return "action";
+        }
+        if (command instanceof Command.Assert) {
+            return "ui_assert";
         }
         if (command instanceof Command.Wait) {
             return "wait";

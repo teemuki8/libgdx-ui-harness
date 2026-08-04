@@ -2,12 +2,17 @@ package dev.gdx.uiharness.protocol;
 
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import dev.gdx.uiharness.core.assertion.AssertionRequest;
+import dev.gdx.uiharness.core.assertion.UiAssertion;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.locator.Locator;
+import dev.gdx.uiharness.core.model.Bounds;
+import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.locator.LocatorFilter;
 import dev.gdx.uiharness.core.locator.TextMatch;
 import java.util.Collections;
 import java.util.Map;
+import java.util.List;
 import java.util.TreeMap;
 import java.util.Locale;
 import java.util.Objects;
@@ -20,6 +25,7 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.Snapshot.class, name = "snapshot"),
     @JsonSubTypes.Type(value = Command.Query.class, name = "query"),
     @JsonSubTypes.Type(value = Command.Action.class, name = "action"),
+    @JsonSubTypes.Type(value = Command.Assert.class, name = "assert"),
     @JsonSubTypes.Type(value = Command.Wait.class, name = "wait"),
     @JsonSubTypes.Type(value = Command.Screenshot.class, name = "screenshot"),
     @JsonSubTypes.Type(value = Command.InspectCompare.class, name = "inspect-compare"),
@@ -31,9 +37,9 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.ScenarioStart.class, name = "scenario-start")
 })
 public sealed interface Command permits Command.Sessions, Command.Capabilities, Command.Snapshot,
-        Command.Query, Command.Action, Command.Wait, Command.Screenshot, Command.TraceStart,
-        Command.InspectCompare, Command.TypographyDiagnose, Command.LayoutDiagnose,
-        Command.TraceStop, Command.ScenarioList, Command.ScenarioStart {
+        Command.Query, Command.Action, Command.Assert, Command.Wait, Command.Screenshot,
+        Command.TraceStart, Command.InspectCompare, Command.TypographyDiagnose,
+        Command.LayoutDiagnose, Command.TraceStop, Command.ScenarioList, Command.ScenarioStart {
     /** Lists active sessions. */
     record Sessions() implements Command {}
 
@@ -84,6 +90,25 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
             Objects.requireNonNull(action, "action");
         }
     }
+    /** Evaluates one closed, versioned declarative assertion until its deadline. */
+    record Assert(int schemaVersion, LocatorSpec locator, AssertionSpec assertion)
+            implements Command {
+        /** Validates the assertion contract version and operands. */
+        public Assert {
+            if (schemaVersion != AssertionRequest.SCHEMA_VERSION) {
+                throw new IllegalArgumentException(
+                        "unsupported assertion schema version: " + schemaVersion);
+            }
+            Objects.requireNonNull(locator, "locator");
+            Objects.requireNonNull(assertion, "assertion");
+        }
+
+        AssertionRequest toCore(Deadline deadline) {
+            return new AssertionRequest(schemaVersion, locator.toCore(),
+                    assertion.toCore(), Objects.requireNonNull(deadline, "deadline"));
+        }
+    }
+
 
     /** Waits for one semantic condition. */
     record Wait(LocatorSpec locator, WaitCondition condition) implements Command {
@@ -302,6 +327,149 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
             return this == PRESENT
                     ? dev.gdx.uiharness.core.wait.WaitCondition.present()
                     : dev.gdx.uiharness.core.wait.WaitCondition.visible();
+        }
+    }
+
+    /** Closed transport union for the thirteen declarative assertion variants. */
+    @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "kind")
+    @JsonSubTypes({
+        @JsonSubTypes.Type(value = AssertionSpec.Visible.class, name = "visible"),
+        @JsonSubTypes.Type(value = AssertionSpec.Hidden.class, name = "hidden"),
+        @JsonSubTypes.Type(value = AssertionSpec.Enabled.class, name = "enabled"),
+        @JsonSubTypes.Type(value = AssertionSpec.Disabled.class, name = "disabled"),
+        @JsonSubTypes.Type(value = AssertionSpec.Focused.class, name = "focused"),
+        @JsonSubTypes.Type(value = AssertionSpec.Checked.class, name = "checked"),
+        @JsonSubTypes.Type(value = AssertionSpec.TextEquals.class, name = "text-equals"),
+        @JsonSubTypes.Type(value = AssertionSpec.TextContains.class, name = "text-contains"),
+        @JsonSubTypes.Type(value = AssertionSpec.CountEquals.class, name = "count-equals"),
+        @JsonSubTypes.Type(
+                value = AssertionSpec.BoundsInsideViewport.class,
+                name = "bounds-inside-viewport"),
+        @JsonSubTypes.Type(
+                value = AssertionSpec.DoesNotOverlap.class,
+                name = "does-not-overlap"),
+        @JsonSubTypes.Type(
+                value = AssertionSpec.StableForFrames.class,
+                name = "stable-for-frames"),
+        @JsonSubTypes.Type(
+                value = AssertionSpec.AccessibleNameExists.class,
+                name = "accessible-name-exists")
+    })
+    sealed interface AssertionSpec permits AssertionSpec.Visible, AssertionSpec.Hidden,
+            AssertionSpec.Enabled, AssertionSpec.Disabled, AssertionSpec.Focused,
+            AssertionSpec.Checked, AssertionSpec.TextEquals, AssertionSpec.TextContains,
+            AssertionSpec.CountEquals, AssertionSpec.BoundsInsideViewport,
+            AssertionSpec.DoesNotOverlap, AssertionSpec.StableForFrames,
+            AssertionSpec.AccessibleNameExists {
+        UiAssertion toCore();
+
+        record Visible() implements AssertionSpec {
+            @Override public UiAssertion toCore() { return new UiAssertion.Visible(); }
+        }
+
+        record Hidden() implements AssertionSpec {
+            @Override public UiAssertion toCore() { return new UiAssertion.Hidden(); }
+        }
+
+        record Enabled() implements AssertionSpec {
+            @Override public UiAssertion toCore() { return new UiAssertion.Enabled(); }
+        }
+
+        record Disabled() implements AssertionSpec {
+            @Override public UiAssertion toCore() { return new UiAssertion.Disabled(); }
+        }
+
+        record Focused() implements AssertionSpec {
+            @Override public UiAssertion toCore() { return new UiAssertion.Focused(); }
+        }
+
+        record Checked() implements AssertionSpec {
+            @Override public UiAssertion toCore() { return new UiAssertion.Checked(); }
+        }
+
+        record TextEquals(String expected) implements AssertionSpec {
+            public TextEquals { requireAssertionText(expected); }
+            @Override public UiAssertion toCore() { return new UiAssertion.TextEquals(expected); }
+        }
+
+        record TextContains(String expected) implements AssertionSpec {
+            public TextContains { requireAssertionText(expected); }
+            @Override public UiAssertion toCore() { return new UiAssertion.TextContains(expected); }
+        }
+
+        record CountEquals(int expected) implements AssertionSpec {
+            public CountEquals {
+                if (expected < 0) throw new IllegalArgumentException("expected must be non-negative");
+            }
+            @Override public UiAssertion toCore() { return new UiAssertion.CountEquals(expected); }
+        }
+
+        private static void requireAssertionText(String expected) {
+            Objects.requireNonNull(expected, "expected");
+            if (expected.length() > ProtocolJson.MAX_STRING_LENGTH) {
+                throw new IllegalArgumentException("expected exceeds protocol string limit");
+            }
+        }
+
+        record BoundsInsideViewport(Bounds viewport) implements AssertionSpec {
+            public BoundsInsideViewport { Objects.requireNonNull(viewport, "viewport"); }
+            @Override public UiAssertion toCore() {
+                return new UiAssertion.BoundsInsideViewport(viewport);
+            }
+        }
+
+        record DoesNotOverlap(LocatorSpec other) implements AssertionSpec {
+            public DoesNotOverlap { Objects.requireNonNull(other, "other"); }
+            @Override public UiAssertion toCore() {
+                return new UiAssertion.DoesNotOverlap(other.toCore());
+            }
+        }
+
+        record StableForFrames(int frames, java.util.List<String> properties)
+                implements AssertionSpec {
+            public StableForFrames {
+                properties = List.copyOf(Objects.requireNonNull(properties, "properties"));
+                if (properties.isEmpty()) {
+                    throw new IllegalArgumentException("properties must not be empty");
+                }
+                java.util.HashSet<String> unique = new java.util.HashSet<>();
+                for (String property : properties) {
+                    parseStableProperty(property);
+                    if (!unique.add(property)) {
+                        throw new IllegalArgumentException("properties must be unique");
+                    }
+                }
+                new UiAssertion.StableForFrames(frames, properties.stream()
+                        .map(AssertionSpec::parseStableProperty)
+                        .collect(java.util.stream.Collectors.toSet()));
+            }
+
+            @Override public UiAssertion toCore() {
+                return new UiAssertion.StableForFrames(frames, properties.stream()
+                        .map(AssertionSpec::parseStableProperty)
+                        .collect(java.util.stream.Collectors.toSet()));
+            }
+        }
+
+        record AccessibleNameExists() implements AssertionSpec {
+            @Override public UiAssertion toCore() {
+                return new UiAssertion.AccessibleNameExists();
+            }
+        }
+
+        private static UiAssertion.StableProperty parseStableProperty(String value) {
+            Objects.requireNonNull(value, "stable property");
+            return switch (value) {
+                case "bounds" -> UiAssertion.StableProperty.BOUNDS;
+                case "text" -> UiAssertion.StableProperty.TEXT;
+                case "accessible-name" -> UiAssertion.StableProperty.ACCESSIBLE_NAME;
+                case "visible" -> UiAssertion.StableProperty.VISIBLE;
+                case "enabled" -> UiAssertion.StableProperty.ENABLED;
+                case "checked" -> UiAssertion.StableProperty.CHECKED;
+                case "focused" -> UiAssertion.StableProperty.FOCUSED;
+                default -> throw new IllegalArgumentException(
+                        "unknown stable property: " + value);
+            };
         }
     }
 

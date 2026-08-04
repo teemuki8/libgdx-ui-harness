@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import dev.gdx.uiharness.core.action.ActionResult;
+import dev.gdx.uiharness.core.assertion.AssertionResult;
 import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.contract.ConditionalRule;
 import dev.gdx.uiharness.core.contract.ContractValue;
@@ -96,6 +97,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(value = Result.Snapshot.class, name = "snapshot"),
         @JsonSubTypes.Type(value = Result.Query.class, name = "query"),
         @JsonSubTypes.Type(value = Result.Action.class, name = "action"),
+        @JsonSubTypes.Type(value = Result.Assertion.class, name = "assertion"),
         @JsonSubTypes.Type(value = Result.Wait.class, name = "wait"),
         @JsonSubTypes.Type(value = Result.Screenshot.class, name = "screenshot"),
         @JsonSubTypes.Type(value = Result.InspectCompare.class, name = "inspect-compare"),
@@ -109,9 +111,10 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(value = Result.ScenarioStart.class, name = "scenario-start")
     })
     sealed interface Result permits Result.Sessions, Result.Capabilities, Result.Snapshot,
-            Result.Query, Result.Action, Result.Wait, Result.Screenshot, Result.TraceStarted,
-            Result.InspectCompare, Result.TypographyDiagnostic, Result.LayoutDiagnostic,
-            Result.TraceStopped, Result.ScenarioList, Result.ScenarioStart {
+            Result.Query, Result.Action, Result.Assertion, Result.Wait, Result.Screenshot,
+            Result.TraceStarted, Result.InspectCompare, Result.TypographyDiagnostic,
+            Result.LayoutDiagnostic, Result.TraceStopped, Result.ScenarioList,
+            Result.ScenarioStart {
         /** Active session catalog. */
         record Sessions(List<SessionInfo> sessions) implements Result {
             /** Defensively copies the session catalog. */
@@ -193,6 +196,79 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             static Action fromCore(ActionResult result) {
                 return new Action(result.beforeRevision(), result.afterRevision(),
                         result.observedState(), result.evidence());
+            }
+        }
+
+        /** Complete bounded evidence for one declarative assertion outcome. */
+        record Assertion(
+                int schemaVersion,
+                String outcome,
+                Command.LocatorSpec locator,
+                Command.AssertionSpec assertion,
+                String nodeId,
+                String expected,
+                String lastObserved,
+                String actionability,
+                long revision,
+                long frame,
+                long elapsedMillis,
+                List<Map<String, String>> candidates,
+                boolean truncated,
+                String traceId) implements Result {
+            /** Validates and defensively bounds assertion evidence. */
+            public Assertion {
+                if (schemaVersion != dev.gdx.uiharness.core.assertion.AssertionRequest.SCHEMA_VERSION) {
+                    throw new IllegalArgumentException(
+                            "unsupported assertion schema version: " + schemaVersion);
+                }
+                if (!"passed".equals(outcome) && !"failed".equals(outcome)) {
+                    throw new IllegalArgumentException("unknown assertion outcome: " + outcome);
+                }
+                locator = Objects.requireNonNull(locator, "locator");
+                assertion = Objects.requireNonNull(assertion, "assertion");
+                requireBoundedEvidenceText(nodeId, "nodeId");
+                requireBoundedEvidenceText(expected, "expected");
+                requireBoundedEvidenceText(lastObserved, "lastObserved");
+                if (!"satisfied".equals(actionability) && !"retryable".equals(actionability)) {
+                    throw new IllegalArgumentException(
+                            "unknown assertion actionability: " + actionability);
+                }
+                if (revision < 0 || frame < 0 || elapsedMillis < 0) {
+                    throw new IllegalArgumentException(
+                            "assertion counters and elapsed time must be non-negative");
+                }
+                candidates = copyEvidence(candidates, "assertion candidates");
+                if (candidates.size() > 1_000) {
+                    throw new IllegalArgumentException(
+                            "assertion candidates exceed protocol limit");
+                }
+                if (traceId != null) ProtocolJson.requireIdentifier(traceId, "traceId");
+            }
+
+            static Assertion fromCore(
+                    Command.Assert command, AssertionResult result) {
+                AssertionResult.Status status = result.status();
+                return new Assertion(
+                        command.schemaVersion(),
+                        status == AssertionResult.Status.PASSED ? "passed" : "failed",
+                        command.locator(),
+                        command.assertion(),
+                        result.evidence().nodeId(),
+                        result.evidence().expected(),
+                        result.evidence().observed(),
+                        status == AssertionResult.Status.PASSED ? "satisfied" : "retryable",
+                        result.evidence().revision(),
+                        result.evidence().frame(),
+                        result.elapsedNanos() / 1_000_000,
+                        List.of(),
+                        false,
+                        null);
+            }
+            private static void requireBoundedEvidenceText(String value, String name) {
+                Objects.requireNonNull(value, name);
+                if (value.length() > ProtocolJson.MAX_STRING_LENGTH) {
+                    throw new IllegalArgumentException(name + " exceeds protocol string limit");
+                }
             }
         }
 

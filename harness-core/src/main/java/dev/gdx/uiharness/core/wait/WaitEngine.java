@@ -1,5 +1,8 @@
 package dev.gdx.uiharness.core.wait;
 
+import dev.gdx.uiharness.core.assertion.AssertionEngine;
+import dev.gdx.uiharness.core.assertion.AssertionRequest;
+import dev.gdx.uiharness.core.assertion.AssertionResult;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
@@ -17,6 +20,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.CompletionStage;
 import java.util.function.Supplier;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
@@ -43,6 +47,14 @@ public final class WaitEngine implements AutoCloseable {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.frames = Objects.requireNonNull(frames, "frames");
     }
+    /**
+     * Evaluates a declarative assertion using this engine's production snapshot, frame, locator,
+     * and monotonic-time boundaries.
+     */
+    public CompletionStage<AssertionResult> assertThat(AssertionRequest request) {
+        return new AssertionEngine(locators).assertThat(snapshots, request, frames, clock);
+    }
+
 
     /**
      * Resolves the locator against a fresh snapshot initially and after changed frame signals.
