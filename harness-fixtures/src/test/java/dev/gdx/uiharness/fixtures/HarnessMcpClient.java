@@ -94,7 +94,7 @@ final class HarnessMcpClient implements Closeable {
         return content.path("outcome");
     }
 
-    void cancelScenario(
+    JsonNode cancelScenario(
             String sessionId, String scenarioId, String profileId, long deadlineMillis)
             throws Exception {
         long cancelledId = ++requestId;
@@ -117,6 +117,7 @@ final class HarnessMcpClient implements Closeable {
         if (!pong.isObject()) {
             throw new IllegalStateException("MCP ping failed after cancellation");
         }
+        return pong;
     }
 
     Snapshot snapshot(String sessionId) throws Exception {
@@ -391,11 +392,15 @@ final class HarnessMcpClient implements Closeable {
     private JsonNode request(String method, Map<String, Object> params) throws Exception {
         long id = ++requestId;
         send(Map.of("jsonrpc", "2.0", "id", id, "method", method, "params", params));
+        return response(id, method);
+    }
+
+    private JsonNode response(long id, String operation) throws Exception {
         JsonNode message;
         do {
             String line = input.readLine();
             if (line == null) {
-                throw new IllegalStateException("MCP stdout closed while awaiting " + method);
+                throw new IllegalStateException("MCP stdout closed while awaiting " + operation);
             }
             message = JSON.readTree(line);
         } while (!message.has("id"));

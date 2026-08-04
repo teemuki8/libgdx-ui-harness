@@ -38,6 +38,7 @@ import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
 import dev.gdx.uiharness.lwjgl3.LaunchProfile;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3ScreenCapture;
+import dev.gdx.uiharness.lwjgl3.RegisteredLaunchCoordinator;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3VisualComparator;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3TypographyRasterComparator;
 import dev.gdx.uiharness.mcp.ArtifactReference;
@@ -134,6 +135,8 @@ public final class FixtureControl implements AutoCloseable {
     private final ExecutorService terminationExecutor;
     private final ScheduledExecutorService scenarioDeadlines;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicBoolean withholdScenarioFrames = new AtomicBoolean();
+    private final RegisteredLaunchCoordinator launchCoordinator;
     private HarnessMcpServer server;
     private Future<?> terminationTask;
 
@@ -153,18 +156,42 @@ public final class FixtureControl implements AutoCloseable {
         sceneHarness = new Scene2dHarness(stage, stage, sceneSession, scheduler, clock,
                 clock::revision, clock::frame);
         scenarios = new ScenarioRegistry();
-        ReferenceScenarioLifecycle lifecycle = new ReferenceScenarioLifecycle(stage);
+        ReferenceScenarioLifecycle lifecycle =
+                new ReferenceScenarioLifecycle(stage, withholdScenarioFrames);
         scenarios.register(scenario("reference-reset", APPLICATION_ID), lifecycle);
-        scenarios.register(scenario("never-ready", APPLICATION_ID), lifecycle);
+        scenarios.register(scenario(
+                "never-ready", APPLICATION_ID, Duration.ofMillis(100)), lifecycle);
         scenarios.register(scenario("incompatible-reference", "another-application"), lifecycle);
         scenarioDeadlines = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofPlatform().name("reference-scenario-deadline").factory());
         scenarioRunner = new Scene2dScenarioRunner(
                 scenarios, scheduler, clock, (delay, signal) -> {
                     var scheduled = scenarioDeadlines.schedule(
-                            signal, delay.toNanos(), TimeUnit.NANOSECONDS);
+                            signal,
+                            delay.plus(Duration.ofMillis(100)).toNanos(),
+                            TimeUnit.NANOSECONDS);
                     return () -> scheduled.cancel(false);
                 });
+        launchCoordinator = (profileId, deadline) -> {
+            if (!RESTART_PROFILE.id().equals(profileId)) {
+                return CompletableFuture.completedFuture(
+                        RegisteredLaunchCoordinator.LaunchFailure.UNKNOWN_PROFILE);
+            }
+            if (deadline.isExpired()) {
+                return CompletableFuture.completedFuture(
+                        RegisteredLaunchCoordinator.LaunchFailure.DEADLINE);
+            }
+            return CompletableFuture.completedFuture(
+                    new RegisteredLaunchCoordinator.LaunchResult(
+                            1,
+                            profileId,
+                            APPLICATION_ID,
+                            PROCESS_ID,
+                            "reference-ui-restarted",
+                            SESSION_ID,
+                            "reference-ui-restarted",
+                            Duration.ZERO));
+        };
         fence = new Lwjgl3FrameFence(64);
         capture = new Lwjgl3ScreenCapture(fence, sceneSession::snapshot);
         LocatorEngine locators = new StrictResolution();
@@ -246,7 +273,9 @@ public final class FixtureControl implements AutoCloseable {
 
     /** Publishes identity for the framebuffer that was just rendered. */
     public void afterDraw() {
-        sceneSession.completedFrame(scenarioRunner, clock.revision(), clock.frame());
+        if (!withholdScenarioFrames.get()) {
+            sceneSession.completedFrame(scenarioRunner, clock.revision(), clock.frame());
+        }
         fence.completedFrame(clock.revision(), clock.frame());
     }
 
@@ -294,11 +323,46 @@ public final class FixtureControl implements AutoCloseable {
                     new HarnessResponse.ScenarioStartOutcome.Rejected(
                             "incompatible-scenario"));
         }
-        return scenarioRunner.start(request, APPLICATION_ID, PROCESS_ID, SESSION_ID)
-                .thenApply(HarnessResponse.ScenarioStartOutcome.Completed::new);
+        RegisteredLaunchCoordinator.LaunchOutcome outcome =
+                launchCoordinator.restart(request.profileId(), request.deadline())
+                        .toCompletableFuture().join();
+        if (outcome instanceof RegisteredLaunchCoordinator.LaunchFailure) {
+            return CompletableFuture.completedFuture(
+                    new HarnessResponse.ScenarioStartOutcome.Rejected(
+                            "incompatible-scenario"));
+        }
+        RegisteredLaunchCoordinator.LaunchResult launched =
+                (RegisteredLaunchCoordinator.LaunchResult) outcome;
+        CompletableFuture<dev.gdx.uiharness.core.scenario.ScenarioResult> source =
+                scenarioRunner.start(
+                                request,
+                                launched.applicationId(),
+                                launched.processId(),
+                                launched.sessionId())
+                        .toCompletableFuture();
+        CompletableFuture<HarnessResponse.ScenarioStartOutcome> mapped =
+                new CompletableFuture<>() {
+                    @Override public boolean cancel(boolean mayInterruptIfRunning) {
+                        return source.cancel(mayInterruptIfRunning)
+                                && super.cancel(mayInterruptIfRunning);
+                    }
+                };
+        source.whenComplete((result, failure) -> {
+            if (failure != null) {
+                mapped.completeExceptionally(failure);
+            } else {
+                mapped.complete(new HarnessResponse.ScenarioStartOutcome.Completed(result));
+            }
+        });
+        return mapped;
     }
 
     private static ScenarioDefinition scenario(String id, String applicationId) {
+        return scenario(id, applicationId, Duration.ofSeconds(5));
+    }
+
+    private static ScenarioDefinition scenario(
+            String id, String applicationId, Duration maxDuration) {
         return new ScenarioDefinition(
                 ScenarioDefinition.SCHEMA_VERSION,
                 id,
@@ -306,19 +370,23 @@ public final class FixtureControl implements AutoCloseable {
                 applicationId,
                 List.of(RESTART_PROFILE.id()),
                 1,
-                Duration.ofSeconds(5));
+                maxDuration);
     }
 
     private static final class ReferenceScenarioLifecycle implements ScenarioLifecycle {
         private final Stage stage;
+        private final AtomicBoolean withholdScenarioFrames;
         private final IdentityHashMap<ScenarioRequest, Integer> readiness = new IdentityHashMap<>();
 
-        ReferenceScenarioLifecycle(Stage stage) {
+        ReferenceScenarioLifecycle(Stage stage, AtomicBoolean withholdScenarioFrames) {
             this.stage = stage;
+            this.withholdScenarioFrames = withholdScenarioFrames;
         }
 
         @Override public void setup(ScenarioRequest request) {
             readiness.put(request, 0);
+            withholdScenarioFrames.set(Boolean.parseBoolean(
+                    request.configuration().getOrDefault("withholdCompletedFrames", "false")));
         }
 
         @Override public void reset(ScenarioRequest request) {
@@ -341,6 +409,8 @@ public final class FixtureControl implements AutoCloseable {
 
         @Override public void cleanup(ScenarioRequest request) {
             readiness.remove(request);
+            withholdScenarioFrames.set(false);
+            textField("password").setText(request.scenarioId() + ":cleaned");
         }
 
         private TextField textField(String name) {

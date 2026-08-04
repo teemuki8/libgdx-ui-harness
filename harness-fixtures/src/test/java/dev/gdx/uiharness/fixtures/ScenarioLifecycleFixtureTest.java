@@ -14,6 +14,8 @@ final class ScenarioLifecycleFixtureTest {
     private static final String SESSION_ID = "reference-ui";
     private static final String PROFILE_ID = "desktop-restart-1280x720";
 
+    private static final String REPLACEMENT_PROCESS_ID = "reference-ui-restarted";
+    private static final String REPLACEMENT_SESSION_ID = "reference-ui-restarted";
     @Test
     @Timeout(120)
     void registeredLifecycleRunsThroughProductionMcpAndCleansEveryTerminalPath() throws Exception {
@@ -46,6 +48,8 @@ final class ScenarioLifecycleFixtureTest {
                     > firstResult.path("startRevision").asLong());
             assertEquals("reference-reset:42:clean",
                     firstResult.path("startStateIdentity").asText());
+            assertEquals(REPLACEMENT_PROCESS_ID, firstResult.path("processId").asText());
+            assertEquals(REPLACEMENT_SESSION_ID, firstResult.path("sessionId").asText());
             assertEquals("", client.singleTextByTestId(SESSION_ID, "username"));
 
             client.fillByLabel(SESSION_ID, "Username", "changed again");
@@ -69,13 +73,20 @@ final class ScenarioLifecycleFixtureTest {
 
             long frameBeforeDeadline = client.snapshot(SESSION_ID).frame();
             JsonNode deadline = client.startScenario(
-                    SESSION_ID, "never-ready", 0, Map.of(), PROFILE_ID, 1);
+                    SESSION_ID,
+                    "never-ready",
+                    0,
+                    Map.of("withholdCompletedFrames", "true"),
+                    PROFILE_ID,
+                    5_000);
             assertEquals("readiness-deadline", deadline.at("/scenario/failure").asText());
             assertTrue(deadline.at("/scenario/cleanupCompleted").asBoolean());
             assertEquals(0, deadline.at("/scenario/readyFrame").asLong());
             assertTrue(client.snapshot(SESSION_ID).frame() > frameBeforeDeadline);
 
             client.cancelScenario(SESSION_ID, "never-ready", PROFILE_ID, 5_000);
+            assertEquals("never-ready:cleaned",
+                    client.singleTextByTestId(SESSION_ID, "password"));
             JsonNode afterCancellation = client.startScenario(
                     SESSION_ID, "reference-reset", 7, Map.of(), PROFILE_ID, 5_000);
             assertEquals("completed", afterCancellation.path("kind").asText());
