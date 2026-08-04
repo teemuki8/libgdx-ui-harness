@@ -227,3 +227,12 @@ fixture assertions, and ADR semantics cover the additive outcome.
 ### Concerns
 
 None.
+
+## Full-suite regression fix
+
+Updated `ReferenceApplicationSmokeTest`'s canonical capability expectation to include
+`scenario-list` and `scenario-start`, matching the scenario-enabled fixture.
+
+`./gradlew :harness-fixtures:test --tests dev.gdx.uiharness.fixtures.ReferenceApplicationSmokeTest --warning-mode=fail`
+
+Passed: `BUILD SUCCESSFUL in 20s`, 16 actionable tasks (2 executed, 14 up-to-date).
