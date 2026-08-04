@@ -12,7 +12,18 @@ import java.util.concurrent.CompletionStage;
  */
 @FunctionalInterface
 public interface RegisteredLaunchCoordinator {
-    CompletionStage<LaunchResult> restart(String registeredProfileId, Deadline deadline);
+    CompletionStage<LaunchOutcome> restart(String registeredProfileId, Deadline deadline);
+
+    /** Closed terminal outcome for a registered restart attempt. */
+    sealed interface LaunchOutcome permits LaunchResult, LaunchFailure {}
+
+    /** Terminal failures that do not expose replacement identities. */
+    enum LaunchFailure implements LaunchOutcome {
+        UNKNOWN_PROFILE,
+        INCOMPATIBLE_APPLICATION,
+        DEADLINE,
+        CANCELLED
+    }
 
     /** Immutable successful restart evidence containing identities, never launch instructions. */
     record LaunchResult(
@@ -23,7 +34,7 @@ public interface RegisteredLaunchCoordinator {
             String processId,
             String previousSessionId,
             String sessionId,
-            Duration elapsed) {
+            Duration elapsed) implements LaunchOutcome {
         public LaunchResult {
             schemaVersion = LaunchProfile.supportedSchemaVersion(schemaVersion);
             profileId = LaunchProfile.identifier(profileId, "profileId");

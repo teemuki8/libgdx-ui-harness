@@ -2,9 +2,9 @@ package dev.gdx.uiharness.lwjgl3;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.MonotonicClock;
@@ -13,10 +13,6 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CancellationException;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.CompletionStage;
 import org.junit.jupiter.api.Test;
 
 class RegisteredLaunchCoordinatorTest {
@@ -26,7 +22,8 @@ class RegisteredLaunchCoordinatorTest {
     void aKnownCompatibleProfileReturnsReplacementIdentities() {
         var coordinator = coordinator("sample-app");
 
-        var result = coordinator.restart("hidpi", deadline()).toCompletableFuture().join();
+        var outcome = coordinator.restart("hidpi", deadline()).toCompletableFuture().join();
+        var result = assertInstanceOf(RegisteredLaunchCoordinator.LaunchResult.class, outcome);
 
         assertEquals(1, result.schemaVersion());
         assertEquals("hidpi", result.profileId());
@@ -40,40 +37,40 @@ class RegisteredLaunchCoordinatorTest {
     }
 
     @Test
-    void anUnknownProfileIsRejectedByTheHostAllowlist() {
-        var failure = assertThrows(CompletionException.class,
-                () -> coordinator("sample-app").restart("unregistered", deadline())
-                        .toCompletableFuture().join());
+    void anUnknownProfileReturnsAProductionFailureOutcome() {
+        var outcome = coordinator("sample-app").restart("unregistered", deadline())
+                .toCompletableFuture().join();
 
-        assertTrue(failure.getCause() instanceof IllegalArgumentException);
+        assertEquals(RegisteredLaunchCoordinator.LaunchFailure.UNKNOWN_PROFILE, outcome);
     }
 
     @Test
-    void anApplicationIncompatibleProfileIsRejected() {
-        var failure = assertThrows(CompletionException.class,
-                () -> coordinator("other-app").restart("hidpi", deadline())
-                        .toCompletableFuture().join());
+    void anApplicationIncompatibleProfileReturnsAProductionFailureOutcome() {
+        var outcome = coordinator("other-app").restart("hidpi", deadline())
+                .toCompletableFuture().join();
 
-        assertTrue(failure.getCause() instanceof IllegalStateException);
+        assertEquals(RegisteredLaunchCoordinator.LaunchFailure.INCOMPATIBLE_APPLICATION, outcome);
     }
 
     @Test
-    void expiredDeadlinesAreRejectedWithoutLaunching() {
+    void expiredDeadlinesReturnAProductionFailureOutcome() {
         var expired = Deadline.after(CLOCK, Duration.ZERO);
-        var failure = assertThrows(CompletionException.class,
-                () -> coordinator("sample-app").restart("hidpi", expired)
-                        .toCompletableFuture().join());
 
-        assertTrue(failure.getCause() instanceof IllegalStateException);
+        var outcome = coordinator("sample-app").restart("hidpi", expired)
+                .toCompletableFuture().join();
+
+        assertEquals(RegisteredLaunchCoordinator.LaunchFailure.DEADLINE, outcome);
     }
 
     @Test
-    void hostRestartStagesRemainCancellable() {
-        CompletableFuture<RegisteredLaunchCoordinator.LaunchResult> pending = new CompletableFuture<>();
-        RegisteredLaunchCoordinator coordinator = (profileId, deadline) -> pending;
+    void hostCancellationReturnsAProductionFailureOutcome() {
+        RegisteredLaunchCoordinator coordinator = (profileId, deadline) ->
+                java.util.concurrent.CompletableFuture.completedFuture(
+                        RegisteredLaunchCoordinator.LaunchFailure.CANCELLED);
 
-        assertTrue(coordinator.restart("hidpi", deadline()).toCompletableFuture().cancel(false));
-        assertThrows(CancellationException.class, pending::join);
+        var outcome = coordinator.restart("hidpi", deadline()).toCompletableFuture().join();
+
+        assertEquals(RegisteredLaunchCoordinator.LaunchFailure.CANCELLED, outcome);
     }
 
     @Test
@@ -110,15 +107,18 @@ class RegisteredLaunchCoordinatorTest {
         return (profileId, deadline) -> {
             LaunchProfile profile = allowlist.get(profileId);
             if (profile == null) {
-                return CompletableFuture.failedFuture(new IllegalArgumentException("unknown profile"));
+                return java.util.concurrent.CompletableFuture.completedFuture(
+                        RegisteredLaunchCoordinator.LaunchFailure.UNKNOWN_PROFILE);
             }
             if (!profile.applicationId().equals(activeApplicationId)) {
-                return CompletableFuture.failedFuture(new IllegalStateException("incompatible application"));
+                return java.util.concurrent.CompletableFuture.completedFuture(
+                        RegisteredLaunchCoordinator.LaunchFailure.INCOMPATIBLE_APPLICATION);
             }
             if (deadline.isExpired()) {
-                return CompletableFuture.failedFuture(new IllegalStateException("deadline expired"));
+                return java.util.concurrent.CompletableFuture.completedFuture(
+                        RegisteredLaunchCoordinator.LaunchFailure.DEADLINE);
             }
-            return CompletableFuture.completedFuture(result(
+            return java.util.concurrent.CompletableFuture.completedFuture(result(
                     "process-before", "process-after", "session-before", "session-after", Duration.ZERO));
         };
     }
