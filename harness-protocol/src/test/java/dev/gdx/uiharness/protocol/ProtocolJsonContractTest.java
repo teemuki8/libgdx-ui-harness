@@ -230,6 +230,11 @@ final class ProtocolJsonContractTest {
         assertEquals("readiness-deadline", failed.failure().wireName());
         assertTrue(ProtocolJson.mapper().writeValueAsString(failed)
                 .contains("\"failure\":\"readiness-deadline\""));
+        assertEquals(
+                HarnessResponse.ScenarioFailureData.READINESS_REJECTED,
+                HarnessResponse.ScenarioFailureData.fromWireName("readiness-rejected"));
+        assertEquals("\"readiness-rejected\"", ProtocolJson.mapper().writeValueAsString(
+                HarnessResponse.ScenarioFailureData.READINESS_REJECTED));
     }
     @Test void scenarioResultRejectsUnknownTerminalFailure() {
         String unknownFailure = "{\"schemaVersion\":1,\"scenarioId\":\"known\","

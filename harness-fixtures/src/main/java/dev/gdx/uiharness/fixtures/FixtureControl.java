@@ -111,8 +111,8 @@ public final class FixtureControl implements AutoCloseable {
     private static final Duration FIXED_STEP = Duration.ofMillis(16);
     private static final Duration ARTIFACT_LIFETIME = Duration.ofHours(1);
     private static final List<String> CAPABILITIES = List.of(
-            "action", "compare", "query", "screenshot", "snapshot",
-            "layout", "trace", "typography", "wait");
+            "action", "compare", "query", "scenario-list", "scenario-start",
+            "screenshot", "snapshot", "layout", "trace", "typography", "wait");
 
     private final Path processRoot;
     private final Path artifactRoot;

@@ -102,6 +102,23 @@ final class Scene2dScenarioRunnerTest {
         }
     }
 
+    @Test void readinessExceptionIsDistinctFromResetRejection() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "unused") {
+                @Override public boolean ready(ScenarioRequest request) {
+                    throw new IllegalStateException("readiness rejected");
+                }
+            });
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(1));
+            fixture.scheduler.drain();
+            fixture.completedFrame();
+
+            assertEquals(
+                    ScenarioFailure.READINESS_REJECTED,
+                    started.toCompletableFuture().join().failure().orElseThrow());
+        }
+    }
+
     @Test void cancellationSchedulesRenderThreadCleanup() {
         try (Fixture fixture = new Fixture()) {
             AtomicReference<Thread> cleanupThread = new AtomicReference<>();

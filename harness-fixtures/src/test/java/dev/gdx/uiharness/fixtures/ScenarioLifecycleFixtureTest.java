@@ -21,6 +21,8 @@ final class ScenarioLifecycleFixtureTest {
     void registeredLifecycleRunsThroughProductionMcpAndCleansEveryTerminalPath() throws Exception {
         try (ReferenceProcess app = ReferenceProcess.launch()) {
             try (HarnessMcpClient client = HarnessMcpClient.connect(app)) {
+            assertTrue(client.capabilities(SESSION_ID).containsAll(
+                    List.of("scenario-list", "scenario-start")));
             JsonNode catalog = client.scenarios(SESSION_ID);
             assertTrue(catalog.path("available").asBoolean());
             assertEquals(

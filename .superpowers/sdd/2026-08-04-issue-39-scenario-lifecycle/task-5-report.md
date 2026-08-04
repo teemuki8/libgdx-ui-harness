@@ -63,3 +63,41 @@ the independently scheduled scenario maximum terminalizes with
 `READINESS_DEADLINE`. Cancellation now propagates through the fixture host
 mapping, and its cleanup hook is observed through the production semantic
 query path before the next start.
+
+## Final review fix wave
+
+### Red
+
+`./gradlew :harness-scene2d:test --tests '*Scene2dScenarioRunnerTest.readinessExceptionIsDistinctFromResetRejection' :harness-fixtures:test --tests '*ScenarioLifecycleFixtureTest' --no-daemon --console=plain --warning-mode=fail`
+
+Failed at test compilation because `ScenarioFailure.READINESS_REJECTED` did not
+exist. The same red change added an assertion for the missing `scenario-list`
+and `scenario-start` capability advertisements.
+
+`./gradlew :harness-protocol:test :harness-mcp:test --no-daemon --console=plain --warning-mode=fail`
+
+Failed in `HarnessToolCatalogTest.goldenCatalogMatchesTypedSchemas` because the
+MCP golden schema did not contain the new closed failure value.
+
+### Green
+
+`./gradlew :harness-scene2d:test --tests '*Scene2dScenarioRunnerTest' :harness-fixtures:test --tests '*ScenarioLifecycleFixtureTest' --no-daemon --console=plain --warning-mode=fail`
+
+Passed: `BUILD SUCCESSFUL in 12s`, 18 actionable tasks (12 executed, 6
+up-to-date).
+
+`./gradlew :harness-protocol:test :harness-mcp:test --no-daemon --console=plain --warning-mode=fail`
+
+Passed: `BUILD SUCCESSFUL in 10s`, 12 actionable tasks (4 executed, 8
+up-to-date).
+
+### Blocker
+
+The fixture's registered restart remains blocked. The current
+`RegisteredLaunchCoordinator` returns only replacement identity strings; it
+has no interface for executing the pending `ScenarioRequest` in the
+replacement process, and the protocol has no handoff outcome carrying a
+host-owned reconnect handle. The existing MCP connection is the old process's
+stdio, so spawning a child cannot transfer the request or return the child
+result without a private host transport/proxy boundary. Relabeling the old
+`Stage` and runner would continue to fabricate replacement evidence.

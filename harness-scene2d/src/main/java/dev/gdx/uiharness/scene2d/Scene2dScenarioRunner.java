@@ -244,7 +244,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             try {
                 ready = hooks.ready(request);
             } catch (RuntimeException failure) {
-                terminate(ScenarioFailure.RESET_REJECTED);
+                terminate(ScenarioFailure.READINESS_REJECTED);
                 return;
             }
             if (!ready) {

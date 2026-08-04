@@ -709,6 +709,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         UNSUPPORTED_PROFILE("unsupported-profile"),
         SETUP_REJECTED("setup-rejected"),
         RESET_REJECTED("reset-rejected"),
+        READINESS_REJECTED("readiness-rejected"),
         READINESS_DEADLINE("readiness-deadline"),
         PROCESS_REPLACED("process-replaced"),
         SESSION_REPLACED("session-replaced"),
@@ -749,6 +750,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                 case UNSUPPORTED_PROFILE -> UNSUPPORTED_PROFILE;
                 case SETUP_REJECTED -> SETUP_REJECTED;
                 case RESET_REJECTED -> RESET_REJECTED;
+                case READINESS_REJECTED -> READINESS_REJECTED;
                 case READINESS_DEADLINE -> READINESS_DEADLINE;
                 case PROCESS_REPLACED -> PROCESS_REPLACED;
                 case SESSION_REPLACED -> SESSION_REPLACED;
