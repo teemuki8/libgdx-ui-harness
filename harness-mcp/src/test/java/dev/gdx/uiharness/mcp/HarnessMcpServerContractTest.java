@@ -118,7 +118,7 @@ final class HarnessMcpServerContractTest {
         HarnessResponse response = new HarnessResponse.Success(
                 ProtocolVersion.V1, "mcp-1", "game",
                 new HarnessResponse.Result.ScenarioStart(
-                        new HarnessResponse.ScenarioStartOutcome.Unavailable()));
+                        new HarnessResponse.ScenarioStartOutcome.Failed("deadline")));
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
                 HarnessToolHandler handler = new HarnessToolHandler(request -> {
                     observed.set(request);
@@ -137,6 +137,8 @@ final class HarnessMcpServerContractTest {
 
             assertFalse(result.isError());
             assertEquals(600_000, observed.get().deadlineMillis());
+            assertEquals(Map.of("kind", "failed", "reason", "deadline"),
+                    ((Map<?, ?>) structured(result).get("outcome")));
             Command.ScenarioStart command =
                     (Command.ScenarioStart) observed.get().command();
             assertEquals("main-menu", command.scenarioId());

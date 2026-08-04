@@ -371,6 +371,10 @@ public final class HarnessToolCatalog {
                                 "unsupported-profile")),
                         List.of("kind", "reason")),
                 object(Map.of(
+                        "kind", Map.of("const", "failed", "type", "string"),
+                        "reason", enumString("deadline", "cancelled")),
+                        List.of("kind", "reason")),
+                object(Map.of(
                         "kind", Map.of("const", "completed", "type", "string"),
                         "scenario", scenarioResultSchema(),
                         "reconnectIdentity", string(1, MAX_IDENTIFIER)),

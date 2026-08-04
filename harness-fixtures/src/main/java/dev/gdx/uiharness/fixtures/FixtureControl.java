@@ -316,12 +316,23 @@ public final class FixtureControl implements AutoCloseable {
             } else if (outcome instanceof RegisteredLaunchCoordinator.HandoffResult handoff) {
                 mapped.complete(new HarnessResponse.ScenarioStartOutcome.Completed(
                         handoff.scenario(), handoff.reconnectIdentity()));
-            } else {
-                mapped.complete(new HarnessResponse.ScenarioStartOutcome.Rejected(
-                        "incompatible-scenario"));
+            } else if (outcome instanceof RegisteredLaunchCoordinator.HandoffFailure handoffFailure) {
+                mapped.complete(mapHandoffFailure(handoffFailure));
             }
         });
         return mapped;
+    }
+
+    static HarnessResponse.ScenarioStartOutcome mapHandoffFailure(
+            RegisteredLaunchCoordinator.HandoffFailure failure) {
+        return switch (failure) {
+            case UNKNOWN_PROFILE ->
+                    new HarnessResponse.ScenarioStartOutcome.Rejected("unsupported-profile");
+            case INCOMPATIBLE_APPLICATION ->
+                    new HarnessResponse.ScenarioStartOutcome.Rejected("incompatible-scenario");
+            case DEADLINE -> new HarnessResponse.ScenarioStartOutcome.Failed("deadline");
+            case CANCELLED -> new HarnessResponse.ScenarioStartOutcome.Failed("cancelled");
+        };
     }
 
 

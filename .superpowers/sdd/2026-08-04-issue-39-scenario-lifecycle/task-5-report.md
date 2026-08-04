@@ -198,3 +198,32 @@ unbounded `readLine()`.
 ### Concerns
 
 None.
+
+## Fix round 4
+
+### Red
+
+`./gradlew :harness-fixtures:test --tests dev.gdx.uiharness.fixtures.FixtureControlTest --no-daemon --console=plain`
+
+Failed at test compilation because `ScenarioStartOutcome.Failed` and the exhaustive handoff-failure
+mapping did not exist. The four tests specify unknown-profile and incompatible-application
+pre-execution rejections plus distinct deadline and cancellation terminal failures.
+
+### Green
+
+`./gradlew :harness-protocol:test :harness-mcp:test --no-daemon --console=plain`
+
+Passed: `BUILD SUCCESSFUL in 11s`, 12 actionable tasks (4 executed, 8 up-to-date).
+
+`./gradlew :harness-fixtures:test --tests dev.gdx.uiharness.fixtures.ScenarioLifecycleFixtureTest --tests dev.gdx.uiharness.fixtures.FixtureControlTest --no-daemon --console=plain`
+
+Passed: `BUILD SUCCESSFUL in 12s`, 16 actionable tasks (2 executed, 14 up-to-date).
+
+`FixtureControl` now maps the closed `HandoffFailure` enum with an exhaustive switch. Identity
+selection failures remain pre-execution `Rejected` outcomes, while deadline and cancellation use
+the new closed `Failed` outcome with distinct reasons. Protocol JSON, MCP output/schema goldens,
+fixture assertions, and ADR semantics cover the additive outcome.
+
+### Concerns
+
+None.

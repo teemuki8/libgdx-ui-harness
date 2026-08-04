@@ -39,7 +39,9 @@ Protocol V1 adds the closed `scenario-list` and `scenario-start` command/result 
 configuration, registered profile ID, and explicit deadline. It never accepts code, commands,
 filesystem paths, environment variables, class names, launch arguments, or reflection targets.
 Unknown scenario, incompatible scenario, and unsupported profile selections are closed terminal
-rejections rather than transport extensions.
+pre-execution rejections rather than transport extensions. A handoff deadline or cancellation is
+instead a closed terminal start failure, preserving both its post-validation semantics and its
+distinct reason without exposing a replacement identity.
 
 Scenario registration and coordination are optional session capabilities. Listing reports an
 explicit unavailable catalog when no registry is registered, and start returns an explicit

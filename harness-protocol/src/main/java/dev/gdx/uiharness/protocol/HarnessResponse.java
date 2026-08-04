@@ -630,10 +630,12 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
     @JsonSubTypes({
         @JsonSubTypes.Type(value = ScenarioStartOutcome.Unavailable.class, name = "unavailable"),
         @JsonSubTypes.Type(value = ScenarioStartOutcome.Rejected.class, name = "rejected"),
+        @JsonSubTypes.Type(value = ScenarioStartOutcome.Failed.class, name = "failed"),
         @JsonSubTypes.Type(value = ScenarioStartOutcome.Completed.class, name = "completed")
     })
     sealed interface ScenarioStartOutcome permits ScenarioStartOutcome.Unavailable,
-            ScenarioStartOutcome.Rejected, ScenarioStartOutcome.Completed {
+            ScenarioStartOutcome.Rejected, ScenarioStartOutcome.Failed,
+            ScenarioStartOutcome.Completed {
         /** The selected session has no scenario registry or coordinator. */
         record Unavailable() implements ScenarioStartOutcome {}
 
@@ -646,6 +648,18 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             public Rejected {
                 if (!REASONS.contains(reason)) {
                     throw new IllegalArgumentException("unknown scenario rejection: " + reason);
+                }
+            }
+        }
+
+        /** The validated start reached a closed terminal host handoff failure. */
+        record Failed(String reason) implements ScenarioStartOutcome {
+            private static final Set<String> REASONS = Set.of("deadline", "cancelled");
+
+            /** Restricts failures to the closed post-validation terminal set. */
+            public Failed {
+                if (!REASONS.contains(reason)) {
+                    throw new IllegalArgumentException("unknown scenario start failure: " + reason);
                 }
             }
         }

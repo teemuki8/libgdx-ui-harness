@@ -74,6 +74,9 @@ final class ScenarioLifecycleFixtureTest {
             assertRejected(client.startScenario(
                     SESSION_ID, "incompatible-reference", 0, Map.of(), PROFILE_ID, 5_000),
                     "incompatible-scenario");
+            assertRejected(client.startScenario(
+                    SESSION_ID, "reference-reset", 0, Map.of(), "missing-profile", 5_000),
+                    "unsupported-profile");
 
             long frameBeforeDeadline = client.snapshot(SESSION_ID).frame();
             JsonNode deadline = client.startScenario(

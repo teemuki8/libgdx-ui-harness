@@ -90,6 +90,28 @@ final class ProtocolJsonContractTest {
         assertEquals(Set.of(ProtocolError.Code.values()), codes);
     }
 
+    @Test void scenarioStartFailuresUseClosedDistinctWireOutcomes() throws Exception {
+        HarnessResponse.Success deadline = new HarnessResponse.Success(
+                ProtocolVersion.V1, "request", "game",
+                new HarnessResponse.Result.ScenarioStart(
+                        new HarnessResponse.ScenarioStartOutcome.Failed("deadline")));
+        HarnessResponse.Success cancelled = new HarnessResponse.Success(
+                ProtocolVersion.V1, "request", "game",
+                new HarnessResponse.Result.ScenarioStart(
+                        new HarnessResponse.ScenarioStartOutcome.Failed("cancelled")));
+
+        assertEquals(
+                "{\"status\":\"ok\",\"version\":{\"major\":1,\"minor\":0},"
+                        + "\"requestId\":\"request\",\"sessionId\":\"game\","
+                        + "\"result\":{\"type\":\"scenario-start\","
+                        + "\"outcome\":{\"kind\":\"failed\",\"reason\":\"deadline\"}}}",
+                ProtocolJson.mapper().writeValueAsString(deadline));
+        assertEquals("cancelled",
+                ProtocolJson.mapper().valueToTree(cancelled).at("/result/outcome/reason").asText());
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.ScenarioStartOutcome.Failed("deadline-exceeded"));
+    }
+
     @Test void everyNestedLocatorFilterAndActionUnionUsesStableNames() throws Exception {
         Command.TextMatchSpec exact = new Command.TextMatchSpec("exact", "Save");
         List<Command.LocatorSpec> locators = List.of(

@@ -4422,6 +4422,20 @@
           "additionalProperties" : false,
           "properties" : {
             "kind" : {
+              "const" : "failed",
+              "type" : "string"
+            },
+            "reason" : {
+              "enum" : [ "deadline", "cancelled" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "reason" ],
+          "type" : "object"
+        }, {
+          "additionalProperties" : false,
+          "properties" : {
+            "kind" : {
               "const" : "completed",
               "type" : "string"
             },
