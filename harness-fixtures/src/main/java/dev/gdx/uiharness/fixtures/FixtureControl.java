@@ -18,6 +18,7 @@ import dev.gdx.uiharness.core.layout.LayoutQuiescencePolicy;
 import dev.gdx.uiharness.core.layout.LayoutReference;
 import dev.gdx.uiharness.core.layout.LayoutStabilitySample;
 import dev.gdx.uiharness.core.visual.VisualPolicy;
+import dev.gdx.uiharness.core.assertion.AssertionSnapshotSource;
 import dev.gdx.uiharness.core.visual.VisualReference;
 import dev.gdx.uiharness.core.typography.CoordinateSpace;
 import dev.gdx.uiharness.core.typography.TypographyControlReference;
@@ -192,8 +193,24 @@ public final class FixtureControl implements AutoCloseable {
                 listener.onClosed();
             }
         });
-        waits = new WaitEngine(this::snapshotForWait, locators, clock, assertionFrames,
-                DeadlineWakeup.scheduledBy(scenarioDeadlines));
+        AssertionSnapshotSource assertionSnapshots = new AssertionSnapshotSource() {
+            @Override public SemanticSnapshot currentSnapshot() {
+                return snapshotForWait();
+            }
+
+            @Override public SemanticSnapshot snapshotFor(FrameSignal.Frame frame) {
+                if (!scheduler.isOwnerThread()) {
+                    throw new IllegalStateException(
+                            "completed-frame assertion snapshot must be captured on render thread");
+                }
+                SemanticSnapshot snapshot =
+                        sceneSession.snapshot(frame.revision(), frame.frame());
+                traces.snapshot(snapshot, "assert");
+                return snapshot;
+            }
+        };
+        waits = new WaitEngine(this::snapshotForWait, assertionSnapshots, locators, clock,
+                assertionFrames, DeadlineWakeup.scheduledBy(scenarioDeadlines));
         terminationExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-mcp-termination-", 0).factory());
     }

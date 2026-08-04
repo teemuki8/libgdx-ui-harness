@@ -12,6 +12,7 @@ import dev.gdx.uiharness.core.action.Harness;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
+import dev.gdx.uiharness.core.assertion.AssertionSnapshotSource;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.locator.StrictResolution;
@@ -817,8 +818,19 @@ final class HarnessMcpServerContractTest {
     private static HarnessProtocolService service(RecordingHarness harness) {
         LocatorEngine locators = new StrictResolution();
         FrameSignal frames = listener -> () -> {};
+        AssertionSnapshotSource assertionSnapshots = new AssertionSnapshotSource() {
+            @Override public SemanticSnapshot currentSnapshot() {
+                return SNAPSHOT;
+            }
+
+            @Override public SemanticSnapshot snapshotFor(FrameSignal.Frame frame) {
+                return new SemanticSnapshot(
+                        frame.revision(), frame.frame(), SNAPSHOT.rootId(), SNAPSHOT.nodes());
+            }
+        };
         WaitEngine waits = new WaitEngine(
-                () -> SNAPSHOT, locators, CLOCK, frames, (delay, wakeup) -> () -> {});
+                () -> SNAPSHOT, assertionSnapshots, locators, CLOCK, frames,
+                (delay, wakeup) -> () -> {});
         CapabilitySet capabilities = new CapabilitySet(List.of(
                 "action", "capabilities", "query", "screenshot", "snapshot", "trace",
                 "ui_assert", "wait"));

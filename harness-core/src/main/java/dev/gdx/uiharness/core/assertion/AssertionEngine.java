@@ -1,5 +1,8 @@
 package dev.gdx.uiharness.core.assertion;
 
+import dev.gdx.uiharness.core.error.ErrorCode;
+import dev.gdx.uiharness.core.error.ErrorEvidence;
+import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.locator.StrictResolution;
 import dev.gdx.uiharness.core.model.SemanticNode;
@@ -12,10 +15,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
-import java.util.function.Supplier;
 
 /** Event-driven evaluation of assertions over fresh completed semantic frames. */
 public final class AssertionEngine {
+    static final int MAX_PENDING_FRAMES = 64;
     private final AssertionEvaluator evaluator;
     private final LocatorEngine locators;
 
@@ -31,7 +34,7 @@ public final class AssertionEngine {
 
     /** Evaluates with a cancellable deadline wake-up independent of frame delivery. */
     public CompletionStage<AssertionResult> assertThat(
-            Supplier<SemanticSnapshot> snapshots,
+            AssertionSnapshotSource snapshots,
             AssertionRequest request,
             FrameSignal frames,
             MonotonicClock clock,
@@ -58,7 +61,7 @@ public final class AssertionEngine {
     }
 
     private final class State implements FrameSignal.FrameListener {
-        private final Supplier<SemanticSnapshot> snapshots;
+        private final AssertionSnapshotSource snapshots;
         private final AssertionRequest request;
         private final CompletableFuture<AssertionResult> result = new CompletableFuture<>();
         private final DeadlineWakeup deadlineWakeup;
@@ -82,7 +85,7 @@ public final class AssertionEngine {
         private int stableCount;
 
         State(
-                Supplier<SemanticSnapshot> snapshots,
+                AssertionSnapshotSource snapshots,
                 AssertionRequest request,
                 DeadlineWakeup deadlineWakeup) {
             this.snapshots = snapshots;
@@ -194,18 +197,32 @@ public final class AssertionEngine {
 
         @Override public void onFrame(FrameSignal.Frame frame) {
             Objects.requireNonNull(frame, "frame");
-            boolean start;
+            boolean start = false;
+            HarnessException overflow = null;
             synchronized (this) {
                 if (result.isDone()) {
                     return;
                 }
-                pending.addLast(frame);
-                start = registered && !draining;
-                if (start) {
-                    draining = true;
+                if (pending.size() >= MAX_PENDING_FRAMES) {
+                    overflow = new HarnessException(
+                            ErrorCode.LIMIT_EXCEEDED,
+                            "Assertion pending completed-frame limit exceeded; "
+                                    + "evaluation could not keep pace with rendering",
+                            ErrorEvidence.ofDetails(Map.of(
+                                    "dimension", "pendingFrames",
+                                    "actual", Integer.toString(pending.size() + 1),
+                                    "limit", Integer.toString(MAX_PENDING_FRAMES))));
+                } else {
+                    pending.addLast(frame);
+                    start = registered && !draining;
+                    if (start) {
+                        draining = true;
+                    }
                 }
             }
-            if (start) {
+            if (overflow != null) {
+                result.completeExceptionally(overflow);
+            } else if (start) {
                 drainOwned();
             }
         }
@@ -246,7 +263,7 @@ public final class AssertionEngine {
                 return;
             }
             try {
-                SemanticSnapshot snapshot = freshSnapshot();
+                SemanticSnapshot snapshot = currentSnapshot();
                 if (request.assertion() instanceof UiAssertion.StableForFrames) {
                     locators.resolveStrict(snapshot, request.locator());
                 } else {
@@ -299,14 +316,25 @@ public final class AssertionEngine {
                     completeAtDeadline();
                     continue;
                 }
-                evaluateFrame();
+                evaluateFrame(frame);
             }
             closeResources();
         }
 
-        private void evaluateFrame() {
+        private void evaluateFrame(FrameSignal.Frame frame) {
+            SemanticSnapshot snapshot;
             try {
-                SemanticSnapshot snapshot = freshSnapshot();
+                snapshot = snapshotFor(frame);
+            } catch (FrameSnapshotMismatch mismatch) {
+                result.completeExceptionally(mismatch);
+                return;
+            } catch (Throwable failure) {
+                lastResolutionFailure = failure;
+                stableCount = 0;
+                lastProperties = null;
+                return;
+            }
+            try {
                 if (request.assertion() instanceof UiAssertion.StableForFrames stable) {
                     evaluateStable(snapshot, stable);
                 } else {
@@ -367,8 +395,22 @@ public final class AssertionEngine {
             return Map.copyOf(values);
         }
 
-        private SemanticSnapshot freshSnapshot() {
-            return Objects.requireNonNull(snapshots.get(), "snapshot supplier returned null");
+        private SemanticSnapshot currentSnapshot() {
+            return Objects.requireNonNull(
+                    snapshots.currentSnapshot(), "current snapshot source returned null");
+        }
+
+        private SemanticSnapshot snapshotFor(FrameSignal.Frame frame) {
+            SemanticSnapshot snapshot = Objects.requireNonNull(
+                    snapshots.snapshotFor(frame), "frame snapshot source returned null");
+            if (snapshot.revision() != frame.revision() || snapshot.frame() != frame.frame()) {
+                throw new FrameSnapshotMismatch(
+                        "Snapshot identity revision=" + snapshot.revision()
+                                + ", frame=" + snapshot.frame()
+                                + " does not match delivered frame revision=" + frame.revision()
+                                + ", frame=" + frame.frame());
+            }
+            return snapshot;
         }
 
         private void accept(AssertionResult attempt) {
@@ -412,6 +454,13 @@ public final class AssertionEngine {
             }
             if (deadlineToCancel != null) {
                 deadlineToCancel.cancel();
+            }
+        }
+        private final class FrameSnapshotMismatch extends IllegalStateException {
+            private static final long serialVersionUID = 1L;
+
+            FrameSnapshotMismatch(String message) {
+                super(message);
             }
         }
     }

@@ -1,6 +1,7 @@
 package dev.gdx.uiharness.core.wait;
 
 import dev.gdx.uiharness.core.assertion.AssertionEngine;
+import dev.gdx.uiharness.core.assertion.AssertionSnapshotSource;
 import dev.gdx.uiharness.core.assertion.DeadlineWakeup;
 import dev.gdx.uiharness.core.assertion.AssertionRequest;
 import dev.gdx.uiharness.core.assertion.AssertionResult;
@@ -29,6 +30,7 @@ import java.util.concurrent.locks.ReentrantLock;
 /** Event-driven waits over fresh immutable semantic snapshots. */
 public final class WaitEngine implements AutoCloseable {
     private final Supplier<SemanticSnapshot> snapshots;
+    private final AssertionSnapshotSource assertionSnapshots;
     private final LocatorEngine locators;
     private final MonotonicClock clock;
     private final FrameSignal frames;
@@ -41,40 +43,50 @@ public final class WaitEngine implements AutoCloseable {
     /**
      * Creates a wait engine in one monotonic time domain.
      *
-     * @deprecated Use the overload with assertion deadline wake-ups when serving ui_assert.
+     * This constructor supports wait operations only; {@code ui_assert} requires a correlated
+     * assertion snapshot source.
      */
-    @Deprecated
     public WaitEngine(
             Supplier<SemanticSnapshot> snapshots,
             LocatorEngine locators,
             MonotonicClock clock,
             FrameSignal frames) {
-        this(snapshots, locators, clock, frames, null);
+        this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
+        this.assertionSnapshots = null;
+        this.locators = Objects.requireNonNull(locators, "locators");
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.frames = Objects.requireNonNull(frames, "frames");
+        this.assertionDeadlines = null;
     }
 
-    /** Creates a wait engine with independent, cancellable assertion deadline wake-ups. */
+    /** Creates a wait engine with frame-correlated assertion snapshots and deadline wake-ups. */
     public WaitEngine(
             Supplier<SemanticSnapshot> snapshots,
+            AssertionSnapshotSource assertionSnapshots,
             LocatorEngine locators,
             MonotonicClock clock,
             FrameSignal frames,
             DeadlineWakeup assertionDeadlines) {
         this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
+        this.assertionSnapshots =
+                Objects.requireNonNull(assertionSnapshots, "assertionSnapshots");
         this.locators = Objects.requireNonNull(locators, "locators");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.frames = Objects.requireNonNull(frames, "frames");
-        this.assertionDeadlines = assertionDeadlines;
+        this.assertionDeadlines =
+                Objects.requireNonNull(assertionDeadlines, "assertionDeadlines");
     }
     /**
      * Evaluates a declarative assertion using this engine's production snapshot, frame, locator,
      * and monotonic-time boundaries.
      */
     public CompletionStage<AssertionResult> assertThat(AssertionRequest request) {
-        if (assertionDeadlines == null) {
-            throw new IllegalStateException("ui_assert requires a deadline wake-up");
+        if (assertionSnapshots == null || assertionDeadlines == null) {
+            throw new IllegalStateException(
+                    "ui_assert requires a frame-correlated snapshot source and deadline wake-up");
         }
         return new AssertionEngine(locators)
-                .assertThat(snapshots, request, frames, clock, assertionDeadlines);
+                .assertThat(assertionSnapshots, request, frames, clock, assertionDeadlines);
     }
 
 
