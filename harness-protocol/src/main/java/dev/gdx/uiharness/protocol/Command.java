@@ -399,7 +399,9 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
 
         record CountEquals(int expected) implements AssertionSpec {
             public CountEquals {
-                if (expected < 0) throw new IllegalArgumentException("expected must be non-negative");
+                if (expected < 0) {
+                    throw new IllegalArgumentException("expected must be non-negative");
+                }
             }
             @Override public UiAssertion toCore() { return new UiAssertion.CountEquals(expected); }
         }

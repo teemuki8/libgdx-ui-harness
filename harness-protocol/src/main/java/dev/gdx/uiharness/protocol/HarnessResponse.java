@@ -242,7 +242,9 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                     throw new IllegalArgumentException(
                             "assertion candidates exceed protocol limit");
                 }
-                if (traceId != null) ProtocolJson.requireIdentifier(traceId, "traceId");
+                if (traceId != null) {
+                    ProtocolJson.requireIdentifier(traceId, "traceId");
+                }
             }
 
             static Assertion fromCore(
