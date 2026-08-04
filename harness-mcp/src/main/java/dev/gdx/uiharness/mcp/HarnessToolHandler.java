@@ -316,7 +316,9 @@ public final class HarnessToolHandler implements AutoCloseable {
             content.put("elapsedMillis", assertion.elapsedMillis());
             content.put("candidates", assertion.candidates());
             content.put("truncated", assertion.truncated());
-            if (assertion.traceId() != null) content.put("traceId", assertion.traceId());
+            if (assertion.traceId() != null) {
+                content.put("traceId", assertion.traceId());
+            }
             offloadLarge(content, encoded, "application/json", "candidates");
             return Map.copyOf(content);
         }
