@@ -91,6 +91,34 @@ final class AssertionEvaluatorTest {
                 new UiAssertion.DoesNotOverlap(Locator.testId("other")), "other");
     }
 
+    @Test void nonOverlapAllowsZeroAreaTargetInsideAnotherRectangle() {
+        SemanticNode other = node("other", true, Optional.of(true), Optional.empty(), false,
+                "", "Other", new Bounds(0, 0, 10, 10));
+        SemanticNode zeroWidthTarget = node("target", true, Optional.of(true), Optional.empty(), false,
+                "", "Target", new Bounds(2, 2, 0, 5));
+        assertPassed(snapshot(zeroWidthTarget, other),
+                new UiAssertion.DoesNotOverlap(Locator.testId("other")));
+
+        SemanticNode zeroHeightTarget = node("target", true, Optional.of(true), Optional.empty(), false,
+                "", "Target", new Bounds(2, 2, 5, 0));
+        assertPassed(snapshot(zeroHeightTarget, other),
+                new UiAssertion.DoesNotOverlap(Locator.testId("other")));
+    }
+
+    @Test void nonOverlapAllowsZeroAreaOtherInsideTargetRectangle() {
+        SemanticNode target = node("target", true, Optional.of(true), Optional.empty(), false,
+                "", "Target", new Bounds(0, 0, 10, 10));
+        SemanticNode zeroWidthOther = node("other", true, Optional.of(true), Optional.empty(), false,
+                "", "Other", new Bounds(2, 2, 0, 5));
+        assertPassed(snapshot(target, zeroWidthOther),
+                new UiAssertion.DoesNotOverlap(Locator.testId("other")));
+
+        SemanticNode zeroHeightOther = node("other", true, Optional.of(true), Optional.empty(), false,
+                "", "Other", new Bounds(2, 2, 5, 0));
+        assertPassed(snapshot(target, zeroHeightOther),
+                new UiAssertion.DoesNotOverlap(Locator.testId("other")));
+    }
+
     @Test void checkedAndEnabledUnsupportedStatesFailRatherThanBecomingFalse() {
         SemanticSnapshot snapshot = snapshot(node("target", true, Optional.empty(), Optional.empty(), false,
                 "", "Target", new Bounds(0, 0, 1, 1)));

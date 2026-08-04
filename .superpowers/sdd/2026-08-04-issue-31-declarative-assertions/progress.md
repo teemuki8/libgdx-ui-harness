@@ -1,0 +1,10 @@
+# SDD ledger — plan: /home/tjaaskel/git/libgdx-ui-harness/.worktrees/remaining-issues-design/docs/superpowers/plans/2026-08-04-issue-31-declarative-assertions.md
+
+1. Baseline: origin/main c9938fb; `./gradlew test --no-daemon --console=plain --warning-mode=fail` BUILD SUCCESSFUL (32 tasks).
+
+2. Task 1 RED: `./gradlew :harness-core:test --tests '*AssertionEvaluatorTest' --no-daemon --console=plain --warning-mode=fail` — BUILD FAILED in `compileTestJava` because the assertion types/evaluator did not exist.
+3. Task 1 GREEN: `./gradlew :harness-core:test --tests '*AssertionEvaluatorTest' --no-daemon --console=plain --warning-mode=fail` — BUILD SUCCESSFUL (3 actionable tasks).
+4. Task 1 concern: `StableForFrames` is modeled and bounded here but intentionally rejected by the pure single-snapshot evaluator; completed-frame behavior belongs to Task 2.
+
+5. Task 1 review fix RED: `./gradlew :harness-core:test --tests dev.gdx.uiharness.core.assertion.AssertionEvaluatorTest` — BUILD FAILED; both zero-area target and zero-area other cases failed (10 tests completed, 2 failed).
+6. Task 1 review fix GREEN: `./gradlew :harness-core:test --tests dev.gdx.uiharness.core.assertion.AssertionEvaluatorTest` — BUILD SUCCESSFUL (3 actionable tasks).

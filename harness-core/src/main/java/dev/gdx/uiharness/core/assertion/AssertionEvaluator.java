@@ -82,8 +82,11 @@ public final class AssertionEvaluator {
     private static Evaluation noOverlap(SemanticNode first, SemanticNode second) {
         Bounds a = first.screenBounds();
         Bounds b = second.screenBounds();
-        boolean overlaps = a.x() < b.x() + b.width() && b.x() < a.x() + a.width()
-                && a.y() < b.y() + b.height() && b.y() < a.y() + a.height();
+        double intersectionWidth = Math.min(a.x() + a.width(), b.x() + b.width())
+                - Math.max(a.x(), b.x());
+        double intersectionHeight = Math.min(a.y() + a.height(), b.y() + b.height())
+                - Math.max(a.y(), b.y());
+        boolean overlaps = intersectionWidth > 0 && intersectionHeight > 0;
         return new Evaluation(!overlaps, "no positive-area overlap",
                 second.id() + " " + b);
     }
