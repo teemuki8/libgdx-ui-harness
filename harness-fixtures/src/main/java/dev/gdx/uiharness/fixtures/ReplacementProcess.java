@@ -6,6 +6,7 @@ import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.Reader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
@@ -53,6 +54,10 @@ final class ReplacementProcess implements AutoCloseable {
         return result;
     }
 
+    boolean isClosed() {
+        return closed.get();
+    }
+
     void cancel() {
         if (!process.isAlive()) {
             return;
@@ -71,13 +76,10 @@ final class ReplacementProcess implements AutoCloseable {
     private static RegisteredLaunchCoordinator.HandoffOutcome readResult(Process process) {
         try (BufferedReader output = new BufferedReader(new InputStreamReader(
                 process.getInputStream(), StandardCharsets.UTF_8))) {
-            String line = output.readLine();
+            String line = readBoundedLine(output);
             if (line == null) {
                 throw new IOException("replacement process exited without a result (exit "
                         + process.waitFor() + ")");
-            }
-            if (line.length() > ReplacementWire.MAX_LINE_CHARS) {
-                throw new IOException("replacement result exceeds message bound");
             }
             RegisteredLaunchCoordinator.HandoffResult result = ReplacementWire.result(line);
             int exit = process.waitFor();
@@ -89,6 +91,24 @@ final class ReplacementProcess implements AutoCloseable {
             throw new java.util.concurrent.CompletionException(failure);
         }
     }
+    static String readBoundedLine(Reader output) throws IOException {
+        StringBuilder line = new StringBuilder();
+        char[] character = new char[1];
+        while (true) {
+            int count = output.read(character, 0, 1);
+            if (count < 0) {
+                return line.isEmpty() ? null : line.toString();
+            }
+            if (character[0] == '\n' || character[0] == '\r') {
+                return line.toString();
+            }
+            if (line.length() == ReplacementWire.MAX_LINE_CHARS) {
+                throw new IOException("replacement result exceeds message bound");
+            }
+            line.append(character[0]);
+        }
+    }
+
 
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) {

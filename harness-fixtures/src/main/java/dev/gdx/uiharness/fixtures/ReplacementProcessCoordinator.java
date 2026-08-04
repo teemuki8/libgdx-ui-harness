@@ -18,6 +18,7 @@ final class ReplacementProcessCoordinator implements RegisteredLaunchCoordinator
     private final String profileId;
     private final Executor executor;
     private final Launcher launcher;
+    private final Object ownershipLock = new Object();
     private final AtomicReference<ReplacementProcess> active = new AtomicReference<>();
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -39,14 +40,16 @@ final class ReplacementProcessCoordinator implements RegisteredLaunchCoordinator
         AtomicReference<ReplacementProcess> launched = new AtomicReference<>();
         CompletableFuture<HandoffOutcome> result = new CompletableFuture<>() {
             @Override public boolean cancel(boolean mayInterruptIfRunning) {
-                if (!cancelled.compareAndSet(false, true)) {
-                    return false;
-                }
-                ReplacementProcess process = launched.get();
-                if (process != null) {
-                    process.cancel();
-                    active.compareAndSet(process, null);
-                    process.close();
+                synchronized (ownershipLock) {
+                    if (!cancelled.compareAndSet(false, true)) {
+                        return false;
+                    }
+                    ReplacementProcess process = launched.get();
+                    if (process != null) {
+                        process.cancel();
+                        active.compareAndSet(process, null);
+                        process.close();
+                    }
                 }
                 return super.cancel(mayInterruptIfRunning);
             }
@@ -59,9 +62,17 @@ final class ReplacementProcessCoordinator implements RegisteredLaunchCoordinator
             try {
                 ReplacementProcess process = launcher.launch(request);
                 launched.set(process);
-                if (!active.compareAndSet(null, process)) {
-                    process.close();
-                    throw new IllegalStateException("replacement process already active");
+                synchronized (ownershipLock) {
+                    if (closed.get() || cancelled.get()) {
+                        process.cancel();
+                        process.close();
+                        result.cancel(false);
+                        return;
+                    }
+                    if (!active.compareAndSet(null, process)) {
+                        process.close();
+                        throw new IllegalStateException("replacement process already active");
+                    }
                 }
                 if (cancelled.get()) {
                     process.cancel();
@@ -86,8 +97,11 @@ final class ReplacementProcessCoordinator implements RegisteredLaunchCoordinator
     }
 
     @Override public void close() {
-        closed.set(true);
-        ReplacementProcess process = active.getAndSet(null);
+        ReplacementProcess process;
+        synchronized (ownershipLock) {
+            closed.set(true);
+            process = active.getAndSet(null);
+        }
         if (process != null) {
             process.cancel();
             process.close();

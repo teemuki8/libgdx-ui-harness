@@ -166,3 +166,35 @@ polling sleeps.
 ### Concerns
 
 None.
+
+## Fix round 3
+
+### Red
+
+`./gradlew :harness-fixtures:test --tests '*ReplacementProcessCoordinatorTest.closeDuringLaunchClosesChildAndTerminalizesHandoff' --no-daemon --console=plain --warning-mode=fail`
+
+Failed deterministically after the launcher created the child but before it returned: the handoff did
+not terminalize when `close()` had already observed no active process.
+
+`./gradlew :harness-fixtures:test --tests '*ReplacementProcessTest.oversizedResultWithoutNewlineIsRejectedAtBound' --no-daemon --console=plain --warning-mode=fail`
+
+Failed at compilation because the bounded line-framing operation did not exist; the production path
+still used unbounded `BufferedReader.readLine()`.
+
+### Green
+
+`./gradlew :harness-fixtures:test --tests '*ReplacementProcessCoordinatorTest' --tests '*ReplacementProcessTest' --tests '*ScenarioLifecycleFixtureTest' --no-daemon --console=plain --warning-mode=fail`
+
+Passed: `BUILD SUCCESSFUL in 14s`, 16 actionable tasks (2 executed, 14 up-to-date).
+
+The coordinator now publishes a launched process only while holding the same ownership lock used by
+`close()`, and atomically rejects publication when closure or request cancellation has already won.
+The losing child is cancelled, closed, and the handoff is completed terminally.
+
+Replacement result framing now consumes at most `MAX_LINE_CHARS + 1` characters before rejecting an
+oversized frame. EOF and line terminators complete bounded frames deterministically without calling
+unbounded `readLine()`.
+
+### Concerns
+
+None.
