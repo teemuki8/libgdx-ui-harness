@@ -7025,6 +7025,222 @@
         "maxLength" : 256,
         "minLength" : 1,
         "type" : "string"
+      },
+      "spec" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "baselineId" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "excludedProperties" : {
+            "items" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "maxItems" : 256,
+            "type" : "array"
+          },
+          "maxDifferences" : {
+            "maximum" : 4096,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "maxDurationMillis" : {
+            "maximum" : 3600000,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "strictNodes" : {
+            "type" : "boolean"
+          },
+          "tolerances" : {
+            "items" : {
+              "additionalProperties" : false,
+              "properties" : {
+                "deltaHeight" : {
+                  "maximum" : 1.7976931348623157E308,
+                  "minimum" : 0.0,
+                  "type" : "number"
+                },
+                "deltaWidth" : {
+                  "maximum" : 1.7976931348623157E308,
+                  "minimum" : 0.0,
+                  "type" : "number"
+                },
+                "deltaX" : {
+                  "maximum" : 1.7976931348623157E308,
+                  "minimum" : 0.0,
+                  "type" : "number"
+                },
+                "deltaY" : {
+                  "maximum" : 1.7976931348623157E308,
+                  "minimum" : 0.0,
+                  "type" : "number"
+                },
+                "id" : {
+                  "maxLength" : 256,
+                  "minLength" : 1,
+                  "type" : "string"
+                },
+                "space" : {
+                  "enum" : [ "local", "stage", "screen", "framebuffer" ],
+                  "type" : "string"
+                },
+                "units" : {
+                  "maxLength" : 16384,
+                  "minLength" : 1,
+                  "type" : "string"
+                }
+              },
+              "required" : [ "id", "space", "units" ],
+              "type" : "object"
+            },
+            "maxItems" : 16,
+            "type" : "array"
+          }
+        },
+        "required" : [ "baselineId", "strictNodes", "tolerances", "excludedProperties", "maxDifferences", "maxDurationMillis" ],
+        "type" : "object"
+      }
+    },
+    "required" : [ "sessionId", "spec" ],
+    "type" : "object"
+  },
+  "name" : "ui_semantic_compare",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "comparedNodes" : {
+        "maximum" : 10000,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "differences" : {
+        "items" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "baselineKey" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "kind" : {
+              "enum" : [ "ADDED", "REMOVED", "CHANGED", "AMBIGUOUS" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "kind", "baselineKey" ],
+          "type" : "object"
+        },
+        "maxItems" : 4096,
+        "type" : "array"
+      },
+      "kind" : {
+        "const" : "semantic-compare-result",
+        "type" : "string"
+      },
+      "matched" : {
+        "type" : "boolean"
+      },
+      "progress" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "dimensions" : {
+            "additionalProperties" : {
+              "enum" : [ "changed", "unchanged", "unavailable" ],
+              "type" : "string"
+            },
+            "maxProperties" : 32,
+            "type" : "object"
+          },
+          "ruleId" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "status" : {
+            "enum" : [ "available", "unavailable" ],
+            "type" : "string"
+          }
+        },
+        "required" : [ "status", "dimensions", "ruleId" ],
+        "type" : "object"
+      },
+      "recovery" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "consumed" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "consumedBefore" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "elapsedMillis" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "limit" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "maxWallTimeMillis" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "policyVersion" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "remaining" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "remainingBefore" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "terminatingRule" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          }
+        },
+        "required" : [ "policyVersion", "consumedBefore", "consumed", "limit", "remainingBefore", "remaining", "elapsedMillis", "maxWallTimeMillis", "terminatingRule" ],
+        "type" : "object"
+      },
+      "truncated" : {
+        "type" : "boolean"
+      }
+    },
+    "required" : [ "kind", "progress", "recovery", "matched", "differences", "comparedNodes", "truncated" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
       }
     },
     "required" : [ "sessionId" ],

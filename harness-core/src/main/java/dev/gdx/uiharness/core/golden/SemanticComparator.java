@@ -10,7 +10,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.TreeSet;
 
 /**
  * Pure hierarchy-aware semantic comparator. Matching uses stable keys (unique test ID, then

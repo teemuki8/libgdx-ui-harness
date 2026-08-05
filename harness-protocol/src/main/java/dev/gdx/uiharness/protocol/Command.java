@@ -52,14 +52,15 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.NavigationValidate.class, name = "navigation-validate"),
     @JsonSubTypes.Type(value = Command.LayoutValidate.class, name = "layout-validate"),
     @JsonSubTypes.Type(value = Command.MatrixRun.class, name = "matrix-run"),
-    @JsonSubTypes.Type(value = Command.MatrixResults.class, name = "matrix-results")
+    @JsonSubTypes.Type(value = Command.MatrixResults.class, name = "matrix-results"),
+    @JsonSubTypes.Type(value = Command.SemanticCompare.class, name = "semantic-compare")
 })
 public sealed interface Command permits Command.Sessions, Command.Capabilities, Command.Snapshot,
         Command.Query, Command.Action, Command.Assert, Command.Wait, Command.Screenshot,
         Command.TraceStart, Command.InspectCompare, Command.TypographyDiagnose,
         Command.LayoutDiagnose, Command.TraceStop, Command.ScenarioList, Command.ScenarioStart,
         Command.NavigationInspect, Command.NavigationValidate, Command.LayoutValidate,
-        Command.MatrixRun, Command.MatrixResults {
+        Command.MatrixRun, Command.MatrixResults, Command.SemanticCompare {
     /** Lists active sessions. */
     record Sessions() implements Command {}
 
@@ -372,6 +373,79 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
         /** Validates the run identifier. */
         public MatrixResults {
             ProtocolJson.requireIdentifier(runId, "runId");
+        }
+    }
+
+    /** One named positional tolerance carried in a comparison request. */
+    record ToleranceSpec(
+            String id,
+            String space,
+            String units,
+            double deltaX,
+            double deltaY,
+            double deltaWidth,
+            double deltaHeight) {
+        /** Validates the closed tolerance. */
+        public ToleranceSpec {
+            ProtocolJson.requireIdentifier(id, "tolerance id");
+            requireOneOf(space, "space", "local", "stage", "screen", "framebuffer");
+            ProtocolJson.requireText(units, "units");
+            for (double value : new double[] {deltaX, deltaY, deltaWidth, deltaHeight}) {
+                if (!Double.isFinite(value) || value < 0.0) {
+                    throw new IllegalArgumentException(
+                            "tolerance deltas must be finite and non-negative");
+                }
+            }
+        }
+    }
+
+    /** Bounded semantic baseline comparison request against a registered baseline. */
+    record SemanticCompareSpec(
+            String baselineId,
+            boolean strictNodes,
+            List<ToleranceSpec> tolerances,
+            List<String> excludedProperties,
+            int maxDifferences,
+            long maxDurationMillis) {
+        private static final int MAX_TOLERANCES = 16;
+        private static final int MAX_EXCLUSIONS = 256;
+        private static final int MAX_DIFFERENCES = 4_096;
+
+        /** Validates the registered baseline identity and bounded options. */
+        public SemanticCompareSpec {
+            ProtocolJson.requireIdentifier(baselineId, "baselineId");
+            tolerances = List.copyOf(Objects.requireNonNull(tolerances, "tolerances"));
+            if (tolerances.size() > MAX_TOLERANCES) {
+                throw new IllegalArgumentException("too many positional tolerances");
+            }
+            excludedProperties = List.copyOf(Objects.requireNonNull(
+                    excludedProperties, "excludedProperties"));
+            if (excludedProperties.size() > MAX_EXCLUSIONS) {
+                throw new IllegalArgumentException("too many excluded properties");
+            }
+            for (String excluded : excludedProperties) {
+                if (dev.gdx.uiharness.core.golden.SemanticComparePolicy.PROTECTED_FIELDS
+                        .contains(excluded)) {
+                    throw new IllegalArgumentException(
+                            "identity field cannot be excluded: " + excluded);
+                }
+            }
+            if (maxDifferences < 1 || maxDifferences > MAX_DIFFERENCES) {
+                throw new IllegalArgumentException(
+                        "maxDifferences must be between 1 and " + MAX_DIFFERENCES);
+            }
+            if (maxDurationMillis < 1 || maxDurationMillis > 3_600_000) {
+                throw new IllegalArgumentException(
+                        "maxDurationMillis must be between 1 and 3600000");
+            }
+        }
+    }
+
+    /** Compares one versioned registered semantic baseline against the current snapshot. */
+    record SemanticCompare(SemanticCompareSpec spec) implements Command {
+        /** Validates the comparison request. */
+        public SemanticCompare {
+            Objects.requireNonNull(spec, "spec");
         }
     }
 

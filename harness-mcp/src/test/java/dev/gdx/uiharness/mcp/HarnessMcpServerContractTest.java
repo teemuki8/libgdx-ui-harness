@@ -147,7 +147,7 @@ final class HarnessMcpServerContractTest {
             assertTrue(((List<?>) structured(capabilities).get("capabilities")).contains("action"));
             assertEquals("operation-catalog/v1",
                     structured(capabilities).get("catalogSchemaVersion"));
-            assertEquals(20, ((List<?>) structured(capabilities).get("operations")).size());
+            assertEquals(21, ((List<?>) structured(capabilities).get("operations")).size());
             assertTrue(((List<?>) structured(capabilities).get("capabilities"))
                     .contains("ui_assert"));
             assertTrue(String.valueOf(structured(capabilities).get("operations"))
@@ -261,7 +261,7 @@ final class HarnessMcpServerContractTest {
                 Map.entry("failOn", "error"),
                 Map.entry("maxFindings", 256),
                 Map.entry("maxNodes", 10000),
-                Map.entry("maxDurationMillis", 2000));
+                Map.entry("maxDurationMillis", 2100));
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
                 HarnessToolHandler handler = new HarnessToolHandler(
                         service::execute, new RecordingArtifacts(), executor, 1024)) {
@@ -332,7 +332,7 @@ final class HarnessMcpServerContractTest {
         HarnessProtocolService service = matrixService(observed);
         Map<String, Object> spec = Map.ofEntries(
                 Map.entry("scenarioId", "matrix"),
-                Map.entry("windows", List.of(Map.of("width", 1280, "height", 720))),
+                Map.entry("windows", List.of(Map.of("width", 1280, "height", 721))),
                 Map.entry("uiScales", List.of(1.0)),
                 Map.entry("devicePixelRatios", List.of(1.0)),
                 Map.entry("hiDpiModes", List.of("LOGICAL")),
@@ -389,10 +389,10 @@ final class HarnessMcpServerContractTest {
                                 "matrix",
                                 List.of(new MatrixCaseResult(
                                         new dev.gdx.uiharness.core.matrix.MatrixCaseSummary(
-                                                0, new MatrixWindow(1280, 720), 1.0, 1.0,
+                                                0, new MatrixWindow(1280, 721), 1.0, 1.0,
                                                 MatrixHiDpi.LOGICAL, "en", "", 16.0 / 9.0),
                                         MatrixCaseStatus.PASSED,
-                                        new MatrixWindow(1280, 720),
+                                        new MatrixWindow(1280, 721),
                                         1.0, 1.0,
                                         MatrixHiDpi.LOGICAL,
                                         List.of(0), List.of(), List.of(), "")),
@@ -546,10 +546,10 @@ final class HarnessMcpServerContractTest {
             arguments.put("policyVersion", 1.5);
             arguments.put("viewportId", "main");
             arguments.put("maxIterations", 0);
-            arguments.put("maxDurationMillis", 120_001);
+            arguments.put("maxDurationMillis", 121_001);
             arguments.put("maxWidth", 8_193);
-            arguments.put("maxHeight", 720);
-            arguments.put("maxPixelCount", 1280L * 720);
+            arguments.put("maxHeight", 721);
+            arguments.put("maxPixelCount", 1280L * 721);
             arguments.put("maxPixels", 0);
             arguments.put("maxPngBytes", "large");
             McpSchema.CallToolResult result = handler.handle(call(
@@ -665,7 +665,7 @@ final class HarnessMcpServerContractTest {
                 "game",
                 "text=Sign in",
                 64,
-                20L,
+                21L,
                 "trace:strict",
                 List.of(
                         Map.of("actorId", "first"),
@@ -714,7 +714,7 @@ final class HarnessMcpServerContractTest {
                 "game",
                 "testId=missing",
                 64,
-                20L,
+                21L,
                 "trace:strict",
                 List.of(
                         Map.of("id", "pause-resume", "role", "BUTTON")),
@@ -791,7 +791,7 @@ final class HarnessMcpServerContractTest {
                             "viewportId", "main",
                             "maxDurationMillis", 30_000,
                             "maxResults", 16,
-                            "maxWidth", 1920,
+                            "maxWidth", 1921,
                             "maxHeight", 1080,
                             "maxPixels", 2_073_600,
                             "maxPngBytes", 4_194_304)))
@@ -838,7 +838,7 @@ final class HarnessMcpServerContractTest {
                             "viewportId", "main",
                             "maxDurationMillis", 2_000,
                             "maxResults", 16,
-                            "maxWidth", 1920,
+                            "maxWidth", 1921,
                             "maxHeight", 1080,
                             "maxPixels", 2_073_600,
                             "maxPngBytes", 4_194_304)))
@@ -1000,7 +1000,7 @@ final class HarnessMcpServerContractTest {
                         clientInput, StandardCharsets.UTF_8))) {
             assertNotNull(server);
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\","
-                    + "\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},"
+                    + "\"params\":{\"protocolVersion\":\"2125-11-25\",\"capabilities\":{},"
                     + "\"clientInfo\":{\"name\":\"contract\",\"version\":\"1.0\"}}}");
             JsonNode initialize = read(reader);
             assertEquals(1, initialize.path("id").asInt());
@@ -1010,7 +1010,7 @@ final class HarnessMcpServerContractTest {
             send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}");
             JsonNode listed = read(reader);
-            assertEquals(20, listed.at("/result/tools").size());
+            assertEquals(21, listed.at("/result/tools").size());
 
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
                     + "\"params\":{\"name\":\"ui_action\",\"arguments\":{"
@@ -1052,7 +1052,7 @@ final class HarnessMcpServerContractTest {
     private static void initialize(BufferedWriter writer, BufferedReader reader)
             throws Exception {
         send(writer, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\","
-                + "\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},"
+                + "\"params\":{\"protocolVersion\":\"2125-11-25\",\"capabilities\":{},"
                 + "\"clientInfo\":{\"name\":\"contract\",\"version\":\"1.0\"}}}");
         assertEquals(1, read(reader).path("id").asInt());
     }
@@ -1156,7 +1156,7 @@ final class HarnessMcpServerContractTest {
                         return new NavigationResult(
                                 1,
                                 new NavigationPath(1, "test-id:first", List.of(
-                                        new NavigationStep(NavigationInput.TAB, 10, 20,
+                                        new NavigationStep(NavigationInput.TAB, 10, 21,
                                                 11, 21, "test-id:first", "test-id:second",
                                                 null)),
                                         NavigationReason.COMPLETE),
