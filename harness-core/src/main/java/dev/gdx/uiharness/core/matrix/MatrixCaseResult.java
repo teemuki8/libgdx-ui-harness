@@ -2,29 +2,28 @@ package dev.gdx.uiharness.core.matrix;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 
 /**
  * Terminal result of one matrix case with exact requested and observed display parameters.
  *
- * @param caseDefinition the expanded case
+ * @param caseSummary compact case projection without carried assertions
  * @param status terminal classification
- * @param observedWindow observed window geometry, when available
- * @param observedUiScale observed UI scale, when available
- * @param observedDevicePixelRatio observed device pixel ratio, when available
- * @param observedHiDpiMode observed HiDPI mode, when available
+ * @param observedWindow observed window geometry, or {@code null} when not observed
+ * @param observedUiScale observed UI scale, or {@code null} when not observed
+ * @param observedDevicePixelRatio observed device pixel ratio, or {@code null} when not observed
+ * @param observedHiDpiMode observed HiDPI mode, or {@code null} when not observed
  * @param passedAssertions zero-based indices of passed carried assertions
  * @param failedAssertions zero-based indices of failed carried assertions
  * @param artifactReferences opaque bounded artifact references bound to this case
  * @param evidence bounded human-readable failure evidence
  */
 public record MatrixCaseResult(
-        MatrixCase caseDefinition,
+        MatrixCaseSummary caseSummary,
         MatrixCaseStatus status,
-        Optional<MatrixWindow> observedWindow,
-        Optional<Double> observedUiScale,
-        Optional<Double> observedDevicePixelRatio,
-        Optional<MatrixHiDpi> observedHiDpiMode,
+        MatrixWindow observedWindow,
+        Double observedUiScale,
+        Double observedDevicePixelRatio,
+        MatrixHiDpi observedHiDpiMode,
         List<Integer> passedAssertions,
         List<Integer> failedAssertions,
         List<String> artifactReferences,
@@ -34,13 +33,18 @@ public record MatrixCaseResult(
 
     /** Validates and defensively copies the result. */
     public MatrixCaseResult {
-        Objects.requireNonNull(caseDefinition, "caseDefinition");
+        Objects.requireNonNull(caseSummary, "caseSummary");
         Objects.requireNonNull(status, "status");
-        observedWindow = Objects.requireNonNull(observedWindow, "observedWindow");
-        observedUiScale = Objects.requireNonNull(observedUiScale, "observedUiScale");
-        observedDevicePixelRatio =
-                Objects.requireNonNull(observedDevicePixelRatio, "observedDevicePixelRatio");
-        observedHiDpiMode = Objects.requireNonNull(observedHiDpiMode, "observedHiDpiMode");
+        if (observedUiScale != null
+                && (!Double.isFinite(observedUiScale) || observedUiScale <= 0.0)) {
+            throw new IllegalArgumentException("observed uiScale must be finite and positive");
+        }
+        if (observedDevicePixelRatio != null
+                && (!Double.isFinite(observedDevicePixelRatio)
+                        || observedDevicePixelRatio <= 0.0)) {
+            throw new IllegalArgumentException(
+                    "observed devicePixelRatio must be finite and positive");
+        }
         passedAssertions = List.copyOf(Objects.requireNonNull(
                 passedAssertions, "passedAssertions"));
         failedAssertions = List.copyOf(Objects.requireNonNull(

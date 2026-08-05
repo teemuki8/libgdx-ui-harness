@@ -110,13 +110,16 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(value = Result.ScenarioList.class, name = "scenario-list"),
         @JsonSubTypes.Type(value = Result.ScenarioStart.class, name = "scenario-start"),
         @JsonSubTypes.Type(value = Result.Navigation.class, name = "navigation"),
-        @JsonSubTypes.Type(value = Result.LayoutValidation.class, name = "layout-validation")
+        @JsonSubTypes.Type(value = Result.LayoutValidation.class, name = "layout-validation"),
+        @JsonSubTypes.Type(value = Result.MatrixRunStarted.class, name = "matrix-run-started"),
+        @JsonSubTypes.Type(value = Result.MatrixReportData.class, name = "matrix-report")
     })
     sealed interface Result permits Result.Sessions, Result.Capabilities, Result.Snapshot,
             Result.Query, Result.Action, Result.Assertion, Result.Wait, Result.Screenshot,
             Result.TraceStarted, Result.InspectCompare, Result.TypographyDiagnostic,
             Result.LayoutDiagnostic, Result.TraceStopped, Result.ScenarioList,
-            Result.ScenarioStart, Result.Navigation, Result.LayoutValidation {
+            Result.ScenarioStart, Result.Navigation, Result.LayoutValidation,
+            Result.MatrixRunStarted, Result.MatrixReportData {
         /** Active session catalog. */
         record Sessions(List<SessionInfo> sessions) implements Result {
             /** Defensively copies the session catalog. */
@@ -172,6 +175,23 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             /** Requires a closed layout validation result. */
             public LayoutValidation {
                 result = Objects.requireNonNull(result, "result");
+            }
+        }
+
+        /** Bounded identifier of one started matrix run. */
+        record MatrixRunStarted(String runId) implements Result {
+            /** Validates the run identifier. */
+            public MatrixRunStarted {
+                ProtocolJson.requireIdentifier(runId, "runId");
+            }
+        }
+
+        /** Compact immutable report of one matrix run; never embeds screenshots. */
+        record MatrixReportData(dev.gdx.uiharness.core.matrix.MatrixReport report)
+                implements Result {
+            /** Requires a closed matrix report. */
+            public MatrixReportData {
+                report = Objects.requireNonNull(report, "report");
             }
         }
 

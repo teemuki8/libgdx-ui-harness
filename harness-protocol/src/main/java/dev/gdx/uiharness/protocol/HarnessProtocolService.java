@@ -258,6 +258,14 @@ public final class HarnessProtocolService {
             requireCapability(session, capability(command));
             return validateLayout(session, layout.spec(), deadline);
         }
+        if (command instanceof Command.MatrixRun matrix) {
+            requireCapability(session, capability(command));
+            return runMatrix(session, matrix.spec(), deadline);
+        }
+        if (command instanceof Command.MatrixResults results) {
+            requireCapability(session, capability(command));
+            return matrixResults(session, results.runId());
+        }
 
 
         requireCapability(session, capability(command));
@@ -364,6 +372,12 @@ public final class HarnessProtocolService {
         if (command instanceof Command.LayoutValidate) {
             return "ui_validate_layout";
         }
+        if (command instanceof Command.MatrixRun) {
+            return "ui_matrix_run";
+        }
+        if (command instanceof Command.MatrixResults) {
+            return "ui_matrix_results";
+        }
         if (command instanceof Command.Query) {
             return "query";
         }
@@ -403,6 +417,29 @@ public final class HarnessProtocolService {
                     "Session does not support capability: " + capability,
                     ErrorEvidence.ofDetails(Map.of("capability", capability)));
         }
+    }
+
+    private static RoutedOperation<?> runMatrix(
+            Session session, Command.MatrixRunSpec spec, Deadline deadline) {
+        if (session.matrixCoordinator().isEmpty()) {
+            throw new HarnessException(ErrorCode.UNSUPPORTED_CAPABILITY,
+                    "Display matrix execution is unavailable for this session",
+                    ErrorEvidence.empty());
+        }
+        return RoutedOperation.map(
+                session.matrixCoordinator().orElseThrow().run(spec, deadline),
+                HarnessResponse.Result.MatrixRunStarted::new);
+    }
+
+    private static RoutedOperation<?> matrixResults(Session session, String runId) {
+        if (session.matrixCoordinator().isEmpty()) {
+            throw new HarnessException(ErrorCode.UNSUPPORTED_CAPABILITY,
+                    "Display matrix execution is unavailable for this session",
+                    ErrorEvidence.empty());
+        }
+        return RoutedOperation.map(
+                session.matrixCoordinator().orElseThrow().results(runId),
+                HarnessResponse.Result.MatrixReportData::new);
     }
 
     private static RoutedOperation<?> validateLayout(
@@ -676,7 +713,8 @@ public final class HarnessProtocolService {
             Optional<ScenarioRegistry> scenarioRegistry,
             Optional<ScenarioCoordinator> scenarioCoordinator,
             Optional<NavigationCoordinator> navigationCoordinator,
-            Optional<LayoutValidationCoordinator> layoutValidationCoordinator) {
+            Optional<LayoutValidationCoordinator> layoutValidationCoordinator,
+            Optional<MatrixCoordinator> matrixCoordinator) {
         /** Retains source compatibility for sessions without scenario lifecycle registration. */
         public Session(
                 Harness harness,
@@ -686,7 +724,8 @@ public final class HarnessProtocolService {
                 CapabilitySet capabilities,
                 TraceController traces) {
             this(harness, locators, waits, capture, capabilities, traces,
-                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
+                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                    Optional.empty());
         }
 
         /** Retains source compatibility for sessions without navigation wiring. */
@@ -700,7 +739,8 @@ public final class HarnessProtocolService {
                 Optional<ScenarioRegistry> scenarioRegistry,
                 Optional<ScenarioCoordinator> scenarioCoordinator) {
             this(harness, locators, waits, capture, capabilities, traces,
-                    scenarioRegistry, scenarioCoordinator, Optional.empty(), Optional.empty());
+                    scenarioRegistry, scenarioCoordinator, Optional.empty(), Optional.empty(),
+                    Optional.empty());
         }
 
         /** Retains source compatibility for sessions without layout validation wiring. */
@@ -716,7 +756,24 @@ public final class HarnessProtocolService {
                 Optional<NavigationCoordinator> navigationCoordinator) {
             this(harness, locators, waits, capture, capabilities, traces,
                     scenarioRegistry, scenarioCoordinator, navigationCoordinator,
-                    Optional.empty());
+                    Optional.empty(), Optional.empty());
+        }
+
+        /** Retains source compatibility for sessions without matrix wiring. */
+        public Session(
+                Harness harness,
+                LocatorEngine locators,
+                WaitEngine waits,
+                ScreenCapture capture,
+                CapabilitySet capabilities,
+                TraceController traces,
+                Optional<ScenarioRegistry> scenarioRegistry,
+                Optional<ScenarioCoordinator> scenarioCoordinator,
+                Optional<NavigationCoordinator> navigationCoordinator,
+                Optional<LayoutValidationCoordinator> layoutValidationCoordinator) {
+            this(harness, locators, waits, capture, capabilities, traces,
+                    scenarioRegistry, scenarioCoordinator, navigationCoordinator,
+                    layoutValidationCoordinator, Optional.empty());
         }
 
         /** Validates all required session operations and optional scenario registration. */
@@ -734,6 +791,8 @@ public final class HarnessProtocolService {
                     Objects.requireNonNull(navigationCoordinator, "navigationCoordinator");
             layoutValidationCoordinator = Objects.requireNonNull(
                     layoutValidationCoordinator, "layoutValidationCoordinator");
+            matrixCoordinator =
+                    Objects.requireNonNull(matrixCoordinator, "matrixCoordinator");
         }
     }
 
@@ -791,6 +850,15 @@ public final class HarnessProtocolService {
         /** Validates one atomic completed-frame whole-stage or subtree observation. */
         CompletionStage<dev.gdx.uiharness.core.layout.LayoutValidationResult> validate(
                 Command.LayoutValidationSpec spec, Deadline deadline);
+    }
+
+    /** Optional application-owned display matrix execution boundary for one session. */
+    public interface MatrixCoordinator {
+        /** Starts one bounded display matrix run and completes with its run identifier. */
+        CompletionStage<String> run(Command.MatrixRunSpec spec, Deadline deadline);
+
+        /** Returns the compact retained report for one run. */
+        CompletionStage<dev.gdx.uiharness.core.matrix.MatrixReport> results(String runId);
     }
 
     /** Render-thread-safe source of the public evaluator-complete contract. */

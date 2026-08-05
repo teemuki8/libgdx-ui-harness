@@ -67,10 +67,10 @@ final class Lwjgl3MatrixRunnerTest {
             assertEquals(2, report.results().size());
             for (var result : report.results()) {
                 assertEquals(MatrixCaseStatus.PASSED, result.status());
-                assertEquals(result.caseDefinition().window(),
-                        result.observedWindow().orElseThrow());
-                assertEquals(1.0, result.observedUiScale().orElseThrow());
-                assertEquals(MatrixHiDpi.LOGICAL, result.observedHiDpiMode().orElseThrow());
+                assertEquals(result.caseSummary().window(),
+                        result.observedWindow());
+                assertEquals(1.0, result.observedUiScale());
+                assertEquals(MatrixHiDpi.LOGICAL, result.observedHiDpiMode());
                 assertEquals(List.of(0), result.passedAssertions());
             }
             assertEquals(2, fixture.acquisitions.get());

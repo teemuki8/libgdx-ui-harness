@@ -157,10 +157,10 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
             MatrixCase matrixCase, Deadline deadline, List<MatrixCaseResult> results) {
         if (deadline.isExpired() || !open) {
             results.add(new MatrixCaseResult(
-                    matrixCase,
+                    dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
                     deadline.isExpired() ? MatrixCaseStatus.UNSTARTED
                             : MatrixCaseStatus.CANCELLED,
-                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                    null, null, null, null,
                     List.of(), List.of(), List.of(), ""));
             return CompletableFuture.completedFuture(null);
         }
@@ -177,10 +177,9 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                 .handle((result, failure) -> {
                     if (failure != null) {
                         results.add(new MatrixCaseResult(
-                                matrixCase,
+                                dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
                                 MatrixCaseStatus.FAILED,
-                                Optional.empty(), Optional.empty(), Optional.empty(),
-                                Optional.empty(),
+                                null, null, null, null,
                                 List.of(), List.of(), List.of(),
                                 bounded(rootMessage(failure))));
                     } else {
@@ -214,12 +213,12 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
             MatrixCaseStatus status = failed.isEmpty()
                     ? MatrixCaseStatus.PASSED : MatrixCaseStatus.FAILED;
             return new MatrixCaseResult(
-                    matrixCase,
+                    dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
                     status,
-                    Optional.of(observed.window()),
-                    Optional.of(observed.uiScale()),
-                    Optional.of(observed.devicePixelRatio()),
-                    Optional.of(observed.hiDpiMode()),
+                    observed.window(),
+                    observed.uiScale(),
+                    observed.devicePixelRatio(),
+                    observed.hiDpiMode(),
                     List.copyOf(passed),
                     List.copyOf(failed),
                     List.of(),

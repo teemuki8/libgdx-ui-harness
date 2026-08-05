@@ -1,6 +1,5 @@
 package dev.gdx.uiharness.core.matrix;
 
-import java.util.Objects;
 
 /** Hard bounds applied to one display matrix run. */
 public record MatrixLimits(int maxCases) {

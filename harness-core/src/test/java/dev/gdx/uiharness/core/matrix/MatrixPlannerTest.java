@@ -2,7 +2,6 @@ package dev.gdx.uiharness.core.matrix;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.gdx.uiharness.core.assertion.AssertionRequest;
 import dev.gdx.uiharness.core.assertion.UiAssertion;
