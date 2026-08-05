@@ -286,6 +286,22 @@ public final class HarnessToolCatalog {
                                 List.of("spec")),
                         output("layout-validation-result", layoutValidationResultSchema(),
                                 List.of("result"))),
+                tool("ui_matrix_run",
+                        "Run one registered scenario and assertion set across a bounded "
+                                + "display/locale matrix",
+                        sessionInput(Map.of(
+                                "spec", matrixRunSpecSchema()),
+                                List.of("spec")),
+                        output("matrix-run-started", Map.of(
+                                "runId", string(1, MAX_IDENTIFIER)),
+                                List.of("runId"))),
+                tool("ui_matrix_results",
+                        "Retrieve the compact report for one matrix run",
+                        sessionInput(Map.of(
+                                "runId", string(1, MAX_IDENTIFIER)),
+                                List.of("runId")),
+                        output("matrix-report", matrixReportSchema(),
+                                List.of("report"))),
                 tool("ui_capabilities", "Discover capabilities for one harness session",
                         sessionInput(Map.of(), List.of()),
                         output("capabilities-result", Map.ofEntries(
@@ -399,6 +415,67 @@ public final class HarnessToolCatalog {
                         Map.entry("truncated", Map.of("type", "boolean")),
                         Map.entry("appliedConfig", object(Map.of(), List.of()))),
                         List.of("status", "findings", "examinedNodes", "truncated"))));
+    }
+
+    private static Map<String, Object> matrixRunSpecSchema() {
+        return object(Map.ofEntries(
+                Map.entry("scenarioId", string(1, MAX_IDENTIFIER)),
+                Map.entry("windows", array(object(Map.of(
+                        "width", integer(1, 16_384),
+                        "height", integer(1, 16_384)),
+                        List.of("width", "height")), 64)),
+                Map.entry("uiScales", array(number(0.0, Double.MAX_VALUE), 64)),
+                Map.entry("devicePixelRatios", array(number(0.0, Double.MAX_VALUE), 64)),
+                Map.entry("hiDpiModes", array(enumString("LOGICAL", "PIXELS"), 64)),
+                Map.entry("locales", array(string(1, MAX_IDENTIFIER), 64)),
+                Map.entry("fontSetIds", array(string(1, MAX_IDENTIFIER), 64)),
+                Map.entry("assertions", array(matrixAssertionSchema(), 256)),
+                Map.entry("maxCases", integer(1, 10_000)),
+                Map.entry("maxDurationMillis", integer(1, 3_600_000))),
+                List.of("scenarioId", "windows", "uiScales", "devicePixelRatios",
+                        "hiDpiModes", "locales", "maxCases", "maxDurationMillis"));
+    }
+
+    private static Map<String, Object> matrixAssertionSchema() {
+        return object(Map.of(
+                "locator", locatorRef(),
+                "assertion", assertionRef()),
+                List.of("locator", "assertion"));
+    }
+
+    private static Map<String, Object> assertionRef() {
+        return Map.of("$ref", "#/$defs/assertion");
+    }
+
+    private static Map<String, Object> matrixReportSchema() {
+        return Map.ofEntries(
+                Map.entry("report", object(Map.ofEntries(
+                        Map.entry("runId", string(1, MAX_IDENTIFIER)),
+                        Map.entry("scenarioId", string(1, MAX_IDENTIFIER)),
+                        Map.entry("results", array(object(Map.ofEntries(
+                                Map.entry("status", enumString(
+                                        "PASSED", "FAILED", "UNSTARTED", "CANCELLED")),
+                                Map.entry("caseDefinition", object(Map.ofEntries(
+                                        Map.entry("index", integer(0, 10_000)),
+                                        Map.entry("window", object(Map.of(
+                                                "width", integer(1, 16_384),
+                                                "height", integer(1, 16_384)),
+                                                List.of("width", "height"))),
+                                        Map.entry("uiScale", number(0.0, Double.MAX_VALUE)),
+                                        Map.entry("devicePixelRatio",
+                                                number(0.0, Double.MAX_VALUE)),
+                                        Map.entry("hiDpiMode",
+                                                enumString("LOGICAL", "PIXELS")),
+                                        Map.entry("locale", string(1, MAX_IDENTIFIER))),
+                                        List.of("index", "window", "uiScale",
+                                                "devicePixelRatio", "hiDpiMode", "locale"))),
+                                Map.entry("passedAssertions", array(
+                                        integer(0, 255), 256)),
+                                Map.entry("failedAssertions", array(
+                                        integer(0, 255), 256))),
+                                List.of("status", "caseDefinition")), 10_000)),
+                        Map.entry("truncated", Map.of("type", "boolean"))),
+                        List.of("runId", "scenarioId", "results", "truncated"))));
     }
 
     private static Map<String, Object> navigationSpecSchema() {
@@ -745,6 +822,21 @@ public final class HarnessToolCatalog {
                 Map.entry("maxFindings", 256),
                 Map.entry("maxNodes", 10000),
                 Map.entry("maxDurationMillis", 2000));
+        values.put("ui_matrix_run", List.of(Map.of(
+                "sessionId", "SESSION",
+                "spec", Map.ofEntries(
+                        Map.entry("scenarioId", "matrix"),
+                        Map.entry("windows", List.of(Map.of("width", 1280, "height", 720))),
+                        Map.entry("uiScales", List.of(1.0)),
+                        Map.entry("devicePixelRatios", List.of(1.0)),
+                        Map.entry("hiDpiModes", List.of("LOGICAL")),
+                        Map.entry("locales", List.of("en")),
+                        Map.entry("fontSetIds", List.of()),
+                        Map.entry("assertions", List.of()),
+                        Map.entry("maxCases", 10000),
+                        Map.entry("maxDurationMillis", 2000)))));
+        values.put("ui_matrix_results", List.of(Map.of(
+                "sessionId", "SESSION", "runId", "matrix-000000000000")));
         values.put("ui_validate_layout", List.of(Map.of(
                 "sessionId", "SESSION", "spec", layoutSpec)));
         values.put("ui_scenarios", List.of(session));

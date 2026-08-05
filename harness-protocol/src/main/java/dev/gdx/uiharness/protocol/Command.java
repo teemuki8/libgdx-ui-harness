@@ -50,13 +50,16 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.ScenarioStart.class, name = "scenario-start"),
     @JsonSubTypes.Type(value = Command.NavigationInspect.class, name = "navigation-inspect"),
     @JsonSubTypes.Type(value = Command.NavigationValidate.class, name = "navigation-validate"),
-    @JsonSubTypes.Type(value = Command.LayoutValidate.class, name = "layout-validate")
+    @JsonSubTypes.Type(value = Command.LayoutValidate.class, name = "layout-validate"),
+    @JsonSubTypes.Type(value = Command.MatrixRun.class, name = "matrix-run"),
+    @JsonSubTypes.Type(value = Command.MatrixResults.class, name = "matrix-results")
 })
 public sealed interface Command permits Command.Sessions, Command.Capabilities, Command.Snapshot,
         Command.Query, Command.Action, Command.Assert, Command.Wait, Command.Screenshot,
         Command.TraceStart, Command.InspectCompare, Command.TypographyDiagnose,
         Command.LayoutDiagnose, Command.TraceStop, Command.ScenarioList, Command.ScenarioStart,
-        Command.NavigationInspect, Command.NavigationValidate, Command.LayoutValidate {
+        Command.NavigationInspect, Command.NavigationValidate, Command.LayoutValidate,
+        Command.MatrixRun, Command.MatrixResults {
     /** Lists active sessions. */
     record Sessions() implements Command {}
 
@@ -256,6 +259,119 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
         /** Validates the layout validation request. */
         public LayoutValidate {
             Objects.requireNonNull(spec, "spec");
+        }
+    }
+
+    /** One authoritative window geometry dimension. */
+    record MatrixWindowSpec(int width, int height) {
+        /** Validates positive geometry. */
+        public MatrixWindowSpec {
+            if (width < 1 || height < 1) {
+                throw new IllegalArgumentException("window width and height must be positive");
+            }
+        }
+    }
+
+    /** One carried declarative assertion reused verbatim from the closed assertion union. */
+    record MatrixAssertionSpec(LocatorSpec locator, AssertionSpec assertion) {
+        /** Validates the assertion binding. */
+        public MatrixAssertionSpec {
+            Objects.requireNonNull(locator, "locator");
+            Objects.requireNonNull(assertion, "assertion");
+        }
+    }
+
+    /** Bounded display matrix run request. */
+    record MatrixRunSpec(
+            String scenarioId,
+            List<MatrixWindowSpec> windows,
+            List<Double> uiScales,
+            List<Double> devicePixelRatios,
+            List<String> hiDpiModes,
+            List<String> locales,
+            List<String> fontSetIds,
+            List<MatrixAssertionSpec> assertions,
+            int maxCases,
+            long maxDurationMillis) {
+        private static final int MAX_DIMENSION = 64;
+        private static final int MAX_ASSERTIONS = 256;
+        private static final int MAX_CASES = 10_000;
+
+        /** Validates identifiers, closed modes, scales, and bounds. */
+        public MatrixRunSpec {
+            ProtocolJson.requireIdentifier(scenarioId, "scenarioId");
+            windows = distinct(requireBounded(windows, "windows", MAX_DIMENSION));
+            uiScales = distinct(requireBoundedPositive(uiScales, "uiScales"));
+            devicePixelRatios =
+                    distinct(requireBoundedPositive(devicePixelRatios, "devicePixelRatios"));
+            hiDpiModes = distinct(requireBounded(hiDpiModes, "hiDpiModes", MAX_DIMENSION));
+            for (String mode : hiDpiModes) {
+                parseHiDpi(mode);
+            }
+            locales = distinct(requireBounded(locales, "locales", MAX_DIMENSION));
+            fontSetIds = distinct(requireBounded(fontSetIds, "fontSetIds", MAX_DIMENSION));
+            assertions = List.copyOf(requireBounded(assertions, "assertions", MAX_ASSERTIONS));
+            if (maxCases < 1 || maxCases > MAX_CASES) {
+                throw new IllegalArgumentException(
+                        "maxCases must be between 1 and " + MAX_CASES);
+            }
+            if (maxDurationMillis < 1 || maxDurationMillis > 3_600_000) {
+                throw new IllegalArgumentException(
+                        "maxDurationMillis must be between 1 and 3600000");
+            }
+        }
+
+        private static dev.gdx.uiharness.core.matrix.MatrixHiDpi parseHiDpi(String mode) {
+            ProtocolJson.requireIdentifier(mode, "hiDpiMode");
+            try {
+                return dev.gdx.uiharness.core.matrix.MatrixHiDpi.valueOf(
+                        mode.toUpperCase(java.util.Locale.ROOT));
+            } catch (IllegalArgumentException failure) {
+                throw new IllegalArgumentException("unknown HiDPI mode: " + mode, failure);
+            }
+        }
+
+        private static <T> List<T> requireBounded(List<T> values, String name, int maximum) {
+            Objects.requireNonNull(values, name);
+            if (values.size() > maximum) {
+                throw new IllegalArgumentException(name + " exceeds " + maximum + " entries");
+            }
+            return values;
+        }
+
+        private static List<Double> requireBoundedPositive(List<Double> values, String name) {
+            List<Double> bounded = requireBounded(values, name, MAX_DIMENSION);
+            for (Double value : bounded) {
+                if (value == null || !Double.isFinite(value) || value <= 0.0) {
+                    throw new IllegalArgumentException(
+                            name + " must contain finite positive values");
+                }
+            }
+            return bounded;
+        }
+
+        private static <T> List<T> distinct(List<T> values) {
+            List<T> copied = List.copyOf(values);
+            if (copied.stream().distinct().count() != copied.size()) {
+                throw new IllegalArgumentException("matrix dimension contains duplicates");
+            }
+            return copied;
+        }
+    }
+
+    /** Starts one bounded display matrix run, completing with its run identifier. */
+    record MatrixRun(MatrixRunSpec spec) implements Command {
+        /** Validates the matrix request. */
+        public MatrixRun {
+            Objects.requireNonNull(spec, "spec");
+        }
+    }
+
+    /** Retrieves the compact retained report for one matrix run. */
+    record MatrixResults(String runId) implements Command {
+        /** Validates the run identifier. */
+        public MatrixResults {
+            ProtocolJson.requireIdentifier(runId, "runId");
         }
     }
 

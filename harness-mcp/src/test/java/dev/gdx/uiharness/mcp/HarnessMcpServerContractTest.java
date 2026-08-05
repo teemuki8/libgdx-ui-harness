@@ -22,6 +22,11 @@ import dev.gdx.uiharness.core.layout.LayoutValidationConfig;
 import dev.gdx.uiharness.core.layout.LayoutValidationReason;
 import dev.gdx.uiharness.core.layout.LayoutValidationResult;
 import dev.gdx.uiharness.core.layout.LayoutValidationSeverity;
+import dev.gdx.uiharness.core.matrix.MatrixCaseResult;
+import dev.gdx.uiharness.core.matrix.MatrixCaseStatus;
+import dev.gdx.uiharness.core.matrix.MatrixHiDpi;
+import dev.gdx.uiharness.core.matrix.MatrixReport;
+import dev.gdx.uiharness.core.matrix.MatrixWindow;
 import dev.gdx.uiharness.core.model.Bounds;
 import dev.gdx.uiharness.core.model.Role;
 import dev.gdx.uiharness.core.model.SemanticNode;
@@ -142,7 +147,7 @@ final class HarnessMcpServerContractTest {
             assertTrue(((List<?>) structured(capabilities).get("capabilities")).contains("action"));
             assertEquals("operation-catalog/v1",
                     structured(capabilities).get("catalogSchemaVersion"));
-            assertEquals(18, ((List<?>) structured(capabilities).get("operations")).size());
+            assertEquals(20, ((List<?>) structured(capabilities).get("operations")).size());
             assertTrue(((List<?>) structured(capabilities).get("capabilities"))
                     .contains("ui_assert"));
             assertTrue(String.valueOf(structured(capabilities).get("operations"))
@@ -314,6 +319,103 @@ final class HarnessMcpServerContractTest {
                 },
                 new CapabilitySet(List.of("ui_validate_layout")),
                 HarnessProtocolService.TraceController.unsupported(),
+                java.util.Optional.empty(),
+                java.util.Optional.empty(),
+                java.util.Optional.empty(),
+                java.util.Optional.of(coordinator));
+        return new HarnessProtocolService(
+                Map.of("game", session), CLOCK, Runnable::run);
+    }
+
+    @Test void matrixToolsRouteThroughTheClosedSpecAndPublishReports() {
+        AtomicReference<Command> observed = new AtomicReference<>();
+        HarnessProtocolService service = matrixService(observed);
+        Map<String, Object> spec = Map.ofEntries(
+                Map.entry("scenarioId", "matrix"),
+                Map.entry("windows", List.of(Map.of("width", 1280, "height", 720))),
+                Map.entry("uiScales", List.of(1.0)),
+                Map.entry("devicePixelRatios", List.of(1.0)),
+                Map.entry("hiDpiModes", List.of("LOGICAL")),
+                Map.entry("locales", List.of("en")),
+                Map.entry("fontSetIds", List.of()),
+                Map.entry("assertions", List.of()),
+                Map.entry("maxCases", 100),
+                Map.entry("maxDurationMillis", 5000));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        service::execute, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult started = handler.handle(call(
+                    "ui_matrix_run",
+                    Map.of("sessionId", "game", "spec", spec)))
+                    .block(Duration.ofSeconds(10));
+            if (started.isError()) {
+                System.err.println("MATRIX_ERR " + started.structuredContent());
+            }
+            assertFalse(started.isError());
+            assertEquals("matrix-run-1", structured(started).get("runId"));
+
+            McpSchema.CallToolResult report = handler.handle(call(
+                    "ui_matrix_results",
+                    Map.of("sessionId", "game", "runId", "matrix-run-1")))
+                    .block(Duration.ofSeconds(10));
+            if (report.isError()) {
+                System.err.println("MATRIX_REPORT_ERR " + report.structuredContent());
+            }
+            assertFalse(report.isError());
+            Map<String, Object> content = structured(report);
+            assertEquals("matrix-report", content.get("kind"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> data = (Map<String, Object>) content.get("report");
+            assertEquals("PASSED", ((Map<?, ?>) ((List<?>) data.get("results")).get(0))
+                    .get("status"));
+
+            Command.MatrixRun command = (Command.MatrixRun) observed.get();
+            assertEquals("matrix", command.spec().scenarioId());
+        }
+    }
+
+    private static HarnessProtocolService matrixService(AtomicReference<Command> observed) {
+        HarnessProtocolService.MatrixCoordinator coordinator =
+                new HarnessProtocolService.MatrixCoordinator() {
+                    @Override public CompletionStage<String> run(
+                            Command.MatrixRunSpec spec, Deadline deadline) {
+                        observed.set(new Command.MatrixRun(spec));
+                        return CompletableFuture.completedFuture("matrix-run-1");
+                    }
+
+                    @Override public CompletionStage<MatrixReport> results(String runId) {
+                        return CompletableFuture.completedFuture(new MatrixReport(
+                                runId,
+                                "matrix",
+                                List.of(new MatrixCaseResult(
+                                        new dev.gdx.uiharness.core.matrix.MatrixCaseSummary(
+                                                0, new MatrixWindow(1280, 720), 1.0, 1.0,
+                                                MatrixHiDpi.LOGICAL, "en", "", 16.0 / 9.0),
+                                        MatrixCaseStatus.PASSED,
+                                        new MatrixWindow(1280, 720),
+                                        1.0, 1.0,
+                                        MatrixHiDpi.LOGICAL,
+                                        List.of(0), List.of(), List.of(), "")),
+                                false));
+                    }
+                };
+        HarnessProtocolService.Session session = new HarnessProtocolService.Session(
+                new RecordingHarness(), new StrictResolution(),
+                new WaitEngine(() -> SNAPSHOT, new StrictResolution(), CLOCK,
+                        listener -> () -> {}),
+                new ScreenCapture() {
+                    @Override public CompletionStage<CapturedImage> capture(
+                            CaptureRequest request, Deadline deadline) {
+                        return CompletableFuture.completedFuture(new CapturedImage(
+                                new byte[] {1, 2, 3}, "0".repeat(64), 1, 1, 1, 1,
+                                new CapturedImage.Scale(1, 1)));
+                    }
+
+                    @Override public void close() {}
+                },
+                new CapabilitySet(List.of("ui_matrix_run", "ui_matrix_results")),
+                HarnessProtocolService.TraceController.unsupported(),
+                java.util.Optional.empty(),
                 java.util.Optional.empty(),
                 java.util.Optional.empty(),
                 java.util.Optional.empty(),
@@ -908,7 +1010,7 @@ final class HarnessMcpServerContractTest {
             send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}");
             JsonNode listed = read(reader);
-            assertEquals(18, listed.at("/result/tools").size());
+            assertEquals(20, listed.at("/result/tools").size());
 
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
                     + "\"params\":{\"name\":\"ui_action\",\"arguments\":{"

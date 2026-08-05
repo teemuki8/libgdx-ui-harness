@@ -1,0 +1,23 @@
+# ADR 0022: Bounded display matrix lifecycle
+
+## Status
+
+Accepted
+
+## Context
+
+A scenario that passes at one display configuration can fail at another resolution, aspect ratio, UI scale, device pixel ratio, HiDPI mode, locale, or font set. Manual correlation is slow and non-reproducible. The matrix runner must start each case from a registered known state, fan the same assertion set across every case, keep requested and observed display parameters distinct, bound the Cartesian product before any case starts, and return compact terminal reports without embedding screenshots.
+
+## Decision
+
+Add the pure matrix planning models in `harness-core`, the `Lwjgl3MatrixRunner` execution adapter, the closed `matrix-run`/`matrix-results` protocol operations, and the `ui_matrix_run`/`ui_matrix_results` MCP tools.
+
+`MatrixPlanner` expands the immutable `MatrixDefinition` (windows, UI scales, device pixel ratios, HiDPI modes, locales, font sets, carried #31 assertions) into a deterministic Cartesian product in window, scale, DPR, HiDPI, locale, font-set order. The product is computed overflow-safely and rejected before execution when it exceeds the case bound. Width and height are authoritative; aspect ratio is derived. Empty font-set lists collapse to one implicit default. UI scale, device pixel ratio, and HiDPI mode remain distinct requested axes.
+
+`Lwjgl3MatrixRunner` executes cases sequentially: each case acquires the registered scenario through the #39 lease API, evaluates every carried assertion through the shared wait engine on externally pumped completed frames, records exact observed display parameters through an application-owned observer, and releases the scenario. Started, failed, unstarted, and cancelled cases have distinct terminal statuses with bounded evidence; reports are compact (`MatrixCaseSummary` carries no assertions), immutable, and never embed screenshots.
+
+The protocol session gains an optional `MatrixCoordinator` boundary with backward-compatible constructors. `matrix-run` completes with a bounded run identifier; `matrix-results` returns the compact retained report.
+
+## Consequences
+
+CI can run one scenario and assertion set across a bounded display/locale/font matrix with deterministic order, exact provenance, and compact terminal reports. Adding a display dimension or changing bounds requires protocol golden updates, schema review, and the exact MCP catalog update.

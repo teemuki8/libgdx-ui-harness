@@ -6598,6 +6598,433 @@
         "maxLength" : 256,
         "minLength" : 1,
         "type" : "string"
+      },
+      "spec" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "assertions" : {
+            "items" : {
+              "additionalProperties" : false,
+              "properties" : {
+                "assertion" : {
+                  "$ref" : "#/$defs/assertion"
+                },
+                "locator" : {
+                  "$ref" : "#/$defs/locator"
+                }
+              },
+              "required" : [ "locator", "assertion" ],
+              "type" : "object"
+            },
+            "maxItems" : 256,
+            "type" : "array"
+          },
+          "devicePixelRatios" : {
+            "items" : {
+              "maximum" : 1.7976931348623157E308,
+              "minimum" : 0.0,
+              "type" : "number"
+            },
+            "maxItems" : 64,
+            "type" : "array"
+          },
+          "fontSetIds" : {
+            "items" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "maxItems" : 64,
+            "type" : "array"
+          },
+          "hiDpiModes" : {
+            "items" : {
+              "enum" : [ "LOGICAL", "PIXELS" ],
+              "type" : "string"
+            },
+            "maxItems" : 64,
+            "type" : "array"
+          },
+          "locales" : {
+            "items" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "maxItems" : 64,
+            "type" : "array"
+          },
+          "maxCases" : {
+            "maximum" : 10000,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "maxDurationMillis" : {
+            "maximum" : 3600000,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "scenarioId" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "uiScales" : {
+            "items" : {
+              "maximum" : 1.7976931348623157E308,
+              "minimum" : 0.0,
+              "type" : "number"
+            },
+            "maxItems" : 64,
+            "type" : "array"
+          },
+          "windows" : {
+            "items" : {
+              "additionalProperties" : false,
+              "properties" : {
+                "height" : {
+                  "maximum" : 16384,
+                  "minimum" : 1,
+                  "type" : "integer"
+                },
+                "width" : {
+                  "maximum" : 16384,
+                  "minimum" : 1,
+                  "type" : "integer"
+                }
+              },
+              "required" : [ "width", "height" ],
+              "type" : "object"
+            },
+            "maxItems" : 64,
+            "type" : "array"
+          }
+        },
+        "required" : [ "scenarioId", "windows", "uiScales", "devicePixelRatios", "hiDpiModes", "locales", "maxCases", "maxDurationMillis" ],
+        "type" : "object"
+      }
+    },
+    "required" : [ "sessionId", "spec" ],
+    "type" : "object"
+  },
+  "name" : "ui_matrix_run",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "kind" : {
+        "const" : "matrix-run-started",
+        "type" : "string"
+      },
+      "progress" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "dimensions" : {
+            "additionalProperties" : {
+              "enum" : [ "changed", "unchanged", "unavailable" ],
+              "type" : "string"
+            },
+            "maxProperties" : 32,
+            "type" : "object"
+          },
+          "ruleId" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "status" : {
+            "enum" : [ "available", "unavailable" ],
+            "type" : "string"
+          }
+        },
+        "required" : [ "status", "dimensions", "ruleId" ],
+        "type" : "object"
+      },
+      "recovery" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "consumed" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "consumedBefore" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "elapsedMillis" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "limit" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "maxWallTimeMillis" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "policyVersion" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "remaining" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "remainingBefore" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "terminatingRule" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          }
+        },
+        "required" : [ "policyVersion", "consumedBefore", "consumed", "limit", "remainingBefore", "remaining", "elapsedMillis", "maxWallTimeMillis", "terminatingRule" ],
+        "type" : "object"
+      },
+      "runId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "kind", "progress", "recovery", "runId" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "runId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId", "runId" ],
+    "type" : "object"
+  },
+  "name" : "ui_matrix_results",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "kind" : {
+        "const" : "matrix-report",
+        "type" : "string"
+      },
+      "progress" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "dimensions" : {
+            "additionalProperties" : {
+              "enum" : [ "changed", "unchanged", "unavailable" ],
+              "type" : "string"
+            },
+            "maxProperties" : 32,
+            "type" : "object"
+          },
+          "ruleId" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "status" : {
+            "enum" : [ "available", "unavailable" ],
+            "type" : "string"
+          }
+        },
+        "required" : [ "status", "dimensions", "ruleId" ],
+        "type" : "object"
+      },
+      "recovery" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "consumed" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "consumedBefore" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "elapsedMillis" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "limit" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "maxWallTimeMillis" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "policyVersion" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "remaining" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "remainingBefore" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "terminatingRule" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          }
+        },
+        "required" : [ "policyVersion", "consumedBefore", "consumed", "limit", "remainingBefore", "remaining", "elapsedMillis", "maxWallTimeMillis", "terminatingRule" ],
+        "type" : "object"
+      },
+      "report" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "results" : {
+            "items" : {
+              "additionalProperties" : false,
+              "properties" : {
+                "caseDefinition" : {
+                  "additionalProperties" : false,
+                  "properties" : {
+                    "devicePixelRatio" : {
+                      "maximum" : 1.7976931348623157E308,
+                      "minimum" : 0.0,
+                      "type" : "number"
+                    },
+                    "hiDpiMode" : {
+                      "enum" : [ "LOGICAL", "PIXELS" ],
+                      "type" : "string"
+                    },
+                    "index" : {
+                      "maximum" : 10000,
+                      "minimum" : 0,
+                      "type" : "integer"
+                    },
+                    "locale" : {
+                      "maxLength" : 256,
+                      "minLength" : 1,
+                      "type" : "string"
+                    },
+                    "uiScale" : {
+                      "maximum" : 1.7976931348623157E308,
+                      "minimum" : 0.0,
+                      "type" : "number"
+                    },
+                    "window" : {
+                      "additionalProperties" : false,
+                      "properties" : {
+                        "height" : {
+                          "maximum" : 16384,
+                          "minimum" : 1,
+                          "type" : "integer"
+                        },
+                        "width" : {
+                          "maximum" : 16384,
+                          "minimum" : 1,
+                          "type" : "integer"
+                        }
+                      },
+                      "required" : [ "width", "height" ],
+                      "type" : "object"
+                    }
+                  },
+                  "required" : [ "index", "window", "uiScale", "devicePixelRatio", "hiDpiMode", "locale" ],
+                  "type" : "object"
+                },
+                "failedAssertions" : {
+                  "items" : {
+                    "maximum" : 255,
+                    "minimum" : 0,
+                    "type" : "integer"
+                  },
+                  "maxItems" : 256,
+                  "type" : "array"
+                },
+                "passedAssertions" : {
+                  "items" : {
+                    "maximum" : 255,
+                    "minimum" : 0,
+                    "type" : "integer"
+                  },
+                  "maxItems" : 256,
+                  "type" : "array"
+                },
+                "status" : {
+                  "enum" : [ "PASSED", "FAILED", "UNSTARTED", "CANCELLED" ],
+                  "type" : "string"
+                }
+              },
+              "required" : [ "status", "caseDefinition" ],
+              "type" : "object"
+            },
+            "maxItems" : 10000,
+            "type" : "array"
+          },
+          "runId" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "scenarioId" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "truncated" : {
+            "type" : "boolean"
+          }
+        },
+        "required" : [ "runId", "scenarioId", "results", "truncated" ],
+        "type" : "object"
+      }
+    },
+    "required" : [ "kind", "progress", "recovery", "report" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
       }
     },
     "required" : [ "sessionId" ],

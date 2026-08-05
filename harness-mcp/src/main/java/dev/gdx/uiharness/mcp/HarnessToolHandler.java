@@ -198,6 +198,8 @@ public final class HarnessToolHandler implements AutoCloseable {
             case "ui_navigation_inspect" -> "navigation-inspect";
             case "ui_navigation_validate" -> "navigation-validate";
             case "ui_validate_layout" -> "layout-validate";
+            case "ui_matrix_run" -> "matrix-run";
+            case "ui_matrix_results" -> "matrix-results";
             case "ui_capabilities" -> "capabilities";
             default -> throw new IllegalArgumentException("Unknown tool: " + toolName);
         };
@@ -523,6 +525,16 @@ public final class HarnessToolHandler implements AutoCloseable {
             LinkedHashMap<String, Object> content = content("layout-validation-result");
             content.put("result", COMMAND_MAPPER.convertValue(
                     validation.result(), Map.class));
+            return Map.copyOf(content);
+        }
+        if (result instanceof HarnessResponse.Result.MatrixRunStarted started) {
+            LinkedHashMap<String, Object> content = content("matrix-run-started");
+            content.put("runId", started.runId());
+            return Map.copyOf(content);
+        }
+        if (result instanceof HarnessResponse.Result.MatrixReportData report) {
+            LinkedHashMap<String, Object> content = content("matrix-report");
+            content.put("report", COMMAND_MAPPER.convertValue(report.report(), Map.class));
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.Navigation navigation) {
