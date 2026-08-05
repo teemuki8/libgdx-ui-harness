@@ -28,7 +28,7 @@ import java.util.function.LongSupplier;
 /** Traverses Scene2D focus using only application-configured input and completed frames. */
 public final class Scene2dNavigationRunner implements AutoCloseable {
     private static final Duration INTERNAL_DISPATCH_TIMEOUT = Duration.ofMinutes(10);
-    private static final String NO_FOCUS = "state:no-focus";
+    
 
     /** Immutable binding to the registered scenario that establishes traversal state. */
     public record Scenario(
@@ -249,7 +249,8 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
                 complete(resultWithReason(NavigationReason.FOCUS_LOST, false));
                 return;
             }
-            String beforeIdentity = before.focusIdentity() == null ? NO_FOCUS : before.focusIdentity();
+            String beforeIdentity = before.focusIdentity() == null
+                    ? NavigationStep.NO_FOCUS_IDENTITY : before.focusIdentity();
             steps.add(new NavigationStep(navigationInput, before.frame(), before.revision(),
                     after.frame(), after.revision(), beforeIdentity, after.focusIdentity(),
                     after.modalBoundaryId()));
@@ -304,6 +305,7 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
 
         private NavigationResult validateObserved(boolean expired) {
             NavigationRequest observed = new NavigationRequest(1, steps, known,
+                    before == null ? null : before.focusIdentity(),
                     request.modalBoundaryId(), request.controllerSupported(), expired,
                     request.maxSteps(), request.maxActors(), request.maxResultBytes(),
                     request.maxEvidenceBytes(), request.deadline());
@@ -317,7 +319,7 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         private NavigationResult resultWithReason(NavigationReason reason, boolean truncated) {
             String defaultFocus = steps.isEmpty() && before != null
                     ? before.focusIdentity() : steps.isEmpty() ? null
-                    : NO_FOCUS.equals(steps.get(0).beforeIdentity())
+                    : NavigationStep.NO_FOCUS_IDENTITY.equals(steps.get(0).beforeIdentity())
                             ? null : steps.get(0).beforeIdentity();
             NavigationPath path = new NavigationPath(1, defaultFocus, steps, reason);
             return new NavigationResult(1, path, known, List.of(), truncated);

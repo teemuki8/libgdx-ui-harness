@@ -19,11 +19,16 @@ public final class NavigationValidator {
         Set<String> visited = new HashSet<>();
         Set<FocusState> seen = new HashSet<>();
         String defaultFocus = request.steps().isEmpty()
-                ? null
+                ? request.observedDefaultFocus()
                 : request.steps().get(0).beforeIdentity();
+        if (NavigationStep.NO_FOCUS_IDENTITY.equals(defaultFocus)) {
+            defaultFocus = null;
+        }
         if (defaultFocus != null) {
             visited.add(defaultFocus);
-            seen.add(new FocusState(defaultFocus, request.steps().get(0).modalBoundaryId()));
+            seen.add(new FocusState(defaultFocus,
+                    request.steps().isEmpty() ? null
+                            : request.steps().get(0).modalBoundaryId()));
         }
 
         NavigationReason reason = request.deadlineExpired() ? NavigationReason.DEADLINE : null;

@@ -12,6 +12,7 @@ public record NavigationRequest(
         int schemaVersion,
         List<NavigationStep> steps,
         List<String> knownFocusables,
+        String observedDefaultFocus,
         String modalBoundaryId,
         boolean controllerSupported,
         boolean deadlineExpired,
@@ -31,6 +32,9 @@ public record NavigationRequest(
         }
         steps = List.copyOf(Objects.requireNonNull(steps, "steps"));
         knownFocusables = List.copyOf(Objects.requireNonNull(knownFocusables, "knownFocusables"));
+        if (observedDefaultFocus != null) {
+            NavigationStep.requireIdentity(observedDefaultFocus, "observedDefaultFocus");
+        }
         if (modalBoundaryId != null) {
             NavigationStep.requireIdentity(modalBoundaryId, "modalBoundaryId");
         }
@@ -67,13 +71,21 @@ public record NavigationRequest(
                         "adjacent navigation steps must have continuous identity, frame, and revision");
             }
         }
+        if (observedDefaultFocus != null && !identities.contains(observedDefaultFocus)) {
+            throw new IllegalArgumentException("observed default focus is not a known focusable");
+        }
         for (NavigationStep step : steps) {
             Objects.requireNonNull(step, "step");
-            if (!identities.contains(step.beforeIdentity())
-                    || step.afterIdentity() != null && !identities.contains(step.afterIdentity())) {
+            if (!isKnownIdentity(step.beforeIdentity(), identities)
+                    || step.afterIdentity() != null
+                            && !isKnownIdentity(step.afterIdentity(), identities)) {
                 throw new IllegalArgumentException("step references an unknown focusable identity");
             }
         }
+    }
+
+    private static boolean isKnownIdentity(String identity, Set<String> identities) {
+        return NavigationStep.NO_FOCUS_IDENTITY.equals(identity) || identities.contains(identity);
     }
 
     private static void requireBound(int value, int hardMaximum, String name) {

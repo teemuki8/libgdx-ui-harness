@@ -67,7 +67,7 @@ final class NavigationValidatorTest {
     void reportsModalEscapeBeforeGeneralReachability() {
         NavigationRequest request = new NavigationRequest(
                 1, List.of(step(NavigationInput.ESCAPE, "dialog/ok", "screen/menu", null)),
-                List.of("dialog/ok", "screen/menu"), "dialog", true, false,
+                List.of("dialog/ok", "screen/menu"), null, "dialog", true, false,
                 32, 32, 4096, 4096, Duration.ofSeconds(1));
 
         assertEquals(NavigationReason.MODAL_ESCAPE, validator.validate(request).path().reason());
@@ -79,7 +79,7 @@ final class NavigationValidatorTest {
                 List.of(step(NavigationInput.TAB, "a", null, null)), List.of("a")));
         NavigationRequest unsupported = new NavigationRequest(
                 1, List.of(step(NavigationInput.CONTROLLER_RIGHT, "a", "b", null)),
-                List.of("a", "b"), null, false, false,
+                List.of("a", "b"), null, null, false, false,
                 32, 32, 4096, 4096, Duration.ofSeconds(1));
 
         assertEquals(NavigationReason.FOCUS_LOST, focusLost.path().reason());
@@ -92,13 +92,13 @@ final class NavigationValidatorTest {
     void deadlineAndStepBoundTerminateDeterministically() {
         NavigationRequest deadline = new NavigationRequest(
                 1, List.of(step(NavigationInput.TAB, "a", "b", null)), List.of("a", "b"),
-                null, true, true, 32, 32, 4096, 4096, Duration.ofSeconds(1));
+                null, null, true, true, 32, 32, 4096, 4096, Duration.ofSeconds(1));
         NavigationRequest truncated = new NavigationRequest(
                 1,
                 List.of(
                         step(10, 20, 11, 21, "a", "b"),
                         step(11, 21, 12, 22, "b", "c")),
-                List.of("a", "b", "c"), null, true, false,
+                List.of("a", "b", "c"), null, null, true, false,
                 1, 32, 4096, 4096, Duration.ofSeconds(1));
 
         assertEquals(NavigationReason.DEADLINE, validator.validate(deadline).path().reason());
@@ -181,7 +181,7 @@ final class NavigationValidatorTest {
                 1,
                 List.of(step(NavigationInput.TAB, "a\"\\\u0001\u754c", "b\uD83D\uDE00", null)),
                 List.of("a\"\\\u0001\u754c", "b\uD83D\uDE00", "metadata-only-overflow"),
-                null, true, false, 32, 32, budget, 4096, Duration.ofSeconds(1));
+                null, null, true, false, 32, 32, budget, 4096, Duration.ofSeconds(1));
 
         NavigationResult result = validator.validate(request);
 
@@ -194,7 +194,7 @@ final class NavigationValidatorTest {
         int budget = 220;
         NavigationRequest request = new NavigationRequest(
                 1, List.of(), List.of("escaped-\"\\\u0001-\u754c-\uD83D\uDE00"),
-                null, true, false, 32, 32, budget, 4096, Duration.ofSeconds(1));
+                null, null, true, false, 32, 32, budget, 4096, Duration.ofSeconds(1));
 
         NavigationResult result = validator.validate(request);
 
@@ -209,21 +209,21 @@ final class NavigationValidatorTest {
         List<NavigationStep> steps = List.of(step(NavigationInput.TAB, "a", "b", null));
         List<String> actors = List.of("a", "b");
         assertThrows(IllegalArgumentException.class, () -> new NavigationRequest(
-                2, steps, actors, null, true, false, 1, 2, 1, 1, Duration.ofSeconds(1)));
+                2, steps, actors, null, null, true, false, 1, 2, 1, 1, Duration.ofSeconds(1)));
         assertThrows(IllegalArgumentException.class, () -> new NavigationRequest(
-                1, steps, actors, null, true, false, 0, 2, 1, 1, Duration.ofSeconds(1)));
+                1, steps, actors, null, null, true, false, 0, 2, 1, 1, Duration.ofSeconds(1)));
         assertThrows(IllegalArgumentException.class, () -> new NavigationRequest(
-                1, steps, actors, null, true, false, 1, 0, 1, 1, Duration.ofSeconds(1)));
+                1, steps, actors, null, null, true, false, 1, 0, 1, 1, Duration.ofSeconds(1)));
         assertThrows(IllegalArgumentException.class, () -> new NavigationRequest(
-                1, steps, actors, null, true, false, 1, 2, 0, 1, Duration.ofSeconds(1)));
+                1, steps, actors, null, null, true, false, 1, 2, 0, 1, Duration.ofSeconds(1)));
         assertThrows(IllegalArgumentException.class, () -> new NavigationRequest(
-                1, steps, actors, null, true, false, 1, 2, 1, 0, Duration.ofSeconds(1)));
+                1, steps, actors, null, null, true, false, 1, 2, 1, 0, Duration.ofSeconds(1)));
         assertThrows(IllegalArgumentException.class, () -> new NavigationRequest(
-                1, steps, actors, null, true, false, 1, 2, 1, 1, Duration.ZERO));
+                1, steps, actors, null, null, true, false, 1, 2, 1, 1, Duration.ZERO));
         assertThrows(HarnessException.class, () -> new NavigationRequest(
-                1, steps, actors, null, true, false, 1, 2, 4096, 1, Duration.ofSeconds(31)));
+                1, steps, actors, null, null, true, false, 1, 2, 4096, 1, Duration.ofSeconds(31)));
         assertThrows(IllegalArgumentException.class, () -> new NavigationRequest(
-                1, steps, actors, null, true, false, 1, 1, 1, 1, Duration.ofSeconds(1)));
+                1, steps, actors, null, null, true, false, 1, 1, 1, 1, Duration.ofSeconds(1)));
     }
 
     @Test
@@ -247,7 +247,7 @@ final class NavigationValidatorTest {
             boolean controllerSupported,
             boolean deadlineExpired) {
         NavigationRequest request = new NavigationRequest(
-                1, steps, actors, modalBoundary, controllerSupported, deadlineExpired,
+                1, steps, actors, null, modalBoundary, controllerSupported, deadlineExpired,
                 32, 32, 4096, 1, Duration.ofSeconds(1));
 
         NavigationResult result = validator.validate(request);
@@ -258,7 +258,7 @@ final class NavigationValidatorTest {
 
     private static NavigationRequest request(List<NavigationStep> steps, List<String> actors) {
         return new NavigationRequest(
-                1, steps, actors, null, true, false,
+                1, steps, actors, null, null, true, false,
                 32, 32, 4096, 4096, Duration.ofSeconds(1));
     }
 

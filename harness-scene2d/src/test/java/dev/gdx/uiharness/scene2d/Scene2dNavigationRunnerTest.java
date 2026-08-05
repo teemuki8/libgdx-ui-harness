@@ -201,8 +201,8 @@ final class Scene2dNavigationRunnerTest {
 
     @Test void semanticStructuralIdentityDistinguishesDuplicatesSurvivesReplacementAndCaptureIsBounded() {
         try (Fixture f = new Fixture()) {
-            f.session.semantics().setTestId(f.first, null);
-            f.session.semantics().setTestId(f.second, null);
+            f.session.semantics().clear(f.first);
+            f.session.semantics().clear(f.second);
             f.first.setText("Same");
             f.second.setText("Same");
             f.route(Keys.TAB, f.second);
@@ -302,7 +302,8 @@ final class Scene2dNavigationRunnerTest {
                 int maxSteps,
                 int maxActors,
                 Duration deadline) {
-            List<String> known = List.of("test-id:first", "test-id:second", "test-id:outside");
+            List<String> all = List.of("test-id:first", "test-id:second", "test-id:outside");
+            List<String> known = all.subList(0, Math.min(maxActors, all.size()));
             List<NavigationStep> configured = new ArrayList<>();
             for (int index = 0; index < inputs.size(); index++) {
                 NavigationInput input = inputs.get(index);
@@ -310,7 +311,7 @@ final class Scene2dNavigationRunnerTest {
                         index + 2L, index + 2L,
                         "test-id:first", "test-id:first", modal));
             }
-            return new NavigationRequest(1, configured, known, modal, controller, false,
+            return new NavigationRequest(1, configured, known, null, modal, controller, false,
                     maxSteps, maxActors, 65536, 65536, deadline);
         }
 

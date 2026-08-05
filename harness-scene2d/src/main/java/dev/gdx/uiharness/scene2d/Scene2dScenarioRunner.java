@@ -349,10 +349,16 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 }
                 phase = Phase.CANCELLING;
             }
-            observeSubmission(this, scheduler.submit(() -> {
+            if (scheduler.isDraining()) {
+                // Already on the render thread inside a drain: cleanup runs inline so the
+                // releasing call site observes the terminal result without another frame.
                 terminate(null);
-                return null;
-            }, dispatchDeadline()));
+            } else {
+                observeSubmission(this, scheduler.submit(() -> {
+                    terminate(null);
+                    return null;
+                }, dispatchDeadline()));
+            }
             return result;
         }
 

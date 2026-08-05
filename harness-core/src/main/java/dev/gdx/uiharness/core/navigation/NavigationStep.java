@@ -12,6 +12,9 @@ public record NavigationStep(
         String beforeIdentity,
         String afterIdentity,
         String modalBoundaryId) {
+    /** Sentinel step identity used when no control holds semantic focus. */
+    public static final String NO_FOCUS_IDENTITY = "state:no-focus";
+
     public NavigationStep {
         Objects.requireNonNull(input, "input");
         requireIdentity(beforeIdentity, "beforeIdentity");
