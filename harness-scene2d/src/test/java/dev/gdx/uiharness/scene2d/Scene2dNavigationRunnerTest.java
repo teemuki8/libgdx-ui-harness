@@ -165,6 +165,70 @@ final class Scene2dNavigationRunnerTest {
         }
     }
 
+    @Test void scenarioUiIsLeasedThroughTraversalAndCleanedOnceOnEveryTerminal() {
+        try (Fixture f = new Fixture()) {
+            f.route(Keys.TAB, f.second);
+            CompletionStage<NavigationResult> run = f.inspect(f.request(List.of(NavigationInput.TAB)));
+            f.readyFrame();
+            assertEquals(0, f.cleanups.get(), "READY must not clean before real input traversal");
+            f.nextFrame();
+            assertEquals("test-id:second", run.toCompletableFuture().join()
+                    .path().steps().get(0).afterIdentity());
+            assertEquals(1, f.cleanups.get());
+            run.toCompletableFuture().cancel(false);
+            assertEquals(1, f.cleanups.get());
+        }
+    }
+
+    @Test void missingInitialFocusIsExplicitOnlyWhenInputEstablishesIt() {
+        try (Fixture f = new Fixture()) {
+            f.defaultFocus = null;
+            f.route(Keys.TAB, f.second);
+            NavigationResult established =
+                    f.complete(f.inspect(f.request(List.of(NavigationInput.TAB))), 2);
+            assertEquals(null, established.path().defaultFocusIdentity());
+            assertEquals("state:no-focus", established.path().steps().get(0).beforeIdentity());
+            assertEquals("test-id:second", established.path().steps().get(0).afterIdentity());
+        }
+        try (Fixture f = new Fixture()) {
+            f.defaultFocus = null;
+            f.route(Keys.TAB, null);
+            NavigationResult lost = f.complete(f.inspect(f.request(List.of(NavigationInput.TAB))), 2);
+            assertEquals(NavigationReason.FOCUS_LOST, lost.path().reason());
+            assertTrue(lost.path().steps().isEmpty(), "never construct a step with null identity");
+        }
+    }
+
+    @Test void semanticStructuralIdentityDistinguishesDuplicatesSurvivesReplacementAndCaptureIsBounded() {
+        try (Fixture f = new Fixture()) {
+            f.session.semantics().setTestId(f.first, null);
+            f.session.semantics().setTestId(f.second, null);
+            f.first.setText("Same");
+            f.second.setText("Same");
+            f.route(Keys.TAB, f.second);
+            NavigationResult firstRun =
+                    f.complete(f.inspect(f.request(List.of(NavigationInput.TAB))), 2);
+            String firstIdentity = firstRun.path().defaultFocusIdentity();
+            String secondIdentity = firstRun.path().steps().get(0).afterIdentity();
+            assertFalse(firstIdentity.equals(secondIdentity), "duplicate labels need sibling ordinals");
+
+            TextButton replacement = f.button(null, "Same", 20);
+            f.first.remove();
+            replacement.setZIndex(0);
+            f.defaultFocus = replacement;
+            NavigationResult replacementRun =
+                    f.complete(f.inspect(f.request(List.of())), 1);
+            assertEquals(firstIdentity, replacementRun.path().defaultFocusIdentity());
+        }
+        try (Fixture f = new Fixture()) {
+            NavigationResult bounded = f.complete(
+                    f.inspect(f.request(List.of(), true, 8, 2, Duration.ofSeconds(1))), 1);
+            assertEquals(NavigationReason.TRUNCATED, bounded.path().reason());
+            assertTrue(bounded.truncated());
+            assertEquals(2, bounded.knownFocusables().size());
+        }
+    }
+
     private static final class Fixture implements AutoCloseable {
         final Duration step = Duration.ofMillis(16);
         final Stage stage = Scene2dTestSupport.stage();
@@ -175,6 +239,7 @@ final class Scene2dNavigationRunnerTest {
         final ScenarioRegistry registry = new ScenarioRegistry();
         final AtomicInteger dispatches = new AtomicInteger();
         final AtomicInteger resets = new AtomicInteger();
+        final AtomicInteger cleanups = new AtomicInteger();
         final TextButton first = button("first", "First", 20);
         final TextButton second = button("second", "Second", 220);
         final TextButton outside = button("outside", "Outside", 420);
@@ -198,7 +263,7 @@ final class Scene2dNavigationRunnerTest {
                 @Override public String startStateIdentity(ScenarioRequest request, SemanticSnapshot snapshot) {
                     return "ready";
                 }
-                @Override public void cleanup(ScenarioRequest request) {}
+                @Override public void cleanup(ScenarioRequest request) { cleanups.incrementAndGet(); }
             });
             scenarios = new Scene2dScenarioRunner(registry, scheduler, clock, deadlines);
             runner = new Scene2dNavigationRunner(
@@ -212,7 +277,7 @@ final class Scene2dNavigationRunnerTest {
             TextButton actor = new TextButton(label, WidgetStyles.textButton());
             actor.setBounds(x, 50, 160, 40);
             stage.addActor(actor);
-            session.semantics().setTestId(actor, id);
+            if (id != null) session.semantics().setTestId(actor, id);
             return actor;
         }
 
@@ -220,13 +285,22 @@ final class Scene2dNavigationRunnerTest {
         void routeShiftTab(Actor target) { input.shiftTab = target; }
 
         NavigationRequest request(List<NavigationInput> inputs) {
-            return request(inputs, true, 8, Duration.ofSeconds(1));
+            return request(inputs, true, 8, 16, Duration.ofSeconds(1));
         }
 
         NavigationRequest request(
                 List<NavigationInput> inputs,
                 boolean controller,
                 int maxSteps,
+                Duration deadline) {
+            return request(inputs, controller, maxSteps, 16, deadline);
+        }
+
+        NavigationRequest request(
+                List<NavigationInput> inputs,
+                boolean controller,
+                int maxSteps,
+                int maxActors,
                 Duration deadline) {
             List<String> known = List.of("test-id:first", "test-id:second", "test-id:outside");
             List<NavigationStep> configured = new ArrayList<>();
@@ -237,7 +311,7 @@ final class Scene2dNavigationRunnerTest {
                         "test-id:first", "test-id:first", modal));
             }
             return new NavigationRequest(1, configured, known, modal, controller, false,
-                    maxSteps, 16, 65536, 65536, deadline);
+                    maxSteps, maxActors, 65536, 65536, deadline);
         }
 
         CompletionStage<NavigationResult> inspect(NavigationRequest request) {

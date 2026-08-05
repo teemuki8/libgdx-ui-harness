@@ -27,6 +27,28 @@ import java.util.concurrent.CompletionStage;
 public final class Scene2dScenarioRunner implements AutoCloseable {
     private static final Duration INTERNAL_DISPATCH_TIMEOUT = Duration.ofMinutes(10);
 
+    /** Exclusive ownership of a scenario after its READY state has been observed. */
+    public interface Lease {
+        /** Completes after render-thread cleanup, whether released or terminated externally. */
+        CompletionStage<ScenarioResult> completion();
+
+        /** Relinquishes ownership and schedules cleanup on the render thread; idempotent. */
+        CompletionStage<ScenarioResult> release();
+    }
+
+    /** Reports a terminal scenario result when READY could not be acquired. */
+    public static final class AcquisitionException extends RuntimeException {
+        private final ScenarioResult result;
+
+        private AcquisitionException(ScenarioResult result) {
+            super("scenario acquisition failed: " + result.failure().orElse(null));
+            this.result = result;
+        }
+
+        public ScenarioResult result() {
+            return result;
+        }
+    }
     private final ScenarioRegistry registry;
     private final RenderThreadScheduler scheduler;
     private final MonotonicClock clock;
@@ -47,9 +69,27 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         this.deadlineScheduler = Objects.requireNonNull(deadlineScheduler, "deadlineScheduler");
     }
 
-    /** Starts one bounded scenario run; lifecycle work is dispatched to the render thread. */
+    /** Starts one bounded scenario run and releases it as soon as READY is observed. */
     public CompletionStage<ScenarioResult> start(
             ScenarioRequest request, String applicationId, String processId, String sessionId) {
+        return launch(request, applicationId, processId, sessionId, true).result;
+    }
+
+    /**
+     * Acquires exclusive ownership at READY. Setup, reset, readiness, and state identity are
+     * evaluated once; cleanup is deferred until release or an external terminal condition.
+     */
+    public CompletionStage<Lease> acquire(
+            ScenarioRequest request, String applicationId, String processId, String sessionId) {
+        return launch(request, applicationId, processId, sessionId, false).acquisition;
+    }
+
+    private Run launch(
+            ScenarioRequest request,
+            String applicationId,
+            String processId,
+            String sessionId,
+            boolean releaseAtReady) {
         Objects.requireNonNull(request, "request");
         ScenarioRegistry.RegisteredScenario registered = registry.require(request.scenarioId());
         ScenarioDefinition definition = registered.definition();
@@ -65,11 +105,10 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 registered.lifecycle(),
                 Objects.requireNonNull(applicationId, "applicationId"),
                 Objects.requireNonNull(processId, "processId"),
-                Objects.requireNonNull(sessionId, "sessionId"));
+                Objects.requireNonNull(sessionId, "sessionId"),
+                releaseAtReady);
         synchronized (lifecycle) {
-            if (!open) {
-                throw new IllegalStateException("scenario runner is closed");
-            }
+            if (!open) throw new IllegalStateException("scenario runner is closed");
             active.add(run);
         }
         observeSubmission(run, scheduler.submit(() -> {
@@ -77,7 +116,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             return null;
         }, dispatchDeadline()));
         run.armDeadline();
-        return run.result;
+        return run;
     }
 
     /** Observes a completed semantic frame and evaluates every active run on the render thread. */
@@ -127,17 +166,19 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         }
     }
 
-    private final class Run {
+    private final class Run implements Lease {
         private final ScenarioRequest request;
         private final ScenarioDefinition definition;
         private final ScenarioLifecycle hooks;
         private final String applicationId;
         private final String processId;
         private final String sessionId;
+        private final boolean releaseAtReady;
         private final String configurationDigest;
         private final InputIdentity inputIdentity;
         private final long startedAtNanos = clock.nanoTime();
         private final ResultFuture result = new ResultFuture(this);
+        private final AcquisitionFuture acquisition = new AcquisitionFuture(this);
         private Phase phase = Phase.QUEUED;
         private long startFrame;
         private long startRevision;
@@ -153,13 +194,15 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 ScenarioLifecycle hooks,
                 String applicationId,
                 String processId,
-                String sessionId) {
+                String sessionId,
+                boolean releaseAtReady) {
             this.request = request;
             this.definition = definition;
             this.hooks = hooks;
             this.applicationId = applicationId;
             this.processId = processId;
             this.sessionId = sessionId;
+            this.releaseAtReady = releaseAtReady;
             configurationDigest = digest(request.configuration());
             inputIdentity = new InputIdentity(
                     request.scenarioId(), request.seed(), configurationDigest, request.profileId());
@@ -187,14 +230,10 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
 
         private void deadlineReached() {
             synchronized (this) {
-                if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
-                    return;
-                }
+                if (phase == Phase.TERMINAL || phase == Phase.CLEANING) return;
             }
             observeSubmission(this, scheduler.submit(() -> {
-                if (expired()) {
-                    terminate(ScenarioFailure.READINESS_DEADLINE);
-                }
+                if (expired()) terminate(ScenarioFailure.READINESS_DEADLINE);
                 return null;
             }, dispatchDeadline()));
         }
@@ -273,7 +312,15 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     mismatch = ScenarioFailure.NONDETERMINISTIC_INITIAL_STATE;
                 }
             }
-            terminate(mismatch);
+            if (mismatch != null || releaseAtReady) {
+                terminate(mismatch);
+                return;
+            }
+            synchronized (this) {
+                if (phase != Phase.WAITING_FOR_FRAME) return;
+                phase = Phase.READY;
+            }
+            acquisition.complete(this);
         }
 
         boolean requestCancellation() {
@@ -288,6 +335,25 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 return null;
             }, dispatchDeadline()));
             return true;
+        }
+
+        @Override public CompletionStage<ScenarioResult> completion() {
+            return result;
+        }
+
+        @Override public CompletionStage<ScenarioResult> release() {
+            synchronized (this) {
+                if (phase == Phase.TERMINAL || phase == Phase.CLEANING) return result;
+                if (phase != Phase.READY) {
+                    throw new IllegalStateException("scenario lease is not ready");
+                }
+                phase = Phase.CANCELLING;
+            }
+            observeSubmission(this, scheduler.submit(() -> {
+                terminate(null);
+                return null;
+            }, dispatchDeadline()));
+            return result;
         }
 
         private boolean expired() {
@@ -331,10 +397,8 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 scheduled = deadlineCancellation;
                 deadlineCancellation = null;
             }
-            if (scheduled != null) {
-                scheduled.cancel();
-            }
-            result.complete(new ScenarioResult(
+            if (scheduled != null) scheduled.cancel();
+            ScenarioResult value = new ScenarioResult(
                     ScenarioDefinition.SCHEMA_VERSION,
                     definition.id(),
                     definition.definitionVersion(),
@@ -352,7 +416,9 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     elapsed(),
                     setupAttempts,
                     cleaned,
-                    Optional.ofNullable(failure)));
+                    Optional.ofNullable(failure));
+            result.complete(value);
+            if (!acquisition.isDone()) acquisition.completeExceptionally(new AcquisitionException(value));
             finished(this);
         }
 
@@ -388,6 +454,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         QUEUED,
         STARTING,
         WAITING_FOR_FRAME,
+        READY,
         CANCELLING,
         CLEANING,
         TERMINAL
@@ -397,6 +464,18 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         private final Run cancellation;
 
         ResultFuture(Run cancellation) {
+            this.cancellation = cancellation;
+        }
+
+        @Override public boolean cancel(boolean mayInterruptIfRunning) {
+            return cancellation.requestCancellation();
+        }
+    }
+
+    private final class AcquisitionFuture extends CompletableFuture<Lease> {
+        private final Run cancellation;
+
+        AcquisitionFuture(Run cancellation) {
             this.cancellation = cancellation;
         }
 

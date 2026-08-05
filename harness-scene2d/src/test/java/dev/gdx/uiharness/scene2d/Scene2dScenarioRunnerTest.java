@@ -222,6 +222,67 @@ final class Scene2dScenarioRunnerTest {
         }
     }
 
+    @Test void acquiredScenarioRemainsReadyUntilExplicitAsyncRelease() {
+        try (Fixture fixture = new Fixture()) {
+            java.util.concurrent.atomic.AtomicInteger cleanups = new java.util.concurrent.atomic.AtomicInteger();
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready") {
+                @Override public void cleanup(ScenarioRequest request) { cleanups.incrementAndGet(); }
+            });
+
+            CompletionStage<Scene2dScenarioRunner.Lease> acquired = fixture.acquire(Duration.ofSeconds(1));
+            fixture.scheduler.drain();
+            fixture.completedFrame();
+
+            Scene2dScenarioRunner.Lease lease = acquired.toCompletableFuture().join();
+            assertEquals(0, cleanups.get(), "READY transfers ownership without cleaning the UI");
+            CompletionStage<ScenarioResult> released = lease.release();
+            assertFalse(released.toCompletableFuture().isDone());
+            fixture.scheduler.drain();
+            assertTrue(released.toCompletableFuture().join().cleanupCompleted());
+            assertEquals(1, cleanups.get());
+            assertEquals(released.toCompletableFuture().join(), lease.release().toCompletableFuture().join());
+            assertEquals(1, cleanups.get(), "release races must clean exactly once");
+        }
+    }
+
+    @Test void closeAndDeadlineReleaseReadyLeaseExactlyOnce() {
+        Fixture closed = new Fixture();
+        java.util.concurrent.atomic.AtomicInteger closeCleanups = new java.util.concurrent.atomic.AtomicInteger();
+        closed.register(new RecordingLifecycle(new ArrayList<>(), true, "ready") {
+            @Override public void cleanup(ScenarioRequest request) { closeCleanups.incrementAndGet(); }
+        });
+        CompletionStage<Scene2dScenarioRunner.Lease> closeAcquisition =
+                closed.acquire(Duration.ofSeconds(1));
+        closed.scheduler.drain();
+        closed.completedFrame();
+        Scene2dScenarioRunner.Lease closeLease = closeAcquisition.toCompletableFuture().join();
+        closed.runner.close();
+        closed.scheduler.drain();
+        assertEquals(ScenarioFailure.CANCELLED,
+                closeLease.completion().toCompletableFuture().join().failure().orElseThrow());
+        assertEquals(1, closeCleanups.get());
+        closed.close();
+
+        try (Fixture expired = new Fixture()) {
+            java.util.concurrent.atomic.AtomicInteger deadlineCleanups = new java.util.concurrent.atomic.AtomicInteger();
+            expired.register(new RecordingLifecycle(new ArrayList<>(), true, "ready") {
+                @Override public void cleanup(ScenarioRequest request) { deadlineCleanups.incrementAndGet(); }
+            });
+            CompletionStage<Scene2dScenarioRunner.Lease> acquisition = expired.acquire(Duration.ofMillis(20));
+            expired.scheduler.drain();
+            expired.completedFrame();
+            Scene2dScenarioRunner.Lease lease = acquisition.toCompletableFuture().join();
+            expired.clock.advance(Duration.ofMillis(10));
+            expired.deadlines.expire();
+            expired.scheduler.drain();
+            assertEquals(ScenarioFailure.READINESS_DEADLINE,
+                    lease.completion().toCompletableFuture().join().failure().orElseThrow());
+            lease.release();
+            expired.scheduler.drain();
+            assertEquals(1, deadlineCleanups.get());
+        }
+    }
+
 
     @Test void repeatedInputsRetainIdentityOrReportNondeterminism() {
         try (Fixture fixture = new Fixture()) {
@@ -332,6 +393,20 @@ final class Scene2dScenarioRunnerTest {
 
         CompletionStage<ScenarioResult> start(Duration timeout) {
             return runner.start(
+                    new ScenarioRequest(
+                            ScenarioDefinition.SCHEMA_VERSION,
+                            "login-ready",
+                            42L,
+                            Map.of("locale", "en", "account", "agent"),
+                            "desktop",
+                            Deadline.after(clock, timeout)),
+                    "test-app",
+                    "process-1",
+                    "session-1");
+        }
+
+        CompletionStage<Scene2dScenarioRunner.Lease> acquire(Duration timeout) {
+            return runner.acquire(
                     new ScenarioRequest(
                             ScenarioDefinition.SCHEMA_VERSION,
                             "login-ready",

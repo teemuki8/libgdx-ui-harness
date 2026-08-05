@@ -28,6 +28,7 @@ import java.util.function.LongSupplier;
 /** Traverses Scene2D focus using only application-configured input and completed frames. */
 public final class Scene2dNavigationRunner implements AutoCloseable {
     private static final Duration INTERNAL_DISPATCH_TIMEOUT = Duration.ofMinutes(10);
+    private static final String NO_FOCUS = "state:no-focus";
 
     /** Immutable binding to the registered scenario that establishes traversal state. */
     public record Scenario(
@@ -157,7 +158,8 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         private final ResultFuture result = new ResultFuture(this);
         private final Deadline deadline;
         private Scene2dScenarioDeadlineScheduler.Cancellation deadlineCancellation;
-        private CompletionStage<ScenarioResult> scenarioStage;
+        private CompletionStage<Scene2dScenarioRunner.Lease> scenarioStage;
+        private Scene2dScenarioRunner.Lease scenarioLease;
         private Observation before;
         private List<String> known = List.of();
         private int nextInput;
@@ -177,28 +179,29 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
                     scenario.scenarioId(), scenario.seed(), scenario.configuration(),
                     scenario.profileId(), deadline);
             try {
-                scenarioStage = scenarios.start(scenarioRequest, scenario.applicationId(),
+                scenarioStage = scenarios.acquire(scenarioRequest, scenario.applicationId(),
                         scenario.processId(), scenario.sessionId());
             } catch (RuntimeException failure) {
                 fail(failure);
                 return;
             }
-            scenarioStage.whenComplete((outcome, failure) -> {
+            scenarioStage.whenComplete((lease, failure) -> {
                 if (failure != null) {
-                    fail(failure);
-                } else if (outcome.failure().isPresent()) {
-                    if (outcome.failure().orElseThrow() == ScenarioFailure.READINESS_DEADLINE) {
-                        deadlineReached();
-                    } else if (outcome.failure().orElseThrow() == ScenarioFailure.CANCELLED) {
-                        cancelForClose();
+                    Throwable cause = failure instanceof java.util.concurrent.CompletionException
+                            ? failure.getCause() : failure;
+                    if (cause instanceof Scene2dScenarioRunner.AcquisitionException acquisition) {
+                        ScenarioFailure scenarioFailure = acquisition.result().failure().orElseThrow();
+                        if (scenarioFailure == ScenarioFailure.READINESS_DEADLINE) deadlineReached();
+                        else if (scenarioFailure == ScenarioFailure.CANCELLED) cancelForClose();
+                        else fail(acquisition);
                     } else {
-                        fail(new IllegalStateException("scenario failed: " + outcome.failure().orElseThrow()));
+                        fail(cause);
                     }
                 } else if (scheduler.isOwnerThread()) {
-                    becomeReady();
+                    becomeReady(lease);
                 } else {
                     Scene2dNavigationRunner.this.observe(this, scheduler.submit(() -> {
-                        becomeReady();
+                        becomeReady(lease);
                         return null;
                     }, dispatchDeadline()));
                 }
@@ -214,15 +217,24 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
             }
         }
 
-        void becomeReady() {
+        void becomeReady(Scene2dScenarioRunner.Lease lease) {
             synchronized (this) {
-                if (terminal || ready) return;
+                if (terminal || ready) {
+                    lease.release();
+                    return;
+                }
+                scenarioLease = lease;
                 ready = true;
             }
             SemanticSnapshot snapshot = session.snapshot(revision.getAsLong(), frame.getAsLong());
             before = observeState(snapshot, request.modalBoundaryId());
-            known = focusables(snapshot);
-            dispatchNext();
+            Capture capture = focusables(snapshot, request.maxActors());
+            known = capture.identities();
+            if (capture.truncated()) {
+                complete(resultWithReason(NavigationReason.TRUNCATED, true));
+            } else {
+                dispatchNext();
+            }
         }
 
         void observe(SemanticSnapshot snapshot) {
@@ -233,8 +245,13 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
             }
             Observation after = observeState(snapshot, request.modalBoundaryId());
             NavigationInput navigationInput = configuredInputs.get(nextInput - 1);
+            if (before.focusIdentity() == null && after.focusIdentity() == null) {
+                complete(resultWithReason(NavigationReason.FOCUS_LOST, false));
+                return;
+            }
+            String beforeIdentity = before.focusIdentity() == null ? NO_FOCUS : before.focusIdentity();
             steps.add(new NavigationStep(navigationInput, before.frame(), before.revision(),
-                    after.frame(), after.revision(), before.focusIdentity(), after.focusIdentity(),
+                    after.frame(), after.revision(), beforeIdentity, after.focusIdentity(),
                     after.modalBoundaryId()));
             before = after;
             NavigationResult current = validateObserved(false);
@@ -299,7 +316,9 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
 
         private NavigationResult resultWithReason(NavigationReason reason, boolean truncated) {
             String defaultFocus = steps.isEmpty() && before != null
-                    ? before.focusIdentity() : steps.isEmpty() ? null : steps.get(0).beforeIdentity();
+                    ? before.focusIdentity() : steps.isEmpty() ? null
+                    : NO_FOCUS.equals(steps.get(0).beforeIdentity())
+                            ? null : steps.get(0).beforeIdentity();
             NavigationPath path = new NavigationPath(1, defaultFocus, steps, reason);
             return new NavigationResult(1, path, known, List.of(), truncated);
         }
@@ -312,16 +331,14 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         }
 
         void cancelForClose() {
-            CompletionStage<ScenarioResult> pending;
+            CompletionStage<Scene2dScenarioRunner.Lease> pending;
             synchronized (this) {
                 if (terminal) return;
                 terminal = true;
                 pending = scenarioStage;
             }
-            if (pending != null) pending.toCompletableFuture().cancel(false);
-            cancelDeadline();
-            result.cancelDirect();
-            finished(this);
+            if (scenarioLease == null && pending != null) pending.toCompletableFuture().cancel(false);
+            finishAfterCleanup(null, null, true);
         }
 
         void fail(Throwable failure) {
@@ -329,9 +346,7 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
                 if (terminal) return;
                 terminal = true;
             }
-            cancelDeadline();
-            result.completeExceptionally(failure);
-            finished(this);
+            finishAfterCleanup(null, failure, false);
         }
 
         private void complete(NavigationResult value) {
@@ -339,9 +354,25 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
                 if (terminal) return;
                 terminal = true;
             }
+            finishAfterCleanup(value, null, false);
+        }
+
+        private void finishAfterCleanup(
+                NavigationResult value, Throwable failure, boolean cancelled) {
             cancelDeadline();
-            result.complete(value);
-            finished(this);
+            Scene2dScenarioRunner.Lease lease;
+            synchronized (this) {
+                lease = scenarioLease;
+            }
+            CompletionStage<?> cleanup = lease == null
+                    ? CompletableFuture.completedFuture(null) : lease.release();
+            cleanup.whenComplete((ignored, cleanupFailure) -> {
+                if (cleanupFailure != null) result.completeExceptionally(cleanupFailure);
+                else if (cancelled) result.cancelDirect();
+                else if (failure != null) result.completeExceptionally(failure);
+                else result.complete(value);
+                finished(this);
+            });
         }
 
         private void cancelDeadline() {
@@ -355,15 +386,14 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
     }
 
     private static Observation observeState(SemanticSnapshot snapshot, String requestedModal) {
-        Map<String, SemanticNode> byId = new HashMap<>();
-        byId.putAll(snapshot.nodes());
+        Map<String, SemanticNode> byId = new HashMap<>(snapshot.nodes());
         SemanticNode focused = snapshot.nodes().values().stream()
                 .filter(node -> node.state().focused())
                 .findFirst().orElse(null);
-        String focusIdentity = focused == null ? null : identity(focused);
+        String focusIdentity = focused == null ? null : identity(focused, byId);
         String modal = null;
         for (SemanticNode node = focused; node != null; node = byId.get(node.parentId())) {
-            if (Objects.equals(identity(node), requestedModal)) {
+            if (Objects.equals(identity(node, byId), requestedModal)) {
                 modal = requestedModal;
                 break;
             }
@@ -371,23 +401,54 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         return new Observation(snapshot.frame(), snapshot.revision(), focusIdentity, modal);
     }
 
-    private static List<String> focusables(SemanticSnapshot snapshot) {
-        return snapshot.nodes().values().stream()
+    private static Capture focusables(SemanticSnapshot snapshot, int maxActors) {
+        Map<String, SemanticNode> byId = new HashMap<>(snapshot.nodes());
+        List<String> all = snapshot.nodes().values().stream()
                 .filter(node -> node.state().focusable() && node.state().visible())
-                .map(Scene2dNavigationRunner::identity)
+                .map(node -> identity(node, byId))
                 .distinct()
                 .sorted(Comparator.naturalOrder())
                 .toList();
+        boolean truncated = all.size() > maxActors;
+        return new Capture(truncated ? List.copyOf(all.subList(0, maxActors)) : all, truncated);
     }
 
-    private static String identity(SemanticNode node) {
+    private static String identity(SemanticNode node, Map<String, SemanticNode> byId) {
         if (node.testId() != null) return "test-id:" + node.testId();
+        ArrayList<String> segments = new ArrayList<>();
+        for (SemanticNode current = node; current != null; current = byId.get(current.parentId())) {
+            String semantic = semanticSegment(current);
+            int ordinal = siblingOrdinal(current, semantic, byId);
+            segments.add(semantic + "[" + ordinal + "]");
+        }
+        java.util.Collections.reverse(segments);
+        return "path:/" + String.join("/", segments);
+    }
+
+    private static int siblingOrdinal(
+            SemanticNode node, String semantic, Map<String, SemanticNode> byId) {
+        SemanticNode parent = byId.get(node.parentId());
+        if (parent == null) return 0;
+        int ordinal = 0;
+        for (String childId : parent.childIds()) {
+            SemanticNode sibling = byId.get(childId);
+            if (sibling == null) continue;
+            if (sibling.id().equals(node.id())) return ordinal;
+            if (semanticSegment(sibling).equals(semantic)) ordinal++;
+        }
+        return ordinal;
+    }
+
+    private static String semanticSegment(SemanticNode node) {
         String name = node.accessibleName();
         if (name == null) name = node.actorName();
         if (name == null) name = node.text();
         if (name == null) name = "unnamed";
-        return "role:" + node.role().name().toLowerCase(java.util.Locale.ROOT) + "/name:" + name;
+        return "role:" + node.role().name().toLowerCase(java.util.Locale.ROOT)
+                + "/name:" + name.replace("%", "%25").replace("/", "%2F");
     }
+
+    private record Capture(List<String> identities, boolean truncated) {}
 
     private record Observation(
             long frame, long revision, String focusIdentity, String modalBoundaryId) {}
