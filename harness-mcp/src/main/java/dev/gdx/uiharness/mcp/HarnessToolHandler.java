@@ -195,6 +195,8 @@ public final class HarnessToolHandler implements AutoCloseable {
             case "ui_trace_stop" -> "trace-stop";
             case "ui_scenarios" -> "scenario-list";
             case "ui_scenario_start" -> "scenario-start";
+            case "ui_navigation_inspect" -> "navigation-inspect";
+            case "ui_navigation_validate" -> "navigation-validate";
             case "ui_capabilities" -> "capabilities";
             default -> throw new IllegalArgumentException("Unknown tool: " + toolName);
         };
@@ -514,6 +516,12 @@ public final class HarnessToolHandler implements AutoCloseable {
         if (result instanceof HarnessResponse.Result.ScenarioStart started) {
             LinkedHashMap<String, Object> content = content("scenario-start-result");
             content.put("outcome", COMMAND_MAPPER.convertValue(started.outcome(), Map.class));
+            return Map.copyOf(content);
+        }
+        if (result instanceof HarnessResponse.Result.Navigation navigation) {
+            LinkedHashMap<String, Object> content = content("navigation-result");
+            content.put("result", COMMAND_MAPPER.convertValue(
+                    navigation.result(), Map.class));
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.TraceStarted started) {

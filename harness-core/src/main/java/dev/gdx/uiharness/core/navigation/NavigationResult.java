@@ -44,7 +44,8 @@ public record NavigationResult(
         return size > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) size;
     }
 
-    static int minimumWireSizeUpperBound() {
+    /** Returns a deterministic conservative minimum wire size for any navigation result. */
+    public static int minimumWireSizeUpperBound() {
         NavigationPath path = new NavigationPath(
                 NavigationPath.SCHEMA_VERSION,
                 null,

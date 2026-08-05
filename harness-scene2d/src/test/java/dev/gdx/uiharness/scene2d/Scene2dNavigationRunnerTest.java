@@ -20,7 +20,6 @@ import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
 import dev.gdx.uiharness.core.scenario.ScenarioLifecycle;
 import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
 import dev.gdx.uiharness.core.scenario.ScenarioRequest;
-import dev.gdx.uiharness.core.time.Deadline;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -277,7 +276,9 @@ final class Scene2dNavigationRunnerTest {
             TextButton actor = new TextButton(label, WidgetStyles.textButton());
             actor.setBounds(x, 50, 160, 40);
             stage.addActor(actor);
-            if (id != null) session.semantics().setTestId(actor, id);
+            if (id != null) {
+                session.semantics().setTestId(actor, id);
+            }
             return actor;
         }
 
@@ -333,7 +334,9 @@ final class Scene2dNavigationRunnerTest {
         }
 
         NavigationResult complete(CompletionStage<NavigationResult> result, int frames) {
-            for (int i = 0; i < frames && !result.toCompletableFuture().isDone(); i++) nextFrame();
+            for (int i = 0; i < frames && !result.toCompletableFuture().isDone(); i++) {
+                nextFrame();
+            }
             return result.toCompletableFuture().join();
         }
 
@@ -351,7 +354,9 @@ final class Scene2dNavigationRunnerTest {
             boolean shift;
             Actor shiftTab;
             @Override public boolean keyDown(int keycode) {
-                if (keycode == Keys.SHIFT_LEFT || keycode == Keys.SHIFT_RIGHT) shift = true;
+                if (keycode == Keys.SHIFT_LEFT || keycode == Keys.SHIFT_RIGHT) {
+                    shift = true;
+                }
                 Actor target = keycode == Keys.TAB && shift ? shiftTab : routes.get(keycode);
                 if (target != null || routes.containsKey(keycode) || keycode == Keys.TAB && shiftTab != null) {
                     dispatches.incrementAndGet();
@@ -360,7 +365,9 @@ final class Scene2dNavigationRunnerTest {
                 return true;
             }
             @Override public boolean keyUp(int keycode) {
-                if (keycode == Keys.SHIFT_LEFT || keycode == Keys.SHIFT_RIGHT) shift = false;
+                if (keycode == Keys.SHIFT_LEFT || keycode == Keys.SHIFT_RIGHT) {
+                    shift = false;
+                }
                 return true;
             }
         }
@@ -374,13 +381,20 @@ final class Scene2dNavigationRunnerTest {
             return () -> entry.cancelled = true;
         }
         void expire() {
-            for (Entry entry : List.copyOf(entries)) if (!entry.cancelled) entry.signal.run();
+            for (Entry entry : List.copyOf(entries)) {
+                if (!entry.cancelled) {
+                    entry.signal.run();
+                }
+            }
         }
         private static final class Entry {
             final Duration delay;
             final Runnable signal;
             boolean cancelled;
-            Entry(Duration delay, Runnable signal) { this.delay = delay; this.signal = signal; }
+            Entry(Duration delay, Runnable signal) {
+                this.delay = delay;
+                this.signal = signal;
+            }
         }
     }
 }

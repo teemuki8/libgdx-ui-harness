@@ -49,9 +49,9 @@ final class HarnessMcpClient implements Closeable {
         }
         client.notify("notifications/initialized", Map.of());
         JsonNode listed = client.request("tools/list", Map.of());
-        if (listed.path("tools").size() != 15) {
+        if (listed.path("tools").size() != 17) {
             client.close();
-            throw new IllegalStateException("Expected the fifteen production tools: " + listed);
+            throw new IllegalStateException("Expected the seventeen production tools: " + listed);
         }
         return client;
     }

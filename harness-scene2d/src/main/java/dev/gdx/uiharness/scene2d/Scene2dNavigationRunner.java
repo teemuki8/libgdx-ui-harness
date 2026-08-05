@@ -11,7 +11,6 @@ import dev.gdx.uiharness.core.navigation.NavigationStep;
 import dev.gdx.uiharness.core.navigation.NavigationValidator;
 import dev.gdx.uiharness.core.scenario.ScenarioFailure;
 import dev.gdx.uiharness.core.scenario.ScenarioRequest;
-import dev.gdx.uiharness.core.scenario.ScenarioResult;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import java.time.Duration;
@@ -83,7 +82,9 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         this.revision = Objects.requireNonNull(revision, "revision");
         this.frame = Objects.requireNonNull(frame, "frame");
         this.scenario = Objects.requireNonNull(scenario, "scenario");
-        if (maxPending < 1) throw new IllegalArgumentException("maxPending must be positive");
+        if (maxPending < 1) {
+            throw new IllegalArgumentException("maxPending must be positive");
+        }
         this.maxPending = maxPending;
     }
 
@@ -101,8 +102,12 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         Objects.requireNonNull(request, "request");
         Run run = new Run(request);
         synchronized (lifecycle) {
-            if (!open) throw new IllegalStateException("navigation runner is closed");
-            if (active.size() >= maxPending) throw new IllegalStateException("navigation pending bound exceeded");
+            if (!open) {
+                throw new IllegalStateException("navigation runner is closed");
+            }
+            if (active.size() >= maxPending) {
+                throw new IllegalStateException("navigation pending bound exceeded");
+            }
             active.add(run);
         }
         run.startScenario();
@@ -128,11 +133,15 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
     @Override public void close() {
         Run[] runs;
         synchronized (lifecycle) {
-            if (!open) return;
+            if (!open) {
+                return;
+            }
             open = false;
             runs = active.toArray(Run[]::new);
         }
-        for (Run run : runs) run.cancelForClose();
+        for (Run run : runs) {
+            run.cancelForClose();
+        }
     }
 
     private Deadline dispatchDeadline() {
@@ -141,7 +150,9 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
 
     private void observe(Run run, CompletionStage<?> submitted) {
         submitted.whenComplete((ignored, failure) -> {
-            if (failure != null) run.fail(failure);
+            if (failure != null) {
+                run.fail(failure);
+            }
         });
     }
 
@@ -191,9 +202,13 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
                             ? failure.getCause() : failure;
                     if (cause instanceof Scene2dScenarioRunner.AcquisitionException acquisition) {
                         ScenarioFailure scenarioFailure = acquisition.result().failure().orElseThrow();
-                        if (scenarioFailure == ScenarioFailure.READINESS_DEADLINE) deadlineReached();
-                        else if (scenarioFailure == ScenarioFailure.CANCELLED) cancelForClose();
-                        else fail(acquisition);
+                        if (scenarioFailure == ScenarioFailure.READINESS_DEADLINE) {
+                            deadlineReached();
+                        } else if (scenarioFailure == ScenarioFailure.CANCELLED) {
+                            cancelForClose();
+                        } else {
+                            fail(acquisition);
+                        }
                     } else {
                         fail(cause);
                     }
@@ -212,8 +227,11 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
             Scene2dScenarioDeadlineScheduler.Cancellation scheduled =
                     deadlines.schedule(request.deadline(), this::deadlineReached);
             synchronized (this) {
-                if (terminal) scheduled.cancel();
-                else deadlineCancellation = scheduled;
+                if (terminal) {
+                    scheduled.cancel();
+                } else {
+                    deadlineCancellation = scheduled;
+                }
             }
         }
 
@@ -239,8 +257,12 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
 
         void observe(SemanticSnapshot snapshot) {
             synchronized (this) {
-                if (terminal || !ready || !waitingForFrame) return;
-                if (snapshot.frame() <= before.frame()) return;
+                if (terminal || !ready || !waitingForFrame) {
+                    return;
+                }
+                if (snapshot.frame() <= before.frame()) {
+                    return;
+                }
                 waitingForFrame = false;
             }
             Observation after = observeState(snapshot, request.modalBoundaryId());
@@ -267,7 +289,9 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
 
         private void dispatchNext() {
             synchronized (this) {
-                if (terminal) return;
+                if (terminal) {
+                    return;
+                }
             }
             if (deadline.isExpired()) {
                 complete(deadlineResult());
@@ -299,7 +323,9 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
             }
             nextInput++;
             synchronized (this) {
-                if (!terminal) waitingForFrame = true;
+                if (!terminal) {
+                    waitingForFrame = true;
+                }
             }
         }
 
@@ -327,7 +353,9 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
 
         void deadlineReached() {
             Scene2dNavigationRunner.this.observe(this, scheduler.submit(() -> {
-                if (!terminal && deadline.isExpired()) complete(deadlineResult());
+                if (!terminal && deadline.isExpired()) {
+                    complete(deadlineResult());
+                }
                 return null;
             }, dispatchDeadline()));
         }
@@ -335,17 +363,23 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         void cancelForClose() {
             CompletionStage<Scene2dScenarioRunner.Lease> pending;
             synchronized (this) {
-                if (terminal) return;
+                if (terminal) {
+                    return;
+                }
                 terminal = true;
                 pending = scenarioStage;
             }
-            if (scenarioLease == null && pending != null) pending.toCompletableFuture().cancel(false);
+            if (scenarioLease == null && pending != null) {
+                pending.toCompletableFuture().cancel(false);
+            }
             finishAfterCleanup(null, null, true);
         }
 
         void fail(Throwable failure) {
             synchronized (this) {
-                if (terminal) return;
+                if (terminal) {
+                    return;
+                }
                 terminal = true;
             }
             finishAfterCleanup(null, failure, false);
@@ -353,7 +387,9 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
 
         private void complete(NavigationResult value) {
             synchronized (this) {
-                if (terminal) return;
+                if (terminal) {
+                    return;
+                }
                 terminal = true;
             }
             finishAfterCleanup(value, null, false);
@@ -369,10 +405,15 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
             CompletionStage<?> cleanup = lease == null
                     ? CompletableFuture.completedFuture(null) : lease.release();
             cleanup.whenComplete((ignored, cleanupFailure) -> {
-                if (cleanupFailure != null) result.completeExceptionally(cleanupFailure);
-                else if (cancelled) result.cancelDirect();
-                else if (failure != null) result.completeExceptionally(failure);
-                else result.complete(value);
+                if (cleanupFailure != null) {
+                    result.completeExceptionally(cleanupFailure);
+                } else if (cancelled) {
+                    result.cancelDirect();
+                } else if (failure != null) {
+                    result.completeExceptionally(failure);
+                } else {
+                    result.complete(value);
+                }
                 finished(this);
             });
         }
@@ -383,7 +424,9 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
                 cancellation = deadlineCancellation;
                 deadlineCancellation = null;
             }
-            if (cancellation != null) cancellation.cancel();
+            if (cancellation != null) {
+                cancellation.cancel();
+            }
         }
     }
 
@@ -416,7 +459,9 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
     }
 
     private static String identity(SemanticNode node, Map<String, SemanticNode> byId) {
-        if (node.testId() != null) return "test-id:" + node.testId();
+        if (node.testId() != null) {
+            return "test-id:" + node.testId();
+        }
         ArrayList<String> segments = new ArrayList<>();
         for (SemanticNode current = node; current != null; current = byId.get(current.parentId())) {
             String semantic = semanticSegment(current);
@@ -430,22 +475,36 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
     private static int siblingOrdinal(
             SemanticNode node, String semantic, Map<String, SemanticNode> byId) {
         SemanticNode parent = byId.get(node.parentId());
-        if (parent == null) return 0;
+        if (parent == null) {
+            return 0;
+        }
         int ordinal = 0;
         for (String childId : parent.childIds()) {
             SemanticNode sibling = byId.get(childId);
-            if (sibling == null) continue;
-            if (sibling.id().equals(node.id())) return ordinal;
-            if (semanticSegment(sibling).equals(semantic)) ordinal++;
+            if (sibling == null) {
+                continue;
+            }
+            if (sibling.id().equals(node.id())) {
+                return ordinal;
+            }
+            if (semanticSegment(sibling).equals(semantic)) {
+                ordinal++;
+            }
         }
         return ordinal;
     }
 
     private static String semanticSegment(SemanticNode node) {
         String name = node.accessibleName();
-        if (name == null) name = node.actorName();
-        if (name == null) name = node.text();
-        if (name == null) name = "unnamed";
+        if (name == null) {
+            name = node.actorName();
+        }
+        if (name == null) {
+            name = node.text();
+        }
+        if (name == null) {
+            name = "unnamed";
+        }
         return "role:" + node.role().name().toLowerCase(java.util.Locale.ROOT)
                 + "/name:" + name.replace("%", "%25").replace("/", "%2F");
     }
@@ -460,7 +519,9 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         ResultFuture(Run run) { this.run = run; }
         @Override public boolean cancel(boolean mayInterruptIfRunning) {
             synchronized (run) {
-                if (run.terminal) return false;
+                if (run.terminal) {
+                    return false;
+                }
             }
             run.cancelForClose();
             return true;
