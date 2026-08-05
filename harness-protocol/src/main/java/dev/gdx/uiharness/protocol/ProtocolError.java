@@ -20,9 +20,11 @@ public record ProtocolError(
         String traceReference,
         List<Map<String, String>> candidates,
         Map<String, String> details,
-        String traceId) {
+        String traceId,
+        List<LocatorSuggestionSpec> suggestions) {
     private static final int MAX_CANDIDATES = 1_000;
     private static final int MAX_DETAILS = 256;
+    private static final int MAX_SUGGESTIONS = 1_000;
 
     /** Validates and recursively copies bounded error evidence. */
     public ProtocolError {
@@ -51,6 +53,42 @@ public record ProtocolError(
         if (traceId != null) {
             ProtocolJson.requireIdentifier(traceId, "traceId");
         }
+        Objects.requireNonNull(suggestions, "suggestions");
+        if (suggestions.size() > MAX_SUGGESTIONS) {
+            throw new IllegalArgumentException("too many locator suggestions");
+        }
+        suggestions = List.copyOf(suggestions);
+    }
+
+    /**
+     * Backward-compatible constructor retaining the pre-suggestion signature.
+     *
+     * @param code stable failure category
+     * @param message bounded human-readable explanation
+     * @param requestId request identifier
+     * @param sessionId session identifier
+     * @param locator failed locator description, when present
+     * @param elapsedMillis elapsed monotonic time at failure
+     * @param lastSnapshotRevision most recent semantic revision, when present
+     * @param traceReference trace artifact reference, when present
+     * @param candidates bounded candidate summaries
+     * @param details bounded error-specific evidence
+     * @param traceId bounded internal trace identifier, when present
+     */
+    public ProtocolError(
+            Code code,
+            String message,
+            String requestId,
+            String sessionId,
+            String locator,
+            long elapsedMillis,
+            Long lastSnapshotRevision,
+            String traceReference,
+            List<Map<String, String>> candidates,
+            Map<String, String> details,
+            String traceId) {
+        this(code, message, requestId, sessionId, locator, elapsedMillis, lastSnapshotRevision,
+                traceReference, candidates, details, traceId, List.of());
     }
 
     private static Map<String, String> copyEvidenceMap(Map<String, String> source) {

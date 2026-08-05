@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.badlogic.gdx.Input.Buttons;
 import com.badlogic.gdx.Input.Keys;
+import com.badlogic.gdx.InputProcessor;
 import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.Stage;
@@ -451,6 +452,25 @@ final class Scene2dActionEndToEndTest {
         }
     }
 
+    @Test void strictFailureAttachesSuggestionsAndDispatchesNoInput() {
+        AtomicInteger dispatches = new AtomicInteger();
+        Stage stage = Scene2dTestSupport.stage();
+        try (Fixture fixture = new Fixture(stage, new CountingInput(stage, dispatches))) {
+            fixture.button("duplicated", "First", 100, 100);
+            fixture.button("duplicated", "Second", 350, 100);
+
+            CompletionStage<ActionResult> strict = fixture.harness.perform(
+                    Locator.testId("duplicated"), Action.click(false), fixture.deadline());
+            fixture.drain();
+            HarnessException error = failure(strict);
+            assertEquals(ErrorCode.STRICTNESS_VIOLATION, error.code());
+            assertEquals(2, error.evidence().suggestions().size());
+            assertEquals(0, dispatches.get());
+            assertEquals("role and accessible name",
+                    error.evidence().suggestions().getFirst().rationale());
+        }
+    }
+
     @Test void timeoutContainsLastRevisionAndBoundedActionabilityEvidence() {
         try (Fixture fixture = new Fixture()) {
             fixture.button("covered", "Covered", 100, 100);
@@ -486,6 +506,61 @@ final class Scene2dActionEndToEndTest {
         style.knob.setMinWidth(10);
         style.knob.setMinHeight(10);
         return style;
+    }
+
+    private static final class CountingInput implements InputProcessor {
+        private final InputProcessor delegate;
+        private final AtomicInteger dispatches;
+
+        CountingInput(InputProcessor delegate, AtomicInteger dispatches) {
+            this.delegate = delegate;
+            this.dispatches = dispatches;
+        }
+
+        @Override public boolean keyDown(int keycode) {
+            dispatches.incrementAndGet();
+            return delegate.keyDown(keycode);
+        }
+
+        @Override public boolean keyUp(int keycode) {
+            dispatches.incrementAndGet();
+            return delegate.keyUp(keycode);
+        }
+
+        @Override public boolean keyTyped(char character) {
+            dispatches.incrementAndGet();
+            return delegate.keyTyped(character);
+        }
+
+        @Override public boolean touchDown(int screenX, int screenY, int pointer, int button) {
+            dispatches.incrementAndGet();
+            return delegate.touchDown(screenX, screenY, pointer, button);
+        }
+
+        @Override public boolean touchUp(int screenX, int screenY, int pointer, int button) {
+            dispatches.incrementAndGet();
+            return delegate.touchUp(screenX, screenY, pointer, button);
+        }
+
+        @Override public boolean touchDragged(int screenX, int screenY, int pointer) {
+            dispatches.incrementAndGet();
+            return delegate.touchDragged(screenX, screenY, pointer);
+        }
+
+        @Override public boolean mouseMoved(int screenX, int screenY) {
+            dispatches.incrementAndGet();
+            return delegate.mouseMoved(screenX, screenY);
+        }
+
+        @Override public boolean scrolled(float amountX, float amountY) {
+            dispatches.incrementAndGet();
+            return delegate.scrolled(amountX, amountY);
+        }
+
+        @Override public boolean touchCancelled(int screenX, int screenY, int pointer, int button) {
+            dispatches.incrementAndGet();
+            return delegate.touchCancelled(screenX, screenY, pointer, button);
+        }
     }
 
     private static final class BlockingTextButton extends TextButton {
@@ -530,12 +605,24 @@ final class Scene2dActionEndToEndTest {
 
     private static final class Fixture implements AutoCloseable {
         final Duration step = Duration.ofMillis(16);
-        final Stage stage = Scene2dTestSupport.stage();
-        final ControlledStageClock clock = new ControlledStageClock(stage, step);
+        final Stage stage;
+        final ControlledStageClock clock;
         final RenderThreadScheduler scheduler = new RenderThreadScheduler(64);
-        final Scene2dSession session = new Scene2dSession(stage);
-        final Scene2dHarness harness = new Scene2dHarness(
-                stage, stage, session, scheduler, clock, clock::revision, clock::frame);
+        final Scene2dSession session;
+        final Scene2dHarness harness;
+
+        Fixture() {
+            this(Scene2dTestSupport.stage(), null);
+        }
+
+        Fixture(Stage stage, InputProcessor input) {
+            this.stage = stage;
+            this.clock = new ControlledStageClock(stage, step);
+            this.session = new Scene2dSession(stage);
+            harness = new Scene2dHarness(
+                    stage, input == null ? stage : input, session, scheduler, clock,
+                    clock::revision, clock::frame);
+        }
 
         Deadline deadline() {
             return Deadline.after(clock, Duration.ofSeconds(5));

@@ -139,7 +139,8 @@ public final class RenderThreadScheduler implements AutoCloseable {
                         OptionalLong.empty(),
                         Optional.empty(),
                         List.of(),
-                        Map.of("timeout", deadline.timeout().toString())));
+                        Map.of("timeout", deadline.timeout().toString()),
+                        List.of()));
     }
 
     private static HarnessException queueFull(int capacity) {

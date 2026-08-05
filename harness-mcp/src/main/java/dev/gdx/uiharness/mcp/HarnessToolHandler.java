@@ -7,6 +7,7 @@ import dev.gdx.uiharness.protocol.DiagnosticEnvelope;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
 import dev.gdx.uiharness.protocol.HarnessRequest;
 import dev.gdx.uiharness.protocol.HarnessResponse;
+import dev.gdx.uiharness.protocol.LocatorSuggestionSpec;
 import dev.gdx.uiharness.protocol.ProtocolError;
 import dev.gdx.uiharness.protocol.ProtocolJson;
 import dev.gdx.uiharness.protocol.ProtocolVersion;
@@ -822,6 +823,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                 error.requestId(), sequence, operation, arguments, code,
                 error.message(), List.of(),
                 error.locator(), error.candidates(), error.details(),
+                error.suggestions(),
                 error.elapsedMillis(), error.traceId(),
                 new DiagnosticEnvelope.StateIdentity(
                         null, error.sessionId(), error.lastSnapshotRevision(), null),
@@ -840,7 +842,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             DiagnosticEnvelope.StateIdentity stateIdentity) {
         return diagnostic(
                 requestId, sequence, operation, arguments, requestedCode,
-                message, problems, null, List.of(), Map.of(), null, null,
+                message, problems, null, List.of(), Map.of(), List.of(), null, null,
                 stateIdentity, List.of());
     }
 
@@ -855,6 +857,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             String locator,
             List<Map<String, String>> candidates,
             Map<String, String> details,
+            List<LocatorSuggestionSpec> suggestions,
             Long operationElapsedMillis,
             String traceId,
             DiagnosticEnvelope.StateIdentity stateIdentity,
@@ -887,7 +890,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                 0, (nanoClock.getAsLong() - startedNanos) / 1_000_000);
         DiagnosticEnvelope envelope = DiagnosticEnvelope.create(
                 requestId, sequence, operation, code, message, problems,
-                locator, candidates, details, operationElapsedMillis, traceId,
+                locator, candidates, details, suggestions, operationElapsedMillis, traceId,
                 stateIdentity, DiagnosticEnvelope.Progress.unavailable(),
                 new DiagnosticEnvelope.Recovery(
                         dev.gdx.uiharness.protocol.RecoveryPolicy.VERSION,
