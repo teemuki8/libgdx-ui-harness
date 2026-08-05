@@ -23,7 +23,7 @@ import java.util.zip.ZipInputStream;
 /** Minimal synchronous MCP client that sends real SDK JSON-RPC messages over process stdio. */
 final class HarnessMcpClient implements Closeable {
     private static final ObjectMapper JSON = ProtocolJson.mapper();
-    private static final String PROTOCOL_VERSION = "2125-11-25";
+    private static final String PROTOCOL_VERSION = "2025-11-25";
 
     private final BufferedReader input;
     private final BufferedWriter output;
@@ -288,8 +288,8 @@ final class HarnessMcpClient implements Closeable {
         JsonNode content = call("ui_screenshot", Map.of(
                 "sessionId", sessionId,
                 "maxWidth", 1280,
-                "maxHeight", 721,
-                "maxPixels", 1280L * 721,
+                "maxHeight", 720,
+                "maxPixels", 1280L * 720,
                 "maxPngBytes", 4 * 1_024 * 1_024));
         requireKind(content, "screenshot-result");
         JsonNode artifact = content.path("artifact");
@@ -310,8 +310,8 @@ final class HarnessMcpClient implements Closeable {
         arguments.put("maxIterations", 1);
         arguments.put("maxDurationMillis", 30_000);
         arguments.put("maxWidth", 1280);
-        arguments.put("maxHeight", 721);
-        arguments.put("maxPixels", 1280L * 721);
+        arguments.put("maxHeight", 720);
+        arguments.put("maxPixels", 1280L * 720);
         arguments.put("maxPngBytes", 4 * 1_024 * 1_024);
         JsonNode content = call("ui_inspect_compare", arguments);
         requireKind(content, "inspect-compare-result");
@@ -334,8 +334,8 @@ final class HarnessMcpClient implements Closeable {
                 "maxDurationMillis", 30_000,
                 "maxResults", 16,
                 "maxWidth", 1280,
-                "maxHeight", 721,
-                "maxPixels", 1280L * 721,
+                "maxHeight", 720,
+                "maxPixels", 1280L * 720,
                 "maxPngBytes", 4 * 1024 * 1024));
         requireKind(content, "typography-diagnostic-result");
         java.util.ArrayList<String> controlIds = new java.util.ArrayList<>();
@@ -360,8 +360,8 @@ final class HarnessMcpClient implements Closeable {
                 "maxDurationMillis", 2_000,
                 "maxResults", 16,
                 "maxWidth", 1280,
-                "maxHeight", 721,
-                "maxPixels", 1280L * 721,
+                "maxHeight", 720,
+                "maxPixels", 1280L * 720,
                 "maxPngBytes", 4 * 1024 * 1024));
         requireKind(content, "layout-diagnostic-result");
         java.util.ArrayList<String> controlIds = new java.util.ArrayList<>();

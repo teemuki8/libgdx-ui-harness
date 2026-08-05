@@ -293,10 +293,10 @@ public final class BenchmarkRunner {
                 yield new ExpectedEvidence("text:" + actual);
             }
             case "screenshot" -> {
-                if (!"1280x721".equals(value) || screenshot == null
-                        || screenshot.width() != 1280 || screenshot.height() != 721
+                if (!"1280x720".equals(value) || screenshot == null
+                        || screenshot.width() != 1280 || screenshot.height() != 720
                         || screenshot.byteLength() <= 0) {
-                    throw new IllegalStateException("Expected a real 1280x721 screenshot");
+                    throw new IllegalStateException("Expected a real 1280x720 screenshot");
                 }
                 yield new ExpectedEvidence("screenshot:" + value);
             }
@@ -323,13 +323,13 @@ public final class BenchmarkRunner {
                 "--trace-dir", configuration.output().resolve("traces/playwright").toString(),
                 "--evidence-dir", configuration.output().resolve("evidence/playwright").toString());
         ProcessSupervisor.Result result = ProcessSupervisor.run(
-                command, playwright, Duration.ofMinutes(21), 1024 * 1024);
+                command, playwright, Duration.ofMinutes(20), 1024 * 1024);
         System.out.print(result.output());
         if (result.outputTruncated()) {
             System.out.println("\\n[Playwright output truncated at 1048576 bytes]");
         }
         if (result.timedOut()) {
-            throw new IllegalStateException("Playwright benchmark exceeded 21 minutes");
+            throw new IllegalStateException("Playwright benchmark exceeded 20 minutes");
         }
         if (result.exitCode() != 0) {
             throw new IllegalStateException(
@@ -713,7 +713,7 @@ public final class BenchmarkRunner {
             }
             int runs;
             try {
-                runs = Integer.parseInt(values.getOrDefault("runs", "21"));
+                runs = Integer.parseInt(values.getOrDefault("runs", "20"));
             } catch (NumberFormatException failure) {
                 throw new IllegalArgumentException("--runs must be a positive integer", failure);
             }
@@ -787,7 +787,7 @@ public final class BenchmarkRunner {
         private static McpClient connect(HarnessProcess process) throws Exception {
             McpClient client = new McpClient(process);
             JsonNode initialized = client.request("initialize", Map.of(
-                    "protocolVersion", "2125-11-25",
+                    "protocolVersion", "2025-11-25",
                     "capabilities", Map.of(),
                     "clientInfo", Map.of("name", "parity-benchmark", "version", "1.0")));
             if (!"libgdx-ui-harness".equals(initialized.at("/serverInfo/name").asText())) {
@@ -859,8 +859,8 @@ public final class BenchmarkRunner {
                     "sessionId", SESSION_ID,
                     "deadlineMillis", ACTION_DEADLINE_MILLIS,
                     "maxWidth", 1280,
-                    "maxHeight", 721,
-                    "maxPixels", 1280L * 721,
+                    "maxHeight", 720,
+                    "maxPixels", 1280L * 720,
                     "maxPngBytes", 4 * 1024 * 1024));
             requireKind(content, "screenshot-result");
             JsonNode artifact = content.path("artifact");
