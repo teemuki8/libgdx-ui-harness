@@ -263,6 +263,21 @@ public final class HarnessToolCatalog {
                         output("scenario-start-result", Map.of(
                                 "outcome", scenarioStartOutcomeSchema()),
                                 List.of("outcome"))),
+                tool("ui_navigation_inspect",
+                        "Inspect one declared keyboard/controller focus path from a registered "
+                                + "scenario using real configured input",
+                        sessionInput(Map.of(
+                                "spec", navigationSpecSchema()),
+                                List.of("spec")),
+                        output("navigation-result", navigationResultSchema(),
+                                List.of("result"))),
+                tool("ui_navigation_validate",
+                        "Validate one navigation path and reset through the registered scenario",
+                        sessionInput(Map.of(
+                                "spec", navigationSpecSchema()),
+                                List.of("spec")),
+                        output("navigation-result", navigationResultSchema(),
+                                List.of("result"))),
                 tool("ui_capabilities", "Discover capabilities for one harness session",
                         sessionInput(Map.of(), List.of()),
                         output("capabilities-result", Map.ofEntries(
@@ -330,6 +345,71 @@ public final class HarnessToolCatalog {
                 "maxDurationMillis", integer(1, 600_000)),
                 List.of("schemaVersion", "id", "definitionVersion", "applicationId",
                         "supportedProfileIds", "maxSetupAttempts", "maxDurationMillis"));
+    }
+
+    private static Map<String, Object> navigationSpecSchema() {
+        return object(Map.ofEntries(
+                Map.entry("scenarioId", string(1, MAX_IDENTIFIER)),
+                Map.entry("seed", integer(Long.MIN_VALUE, Long.MAX_VALUE)),
+                Map.entry("configuration", configurationSchema()),
+                Map.entry("profileId", string(1, MAX_IDENTIFIER)),
+                Map.entry("applicationId", string(1, MAX_IDENTIFIER)),
+                Map.entry("processId", string(1, MAX_IDENTIFIER)),
+                Map.entry("sessionId", string(1, MAX_IDENTIFIER)),
+                Map.entry("inputs", array(enumString(
+                        "tab", "shift-tab", "up", "down", "left", "right", "escape", "back",
+                        "controller-up", "controller-down", "controller-left",
+                        "controller-right", "controller-confirm", "controller-back"), 4_096)),
+                Map.entry("startFocus", nullableString()),
+                Map.entry("controllerSupported", Map.of("type", "boolean")),
+                Map.entry("maxSteps", integer(1, 4_096)),
+                Map.entry("maxActors", integer(1, 10_000)),
+                Map.entry("maxResultBytes", integer(1, 1_048_576)),
+                Map.entry("maxEvidenceBytes", integer(1, 1_048_576)),
+                Map.entry("maxDurationMillis", integer(1, 3_600_000))),
+                List.of("scenarioId", "seed", "configuration", "profileId", "applicationId",
+                        "processId", "sessionId", "inputs", "controllerSupported", "maxSteps",
+                        "maxActors", "maxResultBytes", "maxEvidenceBytes", "maxDurationMillis"));
+    }
+
+    private static Map<String, Object> navigationResultSchema() {
+        return Map.ofEntries(
+                Map.entry("result", object(Map.ofEntries(
+                        Map.entry("schemaVersion", Map.of("const", 1, "type", "integer")),
+                        Map.entry("path", object(Map.ofEntries(
+                                Map.entry("schemaVersion", Map.of("const", 1, "type", "integer")),
+                                Map.entry("defaultFocusIdentity", nullableString()),
+                                Map.entry("steps", array(navigationStepSchema(), 4_096)),
+                                Map.entry("reason", enumString(
+                                        "COMPLETE", "CYCLE", "DEAD_END", "MODAL_ESCAPE",
+                                        "FOCUS_LOST", "UNREACHABLE_CONTROL",
+                                        "UNSUPPORTED_CONTROLLER_PATH", "DEADLINE",
+                                        "TRUNCATED"))),
+                                List.of("schemaVersion", "steps", "reason"))),
+                        Map.entry("knownFocusables", array(
+                                string(1, ProtocolJson.MAX_STRING_LENGTH), 10_000)),
+                        Map.entry("unreachableFocusables", array(
+                                string(1, ProtocolJson.MAX_STRING_LENGTH), 10_000)),
+                        Map.entry("truncated", Map.of("type", "boolean"))),
+                        List.of("schemaVersion", "path", "knownFocusables",
+                                "unreachableFocusables", "truncated"))));
+    }
+
+    private static Map<String, Object> navigationStepSchema() {
+        return object(Map.ofEntries(
+                Map.entry("input", enumString(
+                        "TAB", "SHIFT_TAB", "UP", "DOWN", "LEFT", "RIGHT", "ESCAPE", "BACK",
+                        "CONTROLLER_UP", "CONTROLLER_DOWN", "CONTROLLER_LEFT",
+                        "CONTROLLER_RIGHT", "CONTROLLER_CONFIRM", "CONTROLLER_BACK")),
+                Map.entry("beforeFrame", integer(0, Long.MAX_VALUE)),
+                Map.entry("beforeRevision", integer(0, Long.MAX_VALUE)),
+                Map.entry("afterFrame", integer(0, Long.MAX_VALUE)),
+                Map.entry("afterRevision", integer(0, Long.MAX_VALUE)),
+                Map.entry("beforeIdentity", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                Map.entry("afterIdentity", nullableString()),
+                Map.entry("modalBoundaryId", nullableString())),
+                List.of("input", "beforeFrame", "beforeRevision", "afterFrame",
+                        "afterRevision", "beforeIdentity"));
     }
 
     private static Map<String, Object> scenarioResultSchema() {
@@ -581,6 +661,25 @@ public final class HarnessToolCatalog {
                 "maxDurationMillis", 30_000,
                 "maxBytes", 1_048_576)));
         values.put("ui_trace_stop", List.of(session));
+        Map<String, Object> navigationSpec = Map.ofEntries(
+                Map.entry("scenarioId", "navigation"),
+                Map.entry("seed", 7),
+                Map.entry("configuration", Map.of("locale", "en")),
+                Map.entry("profileId", "desktop"),
+                Map.entry("applicationId", "app"),
+                Map.entry("processId", "process"),
+                Map.entry("sessionId", "SESSION"),
+                Map.entry("inputs", List.of("tab", "tab")),
+                Map.entry("controllerSupported", true),
+                Map.entry("maxSteps", 16),
+                Map.entry("maxActors", 16),
+                Map.entry("maxResultBytes", 262144),
+                Map.entry("maxEvidenceBytes", 262144),
+                Map.entry("maxDurationMillis", 5000));
+        values.put("ui_navigation_inspect", List.of(Map.of(
+                "sessionId", "SESSION", "spec", navigationSpec)));
+        values.put("ui_navigation_validate", List.of(Map.of(
+                "sessionId", "SESSION", "spec", navigationSpec)));
         values.put("ui_scenarios", List.of(session));
         values.put("ui_scenario_start", List.of(Map.of(
                 "sessionId", "SESSION",

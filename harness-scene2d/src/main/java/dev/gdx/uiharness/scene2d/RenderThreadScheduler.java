@@ -38,6 +38,13 @@ public final class RenderThreadScheduler implements AutoCloseable {
         return Thread.currentThread() == ownerThread;
     }
 
+    /** Returns whether a drain is currently executing on the owning render thread. */
+    public boolean isDraining() {
+        synchronized (lifecycle) {
+            return draining;
+        }
+    }
+
     /** Enqueues work for the owning render thread, including queue time in its deadline. */
     public <T> CompletionStage<T> submit(Callable<T> callable, Deadline deadline) {
         ScheduledCommand<T> command = new ScheduledCommand<>(

@@ -246,6 +246,14 @@ public final class HarnessProtocolService {
                     session.scenarioCoordinator().orElseThrow().start(scenarioRequest),
                     HarnessResponse.Result.ScenarioStart::new);
         }
+        if (command instanceof Command.NavigationInspect inspect) {
+            requireCapability(session, capability(command));
+            return navigate(session, inspect.spec(), deadline, false);
+        }
+        if (command instanceof Command.NavigationValidate validate) {
+            requireCapability(session, capability(command));
+            return navigate(session, validate.spec(), deadline, true);
+        }
 
 
         requireCapability(session, capability(command));
@@ -343,6 +351,12 @@ public final class HarnessProtocolService {
         if (command instanceof Command.Snapshot) {
             return "snapshot";
         }
+        if (command instanceof Command.NavigationInspect) {
+            return "ui_navigation_inspect";
+        }
+        if (command instanceof Command.NavigationValidate) {
+            return "ui_navigation_validate";
+        }
         if (command instanceof Command.Query) {
             return "query";
         }
@@ -382,6 +396,32 @@ public final class HarnessProtocolService {
                     "Session does not support capability: " + capability,
                     ErrorEvidence.ofDetails(Map.of("capability", capability)));
         }
+    }
+
+    private static RoutedOperation<?> navigate(
+            Session session, Command.NavigationSpec spec, Deadline deadline, boolean validate) {
+        if (session.navigationCoordinator().isEmpty() || session.scenarioRegistry().isEmpty()) {
+            throw new HarnessException(ErrorCode.UNSUPPORTED_CAPABILITY,
+                    "Navigation is unavailable for this session", ErrorEvidence.empty());
+        }
+        ScenarioRegistry.RegisteredScenario registered;
+        try {
+            registered = session.scenarioRegistry().orElseThrow().require(spec.scenarioId());
+        } catch (IllegalArgumentException unknown) {
+            throw new HarnessException(ErrorCode.INVALID_REQUEST,
+                    "Unknown navigation scenario: " + spec.scenarioId(),
+                    ErrorEvidence.ofDetails(Map.of("reason", "unknown-scenario")));
+        }
+        if (!registered.definition().supportedProfileIds().contains(spec.profileId())) {
+            throw new HarnessException(ErrorCode.INVALID_REQUEST,
+                    "Unsupported navigation profile: " + spec.profileId(),
+                    ErrorEvidence.ofDetails(Map.of("reason", "unsupported-profile")));
+        }
+        NavigationCoordinator coordinator = session.navigationCoordinator().orElseThrow();
+        CompletionStage<dev.gdx.uiharness.core.navigation.NavigationResult> traversal =
+                validate ? coordinator.validate(spec, deadline)
+                        : coordinator.inspect(spec, deadline);
+        return RoutedOperation.map(traversal, HarnessResponse.Result.Navigation::new);
     }
 
     private static HarnessResponse.Failure failure(
@@ -616,7 +656,8 @@ public final class HarnessProtocolService {
             CapabilitySet capabilities,
             TraceController traces,
             Optional<ScenarioRegistry> scenarioRegistry,
-            Optional<ScenarioCoordinator> scenarioCoordinator) {
+            Optional<ScenarioCoordinator> scenarioCoordinator,
+            Optional<NavigationCoordinator> navigationCoordinator) {
         /** Retains source compatibility for sessions without scenario lifecycle registration. */
         public Session(
                 Harness harness,
@@ -626,7 +667,21 @@ public final class HarnessProtocolService {
                 CapabilitySet capabilities,
                 TraceController traces) {
             this(harness, locators, waits, capture, capabilities, traces,
-                    Optional.empty(), Optional.empty());
+                    Optional.empty(), Optional.empty(), Optional.empty());
+        }
+
+        /** Retains source compatibility for sessions without navigation wiring. */
+        public Session(
+                Harness harness,
+                LocatorEngine locators,
+                WaitEngine waits,
+                ScreenCapture capture,
+                CapabilitySet capabilities,
+                TraceController traces,
+                Optional<ScenarioRegistry> scenarioRegistry,
+                Optional<ScenarioCoordinator> scenarioCoordinator) {
+            this(harness, locators, waits, capture, capabilities, traces,
+                    scenarioRegistry, scenarioCoordinator, Optional.empty());
         }
 
         /** Validates all required session operations and optional scenario registration. */
@@ -640,6 +695,8 @@ public final class HarnessProtocolService {
             scenarioRegistry = Objects.requireNonNull(scenarioRegistry, "scenarioRegistry");
             scenarioCoordinator =
                     Objects.requireNonNull(scenarioCoordinator, "scenarioCoordinator");
+            navigationCoordinator =
+                    Objects.requireNonNull(navigationCoordinator, "navigationCoordinator");
         }
     }
 
@@ -678,6 +735,17 @@ public final class HarnessProtocolService {
     public interface ScenarioCoordinator {
         /** Starts one validated registered scenario and returns one closed terminal outcome. */
         CompletionStage<HarnessResponse.ScenarioStartOutcome> start(ScenarioRequest request);
+    }
+
+    /** Optional application-owned navigation execution boundary for one session. */
+    public interface NavigationCoordinator {
+        /** Inspects one declared navigation path through real configured input. */
+        CompletionStage<dev.gdx.uiharness.core.navigation.NavigationResult> inspect(
+                Command.NavigationSpec spec, Deadline deadline);
+
+        /** Validates one navigation path and resets through the registered scenario. */
+        CompletionStage<dev.gdx.uiharness.core.navigation.NavigationResult> validate(
+                Command.NavigationSpec spec, Deadline deadline);
     }
 
     /** Render-thread-safe source of the public evaluator-complete contract. */

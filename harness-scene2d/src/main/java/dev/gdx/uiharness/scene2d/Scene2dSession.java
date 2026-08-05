@@ -70,6 +70,21 @@ public final class Scene2dSession implements AutoCloseable {
         Objects.requireNonNull(runner, "runner").completedFrame(snapshot(revision, frame));
     }
 
+    /** Captures and publishes one completed semantic frame to scenario and navigation runners. */
+    public void completedFrame(
+            Scene2dScenarioRunner scenarioRunner,
+            Scene2dNavigationRunner navigationRunner,
+            long revision,
+            long frame) {
+        if (Thread.currentThread() != ownerThread) {
+            throw new IllegalStateException(
+                    "completed navigation frames must be captured on the owning render thread");
+        }
+        SemanticSnapshot snapshot = snapshot(revision, frame);
+        Objects.requireNonNull(scenarioRunner, "scenarioRunner").completedFrame(snapshot);
+        Objects.requireNonNull(navigationRunner, "navigationRunner").completedFrame(snapshot);
+    }
+
     /** Captures the evaluator-complete contract after a completed frame. */
     public StateActionContract stateActionContract(long revision, long frame) {
         requireOpen();

@@ -47,12 +47,15 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.TraceStart.class, name = "trace-start"),
     @JsonSubTypes.Type(value = Command.TraceStop.class, name = "trace-stop"),
     @JsonSubTypes.Type(value = Command.ScenarioList.class, name = "scenario-list"),
-    @JsonSubTypes.Type(value = Command.ScenarioStart.class, name = "scenario-start")
+    @JsonSubTypes.Type(value = Command.ScenarioStart.class, name = "scenario-start"),
+    @JsonSubTypes.Type(value = Command.NavigationInspect.class, name = "navigation-inspect"),
+    @JsonSubTypes.Type(value = Command.NavigationValidate.class, name = "navigation-validate")
 })
 public sealed interface Command permits Command.Sessions, Command.Capabilities, Command.Snapshot,
         Command.Query, Command.Action, Command.Assert, Command.Wait, Command.Screenshot,
         Command.TraceStart, Command.InspectCompare, Command.TypographyDiagnose,
-        Command.LayoutDiagnose, Command.TraceStop, Command.ScenarioList, Command.ScenarioStart {
+        Command.LayoutDiagnose, Command.TraceStop, Command.ScenarioList, Command.ScenarioStart,
+        Command.NavigationInspect, Command.NavigationValidate {
     /** Lists active sessions. */
     record Sessions() implements Command {}
 
@@ -61,6 +64,105 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
 
     /** Lists bounded application-registered scenario definitions. */
     record ScenarioList() implements Command {}
+
+    /** Bounded traversal binding to one registered scenario and its declared input path. */
+    record NavigationSpec(
+            String scenarioId,
+            long seed,
+            Map<String, String> configuration,
+            String profileId,
+            String applicationId,
+            String processId,
+            String sessionId,
+            List<String> inputs,
+            String startFocus,
+            boolean controllerSupported,
+            int maxSteps,
+            int maxActors,
+            int maxResultBytes,
+            int maxEvidenceBytes,
+            long maxDurationMillis) {
+        private static final int MAX_INPUTS = 4_096;
+        private static final int MAX_ACTORS = 10_000;
+        private static final int MAX_BYTES = 1_048_576;
+
+        /** Validates identifiers, canonical configuration, inputs, and bounds. */
+        public NavigationSpec {
+            ProtocolJson.requireIdentifier(scenarioId, "scenarioId");
+            ProtocolJson.requireIdentifier(profileId, "profileId");
+            ProtocolJson.requireIdentifier(applicationId, "applicationId");
+            ProtocolJson.requireIdentifier(processId, "processId");
+            ProtocolJson.requireIdentifier(sessionId, "sessionId");
+            Objects.requireNonNull(configuration, "configuration");
+            if (configuration.size() > 256) {
+                throw new IllegalArgumentException("configuration exceeds 256 entries");
+            }
+            configuration = Map.copyOf(new TreeMap<>(configuration));
+            inputs = List.copyOf(Objects.requireNonNull(inputs, "inputs"));
+            if (inputs.size() > MAX_INPUTS) {
+                throw new IllegalArgumentException("too many navigation inputs");
+            }
+            for (String input : inputs) {
+                parseInput(input);
+            }
+            if (startFocus != null) {
+                ProtocolJson.requireText(startFocus, "startFocus");
+            }
+            if (maxSteps < 1 || maxSteps > MAX_INPUTS) {
+                throw new IllegalArgumentException(
+                        "maxSteps must be between 1 and " + MAX_INPUTS);
+            }
+            if (maxActors < 1 || maxActors > MAX_ACTORS) {
+                throw new IllegalArgumentException(
+                        "maxActors must be between 1 and " + MAX_ACTORS);
+            }
+            if (maxResultBytes < 1 || maxResultBytes > MAX_BYTES) {
+                throw new IllegalArgumentException(
+                        "maxResultBytes must be between 1 and " + MAX_BYTES);
+            }
+            if (maxResultBytes < dev.gdx.uiharness.core.navigation.NavigationResult
+                    .minimumWireSizeUpperBound()) {
+                throw new IllegalArgumentException(
+                        "maxResultBytes cannot contain the minimum navigation result");
+            }
+            if (maxEvidenceBytes < 1 || maxEvidenceBytes > MAX_BYTES) {
+                throw new IllegalArgumentException(
+                        "maxEvidenceBytes must be between 1 and " + MAX_BYTES);
+            }
+            if (maxDurationMillis < 1 || maxDurationMillis > 3_600_000) {
+                throw new IllegalArgumentException(
+                        "maxDurationMillis must be between 1 and 3600000");
+            }
+        }
+
+        private static dev.gdx.uiharness.core.navigation.NavigationInput parseInput(
+                String input) {
+            ProtocolJson.requireIdentifier(input, "input");
+            try {
+                return dev.gdx.uiharness.core.navigation.NavigationInput.valueOf(
+                        input.toUpperCase(java.util.Locale.ROOT).replace('-', '_'));
+            } catch (IllegalArgumentException failure) {
+                throw new IllegalArgumentException("unknown navigation input: " + input,
+                        failure);
+            }
+        }
+    }
+
+    /** Inspects one declared navigation path from a registered scenario using real input. */
+    record NavigationInspect(NavigationSpec spec) implements Command {
+        /** Validates the traversal binding. */
+        public NavigationInspect {
+            Objects.requireNonNull(spec, "spec");
+        }
+    }
+
+    /** Validates one navigation path and resets through the registered scenario. */
+    record NavigationValidate(NavigationSpec spec) implements Command {
+        /** Validates the traversal binding. */
+        public NavigationValidate {
+            Objects.requireNonNull(spec, "spec");
+        }
+    }
 
     /** Starts one registered scenario with canonical bounded inputs. */
     record ScenarioStart(

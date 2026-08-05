@@ -2,6 +2,7 @@ package dev.gdx.uiharness.mcp;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -21,6 +22,11 @@ import dev.gdx.uiharness.core.model.Role;
 import dev.gdx.uiharness.core.model.SemanticNode;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.model.SemanticState;
+import dev.gdx.uiharness.core.navigation.NavigationInput;
+import dev.gdx.uiharness.core.navigation.NavigationPath;
+import dev.gdx.uiharness.core.navigation.NavigationReason;
+import dev.gdx.uiharness.core.navigation.NavigationResult;
+import dev.gdx.uiharness.core.navigation.NavigationStep;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import dev.gdx.uiharness.core.wait.FrameSignal;
@@ -131,7 +137,7 @@ final class HarnessMcpServerContractTest {
             assertTrue(((List<?>) structured(capabilities).get("capabilities")).contains("action"));
             assertEquals("operation-catalog/v1",
                     structured(capabilities).get("catalogSchemaVersion"));
-            assertEquals(15, ((List<?>) structured(capabilities).get("operations")).size());
+            assertEquals(17, ((List<?>) structured(capabilities).get("operations")).size());
             assertTrue(((List<?>) structured(capabilities).get("capabilities"))
                     .contains("ui_assert"));
             assertTrue(String.valueOf(structured(capabilities).get("operations"))
@@ -179,6 +185,56 @@ final class HarnessMcpServerContractTest {
             assertEquals("main-menu", command.scenarioId());
             assertEquals(Map.of("locale", "en"), command.configuration());
             assertEquals("desktop", command.profileId());
+        }
+    }
+
+    @Test void navigationToolsRouteThroughTheClosedSpecAndPublishResults() {
+        AtomicReference<Command> observed = new AtomicReference<>();
+        HarnessProtocolService service = navigationService(observed);
+        Map<String, Object> spec = Map.ofEntries(
+                Map.entry("scenarioId", "navigation"),
+                Map.entry("seed", 7),
+                Map.entry("configuration", Map.of("locale", "en")),
+                Map.entry("profileId", "desktop"),
+                Map.entry("applicationId", "app"),
+                Map.entry("processId", "process"),
+                Map.entry("sessionId", "game"),
+                Map.entry("inputs", List.of("tab", "tab")),
+                Map.entry("controllerSupported", true),
+                Map.entry("maxSteps", 16),
+                Map.entry("maxActors", 16),
+                Map.entry("maxResultBytes", 262144),
+                Map.entry("maxEvidenceBytes", 262144),
+                Map.entry("maxDurationMillis", 5000));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        service::execute, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult inspected = handler.handle(call(
+                    "ui_navigation_inspect",
+                    Map.of("sessionId", "game", "spec", spec)))
+                    .block(Duration.ofSeconds(10));
+
+            assertFalse(inspected.isError());
+            Map<String, Object> content = structured(inspected);
+            assertEquals("navigation-result", content.get("kind"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> result = (Map<String, Object>) content.get("result");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> path = (Map<String, Object>) result.get("path");
+            assertEquals("COMPLETE", path.get("reason"));
+            assertEquals(1, ((List<?>) path.get("steps")).size());
+
+            Command.NavigationInspect command =
+                    (Command.NavigationInspect) observed.get();
+            assertEquals("navigation", command.spec().scenarioId());
+            assertEquals(List.of("tab", "tab"), command.spec().inputs());
+
+            McpSchema.CallToolResult validated = handler.handle(call(
+                    "ui_navigation_validate",
+                    Map.of("sessionId", "game", "spec", spec)))
+                    .block(Duration.ofSeconds(10));
+            assertFalse(validated.isError());
+            assertInstanceOf(Command.NavigationValidate.class, observed.get());
         }
     }
 
@@ -768,7 +824,7 @@ final class HarnessMcpServerContractTest {
             send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}");
             JsonNode listed = read(reader);
-            assertEquals(15, listed.at("/result/tools").size());
+            assertEquals(17, listed.at("/result/tools").size());
 
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
                     + "\"params\":{\"name\":\"ui_action\",\"arguments\":{"
@@ -872,6 +928,79 @@ final class HarnessMcpServerContractTest {
 
     private static JsonNode read(BufferedReader reader) throws Exception {
         return ProtocolJson.mapper().readTree(reader.readLine());
+    }
+
+    private static HarnessProtocolService navigationService(AtomicReference<Command> observed) {
+        var registry = new dev.gdx.uiharness.core.scenario.ScenarioRegistry();
+        registry.register(new dev.gdx.uiharness.core.scenario.ScenarioDefinition(
+                        1, "navigation", "1", "app", List.of("desktop"),
+                        1, Duration.ofMinutes(1)),
+                new dev.gdx.uiharness.core.scenario.ScenarioLifecycle() {
+                    @Override public void setup(
+                            dev.gdx.uiharness.core.scenario.ScenarioRequest request) {}
+                    @Override public void reset(
+                            dev.gdx.uiharness.core.scenario.ScenarioRequest request) {}
+                    @Override public boolean ready(
+                            dev.gdx.uiharness.core.scenario.ScenarioRequest request) {
+                        return true;
+                    }
+                    @Override public String startStateIdentity(
+                            dev.gdx.uiharness.core.scenario.ScenarioRequest request,
+                            dev.gdx.uiharness.core.model.SemanticSnapshot snapshot) {
+                        return "ready";
+                    }
+                    @Override public void cleanup(
+                            dev.gdx.uiharness.core.scenario.ScenarioRequest request) {}
+                });
+        HarnessProtocolService.NavigationCoordinator coordinator =
+                new HarnessProtocolService.NavigationCoordinator() {
+                    @Override public CompletionStage<NavigationResult> inspect(
+                            Command.NavigationSpec spec, Deadline deadline) {
+                        observed.set(new Command.NavigationInspect(spec));
+                        return CompletableFuture.completedFuture(navigated());
+                    }
+
+                    @Override public CompletionStage<NavigationResult> validate(
+                            Command.NavigationSpec spec, Deadline deadline) {
+                        observed.set(new Command.NavigationValidate(spec));
+                        return CompletableFuture.completedFuture(navigated());
+                    }
+
+                    private NavigationResult navigated() {
+                        return new NavigationResult(
+                                1,
+                                new NavigationPath(1, "test-id:first", List.of(
+                                        new NavigationStep(NavigationInput.TAB, 10, 20,
+                                                11, 21, "test-id:first", "test-id:second",
+                                                null)),
+                                        NavigationReason.COMPLETE),
+                                List.of("test-id:first", "test-id:second"),
+                                List.of(),
+                                false);
+                    }
+                };
+        HarnessProtocolService.Session session = new HarnessProtocolService.Session(
+                new RecordingHarness(), new StrictResolution(),
+                new WaitEngine(() -> SNAPSHOT, new StrictResolution(), CLOCK,
+                        listener -> () -> {}),
+                new ScreenCapture() {
+                    @Override public CompletionStage<CapturedImage> capture(
+                            CaptureRequest request, Deadline deadline) {
+                        return CompletableFuture.completedFuture(new CapturedImage(
+                                new byte[] {1, 2, 3}, "0".repeat(64), 1, 1, 1, 1,
+                                new CapturedImage.Scale(1, 1)));
+                    }
+
+                    @Override public void close() {}
+                },
+                new CapabilitySet(List.of(
+                        "ui_navigation_inspect", "ui_navigation_validate")),
+                HarnessProtocolService.TraceController.unsupported(),
+                java.util.Optional.of(registry),
+                java.util.Optional.empty(),
+                java.util.Optional.of(coordinator));
+        return new HarnessProtocolService(
+                Map.of("game", session), CLOCK, Runnable::run);
     }
 
     private static HarnessProtocolService service(RecordingHarness harness) {
