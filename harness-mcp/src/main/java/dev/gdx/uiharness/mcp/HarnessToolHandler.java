@@ -200,6 +200,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             case "ui_validate_layout" -> "layout-validate";
             case "ui_matrix_run" -> "matrix-run";
             case "ui_matrix_results" -> "matrix-results";
+            case "ui_semantic_compare" -> "semantic-compare";
             case "ui_capabilities" -> "capabilities";
             default -> throw new IllegalArgumentException("Unknown tool: " + toolName);
         };
@@ -535,6 +536,15 @@ public final class HarnessToolHandler implements AutoCloseable {
         if (result instanceof HarnessResponse.Result.MatrixReportData report) {
             LinkedHashMap<String, Object> content = content("matrix-report");
             content.put("report", COMMAND_MAPPER.convertValue(report.report(), Map.class));
+            return Map.copyOf(content);
+        }
+        if (result instanceof HarnessResponse.Result.SemanticCompare compare) {
+            LinkedHashMap<String, Object> content = content("semantic-compare-result");
+            content.put("matched", compare.result().matched());
+            content.put("differences", COMMAND_MAPPER.convertValue(
+                    compare.result().differences(), List.class));
+            content.put("comparedNodes", compare.result().comparedNodes());
+            content.put("truncated", compare.result().truncated());
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.Navigation navigation) {

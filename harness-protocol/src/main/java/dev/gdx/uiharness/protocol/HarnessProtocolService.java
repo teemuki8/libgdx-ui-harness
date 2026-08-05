@@ -266,6 +266,10 @@ public final class HarnessProtocolService {
             requireCapability(session, capability(command));
             return matrixResults(session, results.runId());
         }
+        if (command instanceof Command.SemanticCompare compare) {
+            requireCapability(session, capability(command));
+            return semanticCompare(session, compare.spec(), deadline);
+        }
 
 
         requireCapability(session, capability(command));
@@ -378,6 +382,9 @@ public final class HarnessProtocolService {
         if (command instanceof Command.MatrixResults) {
             return "ui_matrix_results";
         }
+        if (command instanceof Command.SemanticCompare) {
+            return "ui_semantic_compare";
+        }
         if (command instanceof Command.Query) {
             return "query";
         }
@@ -417,6 +424,18 @@ public final class HarnessProtocolService {
                     "Session does not support capability: " + capability,
                     ErrorEvidence.ofDetails(Map.of("capability", capability)));
         }
+    }
+
+    private static RoutedOperation<?> semanticCompare(
+            Session session, Command.SemanticCompareSpec spec, Deadline deadline) {
+        if (session.semanticCompareCoordinator().isEmpty()) {
+            throw new HarnessException(ErrorCode.UNSUPPORTED_CAPABILITY,
+                    "Semantic comparison is unavailable for this session",
+                    ErrorEvidence.empty());
+        }
+        return RoutedOperation.map(
+                session.semanticCompareCoordinator().orElseThrow().compare(spec, deadline),
+                HarnessResponse.Result.SemanticCompare::new);
     }
 
     private static RoutedOperation<?> runMatrix(
@@ -714,7 +733,8 @@ public final class HarnessProtocolService {
             Optional<ScenarioCoordinator> scenarioCoordinator,
             Optional<NavigationCoordinator> navigationCoordinator,
             Optional<LayoutValidationCoordinator> layoutValidationCoordinator,
-            Optional<MatrixCoordinator> matrixCoordinator) {
+            Optional<MatrixCoordinator> matrixCoordinator,
+            Optional<SemanticCompareCoordinator> semanticCompareCoordinator) {
         /** Retains source compatibility for sessions without scenario lifecycle registration. */
         public Session(
                 Harness harness,
@@ -725,7 +745,7 @@ public final class HarnessProtocolService {
                 TraceController traces) {
             this(harness, locators, waits, capture, capabilities, traces,
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
-                    Optional.empty());
+                    Optional.empty(), Optional.empty());
         }
 
         /** Retains source compatibility for sessions without navigation wiring. */
@@ -740,7 +760,7 @@ public final class HarnessProtocolService {
                 Optional<ScenarioCoordinator> scenarioCoordinator) {
             this(harness, locators, waits, capture, capabilities, traces,
                     scenarioRegistry, scenarioCoordinator, Optional.empty(), Optional.empty(),
-                    Optional.empty());
+                    Optional.empty(), Optional.empty());
         }
 
         /** Retains source compatibility for sessions without layout validation wiring. */
@@ -756,7 +776,7 @@ public final class HarnessProtocolService {
                 Optional<NavigationCoordinator> navigationCoordinator) {
             this(harness, locators, waits, capture, capabilities, traces,
                     scenarioRegistry, scenarioCoordinator, navigationCoordinator,
-                    Optional.empty(), Optional.empty());
+                    Optional.empty(), Optional.empty(), Optional.empty());
         }
 
         /** Retains source compatibility for sessions without matrix wiring. */
@@ -773,7 +793,25 @@ public final class HarnessProtocolService {
                 Optional<LayoutValidationCoordinator> layoutValidationCoordinator) {
             this(harness, locators, waits, capture, capabilities, traces,
                     scenarioRegistry, scenarioCoordinator, navigationCoordinator,
-                    layoutValidationCoordinator, Optional.empty());
+                    layoutValidationCoordinator, Optional.empty(), Optional.empty());
+        }
+
+        /** Retains source compatibility for sessions without semantic comparison wiring. */
+        public Session(
+                Harness harness,
+                LocatorEngine locators,
+                WaitEngine waits,
+                ScreenCapture capture,
+                CapabilitySet capabilities,
+                TraceController traces,
+                Optional<ScenarioRegistry> scenarioRegistry,
+                Optional<ScenarioCoordinator> scenarioCoordinator,
+                Optional<NavigationCoordinator> navigationCoordinator,
+                Optional<LayoutValidationCoordinator> layoutValidationCoordinator,
+                Optional<MatrixCoordinator> matrixCoordinator) {
+            this(harness, locators, waits, capture, capabilities, traces,
+                    scenarioRegistry, scenarioCoordinator, navigationCoordinator,
+                    layoutValidationCoordinator, matrixCoordinator, Optional.empty());
         }
 
         /** Validates all required session operations and optional scenario registration. */
@@ -793,6 +831,8 @@ public final class HarnessProtocolService {
                     layoutValidationCoordinator, "layoutValidationCoordinator");
             matrixCoordinator =
                     Objects.requireNonNull(matrixCoordinator, "matrixCoordinator");
+            semanticCompareCoordinator = Objects.requireNonNull(
+                    semanticCompareCoordinator, "semanticCompareCoordinator");
         }
     }
 
@@ -850,6 +890,14 @@ public final class HarnessProtocolService {
         /** Validates one atomic completed-frame whole-stage or subtree observation. */
         CompletionStage<dev.gdx.uiharness.core.layout.LayoutValidationResult> validate(
                 Command.LayoutValidationSpec spec, Deadline deadline);
+    }
+
+    /** Optional application-owned semantic baseline comparison boundary for one session. */
+    @FunctionalInterface
+    public interface SemanticCompareCoordinator {
+        /** Compares one registered baseline against the current snapshot. */
+        CompletionStage<dev.gdx.uiharness.core.golden.SemanticCompareResult> compare(
+                Command.SemanticCompareSpec spec, Deadline deadline);
     }
 
     /** Optional application-owned display matrix execution boundary for one session. */

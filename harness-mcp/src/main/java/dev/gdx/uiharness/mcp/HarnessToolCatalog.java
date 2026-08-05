@@ -302,6 +302,22 @@ public final class HarnessToolCatalog {
                                 List.of("runId")),
                         output("matrix-report", matrixReportSchema(),
                                 List.of("report"))),
+                tool("ui_semantic_compare",
+                        "Compare a versioned registered semantic baseline against the current "
+                                + "snapshot without raster capture",
+                        sessionInput(Map.of(
+                                "spec", semanticCompareSpecSchema()),
+                                List.of("spec")),
+                        output("semantic-compare-result", Map.of(
+                                "matched", Map.of("type", "boolean"),
+                                "differences", array(object(Map.of(
+                                        "kind", enumString(
+                                                "ADDED", "REMOVED", "CHANGED", "AMBIGUOUS"),
+                                        "baselineKey", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                                        List.of("kind", "baselineKey")), 4_096),
+                                "comparedNodes", integer(0, 10_000),
+                                "truncated", Map.of("type", "boolean")),
+                                List.of("matched", "differences", "comparedNodes", "truncated"))),
                 tool("ui_capabilities", "Discover capabilities for one harness session",
                         sessionInput(Map.of(), List.of()),
                         output("capabilities-result", Map.ofEntries(
@@ -415,6 +431,27 @@ public final class HarnessToolCatalog {
                         Map.entry("truncated", Map.of("type", "boolean")),
                         Map.entry("appliedConfig", object(Map.of(), List.of()))),
                         List.of("status", "findings", "examinedNodes", "truncated"))));
+    }
+
+    private static Map<String, Object> semanticCompareSpecSchema() {
+        return object(Map.ofEntries(
+                Map.entry("baselineId", string(1, MAX_IDENTIFIER)),
+                Map.entry("strictNodes", Map.of("type", "boolean")),
+                Map.entry("tolerances", array(object(Map.of(
+                        "id", string(1, MAX_IDENTIFIER),
+                        "space", enumString("local", "stage", "screen", "framebuffer"),
+                        "units", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                        "deltaX", number(0.0, Double.MAX_VALUE),
+                        "deltaY", number(0.0, Double.MAX_VALUE),
+                        "deltaWidth", number(0.0, Double.MAX_VALUE),
+                        "deltaHeight", number(0.0, Double.MAX_VALUE)),
+                        List.of("id", "space", "units")), 16)),
+                Map.entry("excludedProperties", array(
+                        string(1, ProtocolJson.MAX_STRING_LENGTH), 256)),
+                Map.entry("maxDifferences", integer(1, 4_096)),
+                Map.entry("maxDurationMillis", integer(1, 3_600_000))),
+                List.of("baselineId", "strictNodes", "tolerances", "excludedProperties",
+                        "maxDifferences", "maxDurationMillis"));
     }
 
     private static Map<String, Object> matrixRunSpecSchema() {
@@ -822,6 +859,15 @@ public final class HarnessToolCatalog {
                 Map.entry("maxFindings", 256),
                 Map.entry("maxNodes", 10000),
                 Map.entry("maxDurationMillis", 2000));
+        values.put("ui_semantic_compare", List.of(Map.of(
+                "sessionId", "SESSION",
+                "spec", Map.ofEntries(
+                        Map.entry("baselineId", "save-golden"),
+                        Map.entry("strictNodes", false),
+                        Map.entry("tolerances", List.of()),
+                        Map.entry("excludedProperties", List.of()),
+                        Map.entry("maxDifferences", 256),
+                        Map.entry("maxDurationMillis", 2000)))));
         values.put("ui_matrix_run", List.of(Map.of(
                 "sessionId", "SESSION",
                 "spec", Map.ofEntries(
