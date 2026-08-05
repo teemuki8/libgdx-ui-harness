@@ -6,6 +6,8 @@ docs/superpowers/
 **/build/
 .idea/
 *.iml
+.settings/
+.project
 out/
 __pycache__/
 /release-public.asc
