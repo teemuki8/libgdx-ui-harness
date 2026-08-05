@@ -254,6 +254,10 @@ public final class HarnessProtocolService {
             requireCapability(session, capability(command));
             return navigate(session, validate.spec(), deadline, true);
         }
+        if (command instanceof Command.LayoutValidate layout) {
+            requireCapability(session, capability(command));
+            return validateLayout(session, layout.spec(), deadline);
+        }
 
 
         requireCapability(session, capability(command));
@@ -357,6 +361,9 @@ public final class HarnessProtocolService {
         if (command instanceof Command.NavigationValidate) {
             return "ui_navigation_validate";
         }
+        if (command instanceof Command.LayoutValidate) {
+            return "ui_validate_layout";
+        }
         if (command instanceof Command.Query) {
             return "query";
         }
@@ -396,6 +403,17 @@ public final class HarnessProtocolService {
                     "Session does not support capability: " + capability,
                     ErrorEvidence.ofDetails(Map.of("capability", capability)));
         }
+    }
+
+    private static RoutedOperation<?> validateLayout(
+            Session session, Command.LayoutValidationSpec spec, Deadline deadline) {
+        if (session.layoutValidationCoordinator().isEmpty()) {
+            throw new HarnessException(ErrorCode.UNSUPPORTED_CAPABILITY,
+                    "Layout validation is unavailable for this session", ErrorEvidence.empty());
+        }
+        return RoutedOperation.map(
+                session.layoutValidationCoordinator().orElseThrow().validate(spec, deadline),
+                HarnessResponse.Result.LayoutValidation::new);
     }
 
     private static RoutedOperation<?> navigate(
@@ -657,7 +675,8 @@ public final class HarnessProtocolService {
             TraceController traces,
             Optional<ScenarioRegistry> scenarioRegistry,
             Optional<ScenarioCoordinator> scenarioCoordinator,
-            Optional<NavigationCoordinator> navigationCoordinator) {
+            Optional<NavigationCoordinator> navigationCoordinator,
+            Optional<LayoutValidationCoordinator> layoutValidationCoordinator) {
         /** Retains source compatibility for sessions without scenario lifecycle registration. */
         public Session(
                 Harness harness,
@@ -667,7 +686,7 @@ public final class HarnessProtocolService {
                 CapabilitySet capabilities,
                 TraceController traces) {
             this(harness, locators, waits, capture, capabilities, traces,
-                    Optional.empty(), Optional.empty(), Optional.empty());
+                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
         }
 
         /** Retains source compatibility for sessions without navigation wiring. */
@@ -681,7 +700,23 @@ public final class HarnessProtocolService {
                 Optional<ScenarioRegistry> scenarioRegistry,
                 Optional<ScenarioCoordinator> scenarioCoordinator) {
             this(harness, locators, waits, capture, capabilities, traces,
-                    scenarioRegistry, scenarioCoordinator, Optional.empty());
+                    scenarioRegistry, scenarioCoordinator, Optional.empty(), Optional.empty());
+        }
+
+        /** Retains source compatibility for sessions without layout validation wiring. */
+        public Session(
+                Harness harness,
+                LocatorEngine locators,
+                WaitEngine waits,
+                ScreenCapture capture,
+                CapabilitySet capabilities,
+                TraceController traces,
+                Optional<ScenarioRegistry> scenarioRegistry,
+                Optional<ScenarioCoordinator> scenarioCoordinator,
+                Optional<NavigationCoordinator> navigationCoordinator) {
+            this(harness, locators, waits, capture, capabilities, traces,
+                    scenarioRegistry, scenarioCoordinator, navigationCoordinator,
+                    Optional.empty());
         }
 
         /** Validates all required session operations and optional scenario registration. */
@@ -697,6 +732,8 @@ public final class HarnessProtocolService {
                     Objects.requireNonNull(scenarioCoordinator, "scenarioCoordinator");
             navigationCoordinator =
                     Objects.requireNonNull(navigationCoordinator, "navigationCoordinator");
+            layoutValidationCoordinator = Objects.requireNonNull(
+                    layoutValidationCoordinator, "layoutValidationCoordinator");
         }
     }
 
@@ -746,6 +783,14 @@ public final class HarnessProtocolService {
         /** Validates one navigation path and resets through the registered scenario. */
         CompletionStage<dev.gdx.uiharness.core.navigation.NavigationResult> validate(
                 Command.NavigationSpec spec, Deadline deadline);
+    }
+
+    /** Optional application-owned layout validation boundary for one session. */
+    @FunctionalInterface
+    public interface LayoutValidationCoordinator {
+        /** Validates one atomic completed-frame whole-stage or subtree observation. */
+        CompletionStage<dev.gdx.uiharness.core.layout.LayoutValidationResult> validate(
+                Command.LayoutValidationSpec spec, Deadline deadline);
     }
 
     /** Render-thread-safe source of the public evaluator-complete contract. */

@@ -1,0 +1,447 @@
+package dev.gdx.uiharness.core.layout;
+
+import dev.gdx.uiharness.core.model.Bounds;
+import dev.gdx.uiharness.core.model.Role;
+import dev.gdx.uiharness.core.model.SemanticNode;
+import dev.gdx.uiharness.core.model.SemanticSnapshot;
+import dev.gdx.uiharness.core.navigation.NavigationResult;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+
+/**
+ * Pure whole-stage layout invariant validator over one immutable semantic observation. Findings
+ * are bounded, deterministically ordered, and classified against a configurable severity gate.
+ * Execution never reads backend state and never dispatches input.
+ */
+public final class LayoutValidator {
+    private static final Set<Role> TEXT_BEARING_ROLES = Set.of(
+            Role.LABEL, Role.BUTTON, Role.TEXT_FIELD, Role.TEXT_AREA, Role.MENU_ITEM,
+            Role.LIST_ITEM, Role.CHECKBOX, Role.RADIO_BUTTON, Role.SELECT, Role.SLIDER);
+    private static final Set<Role> INTERACTIVE_ROLES = Set.of(
+            Role.BUTTON, Role.CHECKBOX, Role.RADIO_BUTTON, Role.TEXT_FIELD, Role.TEXT_AREA,
+            Role.SELECT, Role.SLIDER, Role.LIST_ITEM, Role.MENU_ITEM);
+
+    /** Validates the supplied immutable observation. */
+    public LayoutValidationResult validate(
+            SemanticSnapshot snapshot,
+            LayoutValidationConfig config,
+            NavigationResult navigation) {
+        Objects.requireNonNull(snapshot, "snapshot");
+        Objects.requireNonNull(config, "config");
+        List<SemanticNode> ordered = documentOrder(snapshot);
+        boolean coverageLimited = ordered.size() > config.maxNodes();
+        List<SemanticNode> examined = coverageLimited
+                ? ordered.subList(0, config.maxNodes()) : ordered;
+
+        Sink findings = new Sink(config.maxFindings());
+        boolean truncated = coverageLimited;
+        Map<LayoutValidationCheck, Boolean> availability = new LinkedHashMap<>();
+        checkAvailability(availability, config, navigation);
+
+        if (config.isEnabled(LayoutValidationCheck.OUTSIDE_VIEWPORT)) {
+            checkOutsideViewport(examined, findings, config);
+        }
+        if (config.isEnabled(LayoutValidationCheck.CLIPPED_TEXT)) {
+            checkClippedText(examined, findings, config);
+        }
+        if (config.isEnabled(LayoutValidationCheck.ZERO_SIZE)) {
+            checkZeroSize(examined, findings, config);
+        }
+        if (config.isEnabled(LayoutValidationCheck.BELOW_TARGET_SIZE)) {
+            checkBelowTargetSize(examined, findings, config);
+        }
+        if (config.isEnabled(LayoutValidationCheck.DUPLICATE_TEST_ID)) {
+            checkDuplicateTestIds(examined, findings, config);
+        }
+        if (config.isEnabled(LayoutValidationCheck.MISSING_ACCESSIBLE_NAME)) {
+            checkMissingAccessibleName(examined, findings, config);
+        }
+        if (config.isEnabled(LayoutValidationCheck.OBSCURED)) {
+            checkObscured(examined, findings, config);
+        }
+        if (config.isEnabled(LayoutValidationCheck.INTERACTIVE_OVERLAP)) {
+            checkInteractiveOverlap(examined, findings, config);
+        }
+        if (config.isEnabled(LayoutValidationCheck.KEYBOARD_UNREACHABLE)
+                && availability.get(LayoutValidationCheck.KEYBOARD_UNREACHABLE) == Boolean.TRUE) {
+            checkKeyboardUnreachable(examined, findings, config, Objects.requireNonNull(navigation));
+        }
+        if (config.isEnabled(LayoutValidationCheck.INCONSISTENT_ALIGNMENT)) {
+            checkConsistentAlignment(snapshot, examined, findings, config);
+        }
+        if (config.isEnabled(LayoutValidationCheck.INCONSISTENT_SPACING)) {
+            checkConsistentSpacing(snapshot, examined, findings, config);
+        }
+        for (LayoutValidationCheck check : availability.keySet()) {
+            if (availability.get(check) == Boolean.FALSE) {
+                findings.add(new LayoutFinding(
+                        LayoutValidationReason.CHECK_UNAVAILABLE,
+                        LayoutValidationSeverity.INFO,
+                        snapshot.rootId(),
+                        null,
+                        boundsOf(snapshot.nodes().get(snapshot.rootId())),
+                        "check unavailable: " + check.name().toLowerCase()));
+            }
+        }
+
+        List<LayoutFinding> orderedFindings = findings.list().stream()
+                .sorted(Comparator
+                        .comparingInt((LayoutFinding finding) -> finding.reason().ordinal())
+                        .thenComparing(LayoutFinding::nodeId)
+                        .thenComparing(finding -> finding.relatedActorId() == null
+                                ? "" : finding.relatedActorId()))
+                .toList();
+        truncated = truncated || findings.overflow();
+        boolean gateHit = orderedFindings.stream()
+                .anyMatch(finding -> finding.severity().ordinal()
+                        >= config.failOn().ordinal());
+        LayoutValidationResult.Status status = truncated && orderedFindings.isEmpty()
+                ? LayoutValidationResult.Status.INCOMPLETE
+                : gateHit ? LayoutValidationResult.Status.FAIL
+                        : LayoutValidationResult.Status.PASS;
+        return new LayoutValidationResult(
+                status, orderedFindings, examined.size(), truncated, config);
+    }
+
+    private static void checkAvailability(
+            Map<LayoutValidationCheck, Boolean> availability,
+            LayoutValidationConfig config,
+            NavigationResult navigation) {
+        if (config.isEnabled(LayoutValidationCheck.KEYBOARD_UNREACHABLE)) {
+            availability.put(LayoutValidationCheck.KEYBOARD_UNREACHABLE, navigation != null);
+        }
+        if (config.isEnabled(LayoutValidationCheck.INVALID_CLIP_SCROLL)) {
+            // The semantic snapshot carries clipped state but not clip-chain geometry;
+            // without it the check cannot be evaluated.
+            availability.put(LayoutValidationCheck.INVALID_CLIP_SCROLL, false);
+        }
+    }
+
+    private static void checkOutsideViewport(
+            List<SemanticNode> nodes, Sink findings,
+            LayoutValidationConfig config) {
+        for (SemanticNode node : nodes) {
+            if (node.state().visible() && !node.state().viewportIntersecting()) {
+                findings.add(new LayoutFinding(
+                        LayoutValidationReason.OUTSIDE_VIEWPORT,
+                        LayoutValidationSeverity.ERROR,
+                        node.id(), null, node.stageBounds(),
+                        "visible actor does not intersect the viewport"));
+            }
+        }
+    }
+
+    private static void checkClippedText(
+            List<SemanticNode> nodes, Sink findings,
+            LayoutValidationConfig config) {
+        for (SemanticNode node : nodes) {
+            if (node.state().clipped() && textBearing(node)) {
+                findings.add(new LayoutFinding(
+                        LayoutValidationReason.CLIPPED_TEXT,
+                        LayoutValidationSeverity.WARNING,
+                        node.id(), null, node.stageBounds(),
+                        "text-bearing actor is clipped by a container"));
+            }
+        }
+    }
+
+    private static void checkZeroSize(
+            List<SemanticNode> nodes, Sink findings,
+            LayoutValidationConfig config) {
+        for (SemanticNode node : nodes) {
+            if (node.stageBounds().width() == 0.0 || node.stageBounds().height() == 0.0) {
+                findings.add(new LayoutFinding(
+                        LayoutValidationReason.ZERO_SIZE,
+                        LayoutValidationSeverity.ERROR,
+                        node.id(), null, node.stageBounds(),
+                        "actor has zero width or height"));
+            }
+        }
+    }
+
+    private static void checkBelowTargetSize(
+            List<SemanticNode> nodes, Sink findings,
+            LayoutValidationConfig config) {
+        for (SemanticNode node : nodes) {
+            Bounds bounds = node.stageBounds();
+            if (bounds.width() < config.minTargetWidth()
+                    || bounds.height() < config.minTargetHeight()) {
+                findings.add(new LayoutFinding(
+                        LayoutValidationReason.BELOW_TARGET_SIZE,
+                        LayoutValidationSeverity.WARNING,
+                        node.id(), null, bounds,
+                        "actor below target size " + config.minTargetWidth() + "x"
+                                + config.minTargetHeight()));
+            }
+        }
+    }
+
+    private static void checkDuplicateTestIds(
+            List<SemanticNode> nodes, Sink findings,
+            LayoutValidationConfig config) {
+        Map<String, List<SemanticNode>> byTestId = new HashMap<>();
+        for (SemanticNode node : nodes) {
+            if (node.testId() != null) {
+                byTestId.computeIfAbsent(node.testId(), ignored -> new ArrayList<>()).add(node);
+            }
+        }
+        for (Map.Entry<String, List<SemanticNode>> entry : byTestId.entrySet()) {
+            if (entry.getValue().size() > 1) {
+                for (SemanticNode node : entry.getValue()) {
+                    findings.add(new LayoutFinding(
+                            LayoutValidationReason.DUPLICATE_TEST_ID,
+                            LayoutValidationSeverity.ERROR,
+                            node.id(), null, node.stageBounds(),
+                            "test identifier " + entry.getKey() + " is not unique"));
+                }
+            }
+        }
+    }
+
+    private static void checkMissingAccessibleName(
+            List<SemanticNode> nodes, Sink findings,
+            LayoutValidationConfig config) {
+        for (SemanticNode node : nodes) {
+            boolean interactive = node.state().touchable()
+                    || node.state().focusable()
+                    || INTERACTIVE_ROLES.contains(node.role());
+            if (interactive && (node.accessibleName() == null
+                    || node.accessibleName().isBlank())) {
+                findings.add(new LayoutFinding(
+                        LayoutValidationReason.MISSING_ACCESSIBLE_NAME,
+                        LayoutValidationSeverity.WARNING,
+                        node.id(), null, node.stageBounds(),
+                        "interactive actor has no accessible name"));
+            }
+        }
+    }
+
+    private static void checkObscured(
+            List<SemanticNode> nodes, Sink findings,
+            LayoutValidationConfig config) {
+        for (int index = 0; index < nodes.size(); index++) {
+            SemanticNode lower = nodes.get(index);
+            if (!lower.state().visible()) {
+                continue;
+            }
+            for (int other = 0; other < nodes.size(); other++) {
+                if (other == index) {
+                    continue;
+                }
+                SemanticNode higher = nodes.get(other);
+                if (!higher.state().visible() || higher.zIndex() <= lower.zIndex()) {
+                    continue;
+                }
+                if (overlaps(lower.stageBounds(), higher.stageBounds())) {
+                    findings.add(new LayoutFinding(
+                            LayoutValidationReason.OBSCURED,
+                            LayoutValidationSeverity.WARNING,
+                            lower.id(), higher.id(), lower.stageBounds(),
+                            "actor is overlapped by a higher-z actor"));
+                    break;
+                }
+            }
+        }
+    }
+
+    private static void checkInteractiveOverlap(
+            List<SemanticNode> nodes, Sink findings,
+            LayoutValidationConfig config) {
+        for (int index = 0; index < nodes.size(); index++) {
+            SemanticNode first = nodes.get(index);
+            if (!interactive(first)) {
+                continue;
+            }
+            for (int other = index + 1; other < nodes.size(); other++) {
+                SemanticNode second = nodes.get(other);
+                if (!interactive(second)) {
+                    continue;
+                }
+                if (overlaps(first.stageBounds(), second.stageBounds())) {
+                    findings.add(new LayoutFinding(
+                            LayoutValidationReason.INTERACTIVE_OVERLAP,
+                            LayoutValidationSeverity.ERROR,
+                            first.id(), second.id(), first.stageBounds(),
+                            "interactive actors overlap"));
+                    findings.add(new LayoutFinding(
+                            LayoutValidationReason.INTERACTIVE_OVERLAP,
+                            LayoutValidationSeverity.ERROR,
+                            second.id(), first.id(), second.stageBounds(),
+                            "interactive actors overlap"));
+                }
+            }
+        }
+    }
+
+    private static void checkKeyboardUnreachable(
+            List<SemanticNode> nodes, Sink findings,
+            LayoutValidationConfig config, NavigationResult navigation) {
+        Set<String> reachable = new HashSet<>();
+        if (navigation.path().defaultFocusIdentity() != null) {
+            reachable.add(navigation.path().defaultFocusIdentity());
+        }
+        for (var step : navigation.path().steps()) {
+            reachable.add(step.afterIdentity());
+        }
+        for (SemanticNode node : nodes) {
+            if (node.state().focusable() && node.state().visible()
+                    && !reachable.contains(identity(node))) {
+                findings.add(new LayoutFinding(
+                        LayoutValidationReason.KEYBOARD_UNREACHABLE,
+                        LayoutValidationSeverity.WARNING,
+                        node.id(), null, node.stageBounds(),
+                        "focusable actor is unreachable by keyboard navigation"));
+            }
+        }
+    }
+
+    private static void checkConsistentAlignment(
+            SemanticSnapshot snapshot,
+            List<SemanticNode> nodes,
+            Sink findings,
+            LayoutValidationConfig config) {
+        Map<String, List<SemanticNode>> siblingGroups = siblingGroups(snapshot, nodes);
+        for (Map.Entry<String, List<SemanticNode>> group : siblingGroups.entrySet()) {
+            List<SemanticNode> siblings = group.getValue();
+            if (siblings.size() < 2) {
+                continue;
+            }
+            double reference = siblings.getFirst().stageBounds().x();
+            for (SemanticNode sibling : siblings) {
+                if (Math.abs(sibling.stageBounds().x() - reference) > config.maxAlignmentDelta()) {
+                    findings.add(new LayoutFinding(
+                            LayoutValidationReason.INCONSISTENT_ALIGNMENT,
+                            LayoutValidationSeverity.WARNING,
+                            sibling.id(), group.getKey(), sibling.stageBounds(),
+                            "left edge deviates from sibling alignment"));
+                }
+            }
+        }
+    }
+
+    private static void checkConsistentSpacing(
+            SemanticSnapshot snapshot,
+            List<SemanticNode> nodes,
+            Sink findings,
+            LayoutValidationConfig config) {
+        Map<String, List<SemanticNode>> siblingGroups = siblingGroups(snapshot, nodes);
+        for (Map.Entry<String, List<SemanticNode>> group : siblingGroups.entrySet()) {
+            List<SemanticNode> siblings = new ArrayList<>(group.getValue());
+            siblings.sort(Comparator.comparingDouble(node -> node.stageBounds().x()));
+            if (siblings.size() < 3) {
+                continue;
+            }
+            Double referenceGap = null;
+            for (int index = 1; index < siblings.size(); index++) {
+                SemanticNode previous = siblings.get(index - 1);
+                SemanticNode current = siblings.get(index);
+                double gap = current.stageBounds().x()
+                        - (previous.stageBounds().x() + previous.stageBounds().width());
+                if (referenceGap == null) {
+                    referenceGap = gap;
+                } else if (Math.abs(gap - referenceGap) > config.minSpacing()) {
+                    findings.add(new LayoutFinding(
+                            LayoutValidationReason.INCONSISTENT_SPACING,
+                            LayoutValidationSeverity.WARNING,
+                            current.id(), group.getKey(), current.stageBounds(),
+                            "gap deviates from sibling spacing"));
+                }
+            }
+        }
+    }
+
+    private static Map<String, List<SemanticNode>> siblingGroups(
+            SemanticSnapshot snapshot, List<SemanticNode> nodes) {
+        Map<String, List<SemanticNode>> groups = new HashMap<>();
+        for (SemanticNode node : nodes) {
+            String key = node.parentId() == null ? "root" : node.parentId();
+            groups.computeIfAbsent(key, ignored -> new ArrayList<>()).add(node);
+        }
+        return groups;
+    }
+
+    private static boolean textBearing(SemanticNode node) {
+        return node.text() != null && !node.text().isEmpty()
+                || TEXT_BEARING_ROLES.contains(node.role());
+    }
+
+    private static boolean interactive(SemanticNode node) {
+        return node.state().touchable() || INTERACTIVE_ROLES.contains(node.role());
+    }
+
+    private static boolean overlaps(Bounds first, Bounds second) {
+        return first.x() < second.x() + second.width()
+                && second.x() < first.x() + first.width()
+                && first.y() < second.y() + second.height()
+                && second.y() < first.y() + first.height();
+    }
+
+    private static String identity(SemanticNode node) {
+        if (node.testId() != null) {
+            return "test-id:" + node.testId();
+        }
+        String name = node.accessibleName();
+        if (name == null) {
+            name = node.actorName();
+        }
+        if (name == null) {
+            name = node.text();
+        }
+        return "role:" + node.role().name().toLowerCase(java.util.Locale.ROOT)
+                + "/name:" + (name == null ? "unnamed" : name);
+    }
+
+    private static Bounds boundsOf(SemanticNode node) {
+        return node == null ? new Bounds(0, 0, 0, 0) : node.stageBounds();
+    }
+
+    /** Bounded finding collector that records overflow without unbounded growth. */
+    private static final class Sink {
+        private final List<LayoutFinding> findings;
+        private final int maximum;
+        private boolean overflow;
+
+        Sink(int maximum) {
+            findings = new ArrayList<>(Math.min(maximum, 64));
+            this.maximum = maximum;
+        }
+
+        void add(LayoutFinding finding) {
+            if (findings.size() < maximum) {
+                findings.add(finding);
+            } else {
+                overflow = true;
+            }
+        }
+
+        List<LayoutFinding> list() {
+            return List.copyOf(findings);
+        }
+
+        boolean overflow() {
+            return overflow;
+        }
+    }
+
+    private static List<SemanticNode> documentOrder(SemanticSnapshot snapshot) {
+        var ordered = new ArrayList<SemanticNode>(snapshot.nodes().size());
+        var pending = new java.util.ArrayDeque<String>();
+        pending.push(snapshot.rootId());
+        while (!pending.isEmpty()) {
+            SemanticNode node = snapshot.nodes().get(pending.pop());
+            ordered.add(node);
+            List<String> children = node.childIds();
+            for (int index = children.size() - 1; index >= 0; index--) {
+                pending.push(children.get(index));
+            }
+        }
+        return ordered;
+    }
+}

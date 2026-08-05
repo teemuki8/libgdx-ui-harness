@@ -109,13 +109,14 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(value = Result.TraceStopped.class, name = "trace-stopped"),
         @JsonSubTypes.Type(value = Result.ScenarioList.class, name = "scenario-list"),
         @JsonSubTypes.Type(value = Result.ScenarioStart.class, name = "scenario-start"),
-        @JsonSubTypes.Type(value = Result.Navigation.class, name = "navigation")
+        @JsonSubTypes.Type(value = Result.Navigation.class, name = "navigation"),
+        @JsonSubTypes.Type(value = Result.LayoutValidation.class, name = "layout-validation")
     })
     sealed interface Result permits Result.Sessions, Result.Capabilities, Result.Snapshot,
             Result.Query, Result.Action, Result.Assertion, Result.Wait, Result.Screenshot,
             Result.TraceStarted, Result.InspectCompare, Result.TypographyDiagnostic,
             Result.LayoutDiagnostic, Result.TraceStopped, Result.ScenarioList,
-            Result.ScenarioStart, Result.Navigation {
+            Result.ScenarioStart, Result.Navigation, Result.LayoutValidation {
         /** Active session catalog. */
         record Sessions(List<SessionInfo> sessions) implements Result {
             /** Defensively copies the session catalog. */
@@ -161,6 +162,15 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                 implements Result {
             /** Requires a closed navigation result. */
             public Navigation {
+                result = Objects.requireNonNull(result, "result");
+            }
+        }
+
+        /** Deterministic bounded whole-stage or subtree layout validation result. */
+        record LayoutValidation(dev.gdx.uiharness.core.layout.LayoutValidationResult result)
+                implements Result {
+            /** Requires a closed layout validation result. */
+            public LayoutValidation {
                 result = Objects.requireNonNull(result, "result");
             }
         }

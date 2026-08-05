@@ -278,6 +278,14 @@ public final class HarnessToolCatalog {
                                 List.of("spec")),
                         output("navigation-result", navigationResultSchema(),
                                 List.of("result"))),
+                tool("ui_validate_layout",
+                        "Validate whole-stage or strict subtree layout invariants from one "
+                                + "completed-frame observation",
+                        layoutValidationInput(Map.of(
+                                "spec", layoutValidationSpecSchema()),
+                                List.of("spec")),
+                        output("layout-validation-result", layoutValidationResultSchema(),
+                                List.of("result"))),
                 tool("ui_capabilities", "Discover capabilities for one harness session",
                         sessionInput(Map.of(), List.of()),
                         output("capabilities-result", Map.ofEntries(
@@ -345,6 +353,52 @@ public final class HarnessToolCatalog {
                 "maxDurationMillis", integer(1, 600_000)),
                 List.of("schemaVersion", "id", "definitionVersion", "applicationId",
                         "supportedProfileIds", "maxSetupAttempts", "maxDurationMillis"));
+    }
+
+    private static Map<String, Object> layoutValidationSpecSchema() {
+        return object(Map.ofEntries(
+                Map.entry("targetMode", enumString("stage", "subtree")),
+                Map.entry("locator", nullableLocator()),
+                Map.entry("enabledChecks", array(enumString(
+                        "outside-viewport", "clipped-text", "interactive-overlap", "zero-size",
+                        "below-target-size", "duplicate-test-id", "missing-accessible-name",
+                        "keyboard-unreachable", "obscured", "invalid-clip-scroll",
+                        "inconsistent-alignment", "inconsistent-spacing"), 32)),
+                Map.entry("minTargetWidth", number(0, Double.MAX_VALUE)),
+                Map.entry("minTargetHeight", number(0, Double.MAX_VALUE)),
+                Map.entry("maxAlignmentDelta", number(0, Double.MAX_VALUE)),
+                Map.entry("minSpacing", number(0, Double.MAX_VALUE)),
+                Map.entry("failOn", enumString("info", "warning", "error")),
+                Map.entry("maxFindings", integer(1, 4_096)),
+                Map.entry("maxNodes", integer(1, 10_000)),
+                Map.entry("maxDurationMillis", integer(1, 3_600_000))),
+                List.of("targetMode", "enabledChecks", "minTargetWidth", "minTargetHeight",
+                        "maxAlignmentDelta", "minSpacing", "failOn", "maxFindings", "maxNodes",
+                        "maxDurationMillis"));
+    }
+
+    private static Map<String, Object> nullableLocator() {
+        return Map.of("oneOf", List.of(locatorRef(), Map.of("type", "null")));
+    }
+
+    private static Map<String, Object> locatorRef() {
+        return Map.of("$ref", "#/$defs/locator");
+    }
+
+    private static Map<String, Object> layoutValidationResultSchema() {
+        return Map.ofEntries(
+                Map.entry("result", object(Map.ofEntries(
+                        Map.entry("status", enumString("PASS", "FAIL", "INCOMPLETE")),
+                        Map.entry("findings", array(object(Map.ofEntries(
+                                Map.entry("reason", enumString(java.util.Arrays.stream(
+                                        dev.gdx.uiharness.core.layout.LayoutValidationReason
+                                                .values())
+                                        .map(Enum::name).toArray(String[]::new)))),
+                                List.of("reason")), 4_096)),
+                        Map.entry("examinedNodes", integer(0, 10_000)),
+                        Map.entry("truncated", Map.of("type", "boolean")),
+                        Map.entry("appliedConfig", object(Map.of(), List.of()))),
+                        List.of("status", "findings", "examinedNodes", "truncated"))));
     }
 
     private static Map<String, Object> navigationSpecSchema() {
@@ -680,6 +734,19 @@ public final class HarnessToolCatalog {
                 "sessionId", "SESSION", "spec", navigationSpec)));
         values.put("ui_navigation_validate", List.of(Map.of(
                 "sessionId", "SESSION", "spec", navigationSpec)));
+        Map<String, Object> layoutSpec = Map.ofEntries(
+                Map.entry("targetMode", "stage"),
+                Map.entry("enabledChecks", List.of("zero-size", "duplicate-test-id")),
+                Map.entry("minTargetWidth", 64.0),
+                Map.entry("minTargetHeight", 64.0),
+                Map.entry("maxAlignmentDelta", 1.0),
+                Map.entry("minSpacing", 1.0),
+                Map.entry("failOn", "error"),
+                Map.entry("maxFindings", 256),
+                Map.entry("maxNodes", 10000),
+                Map.entry("maxDurationMillis", 2000));
+        values.put("ui_validate_layout", List.of(Map.of(
+                "sessionId", "SESSION", "spec", layoutSpec)));
         values.put("ui_scenarios", List.of(session));
         values.put("ui_scenario_start", List.of(Map.of(
                 "sessionId", "SESSION",
@@ -734,6 +801,12 @@ public final class HarnessToolCatalog {
     private static Map<String, Object> sessionInput(
             Map<String, Object> additions, List<String> required) {
         return envelope(additions, required, true, ignored -> {});
+    }
+
+    private static Map<String, Object> layoutValidationInput(
+            Map<String, Object> additions, List<String> required) {
+        return envelope(additions, required, true,
+                schema -> schema.put("$defs", locatorDefinitions()));
     }
 
     private static Map<String, Object> locatorInput(

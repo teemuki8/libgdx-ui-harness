@@ -17,6 +17,11 @@ import dev.gdx.uiharness.core.assertion.AssertionSnapshotSource;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.locator.StrictResolution;
+import dev.gdx.uiharness.core.layout.LayoutFinding;
+import dev.gdx.uiharness.core.layout.LayoutValidationConfig;
+import dev.gdx.uiharness.core.layout.LayoutValidationReason;
+import dev.gdx.uiharness.core.layout.LayoutValidationResult;
+import dev.gdx.uiharness.core.layout.LayoutValidationSeverity;
 import dev.gdx.uiharness.core.model.Bounds;
 import dev.gdx.uiharness.core.model.Role;
 import dev.gdx.uiharness.core.model.SemanticNode;
@@ -137,7 +142,7 @@ final class HarnessMcpServerContractTest {
             assertTrue(((List<?>) structured(capabilities).get("capabilities")).contains("action"));
             assertEquals("operation-catalog/v1",
                     structured(capabilities).get("catalogSchemaVersion"));
-            assertEquals(17, ((List<?>) structured(capabilities).get("operations")).size());
+            assertEquals(18, ((List<?>) structured(capabilities).get("operations")).size());
             assertTrue(((List<?>) structured(capabilities).get("capabilities"))
                     .contains("ui_assert"));
             assertTrue(String.valueOf(structured(capabilities).get("operations"))
@@ -236,6 +241,85 @@ final class HarnessMcpServerContractTest {
             assertFalse(validated.isError());
             assertInstanceOf(Command.NavigationValidate.class, observed.get());
         }
+    }
+
+    @Test void layoutValidationToolRoutesThroughTheClosedSpecAndPublishesResults() {
+        AtomicReference<Command> observed = new AtomicReference<>();
+        HarnessProtocolService service = layoutService(observed);
+        Map<String, Object> spec = Map.ofEntries(
+                Map.entry("targetMode", "stage"),
+                Map.entry("enabledChecks", List.of("zero-size", "duplicate-test-id")),
+                Map.entry("minTargetWidth", 64.0),
+                Map.entry("minTargetHeight", 64.0),
+                Map.entry("maxAlignmentDelta", 1.0),
+                Map.entry("minSpacing", 1.0),
+                Map.entry("failOn", "error"),
+                Map.entry("maxFindings", 256),
+                Map.entry("maxNodes", 10000),
+                Map.entry("maxDurationMillis", 2000));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        service::execute, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_validate_layout",
+                    Map.of("sessionId", "game", "spec", spec)))
+                    .block(Duration.ofSeconds(10));
+
+            if (result.isError()) {
+                System.err.println("LAYOUT_ERR " + result.structuredContent());
+            }
+            assertFalse(result.isError());
+            Map<String, Object> content = structured(result);
+            assertEquals("layout-validation-result", content.get("kind"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> validation = (Map<String, Object>) content.get("result");
+            assertEquals("FAIL", validation.get("status"));
+
+            Command.LayoutValidate command = (Command.LayoutValidate) observed.get();
+            assertEquals("stage", command.spec().targetMode());
+            assertEquals(List.of("zero-size", "duplicate-test-id"),
+                    command.spec().enabledChecks());
+        }
+    }
+
+    private static HarnessProtocolService layoutService(AtomicReference<Command> observed) {
+        HarnessProtocolService.LayoutValidationCoordinator coordinator =
+                new HarnessProtocolService.LayoutValidationCoordinator() {
+                    @Override public CompletionStage<LayoutValidationResult> validate(
+                            Command.LayoutValidationSpec spec, Deadline deadline) {
+                        observed.set(new Command.LayoutValidate(spec));
+                        return CompletableFuture.completedFuture(new LayoutValidationResult(
+                                LayoutValidationResult.Status.FAIL,
+                                List.of(new LayoutFinding(
+                                        LayoutValidationReason.ZERO_SIZE,
+                                        LayoutValidationSeverity.ERROR,
+                                        "btn-zero", null, new Bounds(0, 0, 0, 0),
+                                        "actor has zero width or height")),
+                                1, false, LayoutValidationConfig.defaults()));
+                    }
+                };
+        HarnessProtocolService.Session session = new HarnessProtocolService.Session(
+                new RecordingHarness(), new StrictResolution(),
+                new WaitEngine(() -> SNAPSHOT, new StrictResolution(), CLOCK,
+                        listener -> () -> {}),
+                new ScreenCapture() {
+                    @Override public CompletionStage<CapturedImage> capture(
+                            CaptureRequest request, Deadline deadline) {
+                        return CompletableFuture.completedFuture(new CapturedImage(
+                                new byte[] {1, 2, 3}, "0".repeat(64), 1, 1, 1, 1,
+                                new CapturedImage.Scale(1, 1)));
+                    }
+
+                    @Override public void close() {}
+                },
+                new CapabilitySet(List.of("ui_validate_layout")),
+                HarnessProtocolService.TraceController.unsupported(),
+                java.util.Optional.empty(),
+                java.util.Optional.empty(),
+                java.util.Optional.empty(),
+                java.util.Optional.of(coordinator));
+        return new HarnessProtocolService(
+                Map.of("game", session), CLOCK, Runnable::run);
     }
 
     @Test void screenshotAndLargeResultsUseInjectedOpaqueArtifactReferences() {
@@ -824,7 +908,7 @@ final class HarnessMcpServerContractTest {
             send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}");
             JsonNode listed = read(reader);
-            assertEquals(17, listed.at("/result/tools").size());
+            assertEquals(18, listed.at("/result/tools").size());
 
             send(writer, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
                     + "\"params\":{\"name\":\"ui_action\",\"arguments\":{"
