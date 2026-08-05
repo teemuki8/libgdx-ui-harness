@@ -82,6 +82,31 @@ public record ErrorEvidence(
     }
 
     /**
+     * Backward-compatible constructor retaining the pre-suggestion signature.
+     *
+     * @param requestId request identifier, when a request context exists
+     * @param sessionId session identifier, when a session context exists
+     * @param locator stable locator description, when relevant
+     * @param elapsed elapsed monotonic time at failure
+     * @param lastSnapshotRevision most recent semantic revision, when available
+     * @param traceReference trace artifact reference, when available
+     * @param candidates bounded candidate summaries for location failures
+     * @param details bounded error-specific key/value evidence
+     */
+    public ErrorEvidence(
+            Optional<String> requestId,
+            Optional<String> sessionId,
+            Optional<String> locator,
+            Duration elapsed,
+            OptionalLong lastSnapshotRevision,
+            Optional<String> traceReference,
+            List<Map<String, String>> candidates,
+            Map<String, String> details) {
+        this(requestId, sessionId, locator, elapsed, lastSnapshotRevision, traceReference,
+                candidates, details, List.of());
+    }
+
+    /**
      * Returns evidence with no request-specific context.
      *
      * @return a shared immutable empty evidence value

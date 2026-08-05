@@ -87,6 +87,67 @@ public record DiagnosticEnvelope(
                 evidenceRefs, MAX_EVIDENCE_REFS, "evidenceRefs");
     }
 
+    /**
+     * Backward-compatible constructor retaining the pre-suggestion signature.
+     *
+     * @param schemaVersion immutable envelope version
+     * @param diagnosticId bounded diagnostic identifier
+     * @param requestId bounded request identifier
+     * @param sequence monotonically increasing diagnostic sequence
+     * @param operation bounded operation name
+     * @param code closed diagnostic code
+     * @param severity derived severity
+     * @param disposition derived disposition
+     * @param retryable whether the diagnostic is retryable
+     * @param message bounded human-readable message
+     * @param fieldPath first problem field path, when present
+     * @param observed first problem observed value, when present
+     * @param expected first problem expectation, when present
+     * @param admissible first problem admissible values, when present
+     * @param minimalExample first problem example, when present
+     * @param problems bounded field problems
+     * @param locator failed locator description, when present
+     * @param candidates bounded candidate summaries
+     * @param details bounded error-specific evidence
+     * @param elapsedMillis operation elapsed time, when present
+     * @param traceId bounded trace identifier, when present
+     * @param stateIdentity bounded state identity
+     * @param progress bounded progress state
+     * @param recovery bounded recovery state
+     * @param evidenceRefs bounded evidence references
+     */
+    public DiagnosticEnvelope(
+            String schemaVersion,
+            String diagnosticId,
+            String requestId,
+            long sequence,
+            String operation,
+            DiagnosticCode code,
+            Severity severity,
+            Disposition disposition,
+            boolean retryable,
+            String message,
+            String fieldPath,
+            String observed,
+            Expected expected,
+            List<String> admissible,
+            Map<String, Object> minimalExample,
+            List<FieldProblem> problems,
+            String locator,
+            List<Map<String, String>> candidates,
+            Map<String, String> details,
+            Long elapsedMillis,
+            String traceId,
+            StateIdentity stateIdentity,
+            Progress progress,
+            Recovery recovery,
+            List<String> evidenceRefs) {
+        this(schemaVersion, diagnosticId, requestId, sequence, operation, code, severity,
+                disposition, retryable, message, fieldPath, observed, expected, admissible,
+                minimalExample, problems, locator, candidates, details, List.of(), elapsedMillis,
+                traceId, stateIdentity, progress, recovery, evidenceRefs);
+    }
+
     /** Constructs an envelope and derives its immutable identity from all other fields. */
     public static DiagnosticEnvelope create(
             String requestId,
