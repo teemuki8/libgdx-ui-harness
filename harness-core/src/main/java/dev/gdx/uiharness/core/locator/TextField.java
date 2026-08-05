@@ -1,6 +1,6 @@
 package dev.gdx.uiharness.core.locator;
 
-enum TextField {
+public enum TextField {
     TEXT,
     LABEL
 }

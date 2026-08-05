@@ -407,7 +407,8 @@ final class ProtocolJsonContractTest {
         }
         ProtocolError error = new ProtocolError(ProtocolError.Code.LIMIT_EXCEEDED,
                 "too large", "r", "s", null, 0, null, null,
-                Collections.nCopies(1_000, Map.of("candidate", maximum)), details, null);
+                Collections.nCopies(1_000, Map.of("candidate", maximum)), details, null,
+                List.of());
         HarnessResponse response = new HarnessResponse.Failure(
                 ProtocolVersion.V1, "r", "s", error);
 

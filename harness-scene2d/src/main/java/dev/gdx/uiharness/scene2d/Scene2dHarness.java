@@ -515,7 +515,8 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
                             Map.of(
                                     "action", action.getClass().getSimpleName(),
                                     "timeout", deadline.timeout().toString(),
-                                    "unmet", unmet)));
+                                    "unmet", unmet),
+                            List.of()));
         }
 
         private void finish(ActionResult result) {

@@ -20,9 +20,11 @@ public record ProtocolError(
         String traceReference,
         List<Map<String, String>> candidates,
         Map<String, String> details,
-        String traceId) {
+        String traceId,
+        List<LocatorSuggestionSpec> suggestions) {
     private static final int MAX_CANDIDATES = 1_000;
     private static final int MAX_DETAILS = 256;
+    private static final int MAX_SUGGESTIONS = 1_000;
 
     /** Validates and recursively copies bounded error evidence. */
     public ProtocolError {
@@ -51,6 +53,11 @@ public record ProtocolError(
         if (traceId != null) {
             ProtocolJson.requireIdentifier(traceId, "traceId");
         }
+        Objects.requireNonNull(suggestions, "suggestions");
+        if (suggestions.size() > MAX_SUGGESTIONS) {
+            throw new IllegalArgumentException("too many locator suggestions");
+        }
+        suggestions = List.copyOf(suggestions);
     }
 
     private static Map<String, String> copyEvidenceMap(Map<String, String> source) {

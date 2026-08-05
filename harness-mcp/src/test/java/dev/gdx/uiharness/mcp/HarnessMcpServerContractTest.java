@@ -25,11 +25,14 @@ import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import dev.gdx.uiharness.core.wait.FrameSignal;
 import dev.gdx.uiharness.core.wait.WaitEngine;
+import dev.gdx.uiharness.core.locator.Stability;
 import dev.gdx.uiharness.protocol.CapabilitySet;
 import dev.gdx.uiharness.protocol.Command;
+import dev.gdx.uiharness.protocol.DistinguishingPropertySpec;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
 import dev.gdx.uiharness.protocol.HarnessRequest;
 import dev.gdx.uiharness.protocol.HarnessResponse;
+import dev.gdx.uiharness.protocol.LocatorSuggestionSpec;
 import dev.gdx.uiharness.protocol.ProtocolJson;
 import dev.gdx.uiharness.protocol.ProtocolError;
 import dev.gdx.uiharness.protocol.ProtocolVersion;
@@ -428,7 +431,8 @@ final class HarnessMcpServerContractTest {
                 Map.of(
                         "matchCount", "[redacted] 2",
                         "lastActionability", "visible"),
-                "trace-1");
+                "trace-1",
+                List.of());
         CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
                 new HarnessResponse.Failure(
                         ProtocolVersion.V1, "mcp-1", "game", error));
@@ -457,6 +461,61 @@ final class HarnessMcpServerContractTest {
             assertEquals(64, ((Number) diagnostic.get("elapsedMillis")).intValue());
             assertEquals("trace-1", diagnostic.get("traceId"));
             assertEquals(List.of("trace:strict"), diagnostic.get("evidenceRefs"));
+        }
+    }
+
+    @Test void protocolFailurePublishesSuggestionsUnderTheClosedLocatorSchema() {
+        ProtocolError error = new ProtocolError(
+                ProtocolError.Code.NOT_FOUND,
+                "No semantic node matches the locator",
+                "mcp-1",
+                "game",
+                "testId=missing",
+                64,
+                20L,
+                "trace:strict",
+                List.of(
+                        Map.of("id", "pause-resume", "role", "BUTTON")),
+                Map.of(
+                        "matchCount", "0",
+                        "redactionPolicyId", "none"),
+                "trace-1",
+                List.of(new LocatorSuggestionSpec(
+                        new Command.LocatorSpec.TestId("pause-resume"),
+                        Stability.STABLE,
+                        "unique test identifier",
+                        "pause-resume",
+                        List.of(new DistinguishingPropertySpec(
+                                "testId", "pause-resume")))));
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Failure(
+                        ProtocolVersion.V1, "mcp-1", "game", error));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> response, new RecordingArtifacts(), executor, 1024)) {
+            Map<String, Object> diagnostic = structured(handler.handle(call(
+                    "ui_action",
+                    Map.of(
+                            "sessionId", "game",
+                            "locator", Map.of(
+                                    "kind", "test-id",
+                                    "testId", "missing"),
+                            "action", Map.of(
+                                    "kind", "click", "pointer", 0,
+                                    "button", 0, "force", false))))
+                    .block(Duration.ofSeconds(10)));
+
+            assertEquals("LOCATOR_NOT_FOUND", diagnostic.get("code"));
+            assertEquals(1, ((List<?>) diagnostic.get("suggestions")).size());
+            @SuppressWarnings("unchecked")
+            Map<String, Object> suggestion =
+                    (Map<String, Object>) ((List<?>) diagnostic.get("suggestions")).get(0);
+            assertEquals("STABLE", suggestion.get("stability"));
+            assertEquals("unique test identifier", suggestion.get("rationale"));
+            assertEquals("pause-resume", suggestion.get("candidateIdentity"));
+            Map<?, ?> locator = (Map<?, ?>) suggestion.get("locator");
+            assertEquals("test-id", locator.get("kind"));
+            assertEquals("pause-resume", locator.get("testId"));
         }
     }
 

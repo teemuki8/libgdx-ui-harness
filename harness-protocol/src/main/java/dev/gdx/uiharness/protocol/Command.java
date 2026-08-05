@@ -5,11 +5,24 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import dev.gdx.uiharness.core.assertion.AssertionRequest;
 import dev.gdx.uiharness.core.assertion.UiAssertion;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
+import dev.gdx.uiharness.core.locator.ActorField;
+import dev.gdx.uiharness.core.locator.ActorLocator;
+import dev.gdx.uiharness.core.locator.FilteredLocator;
+import dev.gdx.uiharness.core.locator.HasFilter;
+import dev.gdx.uiharness.core.locator.HasTextFilter;
+import dev.gdx.uiharness.core.locator.IndexedLocator;
 import dev.gdx.uiharness.core.locator.Locator;
+import dev.gdx.uiharness.core.locator.LocatorFilter;
+import dev.gdx.uiharness.core.locator.NameFilter;
+import dev.gdx.uiharness.core.locator.RelationLocator;
+import dev.gdx.uiharness.core.locator.RoleLocator;
+import dev.gdx.uiharness.core.locator.StateFilter;
+import dev.gdx.uiharness.core.locator.TestIdLocator;
+import dev.gdx.uiharness.core.locator.TextField;
+import dev.gdx.uiharness.core.locator.TextLocator;
+import dev.gdx.uiharness.core.locator.TextMatch;
 import dev.gdx.uiharness.core.model.Bounds;
 import dev.gdx.uiharness.core.time.Deadline;
-import dev.gdx.uiharness.core.locator.LocatorFilter;
-import dev.gdx.uiharness.core.locator.TextMatch;
 import java.util.Collections;
 import java.util.Map;
 import java.util.List;
@@ -490,6 +503,36 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
             LocatorSpec.Actor, LocatorSpec.Relation, LocatorSpec.Filter, LocatorSpec.Index {
         Locator toCore();
 
+        /** Maps a core locator to its closed wire representation. */
+        static LocatorSpec fromCore(Locator locator) {
+            return switch (locator) {
+                case RoleLocator role ->
+                        new LocatorSpec.Role(role.role().name().toLowerCase(Locale.ROOT)
+                                .replace('_', '-'));
+                case TextLocator text -> new LocatorSpec.Text(
+                        text.field() == TextField.TEXT ? "text" : "label",
+                        TextMatchSpec.fromCore(text.text()));
+                case TestIdLocator testId -> new LocatorSpec.TestId(testId.testId());
+                case ActorLocator actor -> new LocatorSpec.Actor(
+                        actor.field() == ActorField.NAME ? "name" : "type",
+                        TextMatchSpec.fromCore(actor.text()));
+                case RelationLocator relation -> new LocatorSpec.Relation(
+                        LocatorSpec.fromCore(relation.anchor()),
+                        LocatorSpec.fromCore(relation.target()),
+                        switch (relation.relation()) {
+                            case CHILD -> "child";
+                            case DESCENDANT -> "descendant";
+                            case PARENT -> "parent";
+                            case SIBLING -> "sibling";
+                        });
+                case FilteredLocator filtered -> new LocatorSpec.Filter(
+                        LocatorSpec.fromCore(filtered.locator()),
+                        FilterSpec.fromCore(filtered.filter()));
+                case IndexedLocator indexed -> new LocatorSpec.Index(
+                        LocatorSpec.fromCore(indexed.locator()), indexed.index());
+            };
+        }
+
         /** Locator by semantic role. */
         record Role(String role) implements LocatorSpec {
             /** Validates a role wire name. */
@@ -617,6 +660,18 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
                 default -> throw new AssertionError(mode);
             };
         }
+
+        /** Maps a core text matcher to its closed wire representation. */
+        static TextMatchSpec fromCore(TextMatch match) {
+            return new TextMatchSpec(
+                    switch (match.mode()) {
+                        case EXACT -> "exact";
+                        case CASE_INSENSITIVE_EXACT -> "case-insensitive-exact";
+                        case SUBSTRING -> "substring";
+                        case REGEX -> "regex";
+                    },
+                    match.source());
+        }
     }
 
     /** Explicit locator-filter union. */
@@ -630,6 +685,19 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
     sealed interface FilterSpec permits FilterSpec.Name, FilterSpec.Has, FilterSpec.HasText,
             FilterSpec.State {
         LocatorFilter toCore();
+
+        /** Maps a core locator filter to its closed wire representation. */
+        static FilterSpec fromCore(LocatorFilter filter) {
+            return switch (filter) {
+                case NameFilter name -> new FilterSpec.Name(TextMatchSpec.fromCore(name.name()));
+                case HasFilter has -> new FilterSpec.Has(LocatorSpec.fromCore(has.descendant()));
+                case HasTextFilter hasText ->
+                        new FilterSpec.HasText(TextMatchSpec.fromCore(hasText.text()));
+                case StateFilter state -> new FilterSpec.State(
+                        state.state().name().toLowerCase(Locale.ROOT).replace('_', '-'),
+                        state.expected());
+            };
+        }
 
         /** Accessible-name predicate. */
         record Name(TextMatchSpec match) implements FilterSpec {

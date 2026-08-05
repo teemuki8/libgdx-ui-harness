@@ -167,7 +167,7 @@ public final class HarnessProtocolService {
                             "Unsupported protocol version " + request.version(),
                             request.requestId(), request.sessionId(), null, 0, null, null,
                             List.of(), Map.of("supportedVersion", ProtocolVersion.V1.toString()),
-                            null)));
+                            null, List.of())));
         }
 
         Deadline deadline = Deadline.after(clock, Duration.ofMillis(request.deadlineMillis()));
@@ -395,7 +395,7 @@ public final class HarnessProtocolService {
         if (failure instanceof CancellationException) {
             return new ProtocolError(ProtocolError.Code.TIMEOUT, "Request was cancelled",
                     request.requestId(), request.sessionId(), null, 0, null, null, List.of(),
-                    Map.of("reason", "cancelled"), null);
+                    Map.of("reason", "cancelled"), null, List.of());
         }
         if (failure instanceof HarnessException harnessFailure) {
             ErrorEvidence evidence = harnessFailure.evidence();
@@ -407,12 +407,15 @@ public final class HarnessProtocolService {
                             ? evidence.lastSnapshotRevision().getAsLong() : null,
                     redactNullable(evidence.traceReference().orElse(null)),
                     evidence.candidates().stream().map(HarnessProtocolService::redactMap).toList(),
-                    redactMap(evidence.details()), null);
+                    redactMap(evidence.details()), null,
+                    evidence.suggestions().stream()
+                            .map(HarnessProtocolService::toSuggestionSpec)
+                            .toList());
         }
         String traceId = internalTraceId(request, failure);
         return new ProtocolError(ProtocolError.Code.INTERNAL_ERROR, "Internal harness failure",
                 request.requestId(), request.sessionId(), null, 0, null, null, List.of(),
-                Map.of(), traceId);
+                Map.of(), traceId, List.of());
     }
 
     private static Throwable unwrap(Throwable thrown) {
@@ -429,6 +432,19 @@ public final class HarnessProtocolService {
         } catch (ArithmeticException ignored) {
             return Long.MAX_VALUE;
         }
+    }
+
+    private static LocatorSuggestionSpec toSuggestionSpec(
+            dev.gdx.uiharness.core.locator.LocatorSuggestion suggestion) {
+        return new LocatorSuggestionSpec(
+                Command.LocatorSpec.fromCore(suggestion.locator()),
+                suggestion.stability(),
+                suggestion.rationale(),
+                suggestion.candidateIdentity(),
+                suggestion.distinctions().stream()
+                        .map(distinction -> new DistinguishingPropertySpec(
+                                distinction.field(), distinction.value()))
+                        .toList());
     }
 
     private static Map<String, String> redactMap(Map<String, String> source) {

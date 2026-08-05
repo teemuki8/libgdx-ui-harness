@@ -1,6 +1,6 @@
 package dev.gdx.uiharness.core.locator;
 
-enum ActorField {
+public enum ActorField {
     NAME,
     TYPE
 }

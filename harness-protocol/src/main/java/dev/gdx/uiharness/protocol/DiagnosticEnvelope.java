@@ -31,6 +31,7 @@ public record DiagnosticEnvelope(
         String locator,
         List<Map<String, String>> candidates,
         Map<String, String> details,
+        List<LocatorSuggestionSpec> suggestions,
         Long elapsedMillis,
         String traceId,
         StateIdentity stateIdentity,
@@ -41,6 +42,7 @@ public record DiagnosticEnvelope(
     public static final String SCHEMA_VERSION = "diagnostic-envelope/v1";
     private static final int MAX_PROBLEMS = 256;
     private static final int MAX_EVIDENCE_REFS = 256;
+    private static final int MAX_SUGGESTIONS = 1_000;
 
     /** Validates and defensively copies every bounded public value. */
     public DiagnosticEnvelope {
@@ -71,6 +73,10 @@ public record DiagnosticEnvelope(
         optionalText(locator, "locator");
         candidates = copyCandidates(candidates);
         details = copyStringMap(details, "details");
+        suggestions = List.copyOf(Objects.requireNonNull(suggestions, "suggestions"));
+        if (suggestions.size() > MAX_SUGGESTIONS) {
+            throw new IllegalArgumentException("too many locator suggestions");
+        }
         if (elapsedMillis != null && elapsedMillis < 0) {
             throw new IllegalArgumentException("elapsedMillis must be non-negative");
         }
@@ -95,7 +101,7 @@ public record DiagnosticEnvelope(
             List<String> evidenceRefs) {
         return create(
                 requestId, sequence, operation, code, message, problems,
-                null, List.of(), Map.of(), null, null,
+                null, List.of(), Map.of(), List.of(), null, null,
                 stateIdentity, progress, recovery, evidenceRefs);
     }
 
@@ -110,6 +116,7 @@ public record DiagnosticEnvelope(
             String locator,
             List<Map<String, String>> candidates,
             Map<String, String> details,
+            List<LocatorSuggestionSpec> suggestions,
             Long elapsedMillis,
             String traceId,
             StateIdentity stateIdentity,
@@ -133,6 +140,7 @@ public record DiagnosticEnvelope(
             identity.put("locator", locator);
             identity.put("candidates", candidates);
             identity.put("details", details);
+            identity.put("suggestions", suggestions);
             identity.put("elapsedMillis", elapsedMillis);
             identity.put("traceId", traceId);
             identity.put("stateIdentity", stateIdentity);
@@ -165,6 +173,7 @@ public record DiagnosticEnvelope(
                 locator,
                 candidates,
                 details,
+                suggestions,
                 elapsedMillis,
                 traceId,
                 stateIdentity,

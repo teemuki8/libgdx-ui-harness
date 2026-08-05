@@ -8,7 +8,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.error.RedactionField;
-import dev.gdx.uiharness.core.error.RedactionPolicies;
 import dev.gdx.uiharness.core.error.RedactionPolicy;
 import dev.gdx.uiharness.core.limits.HarnessLimits;
 import dev.gdx.uiharness.core.model.Bounds;

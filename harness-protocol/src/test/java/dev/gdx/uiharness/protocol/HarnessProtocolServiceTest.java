@@ -216,7 +216,8 @@ final class HarnessProtocolServiceTest {
                         "failure", "at game.Actor.run(Actor.java:42) file:///tmp/crash.log",
                         "windows", "file://C:\\Users\\private\\crash.log",
                         "trace", "trace://safe-reference",
-                        "artifact", "artifact://safe-reference"));
+                        "artifact", "artifact://safe-reference"),
+                List.of());
         RecordingHarness harness = new RecordingHarness();
         harness.snapshotFailure = new HarnessException(ErrorCode.NOT_FOUND,
                 "not found under /home/private/project and file:///home/private/project",
