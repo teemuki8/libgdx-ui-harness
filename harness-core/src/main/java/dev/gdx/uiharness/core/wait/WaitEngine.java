@@ -215,7 +215,8 @@ public final class WaitEngine implements AutoCloseable {
                 revision,
                 Optional.empty(),
                 List.of(),
-                Map.of("timeout", deadline.timeout().toString()));
+                Map.of("timeout", deadline.timeout().toString()),
+                List.of());
         throw new HarnessException(
                 ErrorCode.TIMEOUT,
                 "Wait exceeded its monotonic deadline",

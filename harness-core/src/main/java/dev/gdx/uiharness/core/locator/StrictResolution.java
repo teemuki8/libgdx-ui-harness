@@ -3,6 +3,9 @@ package dev.gdx.uiharness.core.locator;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
+import dev.gdx.uiharness.core.error.RedactionField;
+import dev.gdx.uiharness.core.error.RedactionPolicies;
+import dev.gdx.uiharness.core.error.RedactionPolicy;
 import dev.gdx.uiharness.core.limits.HarnessLimits;
 import dev.gdx.uiharness.core.model.SemanticNode;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
@@ -24,17 +27,31 @@ import java.util.Set;
 public final class StrictResolution implements LocatorEngine {
     private static final int MAX_DIAGNOSTIC_CANDIDATES = 10;
     private static final int MAX_EVIDENCE_STRING_LENGTH = 16_384;
+    private static final LocatorSuggestionEngine SUGGESTION_ENGINE =
+            new LocatorSuggestionEngine();
 
     private final HarnessLimits limits;
+    private final RedactionPolicy redaction;
 
     /** Creates an evaluator using {@link HarnessLimits#defaults()}. */
     public StrictResolution() {
-        this(HarnessLimits.defaults());
+        this(HarnessLimits.defaults(), RedactionPolicies.none());
     }
 
     /** Creates an evaluator using the supplied hard limits. */
     public StrictResolution(HarnessLimits limits) {
+        this(limits, RedactionPolicies.none());
+    }
+
+    /**
+     * Creates an evaluator using the supplied hard limits and redaction policy.
+     *
+     * @param limits hard evaluation bounds
+     * @param redaction policy applied to evidence before it is ranked or published
+     */
+    public StrictResolution(HarnessLimits limits, RedactionPolicy redaction) {
         this.limits = Objects.requireNonNull(limits, "limits");
+        this.redaction = Objects.requireNonNull(redaction, "redaction");
     }
 
     @Override
@@ -149,9 +166,14 @@ public final class StrictResolution implements LocatorEngine {
         List<Map<String, String>> candidates = candidateNodes.stream()
                 .map(node -> candidateSummary(snapshot, node))
                 .toList();
+        var suggestionSet = SUGGESTION_ENGINE.suggest(snapshot, candidateNodes, this, redaction);
         var details = new LinkedHashMap<String, String>();
         details.put("suggestions", suggestions(candidates));
         details.put("matchCount", code == ErrorCode.NOT_FOUND ? "0" : "at least 2");
+        details.put("redactionPolicyId", redaction.id());
+        if (suggestionSet.truncated()) {
+            details.put("suggestionsTruncated", "true");
+        }
         findIndex(locator).ifPresent(index -> {
             details.put("fragileIndex", "true");
             details.put("index", Integer.toString(index));
@@ -164,7 +186,8 @@ public final class StrictResolution implements LocatorEngine {
                 OptionalLong.of(snapshot.revision()),
                 Optional.empty(),
                 candidates,
-                details);
+                details,
+                suggestionSet.suggestions());
         return new HarnessException(code, message, evidence);
     }
 
@@ -190,17 +213,22 @@ public final class StrictResolution implements LocatorEngine {
         var summary = new LinkedHashMap<String, String>();
         summary.put("id", bounded(node.id()));
         summary.put("role", node.role().name());
-        putPresent(summary, "accessibleName", node.accessibleName());
-        putPresent(summary, "text", node.text());
-        putPresent(summary, "label", node.label());
-        putPresent(summary, "testId", node.testId());
-        putPresent(summary, "actorName", node.actorName());
-        putPresent(summary, "actorType", node.actorType());
+        putPresent(summary, "accessibleName",
+                redact(RedactionField.ACCESSIBLE_NAME, node.accessibleName()));
+        putPresent(summary, "text", redact(RedactionField.TEXT, node.text()));
+        putPresent(summary, "label", redact(RedactionField.LABEL, node.label()));
+        putPresent(summary, "testId", redact(RedactionField.TEST_ID, node.testId()));
+        putPresent(summary, "actorName", redact(RedactionField.ACTOR_NAME, node.actorName()));
+        putPresent(summary, "actorType", redact(RedactionField.ACTOR_TYPE, node.actorType()));
         String ancestor = ancestorSummary(snapshot, node);
         if (!ancestor.isEmpty()) {
             summary.put("ancestor", ancestor);
         }
         return summary;
+    }
+
+    private String redact(RedactionField field, String value) {
+        return value == null ? null : redaction.redact(field, value);
     }
 
     private static void putPresent(Map<String, String> target, String key, String value) {
@@ -209,13 +237,16 @@ public final class StrictResolution implements LocatorEngine {
         }
     }
 
-    private static String ancestorSummary(SemanticSnapshot snapshot, SemanticNode node) {
+    private String ancestorSummary(SemanticSnapshot snapshot, SemanticNode node) {
         var ancestors = new ArrayDeque<String>();
         String parentId = node.parentId();
         while (parentId != null) {
             SemanticNode parent = snapshot.nodes().get(parentId);
             String discriminator = firstPresent(
-                    parent.accessibleName(), parent.testId(), parent.actorName(), parent.id());
+                    redact(RedactionField.ACCESSIBLE_NAME, parent.accessibleName()),
+                    redact(RedactionField.TEST_ID, parent.testId()),
+                    redact(RedactionField.ACTOR_NAME, parent.actorName()),
+                    parent.id());
             ancestors.addFirst(parent.role().name() + "[" + discriminator + "]");
             parentId = parent.parentId();
         }

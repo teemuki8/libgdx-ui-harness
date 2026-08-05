@@ -1,5 +1,6 @@
 package dev.gdx.uiharness.core.error;
 
+import dev.gdx.uiharness.core.locator.LocatorSuggestion;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -20,6 +21,7 @@ import java.util.OptionalLong;
  * @param traceReference trace artifact reference, when available
  * @param candidates bounded candidate summaries for location failures
  * @param details bounded error-specific key/value evidence
+ * @param suggestions bounded diagnostic locator suggestions for strict location failures
  */
 public record ErrorEvidence(
         Optional<String> requestId,
@@ -29,9 +31,11 @@ public record ErrorEvidence(
         OptionalLong lastSnapshotRevision,
         Optional<String> traceReference,
         List<Map<String, String>> candidates,
-        Map<String, String> details) {
+        Map<String, String> details,
+        List<LocatorSuggestion> suggestions) {
     private static final int MAX_STRING_LENGTH = 16_384;
     private static final int MAX_CANDIDATES = 1_000;
+    private static final int MAX_SUGGESTIONS = 1_000;
     private static final int MAX_ENTRIES_PER_MAP = 256;
     private static final ErrorEvidence EMPTY =
             new ErrorEvidence(
@@ -42,7 +46,8 @@ public record ErrorEvidence(
                     OptionalLong.empty(),
                     Optional.empty(),
                     List.of(),
-                    Map.of());
+                    Map.of(),
+                    List.of());
 
     /** Validates and defensively copies all evidence. */
     public ErrorEvidence {
@@ -69,6 +74,11 @@ public record ErrorEvidence(
         }
         candidates = List.copyOf(candidateCopies);
         details = copyMap(details, "details");
+        Objects.requireNonNull(suggestions, "suggestions");
+        if (suggestions.size() > MAX_SUGGESTIONS) {
+            throw new IllegalArgumentException("too many locator suggestions");
+        }
+        suggestions = List.copyOf(suggestions);
     }
 
     /**
@@ -95,7 +105,8 @@ public record ErrorEvidence(
                 OptionalLong.empty(),
                 Optional.empty(),
                 List.of(),
-                details);
+                details,
+                List.of());
     }
 
     private static Optional<String> validateOptional(Optional<String> value, String name) {
