@@ -49,13 +49,14 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.ScenarioList.class, name = "scenario-list"),
     @JsonSubTypes.Type(value = Command.ScenarioStart.class, name = "scenario-start"),
     @JsonSubTypes.Type(value = Command.NavigationInspect.class, name = "navigation-inspect"),
-    @JsonSubTypes.Type(value = Command.NavigationValidate.class, name = "navigation-validate")
+    @JsonSubTypes.Type(value = Command.NavigationValidate.class, name = "navigation-validate"),
+    @JsonSubTypes.Type(value = Command.LayoutValidate.class, name = "layout-validate")
 })
 public sealed interface Command permits Command.Sessions, Command.Capabilities, Command.Snapshot,
         Command.Query, Command.Action, Command.Assert, Command.Wait, Command.Screenshot,
         Command.TraceStart, Command.InspectCompare, Command.TypographyDiagnose,
         Command.LayoutDiagnose, Command.TraceStop, Command.ScenarioList, Command.ScenarioStart,
-        Command.NavigationInspect, Command.NavigationValidate {
+        Command.NavigationInspect, Command.NavigationValidate, Command.LayoutValidate {
     /** Lists active sessions. */
     record Sessions() implements Command {}
 
@@ -160,6 +161,100 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
     record NavigationValidate(NavigationSpec spec) implements Command {
         /** Validates the traversal binding. */
         public NavigationValidate {
+            Objects.requireNonNull(spec, "spec");
+        }
+    }
+
+    /** Bounded whole-stage or subtree layout validation request. */
+    record LayoutValidationSpec(
+            String targetMode,
+            LocatorSpec locator,
+            List<String> enabledChecks,
+            double minTargetWidth,
+            double minTargetHeight,
+            double maxAlignmentDelta,
+            double minSpacing,
+            String failOn,
+            int maxFindings,
+            int maxNodes,
+            long maxDurationMillis) {
+        private static final int MAX_FINDINGS = 4_096;
+        private static final int MAX_NODES = 10_000;
+        private static final int MAX_CHECKS = 32;
+
+        /** Validates closed mode, locator exclusivity, checks, thresholds, and bounds. */
+        public LayoutValidationSpec {
+            requireOneOf(targetMode, "targetMode", "stage", "subtree");
+            if ("stage".equals(targetMode)) {
+                if (locator != null) {
+                    throw new IllegalArgumentException(
+                            "stage validation must not declare a subtree locator");
+                }
+            } else if (locator == null) {
+                throw new IllegalArgumentException(
+                        "subtree validation requires a locator");
+            }
+            enabledChecks = List.copyOf(Objects.requireNonNull(
+                    enabledChecks, "enabledChecks"));
+            if (enabledChecks.size() > MAX_CHECKS) {
+                throw new IllegalArgumentException("too many enabled layout checks");
+            }
+            for (String check : enabledChecks) {
+                parseCheck(check);
+            }
+            requireFiniteNonNegative(minTargetWidth, "minTargetWidth");
+            requireFiniteNonNegative(minTargetHeight, "minTargetHeight");
+            requireFiniteNonNegative(maxAlignmentDelta, "maxAlignmentDelta");
+            requireFiniteNonNegative(minSpacing, "minSpacing");
+            parseSeverity(failOn);
+            if (maxFindings < 1 || maxFindings > MAX_FINDINGS) {
+                throw new IllegalArgumentException(
+                        "maxFindings must be between 1 and " + MAX_FINDINGS);
+            }
+            if (maxNodes < 1 || maxNodes > MAX_NODES) {
+                throw new IllegalArgumentException(
+                        "maxNodes must be between 1 and " + MAX_NODES);
+            }
+            if (maxDurationMillis < 1 || maxDurationMillis > 3_600_000) {
+                throw new IllegalArgumentException(
+                        "maxDurationMillis must be between 1 and 3600000");
+            }
+        }
+
+        private static dev.gdx.uiharness.core.layout.LayoutValidationCheck parseCheck(
+                String check) {
+            ProtocolJson.requireIdentifier(check, "check");
+            try {
+                return dev.gdx.uiharness.core.layout.LayoutValidationCheck.valueOf(
+                        check.toUpperCase(java.util.Locale.ROOT).replace('-', '_'));
+            } catch (IllegalArgumentException failure) {
+                throw new IllegalArgumentException("unknown layout check: " + check, failure);
+            }
+        }
+
+        private static dev.gdx.uiharness.core.layout.LayoutValidationSeverity parseSeverity(
+                String severity) {
+            ProtocolJson.requireIdentifier(severity, "failOn");
+            try {
+                return dev.gdx.uiharness.core.layout.LayoutValidationSeverity.valueOf(
+                        severity.toUpperCase(java.util.Locale.ROOT));
+            } catch (IllegalArgumentException failure) {
+                throw new IllegalArgumentException("unknown layout severity: " + severity,
+                        failure);
+            }
+        }
+
+        private static void requireFiniteNonNegative(double value, String name) {
+            if (!Double.isFinite(value) || value < 0.0) {
+                throw new IllegalArgumentException(name + " must be finite and non-negative");
+            }
+        }
+    }
+
+    /** Validates layout invariants over one atomic completed-frame observation. */
+    record LayoutValidate(LayoutValidationSpec spec) implements Command {
+        /** Validates the layout validation request. */
+        public LayoutValidate {
             Objects.requireNonNull(spec, "spec");
         }
     }
