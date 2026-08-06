@@ -50,3 +50,24 @@ Raw data: `build/reports/agentic-palisade/qualification-2026-08-06-deepseek-v4-f
 
 Historical evidence remains model-scoped: this record does not invalidate the retained Codex
 batch, and the Codex batch does not validate this model.
+
+## Addendum: low-confidence profile at 40 minutes (2026-08-06, later same day)
+
+After the benchmark-profiles feature shipped (ADR 0028), the low-confidence profile
+relaxed the image requirement (modelImagesRequired: false) and the reduced schedule
+was retried with the same model and reasoning: 3 pairs x 2 arms = 6 runs, 2 rounds,
+40-minute ceiling.
+
+Result (raw data: `build/reports/agentic-palisade/qualification-2026-08-06-deepseek-v4-flash-high-lowconfidence-40m/`):
+- All 6 runs `timed_out` at exactly 2400 s (SIGTERM).
+- Best run: 2 builds, 2 launches, 0 of 2 rounds. Five of six runs made 0 builds
+  (0 launches).
+- Token consumption 188k-302k input tokens per run.
+- Fail-fast cancelled the remaining runs after the first timeout.
+
+Conclusion: the image-capability relaxation removed a latent blocker but did not
+change the outcome; the binding constraint is model pace. DeepSeek v4 flash at
+high reasoning cannot complete even the reduced low-confidence schedule at a
+40-minute ceiling. Completing the corpus at the observed pace would require
+roughly 3 hours per run, which is not practical. The low-confidence gate awaits
+a faster vision-capable (or pace-adequate) model.
