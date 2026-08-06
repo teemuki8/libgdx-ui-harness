@@ -23,13 +23,13 @@ final class HarnessToolCatalogTest {
             "ui_layout_diagnose", "ui_trace_start", "ui_trace_stop", "ui_capabilities",
             "ui_scenarios", "ui_scenario_start", "ui_navigation_inspect",
             "ui_navigation_validate", "ui_validate_layout", "ui_matrix_run",
-            "ui_matrix_results", "ui_semantic_compare");
+            "ui_matrix_results", "ui_semantic_compare", "ui_trace_query");
 
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
 
     @Test void exposesOnlyTheApprovedBoundedTools() {
         assertEquals(APPROVED, catalog.toolNames());
-        assertEquals(21, catalog.tools().size());
+        assertEquals(22, catalog.tools().size());
         for (McpSchema.Tool tool : catalog.tools()) {
             assertEquals("object", tool.inputSchema().get("type"));
             assertEquals(false, tool.inputSchema().get("additionalProperties"));
@@ -251,7 +251,7 @@ final class HarnessToolCatalogTest {
                 "regions", List.of(Map.of(
                         "category", "raster-residual",
                         "x", 10,
-                        "y", 21,
+                        "y", 22,
                         "width", 2,
                         "height", 3,
                         "differingPixels", 4,

@@ -113,14 +113,16 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(value = Result.LayoutValidation.class, name = "layout-validation"),
         @JsonSubTypes.Type(value = Result.MatrixRunStarted.class, name = "matrix-run-started"),
         @JsonSubTypes.Type(value = Result.MatrixReportData.class, name = "matrix-report"),
-        @JsonSubTypes.Type(value = Result.SemanticCompare.class, name = "semantic-compare")
+        @JsonSubTypes.Type(value = Result.SemanticCompare.class, name = "semantic-compare"),
+        @JsonSubTypes.Type(value = Result.TraceQuery.class, name = "trace-query")
     })
     sealed interface Result permits Result.Sessions, Result.Capabilities, Result.Snapshot,
             Result.Query, Result.Action, Result.Assertion, Result.Wait, Result.Screenshot,
             Result.TraceStarted, Result.InspectCompare, Result.TypographyDiagnostic,
             Result.LayoutDiagnostic, Result.TraceStopped, Result.ScenarioList,
             Result.ScenarioStart, Result.Navigation, Result.LayoutValidation,
-            Result.MatrixRunStarted, Result.MatrixReportData, Result.SemanticCompare {
+            Result.MatrixRunStarted, Result.MatrixReportData, Result.SemanticCompare,
+            Result.TraceQuery {
         /** Active session catalog. */
         record Sessions(List<SessionInfo> sessions) implements Result {
             /** Defensively copies the session catalog. */
@@ -201,6 +203,15 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                 implements Result {
             /** Requires a closed comparison result. */
             public SemanticCompare {
+                result = Objects.requireNonNull(result, "result");
+            }
+        }
+
+        /** Compact state-transition projection for one retained trace. */
+        record TraceQuery(dev.gdx.uiharness.core.trace.TransitionQueryResult result)
+                implements Result {
+            /** Requires a closed projection result. */
+            public TraceQuery {
                 result = Objects.requireNonNull(result, "result");
             }
         }

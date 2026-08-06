@@ -53,14 +53,15 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.LayoutValidate.class, name = "layout-validate"),
     @JsonSubTypes.Type(value = Command.MatrixRun.class, name = "matrix-run"),
     @JsonSubTypes.Type(value = Command.MatrixResults.class, name = "matrix-results"),
-    @JsonSubTypes.Type(value = Command.SemanticCompare.class, name = "semantic-compare")
+    @JsonSubTypes.Type(value = Command.SemanticCompare.class, name = "semantic-compare"),
+    @JsonSubTypes.Type(value = Command.TraceQuery.class, name = "trace-query")
 })
 public sealed interface Command permits Command.Sessions, Command.Capabilities, Command.Snapshot,
         Command.Query, Command.Action, Command.Assert, Command.Wait, Command.Screenshot,
         Command.TraceStart, Command.InspectCompare, Command.TypographyDiagnose,
         Command.LayoutDiagnose, Command.TraceStop, Command.ScenarioList, Command.ScenarioStart,
         Command.NavigationInspect, Command.NavigationValidate, Command.LayoutValidate,
-        Command.MatrixRun, Command.MatrixResults, Command.SemanticCompare {
+        Command.MatrixRun, Command.MatrixResults, Command.SemanticCompare, Command.TraceQuery {
     /** Lists active sessions. */
     record Sessions() implements Command {}
 
@@ -445,6 +446,79 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
     record SemanticCompare(SemanticCompareSpec spec) implements Command {
         /** Validates the comparison request. */
         public SemanticCompare {
+            Objects.requireNonNull(spec, "spec");
+        }
+    }
+
+    /** Bounded state-transition query over one retained trace. */
+    record TraceQuerySpec(
+            String traceId,
+            LocatorSpec locator,
+            List<String> kinds,
+            List<String> propertyPaths,
+            Long frameFrom,
+            Long frameTo,
+            int maxTransitions,
+            int maxEvidenceBytes,
+            long maxDurationMillis) {
+        private static final int MAX_KINDS = 16;
+        private static final int MAX_PATHS = 16;
+        private static final int MAX_TRANSITIONS = 4_096;
+
+        /** Validates the closed query. */
+        public TraceQuerySpec {
+            ProtocolJson.requireText(traceId, "traceId");
+            kinds = List.copyOf(Objects.requireNonNull(kinds, "kinds"));
+            if (kinds.size() > MAX_KINDS) {
+                throw new IllegalArgumentException("too many transition kinds");
+            }
+            for (String kind : kinds) {
+                parseKind(kind);
+            }
+            propertyPaths = List.copyOf(Objects.requireNonNull(
+                    propertyPaths, "propertyPaths"));
+            if (propertyPaths.size() > MAX_PATHS) {
+                throw new IllegalArgumentException("too many property paths");
+            }
+            if (frameFrom != null && frameFrom < 0) {
+                throw new IllegalArgumentException("frameFrom must be non-negative");
+            }
+            if (frameTo != null && frameTo < 0) {
+                throw new IllegalArgumentException("frameTo must be non-negative");
+            }
+            if (frameFrom != null && frameTo != null && frameFrom > frameTo) {
+                throw new IllegalArgumentException("frameFrom must not exceed frameTo");
+            }
+            if (maxTransitions < 1 || maxTransitions > MAX_TRANSITIONS) {
+                throw new IllegalArgumentException(
+                        "maxTransitions must be between 1 and " + MAX_TRANSITIONS);
+            }
+            if (maxEvidenceBytes < 1 || maxEvidenceBytes > 1_048_576) {
+                throw new IllegalArgumentException(
+                        "maxEvidenceBytes must be between 1 and 1048576");
+            }
+            if (maxDurationMillis < 1 || maxDurationMillis > 3_600_000) {
+                throw new IllegalArgumentException(
+                        "maxDurationMillis must be between 1 and 3600000");
+            }
+        }
+
+        private static dev.gdx.uiharness.core.trace.TransitionKind parseKind(String kind) {
+            ProtocolJson.requireIdentifier(kind, "kind");
+            try {
+                return dev.gdx.uiharness.core.trace.TransitionKind.valueOf(
+                        kind.toUpperCase(java.util.Locale.ROOT).replace('-', '_'));
+            } catch (IllegalArgumentException failure) {
+                throw new IllegalArgumentException("unknown transition kind: " + kind,
+                        failure);
+            }
+        }
+    }
+
+    /** Queries compact state transitions from one retained trace. */
+    record TraceQuery(TraceQuerySpec spec) implements Command {
+        /** Validates the query. */
+        public TraceQuery {
             Objects.requireNonNull(spec, "spec");
         }
     }

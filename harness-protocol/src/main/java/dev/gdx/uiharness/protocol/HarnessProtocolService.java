@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -270,6 +271,10 @@ public final class HarnessProtocolService {
             requireCapability(session, capability(command));
             return semanticCompare(session, compare.spec(), deadline);
         }
+        if (command instanceof Command.TraceQuery traceQuery) {
+            requireCapability(session, capability(command));
+            return traceQuery(session, traceQuery.spec(), deadline);
+        }
 
 
         requireCapability(session, capability(command));
@@ -385,6 +390,9 @@ public final class HarnessProtocolService {
         if (command instanceof Command.SemanticCompare) {
             return "ui_semantic_compare";
         }
+        if (command instanceof Command.TraceQuery) {
+            return "ui_trace_query";
+        }
         if (command instanceof Command.Query) {
             return "query";
         }
@@ -424,6 +432,32 @@ public final class HarnessProtocolService {
                     "Session does not support capability: " + capability,
                     ErrorEvidence.ofDetails(Map.of("capability", capability)));
         }
+    }
+
+    private static RoutedOperation<?> traceQuery(
+            Session session, Command.TraceQuerySpec spec, Deadline deadline) {
+        return RoutedOperation.map(
+                session.traces().query(toCoreQuery(spec), deadline),
+                HarnessResponse.Result.TraceQuery::new);
+    }
+
+    private static dev.gdx.uiharness.core.trace.TransitionQuery toCoreQuery(
+            Command.TraceQuerySpec spec) {
+        Set<dev.gdx.uiharness.core.trace.TransitionKind> kinds =
+                new java.util.HashSet<>();
+        for (String kind : spec.kinds()) {
+            kinds.add(dev.gdx.uiharness.core.trace.TransitionKind.valueOf(
+                    kind.toUpperCase(java.util.Locale.ROOT).replace('-', '_')));
+        }
+        return new dev.gdx.uiharness.core.trace.TransitionQuery(
+                spec.traceId(),
+                spec.locator() == null ? null : spec.locator().toCore(),
+                Set.copyOf(kinds),
+                Set.copyOf(spec.propertyPaths()),
+                spec.frameFrom(),
+                spec.frameTo(),
+                spec.maxTransitions(),
+                spec.maxEvidenceBytes());
     }
 
     private static RoutedOperation<?> semanticCompare(
@@ -844,6 +878,17 @@ public final class HarnessProtocolService {
 
         /** Stops the active trace. */
         CompletionStage<HarnessResponse.Result.TraceStopped> stop(Deadline deadline);
+
+        /**
+         * Queries compact state transitions from one retained trace. The default reports the
+         * typed unsupported-capability failure.
+         */
+        default CompletionStage<dev.gdx.uiharness.core.trace.TransitionQueryResult> query(
+                dev.gdx.uiharness.core.trace.TransitionQuery query, Deadline deadline) {
+            return CompletableFuture.failedFuture(new HarnessException(
+                    ErrorCode.UNSUPPORTED_CAPABILITY,
+                    "Transition query is unavailable", ErrorEvidence.empty()));
+        }
 
         /** Returns an implementation that reports the typed unsupported-capability failure. */
         static TraceController unsupported() {
