@@ -24,7 +24,7 @@ final class ScenarioLifecycleFixtureTest {
             JsonNode catalog = client.scenarios(SESSION_ID);
             assertTrue(catalog.path("available").asBoolean());
             assertEquals(
-                    List.of("incompatible-reference", "never-ready", "reference-reset"),
+                    List.of("incompatible-reference", "navigation", "never-ready", "reference-reset"),
                     ids(catalog.path("scenarios")));
             assertEquals(
                     List.of(PROFILE_ID),
