@@ -40,8 +40,8 @@ final class ReferenceApplicationSmokeTest {
                                     "action", "compare", "layout", "query", "scenario-list",
                                     "scenario-start", "screenshot", "snapshot", "trace",
                                     "typography", "ui_assert", "ui_navigation_inspect",
-                                    "ui_navigation_validate", "ui_trace_query",
-                                    "ui_validate_layout", "wait"),
+                                    "ui_navigation_validate", "ui_runtime_compare",
+                                    "ui_trace_query", "ui_validate_layout", "wait"),
                             agent.capabilities(SESSION_ID));
                     HarnessMcpClient.Layout layout = agent.layout(SESSION_ID);
                     assertEquals("conformant", layout.status(), layout.reports());

@@ -486,6 +486,16 @@ final class HarnessMcpClient implements Closeable {
         return content;
     }
 
+    JsonNode runtimeCompare(String sessionId, long deadlineMillis) throws Exception {
+        JsonNode content = call("ui_runtime_compare", Map.of(
+                "sessionId", sessionId,
+                "locator", testIdLocator("username"),
+                "maxDurationMillis", 5000,
+                "deadlineMillis", deadlineMillis));
+        requireKind(content, "runtime-compare-result");
+        return content;
+    }
+
     JsonNode validateLayout(String sessionId, long deadlineMillis) throws Exception {
         Map<String, Object> spec = Map.of(
                 "targetMode", "stage",

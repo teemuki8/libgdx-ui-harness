@@ -1,0 +1,33 @@
+package dev.gdx.uiharness.fixtures;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+/**
+ * Real LWJGL3 runtime-binding fixture: the reference process serves the production MCP server;
+ * the username field is bound to {@code reference-ui-user/value}, and {@code ui_runtime_compare}
+ * correlates its displayed text against the app's actual runtime value after one fill.
+ */
+final class RuntimeProductionFixtureTest {
+    private static final String SESSION_ID = "reference-ui";
+
+    @Test
+    @Timeout(120)
+    void boundNodeComparesDisplayedValueAgainstRuntimeThroughProductionMcp() throws Exception {
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+            try (HarnessMcpClient client = HarnessMcpClient.connect(app)) {
+                client.fillByLabel(SESSION_ID, "Username", "Ada");
+
+                JsonNode comparison = client.runtimeCompare(SESSION_ID, 5_000);
+                assertEquals("EQUAL", comparison.path("status").asText());
+                assertEquals("reference-ui-user", comparison.path("entityId").asText());
+                assertEquals("value", comparison.path("propertyId").asText());
+                assertEquals("Ada", comparison.path("displayedValue").asText());
+                assertEquals("Ada", comparison.path("runtimeValue").asText());
+            }
+        }
+    }
+}

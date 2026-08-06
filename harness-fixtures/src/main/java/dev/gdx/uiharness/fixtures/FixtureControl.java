@@ -34,6 +34,9 @@ import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.locator.StrictResolution;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
+import dev.gdx.uiharness.core.runtime.RuntimeComparator;
+import dev.gdx.uiharness.core.runtime.RuntimeObservation;
+import dev.gdx.uiharness.core.runtime.RuntimeObservationSource;
 import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
 import dev.gdx.uiharness.core.scenario.ScenarioLifecycle;
 import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
@@ -130,13 +133,14 @@ public final class FixtureControl implements AutoCloseable {
     private static final List<String> CAPABILITIES = List.of(
             "action", "compare", "query", "scenario-list", "scenario-start",
             "screenshot", "snapshot", "layout", "trace", "typography", "ui_assert", "wait",
-            "ui_navigation_inspect", "ui_navigation_validate", "ui_trace_query",
-            "ui_validate_layout");
+            "ui_navigation_inspect", "ui_navigation_validate", "ui_runtime_compare",
+            "ui_trace_query", "ui_validate_layout");
 
     private final Path processRoot;
     private final Path artifactRoot;
     private final Path traceRoot;
     private final Path proofRoot;
+    private final Stage stage;
     private final ControlledStageClock clock;
     private final RenderThreadScheduler scheduler;
     private final Scene2dSession sceneSession;
@@ -167,6 +171,7 @@ public final class FixtureControl implements AutoCloseable {
     /** Attaches one named production protocol session to the supplied real Stage. */
     public FixtureControl(Stage stage, Path newProcessRoot) {
         Objects.requireNonNull(stage, "stage");
+        this.stage = stage;
         processRoot = Objects.requireNonNull(newProcessRoot, "processRoot")
                 .toAbsolutePath().normalize();
         artifactRoot = processRoot.resolve("artifacts");
@@ -294,13 +299,29 @@ public final class FixtureControl implements AutoCloseable {
                                 spec.locator() == null ? null : spec.locator().toCore(),
                                 toCoreLayoutConfig(spec),
                                 null));
+        RuntimeObservationSource runtimeSource = binding -> {
+            var field = stage.getRoot().findActor("username");
+            if (!(field instanceof com.badlogic.gdx.scenes.scene2d.ui.TextField usernameField)) {
+                return java.util.Optional.empty();
+            }
+            return java.util.Optional.of(new RuntimeObservation(
+                    binding.entityId(), binding.propertyId(),
+                    clock.frame(), clock.revision(), usernameField.getText(), null));
+        };
+        RuntimeComparator runtimeComparator = new RuntimeComparator(runtimeSource);
+        HarnessProtocolService.RuntimeCompareCoordinator runtimeCoordinator =
+                (locator, deadline) -> scheduler.submit(
+                        () -> runtimeComparator.compare(
+                                sceneSession.snapshot(clock.revision(), clock.frame()),
+                                locator.toCore(), new StrictResolution()),
+                        deadline);
         HarnessProtocolService.Session session = new HarnessProtocolService.Session(
                 tracingHarness, new StrictResolution(), waits, tracingCapture,
                 capabilities, traces, Optional.of(scenarios),
                 Optional.of(this::startScenario),
                 Optional.of(navigationCoordinator),
                 Optional.of(layoutCoordinator),
-                Optional.empty(), Optional.empty(), Optional.empty());
+                Optional.empty(), Optional.empty(), Optional.of(runtimeCoordinator));
         VisualReference reference = reference();
         VisualPolicy policy = new VisualPolicy(
                 "reference-smoke", 1, 1280L * 720, 0.125, true, true);
