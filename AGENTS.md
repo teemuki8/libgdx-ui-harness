@@ -7,7 +7,7 @@ Build a standalone Java library that gives coding agents Playwright-grade semant
 ## Scope and invariants
 
 - V1 targets LWJGL3 desktop and Scene2D/Scene2D.UI.
-- The architecture is layered: semantic core, Scene2D adapter, LWJGL3 capture, transport-neutral protocol, MCP adapter.
+- The architecture is layered: semantic core, Scene2D adapter, LWJGL3 capture, transport-neutral protocol, MCP adapter, and an optional agent-runtime value-source adapter.
 - No `Actor`, `Stage`, libGDX collection, or backend type may cross the adapter boundary into protocol models.
 - All Stage/Actor reads and mutations run on the libGDX render thread.
 - Locators are lazy and re-resolve before each action or assertion.

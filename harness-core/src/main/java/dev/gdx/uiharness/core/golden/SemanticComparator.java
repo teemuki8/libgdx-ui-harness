@@ -32,7 +32,7 @@ public final class SemanticComparator {
         Objects.requireNonNull(policy, "policy");
         List<SemanticNode> snapshotNodes = documentOrder(current);
         List<KeyedBaseline> baselineNodes = flatten(baseline.root());
-        Map<String, List<SemanticNode>> byKey = groupByKey(snapshotNodes, current);
+        Map<String, List<SemanticNode>> byKey = groupByKey(snapshotNodes);
         var differences = new ArrayList<SemanticDifference>();
         var matchedBaselineKeys = new java.util.HashSet<String>();
         for (KeyedBaseline expected : baselineNodes) {
@@ -202,12 +202,12 @@ public final class SemanticComparator {
     }
 
     private static Map<String, List<SemanticNode>> groupByKey(
-            List<SemanticNode> nodes, SemanticSnapshot snapshot) {
+            List<SemanticNode> nodes) {
         Map<String, List<SemanticNode>> byKey = new HashMap<>();
         Map<String, String> parentKeys = new HashMap<>();
         for (SemanticNode node : nodes) {
             String parentKey = node.parentId() == null
-                    ? "" : key(node.parentId(), snapshot, parentKeys);
+                    ? "" : key(node.parentId(), parentKeys);
             String nodeKey = key(node, parentKey);
             parentKeys.put(node.id(), nodeKey);
             byKey.computeIfAbsent(nodeKey, ignored -> new ArrayList<>()).add(node);
@@ -215,8 +215,7 @@ public final class SemanticComparator {
         return byKey;
     }
 
-    private static String key(String nodeId, SemanticSnapshot snapshot,
-            Map<String, String> parentKeys) {
+    private static String key(String nodeId, Map<String, String> parentKeys) {
         return parentKeys.getOrDefault(nodeId, "");
     }
 

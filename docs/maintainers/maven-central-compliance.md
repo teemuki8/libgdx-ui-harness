@@ -1,7 +1,7 @@
 # Maven Central compliance
 
 This project publishes open-source Java library modules under Apache License
-2.0. It has no proprietary service requirement and publishes only the five
+2.0. It has no proprietary service requirement and publishes only the six
 consumer modules listed in the release guide.
 
 ## Mechanical release requirements
@@ -15,7 +15,7 @@ the repository:
 - each POM has coordinates, name, description, project URL, Apache 2.0 license,
   an identified developer, SCM connections, and transitive dependencies;
 - every deployed primary artifact, POM, source JAR, and Javadoc JAR is signed;
-- the bundle follows Maven repository layout and contains only the five public
+- the bundle follows Maven repository layout and contains only the six public
   modules;
 - publication uses a Maven Central Portal user token, waits for `VALIDATED`,
   explicitly publishes, and waits for `PUBLISHED`.

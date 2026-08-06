@@ -47,13 +47,14 @@ Run the complete release candidate gate:
 python3 scripts/validate-workflows.py
 ```
 
-Confirm that Maven local contains only the five publishable modules:
+Confirm that Maven local contains only the six publishable modules:
 
 - `harness-core`
 - `harness-scene2d`
 - `harness-lwjgl3`
 - `harness-protocol`
 - `harness-mcp`
+- `harness-agent-runtime`
 
 `harness-fixtures` and `benchmarks` must not be published.
 
@@ -160,7 +161,7 @@ Pushing the tag starts `.github/workflows/release.yml`. The workflow:
 4. regenerates the sealed repeatability decision and requires byte-identical
    agreement with its precommitted decision;
 5. runs the clean checks and Javadocs under JDK 25;
-6. builds and signs the deterministic five-module Central bundle;
+6. builds and signs the deterministic six-module Central bundle;
 7. rejects missing artifacts, signatures, or unpublished-module leakage;
 8. uploads a user-managed Maven Central deployment;
 9. waits for Central state `VALIDATED`;
@@ -175,7 +176,7 @@ After the workflow succeeds:
 
 1. confirm the GitHub Actions release job is green;
 2. confirm the deployment is `PUBLISHED` in the Maven Central Portal;
-3. verify all five module coordinates and their POM, main JAR, sources JAR, Javadoc JAR, and signatures are available;
+3. verify all six module coordinates and their POM, main JAR, sources JAR, Javadoc JAR, and signatures are available;
 4. create the corresponding GitHub release from the immutable signed tag, using the matching file in `docs/releases/` as its notes;
 5. update installation examples only after Maven Central resolves the released coordinates.
 

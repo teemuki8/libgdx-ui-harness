@@ -18,7 +18,7 @@ The design brings Playwright-style principles to libGDX: lazy strict locators, a
 - **Faithful input:** click, hover, focus, fill, press, scroll, drag, and pointer actions travel through libGDX input dispatch.
 - **Deterministic synchronization:** monotonic deadlines and frame/state signals replace sleeps and arbitrary delays.
 - **Useful diagnostics:** errors have stable codes; screenshots and replayable traces retain causal evidence.
-- **Agent-ready access:** a bounded stdio MCP server exposes exactly twelve typed tools with closed schemas.
+- **Agent-ready access:** a bounded stdio MCP server exposes exactly twenty-three typed tools with closed schemas.
 
 ## Quick start
 
@@ -75,6 +75,7 @@ The server uses stdio and exposes a deliberately small tool surface:
 | `ui_snapshot` | Capture a compact immutable semantic snapshot |
 | `ui_query` | Evaluate a lazy locator |
 | `ui_action` | Perform one allowlisted input action |
+| `ui_assert` | Assert a semantic condition on a resolved locator with typed outcome |
 | `ui_wait` | Wait for a semantic condition |
 | `ui_screenshot` | Capture bounded completed-frame PNG evidence |
 | `ui_inspect_compare` | Inspect, capture, and compare one provenance-bound full frame |
@@ -82,6 +83,16 @@ The server uses stdio and exposes a deliberately small tool surface:
 | `ui_layout_diagnose` | Attribute layout, clipping, scroll, viewport, and coordinate-space differences to selected controls |
 | `ui_trace_start` | Begin bounded causal trace collection |
 | `ui_trace_stop` | Finalize a replayable trace archive |
+| `ui_scenarios` | List registered bounded scenarios |
+| `ui_scenario_start` | Start one bounded scenario |
+| `ui_navigation_inspect` | Run a bounded navigation path through real input dispatch |
+| `ui_navigation_validate` | Validate a navigation path without executing it |
+| `ui_validate_layout` | Validate whole-stage or subtree layout invariants from one completed frame |
+| `ui_matrix_run` | Run one scenario/assertion set across a bounded display matrix |
+| `ui_matrix_results` | Retrieve one retained matrix run report |
+| `ui_runtime_compare` | Compare a bound node's displayed value against its runtime observation |
+| `ui_trace_query` | Query compact state transitions from a retained trace |
+| `ui_semantic_compare` | Compare a registered semantic baseline against the current snapshot |
 | `ui_capabilities` | Discover operations supported by a session |
 
 All remote requests, responses, recursive locators, strings, regular expressions, screenshots, traces, and artifacts are bounded. The default server accepts no scripts, reflection targets, arbitrary commands, caller-selected file paths, or unauthenticated network listener.
@@ -97,6 +108,7 @@ See [Agent tools and safe operation](docs/guides/agent-tools.md) for schemas, li
 | `harness-lwjgl3` | Completed-frame synchronization and framebuffer capture | Yes |
 | `harness-protocol` | Versioned bounded JSON commands, results, and errors | Yes |
 | `harness-mcp` | Typed MCP SDK adapter and stdio server | Yes |
+| `harness-agent-runtime` | Optional ADR 0025 runtime-value source adapter over the published AgentRuntime | Yes |
 | `harness-fixtures` | Controlled real Scene2D reference application | No |
 | `benchmarks` | Fixed libGDX-versus-Playwright parity corpus and runners | No |
 
@@ -104,6 +116,7 @@ Dependency direction is intentionally layered:
 
 ```text
 harness-mcp -> harness-protocol -> harness-core <- harness-scene2d <- harness-lwjgl3
+harness-agent-runtime -> harness-core
 ```
 
 ## Supported scope

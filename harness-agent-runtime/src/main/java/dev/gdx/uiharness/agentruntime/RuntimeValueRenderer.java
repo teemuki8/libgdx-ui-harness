@@ -1,6 +1,8 @@
 package dev.gdx.uiharness.agentruntime;
 
 import io.github.teemuki8.libgdx.agent.runtime.core.RuntimeValue;
+import java.util.List;
+import java.util.function.IntConsumer;
 import java.math.BigDecimal;
 import java.util.List;
 
@@ -68,55 +70,38 @@ public final class RuntimeValueRenderer {
         }
 
         private void renderSequence(List<RuntimeValue> values, char open, char close, int depth) {
-            append(String.valueOf(open));
-            if (values != null) {
-                int shown = 0;
-                for (RuntimeValue item : values) {
-                    if (truncated) {
-                        break;
-                    }
-                    if (shown >= MAX_ITEMS) {
-                        truncated = true;
-                        append(TRUNCATION);
-                        break;
-                    }
-                    if (shown > 0) {
-                        append(", ");
-                    }
-                    renderValue(item, depth + 1);
-                    shown++;
-                }
-            }
-            if (!truncated) {
-                append(String.valueOf(close));
-            }
+            renderContainer(open, close, values == null ? 0 : values.size(),
+                    index -> renderValue(values.get(index), depth + 1));
         }
 
         private void renderObject(RuntimeValue.ObjectValue object, int depth) {
-            append("{");
             List<RuntimeValue.Field> fields = object.fields();
-            if (fields != null) {
-                int shown = 0;
-                for (RuntimeValue.Field field : fields) {
-                    if (truncated) {
-                        break;
-                    }
-                    if (shown >= MAX_ITEMS) {
-                        truncated = true;
-                        append(TRUNCATION);
-                        break;
-                    }
-                    if (shown > 0) {
-                        append(", ");
-                    }
-                    append(text(field.name()));
-                    append("=");
-                    renderValue(field.value(), depth + 1);
-                    shown++;
+            renderContainer('{', '}', fields == null ? 0 : fields.size(), index -> {
+                RuntimeValue.Field field = fields.get(index);
+                append(text(field.name()));
+                append("=");
+                renderValue(field.value(), depth + 1);
+            });
+        }
+
+        private void renderContainer(
+                char open, char close, int itemCount, IntConsumer itemRenderer) {
+            append(String.valueOf(open));
+            int shown = 0;
+            for (int index = 0; index < itemCount && !truncated; index++) {
+                if (shown >= MAX_ITEMS) {
+                    truncated = true;
+                    append(TRUNCATION);
+                    break;
                 }
+                if (shown > 0) {
+                    append(", ");
+                }
+                itemRenderer.accept(index);
+                shown++;
             }
             if (!truncated) {
-                append("}");
+                append(String.valueOf(close));
             }
         }
 

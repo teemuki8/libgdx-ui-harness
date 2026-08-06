@@ -13,7 +13,7 @@ dependencies {
 }
 ```
 
-`harness-lwjgl3` brings in `harness-scene2d` and `harness-core`; `harness-mcp` brings in `harness-protocol` and core. The published modules require Java 25. Fixtures and benchmarks have no Maven publication.
+`harness-lwjgl3` brings in `harness-scene2d` and `harness-core`; `harness-mcp` brings in `harness-protocol` and core. The published modules require Java 25. Fixtures and benchmarks have no Maven publication. An optional published `harness-agent-runtime` module implements runtime-value comparison for the ADR 0025 SPI.
 
 ## The compiled Java flow
 
