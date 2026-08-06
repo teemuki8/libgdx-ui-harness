@@ -38,6 +38,7 @@ MODEL_IMAGE_CAPABLE = {
     "deepseek/deepseek-v4-flash": False,
     "deepseek/deepseek-v4-pro": False,
     "openai-codex/gpt-5.6-sol:medium": True,
+    "openai-codex/gpt-5.6-luna:medium": True,
     "gitlab-duo/claude-sonnet-4-5-20250929": True,
     "gitlab-duo/claude-haiku-4-5-20251001": True,
 }
