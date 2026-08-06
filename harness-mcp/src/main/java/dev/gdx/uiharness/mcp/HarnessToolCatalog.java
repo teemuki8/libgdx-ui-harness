@@ -344,11 +344,7 @@ public final class HarnessToolCatalog {
                                 List.of("spec")),
                         output("semantic-compare-result", Map.of(
                                 "matched", Map.of("type", "boolean"),
-                                "differences", array(object(Map.of(
-                                        "kind", enumString(
-                                                "ADDED", "REMOVED", "CHANGED", "AMBIGUOUS"),
-                                        "baselineKey", string(1, ProtocolJson.MAX_STRING_LENGTH)),
-                                        List.of("kind", "baselineKey")), 4_096),
+                                "differences", array(semanticDifferenceSchema(), 4_096),
                                 "comparedNodes", integer(0, 10_000),
                                 "truncated", Map.of("type", "boolean")),
                                 List.of("matched", "differences", "comparedNodes", "truncated"))),
@@ -538,6 +534,20 @@ public final class HarnessToolCatalog {
 
     private static Map<String, Object> nullableInt() {
         return Map.of("oneOf", List.of(integer(0, Long.MAX_VALUE), Map.of("type", "null")));
+    }
+
+    private static Map<String, Object> semanticDifferenceSchema() {
+        return object(Map.ofEntries(
+                Map.entry("kind", enumString("ADDED", "REMOVED", "CHANGED", "AMBIGUOUS")),
+                Map.entry("baselineKey", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                Map.entry("propertyPaths", array(
+                        string(1, ProtocolJson.MAX_STRING_LENGTH), 16)),
+                Map.entry("beforeValues", evidenceSchema()),
+                Map.entry("afterValues", evidenceSchema()),
+                Map.entry("ambiguousIdentities", array(
+                        string(1, ProtocolJson.MAX_STRING_LENGTH), 16))),
+                List.of("kind", "baselineKey", "propertyPaths", "beforeValues",
+                        "afterValues", "ambiguousIdentities"));
     }
 
     private static Map<String, Object> semanticCompareSpecSchema() {

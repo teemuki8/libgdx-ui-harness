@@ -7908,17 +7908,53 @@
         "items" : {
           "additionalProperties" : false,
           "properties" : {
+            "afterValues" : {
+              "additionalProperties" : {
+                "maxLength" : 16384,
+                "minLength" : 0,
+                "type" : "string"
+              },
+              "maxProperties" : 256,
+              "type" : "object"
+            },
+            "ambiguousIdentities" : {
+              "items" : {
+                "maxLength" : 16384,
+                "minLength" : 1,
+                "type" : "string"
+              },
+              "maxItems" : 16,
+              "type" : "array"
+            },
             "baselineKey" : {
               "maxLength" : 16384,
               "minLength" : 1,
               "type" : "string"
             },
+            "beforeValues" : {
+              "additionalProperties" : {
+                "maxLength" : 16384,
+                "minLength" : 0,
+                "type" : "string"
+              },
+              "maxProperties" : 256,
+              "type" : "object"
+            },
             "kind" : {
               "enum" : [ "ADDED", "REMOVED", "CHANGED", "AMBIGUOUS" ],
               "type" : "string"
+            },
+            "propertyPaths" : {
+              "items" : {
+                "maxLength" : 16384,
+                "minLength" : 1,
+                "type" : "string"
+              },
+              "maxItems" : 16,
+              "type" : "array"
             }
           },
-          "required" : [ "kind", "baselineKey" ],
+          "required" : [ "kind", "baselineKey", "propertyPaths", "beforeValues", "afterValues", "ambiguousIdentities" ],
           "type" : "object"
         },
         "maxItems" : 4096,

@@ -31,12 +31,13 @@ public final class SemanticComparator {
         Objects.requireNonNull(current, "current");
         Objects.requireNonNull(policy, "policy");
         List<SemanticNode> snapshotNodes = documentOrder(current);
-        List<BaselineNode> baselineNodes = flatten(baseline.root());
+        List<KeyedBaseline> baselineNodes = flatten(baseline.root());
         Map<String, List<SemanticNode>> byKey = groupByKey(snapshotNodes, current);
         var differences = new ArrayList<SemanticDifference>();
         var matchedBaselineKeys = new java.util.HashSet<String>();
-        for (BaselineNode expected : baselineNodes) {
-            String key = key(expected);
+        for (KeyedBaseline expected : baselineNodes) {
+            String key = expected.key();
+            BaselineNode expectedNode = expected.node();
             if (byKey.getOrDefault(key, List.of()).isEmpty()) {
                 differences.add(new SemanticDifference(
                         SemanticDifference.Kind.REMOVED,
@@ -50,7 +51,7 @@ public final class SemanticComparator {
             } else {
                 matchedBaselineKeys.add(key);
                 SemanticNode actual = byKey.get(key).getFirst();
-                compareProperties(expected, actual, key, policy, differences);
+                compareProperties(expectedNode, actual, key, policy, differences);
             }
             if (differences.size() >= policy.maxDifferences()) {
                 return result(differences, snapshotNodes.size(), true, policy);
@@ -227,28 +228,31 @@ public final class SemanticComparator {
                 + "@" + parentKey;
     }
 
-    private static String key(BaselineNode node) {
+    private static String key(BaselineNode node, String parentKey) {
         if (node.testId() != null) {
             return "test-id:" + node.testId();
         }
         return "role:" + (node.role() == null ? "" : node.role().name())
-                + "/name:" + (node.accessibleName() == null ? "" : node.accessibleName())
-                + "@";
+                + "/name:" + (node.accessibleName() == null ? "null" : node.accessibleName())
+                + "@" + parentKey;
     }
 
-    private static List<BaselineNode> flatten(BaselineNode root) {
-        var ordered = new ArrayList<BaselineNode>();
-        var pending = new java.util.ArrayDeque<BaselineNode>();
-        pending.push(root);
-        while (!pending.isEmpty()) {
-            BaselineNode node = pending.pop();
-            ordered.add(node);
-            List<BaselineNode> children = node.children();
-            for (int index = children.size() - 1; index >= 0; index--) {
-                pending.push(children.get(index));
-            }
-        }
+    /** One flattened baseline node paired with the key it matched against. */
+    private record KeyedBaseline(String key, BaselineNode node) {}
+
+    private static List<KeyedBaseline> flatten(BaselineNode root) {
+        var ordered = new ArrayList<KeyedBaseline>();
+        flatten(root, "", ordered);
         return ordered;
+    }
+
+    private static void flatten(
+            BaselineNode node, String parentKey, List<KeyedBaseline> ordered) {
+        String nodeKey = key(node, parentKey);
+        ordered.add(new KeyedBaseline(nodeKey, node));
+        for (BaselineNode child : node.children()) {
+            flatten(child, nodeKey, ordered);
+        }
     }
 
     private static List<SemanticNode> documentOrder(SemanticSnapshot snapshot) {

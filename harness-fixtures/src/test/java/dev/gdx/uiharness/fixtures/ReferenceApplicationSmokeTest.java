@@ -42,7 +42,8 @@ final class ReferenceApplicationSmokeTest {
                                     "typography", "ui_assert", "ui_matrix_results",
                                     "ui_matrix_run", "ui_navigation_inspect",
                                     "ui_navigation_validate", "ui_runtime_compare",
-                                    "ui_trace_query", "ui_validate_layout", "wait"),
+                                    "ui_semantic_compare", "ui_trace_query",
+                                    "ui_validate_layout", "wait"),
                             agent.capabilities(SESSION_ID));
                     HarnessMcpClient.Layout layout = agent.layout(SESSION_ID);
                     assertEquals("conformant", layout.status(), layout.reports());

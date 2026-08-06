@@ -83,6 +83,57 @@ final class SemanticComparatorTest {
         assertEquals("false", changed.afterValues().get("visible"));
     }
 
+    @Test void hierarchyAwareBaselineMatchesSnapshotByParentChainAndNullNames() {
+        // Root -> panel -> checkbox (no test ids): matching relies on the full parent chain.
+        SemanticBaseline baseline = baseline("hierarchy",
+                new BaselineNode(Role.GROUP, "root", null, null, null, null, null,
+                        true, true, null, null, null, null, false, false,
+                        new Bounds(0, 0, 800, 600), null, Map.of(), List.of(
+                                new BaselineNode(Role.GROUP, null, null, null, null, null, null,
+                                        true, true, null, null, null, null, false, true,
+                                        new Bounds(10, 10, 300, 200), null, Map.of(), List.of(
+                                                new BaselineNode(Role.CHECKBOX,
+                                                        " Fixed-step animations", null, null,
+                                                        null, null, null, true, true, null, null,
+                                                        null, null, false, true,
+                                                        new Bounds(20, 20, 100, 50), null,
+                                                        Map.of(), List.of()))))));
+        SemanticSnapshot snapshot = snapshot(
+                node("checkbox", Role.CHECKBOX, " Fixed-step animations", null, true,
+                        new Bounds(20, 20, 100, 50)),
+                node("panel", Role.GROUP, null, null, true, new Bounds(10, 10, 300, 200)));
+        SemanticNode panel = snapshot.nodes().get("panel");
+        SemanticNode root = snapshot.nodes().get("root");
+        SemanticNode rootWithChild = new SemanticNode(
+                root.id(), null, List.of("panel"), root.role(), root.accessibleName(),
+                root.text(), root.label(), root.testId(), root.actorName(), root.actorType(),
+                root.state(), root.localBounds(), root.stageBounds(), root.screenBounds(),
+                root.zIndex(), root.properties(), root.binding());
+        SemanticNode panelWithChild = new SemanticNode(
+                panel.id(), "root", List.of("checkbox"), panel.role(), panel.accessibleName(),
+                panel.text(), panel.label(), panel.testId(), panel.actorName(), panel.actorType(),
+                panel.state(), panel.localBounds(), panel.stageBounds(), panel.screenBounds(),
+                panel.zIndex(), panel.properties(), panel.binding());
+        SemanticNode checkbox = snapshot.nodes().get("checkbox");
+        SemanticNode checkboxLinked = new SemanticNode(
+                checkbox.id(), "panel", List.of(), checkbox.role(), checkbox.accessibleName(),
+                checkbox.text(), checkbox.label(), checkbox.testId(), checkbox.actorName(),
+                checkbox.actorType(), checkbox.state(), checkbox.localBounds(),
+                checkbox.stageBounds(), checkbox.screenBounds(), checkbox.zIndex(),
+                checkbox.properties(), checkbox.binding());
+        var byId = new LinkedHashMap<String, SemanticNode>();
+        byId.put("root", rootWithChild);
+        byId.put("panel", panelWithChild);
+        byId.put("checkbox", checkboxLinked);
+        SemanticSnapshot linked = new SemanticSnapshot(1, 1, "root", byId);
+
+        SemanticCompareResult result = comparator.compare(baseline, linked, policy);
+
+        assertTrue(result.matched(),
+                "a baseline must match the same hierarchy by parent chain: " + result.differences());
+        assertEquals(3, result.comparedNodes());
+    }
+
     @Test void duplicateKeysAreAmbiguousNeverHeuristicallyPaired() {
         SemanticBaseline baseline = baseline("ambiguous",
                 new BaselineNode(Role.BUTTON, null, null, null, "dup", null, null,

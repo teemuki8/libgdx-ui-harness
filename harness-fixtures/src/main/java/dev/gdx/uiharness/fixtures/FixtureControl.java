@@ -33,6 +33,13 @@ import dev.gdx.uiharness.core.layout.LayoutValidationSeverity;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.locator.StrictResolution;
+import dev.gdx.uiharness.core.golden.BaselineNode;
+import dev.gdx.uiharness.core.golden.PositionalTolerance;
+import dev.gdx.uiharness.core.golden.SemanticBaseline;
+import dev.gdx.uiharness.core.golden.SemanticBaselineCatalog;
+import dev.gdx.uiharness.core.golden.SemanticComparePolicy;
+import dev.gdx.uiharness.core.golden.SemanticComparator;
+import dev.gdx.uiharness.core.model.SemanticNode;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.runtime.RuntimeComparator;
 import dev.gdx.uiharness.core.runtime.RuntimeObservation;
@@ -139,7 +146,7 @@ public final class FixtureControl implements AutoCloseable {
     private static final List<String> CAPABILITIES = List.of(
             "action", "compare", "query", "scenario-list", "scenario-start",
             "screenshot", "snapshot", "layout", "trace", "typography", "ui_assert", "wait",
-            "ui_matrix_run", "ui_matrix_results",
+            "ui_matrix_run", "ui_matrix_results", "ui_semantic_compare",
             "ui_navigation_inspect", "ui_navigation_validate", "ui_runtime_compare",
             "ui_trace_query", "ui_validate_layout");
 
@@ -330,6 +337,22 @@ public final class FixtureControl implements AutoCloseable {
                                 sceneSession.snapshot(clock.revision(), clock.frame()),
                                 locator.toCore(), new StrictResolution()),
                         deadline);
+        SemanticBaselineCatalog baselineCatalog = new SemanticBaselineCatalog();
+        SemanticComparator semanticComparator = new SemanticComparator();
+        HarnessProtocolService.SemanticCompareCoordinator semanticCoordinator =
+                (spec, deadline) -> scheduler.submit(() -> {
+                    SemanticSnapshot current = sceneSession.snapshot(
+                            clock.revision(), clock.frame());
+                    if (!baselineCatalog.contains(spec.baselineId())) {
+                        baselineCatalog.register(new SemanticBaseline(
+                                1, 0, spec.baselineId(),
+                                toBaselineNode(current.nodes(), current.rootId()),
+                                spec.strictNodes()));
+                    }
+                    return semanticComparator.compare(
+                            baselineCatalog.require(spec.baselineId()), current,
+                            toCorePolicy(spec));
+                }, deadline);
         HarnessProtocolService.MatrixCoordinator matrixCoordinator =
                 new HarnessProtocolService.MatrixCoordinator() {
                     @Override public CompletionStage<String> run(
@@ -354,7 +377,7 @@ public final class FixtureControl implements AutoCloseable {
                 Optional.of(this::startScenario),
                 Optional.of(navigationCoordinator),
                 Optional.of(layoutCoordinator),
-                Optional.of(matrixCoordinator), Optional.empty(),
+                Optional.of(matrixCoordinator), Optional.of(semanticCoordinator),
                 Optional.of(runtimeCoordinator));
         VisualReference reference = reference();
         VisualPolicy policy = new VisualPolicy(
@@ -410,6 +433,62 @@ public final class FixtureControl implements AutoCloseable {
         fence.completedFrame(clock.revision(), clock.frame());
         sceneSession.completedFrame(
                 scenarioRunner, navigationRunner, clock.revision(), clock.frame());
+    }
+
+    private static BaselineNode toBaselineNode(
+            Map<String, SemanticNode> nodes, String rootId) {
+        return toBaselineNode(nodes.get(rootId), nodes);
+    }
+
+    private static BaselineNode toBaselineNode(
+            SemanticNode node, Map<String, SemanticNode> nodes) {
+        var children = new java.util.ArrayList<BaselineNode>();
+        for (String childId : node.childIds()) {
+            SemanticNode child = nodes.get(childId);
+            if (child != null) {
+                children.add(toBaselineNode(child, nodes));
+            }
+        }
+        var state = node.state();
+        return new BaselineNode(
+                node.role(),
+                node.accessibleName(),
+                node.text(),
+                node.label(),
+                node.testId(),
+                node.actorName(),
+                node.actorType(),
+                state.visible(),
+                state.enabled().orElse(null),
+                state.checked().orElse(null),
+                state.selected().orElse(null),
+                state.expanded().orElse(null),
+                state.editable().orElse(null),
+                state.focused(),
+                state.focusable(),
+                node.stageBounds(),
+                null,
+                node.properties(),
+                children);
+    }
+
+    private static SemanticComparePolicy toCorePolicy(Command.SemanticCompareSpec spec) {
+        List<PositionalTolerance> tolerances = spec.tolerances().stream()
+                .map(tolerance -> new PositionalTolerance(
+                        tolerance.id(),
+                        dev.gdx.uiharness.core.typography.CoordinateSpace.valueOf(
+                                tolerance.space().toUpperCase(java.util.Locale.ROOT)),
+                        tolerance.units(),
+                        tolerance.deltaX(),
+                        tolerance.deltaY(),
+                        tolerance.deltaWidth(),
+                        tolerance.deltaHeight()))
+                .toList();
+        return new SemanticComparePolicy(
+                tolerances,
+                Set.copyOf(spec.excludedProperties()),
+                spec.maxDifferences(),
+                16_384);
     }
 
     private static MatrixDefinition toCoreMatrixDefinition(
