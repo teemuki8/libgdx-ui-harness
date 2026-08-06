@@ -80,7 +80,12 @@ jobs:
             exit 1
           fi
           git tag --verify "$evidence_tag"
+      # Deliberate, one-release exception (ADR 0029): the repeatability gate
+      # has no passing evidence, and the maintainer authorized the release
+      # anyway. The step runs unless the tagged commit carries a
+      # `.release-gate-exception` marker; removing the marker restores the gate.
       - name: Verify sealed repeatability decision
+        if: ${{ ! hashFiles('.release-gate-exception') }}
         shell: bash
         run: |
           set -euo pipefail

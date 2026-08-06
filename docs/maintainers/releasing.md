@@ -170,6 +170,12 @@ exact archive digest. The manifest's `artifacts` map must list every retained
 raw artifact path and SHA-256. Verification rejects a missing, extra-path, or
 changed referenced artifact.
 
+Release exceptions: the workflow's "Verify sealed repeatability decision"
+step is skipped only while the tagged commit contains a
+`.release-gate-exception` marker (ADR 0029). The marker is a one-release,
+maintainer-authorized deviation and must be deleted with the release; the
+workflow default is gated.
+
 Commit `precommitment.json`, `manifest.json`, `decision.json`, and the
 digest-bound retained raw artifacts on a dedicated evidence commit. Sign an
 annotated evidence tag whose name contains the exact candidate commit:
