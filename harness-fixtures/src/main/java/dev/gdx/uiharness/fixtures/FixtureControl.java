@@ -52,7 +52,13 @@ import dev.gdx.uiharness.core.trace.TransitionQuery;
 import dev.gdx.uiharness.core.trace.TransitionQueryResult;
 import dev.gdx.uiharness.core.wait.FrameSignal;
 import dev.gdx.uiharness.core.wait.WaitEngine;
+import dev.gdx.uiharness.core.matrix.MatrixDefinition;
+import dev.gdx.uiharness.core.matrix.MatrixHiDpi;
+import dev.gdx.uiharness.core.matrix.MatrixLimits;
+import dev.gdx.uiharness.core.matrix.MatrixReport;
+import dev.gdx.uiharness.core.matrix.MatrixWindow;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
+import dev.gdx.uiharness.lwjgl3.Lwjgl3MatrixRunner;
 import dev.gdx.uiharness.lwjgl3.LaunchProfile;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3ScreenCapture;
 import dev.gdx.uiharness.lwjgl3.RegisteredLaunchCoordinator;
@@ -133,6 +139,7 @@ public final class FixtureControl implements AutoCloseable {
     private static final List<String> CAPABILITIES = List.of(
             "action", "compare", "query", "scenario-list", "scenario-start",
             "screenshot", "snapshot", "layout", "trace", "typography", "ui_assert", "wait",
+            "ui_matrix_run", "ui_matrix_results",
             "ui_navigation_inspect", "ui_navigation_validate", "ui_runtime_compare",
             "ui_trace_query", "ui_validate_layout");
 
@@ -165,6 +172,7 @@ public final class FixtureControl implements AutoCloseable {
     private final Scene2dScenarioRunner scenarioRunner;
     private final Scene2dNavigationRunner navigationRunner;
     private final dev.gdx.uiharness.scene2d.Scene2dLayoutValidator layoutValidator;
+    private final Lwjgl3MatrixRunner matrixRunner;
     private HarnessMcpServer server;
     private Future<?> terminationTask;
 
@@ -256,6 +264,13 @@ public final class FixtureControl implements AutoCloseable {
         };
         waits = new WaitEngine(this::snapshotForWait, assertionSnapshots, locators, clock,
                 assertionFrames, DeadlineWakeup.scheduledBy(scenarioDeadlines));
+        matrixRunner = new Lwjgl3MatrixRunner(
+                scenarioRunner, waits,
+                matrixCase -> new Lwjgl3MatrixRunner.DisplayObservation(
+                        new MatrixWindow(1280, 720), 1.0, 1.0, MatrixHiDpi.LOGICAL),
+                new Lwjgl3MatrixRunner.Scenario(
+                        "navigation", 7, Map.of(), RESTART_PROFILE.id(), APPLICATION_ID,
+                        PROCESS_ID, SESSION_ID));
         terminationExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-mcp-termination-", 0).factory());
     }
@@ -315,13 +330,32 @@ public final class FixtureControl implements AutoCloseable {
                                 sceneSession.snapshot(clock.revision(), clock.frame()),
                                 locator.toCore(), new StrictResolution()),
                         deadline);
+        HarnessProtocolService.MatrixCoordinator matrixCoordinator =
+                new HarnessProtocolService.MatrixCoordinator() {
+                    @Override public CompletionStage<String> run(
+                            Command.MatrixRunSpec spec, Deadline deadline) {
+                        return matrixRunner.run(
+                                toCoreMatrixDefinition(spec, deadline),
+                                new MatrixLimits(spec.maxCases()), deadline);
+                    }
+
+                    @Override public CompletionStage<MatrixReport> results(String runId) {
+                        return matrixRunner.results(runId)
+                                .map(CompletableFuture::completedFuture)
+                                .orElseGet(() -> CompletableFuture.failedFuture(
+                                        new HarnessException(ErrorCode.NOT_FOUND,
+                                                "Matrix run not retained: " + runId,
+                                                ErrorEvidence.empty())));
+                    }
+                };
         HarnessProtocolService.Session session = new HarnessProtocolService.Session(
                 tracingHarness, new StrictResolution(), waits, tracingCapture,
                 capabilities, traces, Optional.of(scenarios),
                 Optional.of(this::startScenario),
                 Optional.of(navigationCoordinator),
                 Optional.of(layoutCoordinator),
-                Optional.empty(), Optional.empty(), Optional.of(runtimeCoordinator));
+                Optional.of(matrixCoordinator), Optional.empty(),
+                Optional.of(runtimeCoordinator));
         VisualReference reference = reference();
         VisualPolicy policy = new VisualPolicy(
                 "reference-smoke", 1, 1280L * 720, 0.125, true, true);
@@ -376,6 +410,35 @@ public final class FixtureControl implements AutoCloseable {
         fence.completedFrame(clock.revision(), clock.frame());
         sceneSession.completedFrame(
                 scenarioRunner, navigationRunner, clock.revision(), clock.frame());
+    }
+
+    private static MatrixDefinition toCoreMatrixDefinition(
+            Command.MatrixRunSpec spec, Deadline deadline) {
+        List<MatrixWindow> windows = spec.windows().stream()
+                .map(window -> new MatrixWindow(window.width(), window.height()))
+                .toList();
+        List<MatrixHiDpi> hiDpiModes = spec.hiDpiModes().stream()
+                .map(mode -> MatrixHiDpi.valueOf(
+                        mode.toUpperCase(java.util.Locale.ROOT).replace('-', '_')))
+                .toList();
+        List<dev.gdx.uiharness.core.assertion.AssertionRequest> assertions =
+                spec.assertions().stream()
+                        .map(assertion -> new dev.gdx.uiharness.core.assertion.AssertionRequest(
+                                dev.gdx.uiharness.core.assertion.AssertionRequest.SCHEMA_VERSION,
+                                assertion.locator().toCore(),
+                                assertion.assertion().toCore(),
+                                deadline))
+                        .toList();
+        return new MatrixDefinition(
+                MatrixDefinition.SCHEMA_VERSION,
+                spec.scenarioId(),
+                windows,
+                spec.uiScales(),
+                spec.devicePixelRatios(),
+                hiDpiModes,
+                spec.locales(),
+                spec.fontSetIds(),
+                assertions);
     }
 
     private static LayoutValidationConfig toCoreLayoutConfig(

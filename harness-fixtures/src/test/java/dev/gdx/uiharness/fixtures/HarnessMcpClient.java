@@ -486,6 +486,32 @@ final class HarnessMcpClient implements Closeable {
         return content;
     }
 
+    String runMatrix(String sessionId, long deadlineMillis) throws Exception {
+        Map<String, Object> spec = Map.ofEntries(
+                Map.entry("scenarioId", "navigation"),
+                Map.entry("windows", List.of(Map.of("width", 1280, "height", 720))),
+                Map.entry("uiScales", List.of(1.0)),
+                Map.entry("devicePixelRatios", List.of(1.0)),
+                Map.entry("hiDpiModes", List.of("LOGICAL")),
+                Map.entry("locales", List.of("en-US")),
+                Map.entry("fontSetIds", List.of()),
+                Map.entry("assertions", List.of()),
+                Map.entry("maxCases", 1),
+                Map.entry("maxDurationMillis", 5000));
+        JsonNode content = call("ui_matrix_run", Map.of(
+                "sessionId", sessionId, "spec", spec, "deadlineMillis", deadlineMillis));
+        requireKind(content, "matrix-run-started");
+        return content.path("runId").asText();
+    }
+
+    JsonNode matrixResults(String sessionId, String runId, long deadlineMillis)
+            throws Exception {
+        JsonNode content = call("ui_matrix_results", Map.of(
+                "sessionId", sessionId, "runId", runId, "deadlineMillis", deadlineMillis));
+        requireKind(content, "matrix-report");
+        return content;
+    }
+
     JsonNode runtimeCompare(String sessionId, long deadlineMillis) throws Exception {
         JsonNode content = call("ui_runtime_compare", Map.of(
                 "sessionId", sessionId,

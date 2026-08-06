@@ -592,34 +592,60 @@ public final class HarnessToolCatalog {
     }
 
     private static Map<String, Object> matrixReportSchema() {
-        return Map.ofEntries(
-                Map.entry("report", object(Map.ofEntries(
-                        Map.entry("runId", string(1, MAX_IDENTIFIER)),
-                        Map.entry("scenarioId", string(1, MAX_IDENTIFIER)),
-                        Map.entry("results", array(object(Map.ofEntries(
-                                Map.entry("status", enumString(
-                                        "PASSED", "FAILED", "UNSTARTED", "CANCELLED")),
-                                Map.entry("caseDefinition", object(Map.ofEntries(
-                                        Map.entry("index", integer(0, 10_000)),
-                                        Map.entry("window", object(Map.of(
-                                                "width", integer(1, 16_384),
-                                                "height", integer(1, 16_384)),
-                                                List.of("width", "height"))),
-                                        Map.entry("uiScale", number(0.0, Double.MAX_VALUE)),
-                                        Map.entry("devicePixelRatio",
-                                                number(0.0, Double.MAX_VALUE)),
-                                        Map.entry("hiDpiMode",
-                                                enumString("LOGICAL", "PIXELS")),
-                                        Map.entry("locale", string(1, MAX_IDENTIFIER))),
-                                        List.of("index", "window", "uiScale",
-                                                "devicePixelRatio", "hiDpiMode", "locale"))),
-                                Map.entry("passedAssertions", array(
-                                        integer(0, 255), 256)),
-                                Map.entry("failedAssertions", array(
-                                        integer(0, 255), 256))),
-                                List.of("status", "caseDefinition")), 10_000)),
-                        Map.entry("truncated", Map.of("type", "boolean"))),
-                        List.of("runId", "scenarioId", "results", "truncated"))));
+        Map<String, Object> caseSummaryProperties = new LinkedHashMap<>();
+        caseSummaryProperties.put("index", integer(0, 10_000));
+        caseSummaryProperties.put("window", object(Map.of(
+                "width", integer(1, 16_384),
+                "height", integer(1, 16_384)),
+                List.of("width", "height")));
+        caseSummaryProperties.put("uiScale", number(0.0, Double.MAX_VALUE));
+        caseSummaryProperties.put("devicePixelRatio", number(0.0, Double.MAX_VALUE));
+        caseSummaryProperties.put("hiDpiMode", enumString("LOGICAL", "PIXELS"));
+        caseSummaryProperties.put("locale", string(1, MAX_IDENTIFIER));
+        caseSummaryProperties.put("fontSetId", nullableString());
+        caseSummaryProperties.put("aspectRatio", number(0.0, Double.MAX_VALUE));
+        Map<String, Object> resultProperties = new LinkedHashMap<>();
+        resultProperties.put("caseSummary", object(caseSummaryProperties,
+                List.of("index", "window", "uiScale", "devicePixelRatio",
+                        "hiDpiMode", "locale", "aspectRatio")));
+        resultProperties.put("status", enumString(
+                "PASSED", "FAILED", "UNSTARTED", "CANCELLED"));
+        resultProperties.put("observedWindow", nullableObject(Map.of(
+                "width", integer(1, 16_384),
+                "height", integer(1, 16_384)),
+                List.of("width", "height")));
+        resultProperties.put("observedUiScale", nullableNumber());
+        resultProperties.put("observedDevicePixelRatio", nullableNumber());
+        resultProperties.put("observedHiDpiMode", nullableEnum(
+                "LOGICAL", "PIXELS"));
+        resultProperties.put("passedAssertions", array(integer(0, 255), 256));
+        resultProperties.put("failedAssertions", array(integer(0, 255), 256));
+        resultProperties.put("artifactReferences", array(
+                string(1, ProtocolJson.MAX_STRING_LENGTH), 64));
+        resultProperties.put("evidence", string(0, 4_096));
+        return Map.ofEntries(Map.entry("report", object(Map.ofEntries(
+                Map.entry("runId", string(1, MAX_IDENTIFIER)),
+                Map.entry("scenarioId", string(1, MAX_IDENTIFIER)),
+                Map.entry("results", array(
+                        object(resultProperties, List.of("caseSummary", "status")), 10_000)),
+                Map.entry("truncated", Map.of("type", "boolean"))),
+                List.of("runId", "scenarioId", "results", "truncated"))));
+    }
+
+    private static Map<String, Object> nullableNumber() {
+        return Map.of("oneOf", List.of(
+                number(0.0, Double.MAX_VALUE), Map.of("type", "null")));
+    }
+
+    private static Map<String, Object> nullableEnum(String... values) {
+        return Map.of("oneOf", List.of(
+                enumString(values), Map.of("type", "null")));
+    }
+
+    private static Map<String, Object> nullableObject(
+            Map<String, Object> properties, List<String> required) {
+        return Map.of("oneOf", List.of(
+                object(properties, required), Map.of("type", "null")));
     }
 
     private static Map<String, Object> navigationSpecSchema() {

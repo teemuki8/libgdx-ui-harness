@@ -39,7 +39,8 @@ final class ReferenceApplicationSmokeTest {
                     assertEquals(List.of(
                                     "action", "compare", "layout", "query", "scenario-list",
                                     "scenario-start", "screenshot", "snapshot", "trace",
-                                    "typography", "ui_assert", "ui_navigation_inspect",
+                                    "typography", "ui_assert", "ui_matrix_results",
+                                    "ui_matrix_run", "ui_navigation_inspect",
                                     "ui_navigation_validate", "ui_runtime_compare",
                                     "ui_trace_query", "ui_validate_layout", "wait"),
                             agent.capabilities(SESSION_ID));
