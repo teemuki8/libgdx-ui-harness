@@ -670,6 +670,9 @@ class DryRunTest(unittest.TestCase):
             self.assertIn("qualification requires the fixed mock OMP fixture", completed.stderr)
 
 
+FIXED_REASONING = "medium"
+
+
 class ArgumentValidationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -685,6 +688,7 @@ class ArgumentValidationTest(unittest.TestCase):
             auth_broker_url=None,
             candidate_maven_repository=None,
             candidate_version=None,
+            reasoning=FIXED_REASONING,
             dry_run=True,
             prepare_only=False,
             execute_prepared=False,
@@ -697,6 +701,17 @@ class ArgumentValidationTest(unittest.TestCase):
         arguments = self._arguments(model="anthropic/claude-sonnet-4.5")
         max_seconds = self.runner.parse_duration("30m")
         self.runner._validate_arguments(arguments, max_seconds)
+
+    def test_accepts_high_reasoning(self):
+        arguments = self._arguments(
+            model="deepseek/deepseek-v4-flash", reasoning="high")
+        self.runner._validate_arguments(arguments, self.runner.parse_duration("15m"))
+
+    def test_rejects_blank_reasoning(self):
+        arguments = self._arguments(
+            model="deepseek/deepseek-v4-flash", reasoning="")
+        with self.assertRaisesRegex(ValueError, "reasoning"):
+            self.runner._validate_arguments(arguments, self.runner.parse_duration("15m"))
 
     def test_rejects_max_time_below_floor(self):
         arguments = self._arguments()
@@ -767,7 +782,7 @@ class AuthPreflightTest(unittest.TestCase):
                 ):
                     with self.assertRaisesRegex(ValueError, "did not quiesce"):
                         self.runner._run_auth_preflight(
-                            str(fake), MODEL, broker_url, token)
+                            str(fake), MODEL, FIXED_REASONING, broker_url, token)
             finally:
                 broker.shutdown()
                 broker.server_close()

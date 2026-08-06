@@ -600,6 +600,7 @@ def _relative(output, path):
 
 def _prepare_run(
         output, pair, treatment, index, hashes, treatment_inputs,
+        model, reasoning, max_seconds,
         candidate_repository=None, candidate_version=None):
     run_id = str(uuid.uuid4())
     run_dir = output / "runs" / run_id
@@ -682,9 +683,9 @@ def _prepare_run(
         "runId": run_id,
         "pair": pair,
         "treatment": treatment,
-        "model": FIXED_MODEL,
-        "reasoning": FIXED_REASONING,
-        "maxTimeSeconds": FIXED_SECONDS,
+        "model": model,
+        "reasoning": reasoning,
+        "maxTimeSeconds": max_seconds,
         "rounds": FIXED_ROUNDS,
         "protocolAmendment": PROTOCOL_AMENDMENT,
         "hashes": {
@@ -905,12 +906,12 @@ def quiesce_process_group(process_group, grace_seconds=0.05):
 
 
 
-def _omp_command(omp, item, model, max_time_text):
+def _omp_command(omp, item, model, reasoning, max_time_text):
     runtime = item["_runtime"]
     return [
         omp,
         "--model", model,
-        "--thinking", FIXED_REASONING,
+        "--thinking", reasoning,
         "--profile", item["runId"],
         "--session-dir", str(runtime["sessionRoot"]),
         "--cwd", str(runtime["workspace"]),
@@ -1288,7 +1289,7 @@ def _load_broker_token(omp):
     return token
 
 
-def _run_auth_preflight(omp, model, broker_url, bearer_token):
+def _run_auth_preflight(omp, model, reasoning, broker_url, bearer_token):
     with tempfile.TemporaryDirectory(prefix="palisade-auth-preflight-") as temporary:
         root = Path(temporary)
         environment = _preflight_environment(root)
@@ -1299,7 +1300,7 @@ def _run_auth_preflight(omp, model, broker_url, bearer_token):
         command = [
             omp,
             "--model", model,
-            "--thinking", FIXED_REASONING,
+            "--thinking", reasoning,
             "--profile", "palisade-auth-preflight",
             "--cwd", str(root),
             "--allow-home",
@@ -1394,12 +1395,12 @@ def _open_measured_process(command, item, runtime, environment, stdout, stderr,
     return process, relay
 
 
-def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes,
-             broker_url, bearer_token, manage_display):
+def _run_one(output, item, omp, model, reasoning, max_time_text, max_time_seconds,
+             hashes, broker_url, bearer_token, manage_display):
     runtime = item["_runtime"]
     started_at = utc_now()
     started = time.monotonic()
-    command = _omp_command(omp, item, model, max_time_text)
+    command = _omp_command(omp, item, model, reasoning, max_time_text)
     environment = _sanitized_environment(item)
     stdout_path = runtime["logRoot"] / "omp.stdout.jsonl"
     stderr_path = runtime["logRoot"] / "omp.stderr.log"
@@ -1566,7 +1567,7 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes,
         "pair": item["pair"],
         "treatment": item["treatment"],
         "model": model,
-        "reasoning": FIXED_REASONING,
+        "reasoning": reasoning,
         "timestamps": {"startedAt": started_at, "finishedAt": finished_at},
         "wallTimeSeconds": round(wall_time, 6),
         "exit": {
@@ -1615,6 +1616,8 @@ def _validate_arguments(arguments, max_seconds):
         raise ValueError(f"pairs must be exactly {required_pairs}")
     if max_seconds < MIN_SECONDS:
         raise ValueError(f"--max-time must be at least {MIN_SECONDS // 60} minutes")
+    if not arguments.reasoning or len(arguments.reasoning) > 64:
+        raise ValueError("--reasoning must be a non-empty string of at most 64 characters")
     if arguments.qualification and Path(arguments.omp).resolve() != QUALIFICATION_OMP.resolve():
         raise ValueError("qualification requires the fixed mock OMP fixture")
     if arguments.auth_broker_url not in (None, FIXED_BROKER_URL):
@@ -1643,6 +1646,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--reasoning", default=FIXED_REASONING)
     parser.add_argument("--max-time", required=True)
     parser.add_argument("--pairs", required=True, type=int)
     parser.add_argument(
@@ -1678,7 +1682,7 @@ def main(argv=None):
                 and not arguments.qualification):
             broker_token = _load_broker_token(arguments.omp)
             _run_auth_preflight(
-                arguments.omp, arguments.model,
+                arguments.omp, arguments.model, arguments.reasoning,
                 arguments.auth_broker_url, broker_token)
         if arguments.execute_prepared:
             manifest_path = output / "benchmark-manifest.json"
@@ -1695,6 +1699,7 @@ def main(argv=None):
                     or not manifest.get("candidateMavenRepositorySha256")):
                 raise ValueError("prepared candidate Maven identity is missing")
             if (manifest.get("model") != arguments.model
+                    or manifest.get("reasoning") != arguments.reasoning
                     or manifest.get("pairs") != arguments.pairs
                     or manifest.get("maxTimeSeconds") != max_seconds):
                 raise ValueError("prepared benchmark arguments do not match")
@@ -1737,6 +1742,7 @@ def main(argv=None):
                 for treatment in ("baseline", "harness"):
                     runs.append(_prepare_run(
                         output, pair, treatment, index, hashes, treatment_inputs,
+                        arguments.model, arguments.reasoning, max_seconds,
                         candidate_repository, arguments.candidate_version))
                     index += 1
 
@@ -1750,7 +1756,7 @@ def main(argv=None):
                 "candidateVersion": arguments.candidate_version,
                 "candidateMavenRepositorySha256": candidate_repository_hash,
                 "model": arguments.model,
-                "reasoning": FIXED_REASONING,
+                "reasoning": arguments.reasoning,
                 "maxTimeSeconds": max_seconds,
                 "rounds": FIXED_ROUNDS,
                 "pairs": arguments.pairs,
@@ -1774,7 +1780,7 @@ def main(argv=None):
         with ThreadPoolExecutor(max_workers=len(runs), thread_name_prefix="palisade-run") as executor:
             futures = {executor.submit(
                 _run_one, output, item, arguments.omp, arguments.model,
-                arguments.max_time,
+                arguments.reasoning, arguments.max_time,
                 QUALIFICATION_SECONDS if arguments.qualification else max_seconds,
                 hashes, arguments.auth_broker_url or FIXED_BROKER_URL,
                 broker_token, not arguments.qualification): item for item in runs}
