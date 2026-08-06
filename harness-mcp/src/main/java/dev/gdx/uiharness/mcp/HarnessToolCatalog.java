@@ -302,6 +302,29 @@ public final class HarnessToolCatalog {
                                 List.of("runId")),
                         output("matrix-report", matrixReportSchema(),
                                 List.of("report"))),
+                tool("ui_trace_query",
+                        "Query compact state-transition summaries from one retained bounded "
+                                + "trace without downloading the archive",
+                        sessionInput(Map.of(
+                                "spec", traceQuerySpecSchema()),
+                                List.of("spec")),
+                        output("trace-query-result", Map.of(
+                                "traceId", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                                "transitions", array(object(Map.of(
+                                        "kind", enumString(
+                                                "APPEARED", "DISAPPEARED", "ENABLED",
+                                                "DISABLED", "TEXT_CHANGED", "BOUNDS_CHANGED",
+                                                "FOCUS_CHANGED", "MODAL_CHANGED",
+                                                "OBSCURATION_CHANGED", "Z_ORDER_CHANGED",
+                                                "IDENTITY_AMBIGUOUS"),
+                                        "actorIdentity",
+                                        string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                                        List.of("kind", "actorIdentity")), 4_096),
+                                "truncated", Map.of("type", "boolean"),
+                                "gapCount", integer(0, 1_024),
+                                "unknownCauseCount", integer(0, 4_096)),
+                                List.of("traceId", "transitions", "truncated", "gapCount",
+                                        "unknownCauseCount"))),
                 tool("ui_semantic_compare",
                         "Compare a versioned registered semantic baseline against the current "
                                 + "snapshot without raster capture",
@@ -431,6 +454,29 @@ public final class HarnessToolCatalog {
                         Map.entry("truncated", Map.of("type", "boolean")),
                         Map.entry("appliedConfig", object(Map.of(), List.of()))),
                         List.of("status", "findings", "examinedNodes", "truncated"))));
+    }
+
+    private static Map<String, Object> traceQuerySpecSchema() {
+        return object(Map.ofEntries(
+                Map.entry("traceId", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                Map.entry("locator", nullableLocator()),
+                Map.entry("kinds", array(enumString(
+                        "appeared", "disappeared", "enabled", "disabled", "text-changed",
+                        "bounds-changed", "focus-changed", "modal-changed",
+                        "obscuration-changed", "z-order-changed", "identity-ambiguous"), 16)),
+                Map.entry("propertyPaths", array(
+                        string(1, ProtocolJson.MAX_STRING_LENGTH), 16)),
+                Map.entry("frameFrom", nullableInt()),
+                Map.entry("frameTo", nullableInt()),
+                Map.entry("maxTransitions", integer(1, 4_096)),
+                Map.entry("maxEvidenceBytes", integer(1, 1_048_576)),
+                Map.entry("maxDurationMillis", integer(1, 3_600_000))),
+                List.of("traceId", "kinds", "propertyPaths", "maxTransitions",
+                        "maxEvidenceBytes", "maxDurationMillis"));
+    }
+
+    private static Map<String, Object> nullableInt() {
+        return Map.of("oneOf", List.of(integer(0, Long.MAX_VALUE), Map.of("type", "null")));
     }
 
     private static Map<String, Object> semanticCompareSpecSchema() {
@@ -859,6 +905,15 @@ public final class HarnessToolCatalog {
                 Map.entry("maxFindings", 256),
                 Map.entry("maxNodes", 10000),
                 Map.entry("maxDurationMillis", 2000));
+        values.put("ui_trace_query", List.of(Map.of(
+                "sessionId", "SESSION",
+                "spec", Map.ofEntries(
+                        Map.entry("traceId", "trace-1"),
+                        Map.entry("kinds", List.of("appeared", "disabled")),
+                        Map.entry("propertyPaths", List.of()),
+                        Map.entry("maxTransitions", 128),
+                        Map.entry("maxEvidenceBytes", 65536),
+                        Map.entry("maxDurationMillis", 2000)))));
         values.put("ui_semantic_compare", List.of(Map.of(
                 "sessionId", "SESSION",
                 "spec", Map.ofEntries(
