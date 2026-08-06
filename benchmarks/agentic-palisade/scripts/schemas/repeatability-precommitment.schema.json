@@ -43,7 +43,7 @@
     },
     "schedule": {
       "type": "array",
-      "minItems": 5,
+      "minItems": 3,
       "items": {
         "type": "object",
         "properties": {

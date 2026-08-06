@@ -91,6 +91,31 @@ strata, and the complete matched-pair schedule. Compute
 `precommitmentSha256` over canonical JSON with that field omitted. Every
 recorded `startedAt` must be later than the precommitment's `sealedAt`.
 
+Build the precommitment with the repository scripts (the 17-key hash scheme is
+documented in `build-precommitment.py`; it binds the prepared schedule, the
+corpus/prompt/treatments, the sealed profile thresholds, the environment
+snapshot, and the dependency locks):
+
+```bash
+python3 benchmarks/agentic-palisade/scripts/capture-environment.py \
+  --candidate-commit "$candidate" \
+  --model openai-codex/gpt-5.6-luna:medium \
+  --reasoning medium \
+  --output "$QUALIFICATION_ROOT/environment-snapshot.json"
+
+python3 benchmarks/agentic-palisade/scripts/build-precommitment.py \
+  --manifest "$QUALIFICATION_ROOT/benchmark-manifest.json" \
+  --environment-snapshot "$QUALIFICATION_ROOT/environment-snapshot.json" \
+  --output "$QUALIFICATION_ROOT/precommitment.json" \
+  --release-version X.Y.Z
+```
+
+`build-precommitment.py` seals the draft (`precommitmentSha256` over canonical
+JSON with that field omitted) and defaults `candidateSourceSha256` to
+`git archive CANDIDATE_COMMIT | sha256sum`. Review the draft and keep it as
+the artifact the run is bound to; the builder refuses to overwrite an existing
+`precommitment.json`, so treat it as a single-sign artifact.
+
 Prepare the ten immutable arm identities without starting OMP:
 
 ```bash
