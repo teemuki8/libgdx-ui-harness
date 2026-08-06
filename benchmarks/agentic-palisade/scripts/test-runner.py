@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end fixture tests for isolated benchmark preparation and supervision."""
 
+import argparse
 import contextlib
 import importlib.util
 import hashlib
@@ -616,7 +617,7 @@ class DryRunTest(unittest.TestCase):
                 timeout=10,
             )
             self.assertNotEqual(completed.returncode, 0)
-            self.assertIn("exactly --max-time 45m", completed.stderr)
+            self.assertIn("--max-time must be at least 10 minutes", completed.stderr)
 
     def test_retains_telemetry_with_a_gap_for_a_missing_referenced_payload(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -667,6 +668,41 @@ class DryRunTest(unittest.TestCase):
                 root / "out", "--omp", str(fake), "--qualification", "--dry-run")
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("qualification requires the fixed mock OMP fixture", completed.stderr)
+
+
+class ArgumentValidationTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.runner = load_runner()
+
+    def _arguments(self, **overrides):
+        arguments = argparse.Namespace(
+            model=MODEL,
+            release_candidate=False,
+            pairs=self.runner.FIXED_PAIRS,
+            qualification=False,
+            omp="omp",
+            auth_broker_url=None,
+            candidate_maven_repository=None,
+            candidate_version=None,
+            dry_run=True,
+            prepare_only=False,
+            execute_prepared=False,
+        )
+        for name, value in overrides.items():
+            setattr(arguments, name, value)
+        return arguments
+
+    def test_accepts_any_model_and_bounded_max_time(self):
+        arguments = self._arguments(model="anthropic/claude-sonnet-4.5")
+        max_seconds = self.runner.parse_duration("30m")
+        self.runner._validate_arguments(arguments, max_seconds)
+
+    def test_rejects_max_time_below_floor(self):
+        arguments = self._arguments()
+        with self.assertRaisesRegex(ValueError, "at least"):
+            self.runner._validate_arguments(
+                arguments, self.runner.parse_duration("5m"))
 
 
 class AuthPreflightTest(unittest.TestCase):

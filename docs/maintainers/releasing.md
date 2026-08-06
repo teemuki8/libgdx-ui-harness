@@ -13,7 +13,19 @@ Before preparing a tag:
    by both its full fingerprint and 16-hex long key ID.
 4. Verify the latest `main` CI run is green.
 5. Confirm the release notes describe the exact version being published.
-6. Complete the repeatability qualification for the exact candidate commit.
+6. Complete the repeatability qualification for the exact candidate commit
+   under the qualified model. The model and the per-run wall ceiling are
+   parameters of `run-benchmark.py`: `--model` selects the model whose
+   evidence is being produced, and `--max-time` seals the per-arm ceiling
+   with a 10-minute floor and a 40-minute prepare default. The schedule may
+   seal `failFast: true`; under fail-fast the supervisor cancels the
+   remaining arms once any required run fails, and each cancelled arm is
+   recorded with its run ID and the triggering failure's classification
+   reason. The gate accepts a cancelled arm only when the schedule declared
+   fail-fast and the triggering failure is present; otherwise it treats the
+   arm exactly as missing. Evidence is scoped to the qualified model:
+   historical evidence is model-scoped and does not carry over to a
+   different model.
 7. Review the
    [Maven Central compliance checklist](maven-central-compliance.md), including
    the maintainer attestations that automation cannot make.

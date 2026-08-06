@@ -5,6 +5,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import jsonschema
 import tempfile
 import unittest
 from pathlib import Path
@@ -137,6 +138,7 @@ def sealed_manifest():
         },
         "environments": [{
             "id": "linux-nvidia",
+            "model": "openai-codex/gpt-5.6-sol:medium",
             "os": "Linux",
             "osVersion": "42",
             "jvm": "Temurin-25.0.1",
@@ -217,6 +219,23 @@ class ReleaseGateTest(unittest.TestCase):
             precommitment_schema["properties"]["schemaVersion"]["const"])
         self.assertEqual(GATE.DECISION_SCHEMA,
                          decision_schema["properties"]["schemaVersion"]["const"])
+
+    def test_precommitment_schema_requires_model_and_allows_fail_fast(self):
+        schema_root = SCRIPT.parent / "schemas"
+        schema = json.loads(
+            (schema_root / "repeatability-precommitment.schema.json").read_text())
+        validator = jsonschema.Draft202012Validator(schema)
+        precommitment = sealed_precommitment(sealed_manifest())
+        # (b) an environments entry declaring a model plus a schedule item with
+        # failFast true is valid.
+        precommitment["schedule"][0]["failFast"] = True
+        self.assertTrue(validator.is_valid(precommitment))
+        # (a) an environments entry without model is invalid.
+        without_model = copy.deepcopy(precommitment)
+        without_model["environments"][0].pop("model")
+        self.assertFalse(validator.is_valid(without_model))
+        self.assertTrue(any(
+            "model" in error.message for error in validator.iter_errors(without_model)))
 
     def test_complete_conjunction_passes_and_is_deterministic(self):
         manifest = sealed_manifest()

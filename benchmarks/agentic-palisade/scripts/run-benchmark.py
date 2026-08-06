@@ -37,6 +37,7 @@ FIXED_PAIRS = 3
 RELEASE_PAIRS = 5
 FIXED_ROUNDS = 3
 FIXED_SECONDS = 45 * 60
+MIN_SECONDS = 10 * 60
 QUALIFICATION_SECONDS = 1
 QUALIFICATION_OMP = BENCHMARK_ROOT / "fixtures/mock-omp.py"
 TOOL_ALLOWLIST = "read,write,edit,bash,grep,glob"
@@ -1598,13 +1599,11 @@ def _run_one(output, item, omp, model, max_time_text, max_time_seconds, hashes,
 
 
 def _validate_arguments(arguments, max_seconds):
-    if arguments.model != FIXED_MODEL:
-        raise ValueError(f"model must be exactly {FIXED_MODEL}")
     required_pairs = RELEASE_PAIRS if arguments.release_candidate else FIXED_PAIRS
     if arguments.pairs != required_pairs:
         raise ValueError(f"pairs must be exactly {required_pairs}")
-    if max_seconds != FIXED_SECONDS:
-        raise ValueError("measured runs must use exactly --max-time 45m")
+    if max_seconds < MIN_SECONDS:
+        raise ValueError(f"--max-time must be at least {MIN_SECONDS // 60} minutes")
     if arguments.qualification and Path(arguments.omp).resolve() != QUALIFICATION_OMP.resolve():
         raise ValueError("qualification requires the fixed mock OMP fixture")
     if arguments.auth_broker_url not in (None, FIXED_BROKER_URL):
@@ -1741,7 +1740,7 @@ def main(argv=None):
                 "candidateMavenRepositorySha256": candidate_repository_hash,
                 "model": arguments.model,
                 "reasoning": FIXED_REASONING,
-                "maxTimeSeconds": FIXED_SECONDS,
+                "maxTimeSeconds": max_seconds,
                 "rounds": FIXED_ROUNDS,
                 "pairs": arguments.pairs,
                 "protocolAmendment": PROTOCOL_AMENDMENT,

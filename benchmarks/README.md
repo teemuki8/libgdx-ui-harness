@@ -42,6 +42,8 @@ xvfb-run -a ./gradlew :benchmarks:run --args='--runs 20 --output build/reports/p
 
 The runner refuses to mix a new execution with existing raw JSON. Choose a fresh output directory or remove only the prior benchmark-owned output first.
 
+`--model` and `--max-time` are free parameters of the qualification runner: `--model` selects the model under qualification, and `--max-time` seals the per-run wall ceiling with a 10-minute floor and a 40-minute prepare default derived from the retained distribution of measured run durations. When the sealed schedule declares `failFast`, the supervisor cancels the remaining arms as soon as any required run fails.
+
 ## Corpus and symmetry
 
 `corpus/scenarios.json` is a strict schema-versioned, ordered definition of exactly:
