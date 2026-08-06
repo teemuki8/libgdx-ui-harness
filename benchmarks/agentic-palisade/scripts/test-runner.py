@@ -86,7 +86,7 @@ def run_release_cli(output, omp, repository=None, version=None, *extra):
         ]
     return subprocess.run(
         [sys.executable, str(RUNNER_PATH), "--output", str(output),
-         "--model", MODEL, "--max-time", "45m", "--pairs", "5",
+         "--model", MODEL, "--max-time", "45m", "--pairs", "5", "--profile", "high-confidence",
          "--release-candidate", *candidate, "--omp", str(omp),
          "--qualification", *extra],
         cwd=BENCHMARK_ROOT,
@@ -735,6 +735,22 @@ class ArgumentValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "image"):
             self.runner._validate_arguments(
                 arguments, self.runner.parse_duration("40m"))
+
+    def test_low_confidence_release_accepts_three_pairs(self):
+        arguments = self._arguments(
+            model="gitlab-duo/claude-sonnet-4-5-20250929",
+            profile="low-confidence", release_candidate=True, pairs=3,
+            candidate_maven_repository=Path("/tmp/x"),
+            candidate_version="1.1.0-candidate.test")
+        self.runner._validate_arguments(arguments, self.runner.parse_duration("40m"))
+        self.assertEqual(arguments.pairs, 3)
+
+    def test_high_confidence_release_requires_five_pairs(self):
+        arguments = self._arguments(
+            model="gitlab-duo/claude-sonnet-4-5-20250929",
+            profile="high-confidence", release_candidate=True, pairs=3)
+        with self.assertRaisesRegex(ValueError, "pairs"):
+            self.runner._validate_arguments(arguments, self.runner.parse_duration("40m"))
 
     def test_image_capable_model_accepted(self):
         arguments = self._arguments(

@@ -1635,9 +1635,9 @@ def _validate_arguments(arguments, max_seconds):
             raise ValueError(
                 f"model image capability unknown for {arguments.model}; "
                 f"add it to MODEL_IMAGE_CAPABLE")
-    required_pairs = RELEASE_PAIRS if arguments.release_candidate else FIXED_PAIRS
-    effective_pairs = arguments.pairs or (
-        3 if arguments.profile == "low-confidence" else 5)
+    profile_pairs = 3 if arguments.profile == "low-confidence" else 5
+    required_pairs = profile_pairs if arguments.release_candidate else FIXED_PAIRS
+    effective_pairs = arguments.pairs or profile_pairs
     if effective_pairs != required_pairs:
         raise ValueError(f"pairs must be exactly {required_pairs}")
     arguments.pairs = effective_pairs
