@@ -536,6 +536,16 @@ def public_trace(trace, evaluation, evaluation_sha256):
             "referenceSha256": sha256_bytes(reference.encode("utf-8")),
             "toolCallIdSha256": sha256_bytes(tool_call_id.encode("utf-8")),
         })
+    capture_lifecycle = {}
+    for lifecycle_key, value in trace.get("captureLifecycle", {}).items():
+        if isinstance(value, dict):
+            # The channel names the producer (harness vs runner-supervisor) and
+            # would reveal treatment identity to a blind reviewer; drop it.
+            capture_lifecycle[lifecycle_key] = {
+                key: item for key, item in value.items() if key != "channel"
+            }
+        else:
+            capture_lifecycle[lifecycle_key] = value
     return {
         "schemaVersion": SCHEMA_VERSION,
         "availability": trace.get("availability", "unavailable"),
@@ -549,7 +559,7 @@ def public_trace(trace, evaluation, evaluation_sha256):
         "evidenceGaps": evidence_gaps,
         "events": events,
         "captureAttempts": attempts,
-        "captureLifecycle": dict(trace.get("captureLifecycle", {})),
+        "captureLifecycle": capture_lifecycle,
         "attributions": attributions,
     }
 

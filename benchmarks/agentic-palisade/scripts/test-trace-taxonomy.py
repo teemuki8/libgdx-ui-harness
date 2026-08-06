@@ -270,7 +270,13 @@ class TraceTaxonomyTest(unittest.TestCase):
                 "replayOfPayloadSha256": "d" * 64,
                 "result": None,
             }],
-            "captureLifecycle": {},
+            "captureLifecycle": {
+                "1111111111111111111111111111111111111111111111111111111111111111": {
+                    "channel": "harness",
+                    "states": ["requested", "execution-failed"],
+                    "terminal": "execution-failed",
+                },
+            },
             "attributions": {
                 "capture": [], "semantic": [], "rendering": [],
                 "workflow-loop": [],
@@ -287,8 +293,13 @@ class TraceTaxonomyTest(unittest.TestCase):
         serialized = json.dumps(public, sort_keys=True)
 
         for forbidden in ("batchId", "runId", "sessionId", "inputSha256",
-                          "treatment-harness", "private/"):
+                          "treatment-harness", "private/", "harness"):
             self.assertNotIn(forbidden, serialized)
+        lifecycle = public["captureLifecycle"][
+            "1111111111111111111111111111111111111111111111111111111111111111"]
+        self.assertEqual(lifecycle["states"], ["requested", "execution-failed"])
+        self.assertEqual(lifecycle["terminal"], "execution-failed")
+        self.assertNotIn("channel", lifecycle)
         self.assertEqual("referenced-ndjson",
                          public["captureAttempts"][0]["source"]["kind"])
         self.assertEqual("e" * 64,
