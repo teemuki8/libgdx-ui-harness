@@ -2,7 +2,7 @@
 """Prepare and supervise the six precommitted Agentic Palisade OMP runs."""
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import hashlib
 import http.client
@@ -980,6 +980,17 @@ def classify_process_exit(return_code, timed_out):
     return "success"
 
 
+def _unrecoverable(classifications):
+    return any(classification != "success" for classification in classifications)
+
+
+def _failure_reason(classifications, runs):
+    for item, classification in zip(runs, classifications):
+        if classification != "success":
+            return {"runId": item["runId"], "classification": classification}
+    return None
+
+
 class ManagedDisplay:
     READY_SECONDS = 10
 
@@ -1758,16 +1769,51 @@ def main(argv=None):
             return 0
 
         classifications = []
+        cancelled = []
+        reason = None
         with ThreadPoolExecutor(max_workers=len(runs), thread_name_prefix="palisade-run") as executor:
-            futures = [executor.submit(
+            futures = {executor.submit(
                 _run_one, output, item, arguments.omp, arguments.model,
                 arguments.max_time,
                 QUALIFICATION_SECONDS if arguments.qualification else max_seconds,
                 hashes, arguments.auth_broker_url or FIXED_BROKER_URL,
-                broker_token, not arguments.qualification) for item in runs]
-            for future in as_completed(futures):
-                classifications.append(future.result())
+                broker_token, not arguments.qualification): item for item in runs}
+            pending = set(futures)
+            completed_runs = []
+            for future in as_completed(pending):
+                item = futures[future]
+                try:
+                    classification = future.result()
+                except CancelledError:
+                    pending.discard(future)
+                    continue
+                classifications.append(classification)
+                completed_runs.append(item)
+                pending.discard(future)
+                if reason is None and _unrecoverable(classifications):
+                    reason = _failure_reason(classifications, completed_runs)
+                    for remaining in list(pending):
+                        remaining.cancel()
+                        cancelled_item = futures[remaining]
+                        pending.discard(remaining)
+                        cancelled.append({
+                            "runId": cancelled_item["runId"],
+                            "status": "cancelled",
+                            "cancelReason": reason,
+                        })
+            for future in pending:
+                future.cancel()
+        if reason is not None:
+            _write_exclusive_json(output / "cancellations.json", cancelled)
         successful = classifications.count("success")
+        if reason is not None:
+            print(json.dumps({
+                "status": "complete-with-failures",
+                "runs": len(runs),
+                "successful": successful,
+                "output": str(output),
+            }))
+            return 1
         print(json.dumps({
             "status": "complete" if successful == len(runs) else "complete-with-failures",
             "runs": len(runs),

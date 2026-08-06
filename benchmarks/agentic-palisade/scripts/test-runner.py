@@ -1166,6 +1166,112 @@ class SupervisionTest(unittest.TestCase):
     def test_classifies_signal_termination_as_crash(self):
         self.assertEqual(self.runner.classify_process_exit(-signal.SIGSEGV, False), "crashed")
 
+    def test_unrecoverable_true_on_any_failure(self):
+        self.assertTrue(self.runner._unrecoverable(["success", "failure"]))
+        self.assertTrue(self.runner._unrecoverable(["deadline"]))
+        self.assertFalse(self.runner._unrecoverable(["success", "success"]))
+        self.assertFalse(self.runner._unrecoverable([]))
+
+    def test_failure_reason_names_first_failing_run(self):
+        runs = [{"runId": "run-1"}, {"runId": "run-2"}]
+        reason = self.runner._failure_reason(["success", "deadline"], runs)
+        self.assertEqual("run-2", reason["runId"])
+        self.assertEqual("deadline", reason["classification"])
+        self.assertIsNone(self.runner._failure_reason(["success", "success"], runs))
+
+    def test_fail_fast_cancels_pending_runs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake = root / "fake-omp"
+            write_fake_omp(fake)
+            output = root / "outcomes"
+
+            class BrokerHandler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    content = b"{}\n"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(content)))
+                    self.end_headers()
+                    self.wfile.write(content)
+
+                def log_message(self, *_):
+                    pass
+
+            broker = http.server.ThreadingHTTPServer(("127.0.0.1", 0), BrokerHandler)
+            broker_thread = threading.Thread(target=broker.serve_forever, daemon=True)
+            broker_thread.start()
+            broker_url = f"http://127.0.0.1:{broker.server_port}"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            try:
+                with mock.patch.object(self.runner, "FIXED_BROKER_URL", broker_url):
+                    with mock.patch.dict(
+                        os.environ, {"OPENAI_API_KEY": "must-not-inherit"}
+                    ):
+                        with contextlib.redirect_stdout(stdout):
+                            with contextlib.redirect_stderr(stderr):
+                                return_code = self.runner.main([
+                                    "--output", str(output),
+                                    "--model", MODEL,
+                                    "--max-time", "45m",
+                                    "--pairs", "3",
+                                    "--omp", str(fake),
+                                    "--auth-broker-url", broker_url,
+                                ])
+            finally:
+                broker.shutdown()
+                broker.server_close()
+                broker_thread.join(timeout=2)
+
+            self.assertEqual(1, return_code, stderr.getvalue())
+            self.assertIn('"complete-with-failures"', stdout.getvalue())
+
+            manifest = read_json(output / "benchmark-manifest.json")
+            first_record = read_json(output / manifest["runs"][0]["runRecord"])
+            self.assertNotEqual("success", first_record["exit"]["classification"])
+            run_ids = {run["runId"] for run in manifest["runs"]}
+            records = {
+                run["runId"]: read_json(output / run["runRecord"])
+                for run in manifest["runs"]
+            }
+            self.assertEqual(set(records), run_ids)
+
+            hung_run = next(
+                run for run in manifest["runs"]
+                if run["pair"] == 3 and run["treatment"] == "baseline"
+            )
+            hung_pid = int(
+                (output / Path(hung_run["artifactRoot"]) / "hung-round-child.pid").read_text()
+            )
+            deadline = time.time() + 2
+            state = "running"
+            while time.time() < deadline:
+                try:
+                    state = Path(f"/proc/{hung_pid}/stat").read_text().split()[2]
+                except FileNotFoundError:
+                    state = None
+                if state in (None, "Z"):
+                    break
+                time.sleep(0.02)
+            if state not in (None, "Z"):
+                os.kill(hung_pid, signal.SIGKILL)
+
+            cancellations = read_json(output / "cancellations.json")
+            self.assertTrue(cancellations)
+            triggering_run_id = cancellations[0]["cancelReason"]["runId"]
+            for entry in cancellations:
+                self.assertEqual("cancelled", entry["status"])
+                self.assertEqual(triggering_run_id, entry["cancelReason"]["runId"])
+                self.assertNotEqual(
+                    "success", entry["cancelReason"]["classification"])
+            self.assertEqual(
+                {entry["runId"] for entry in cancellations},
+                run_ids - {triggering_run_id},
+            )
+            self.assertNotEqual(
+                "success", records[triggering_run_id]["exit"]["classification"])
+
 
 if __name__ == "__main__":
     unittest.main()

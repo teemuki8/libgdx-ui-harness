@@ -417,6 +417,24 @@ def evaluate(
             "evidenceSha256": repetition.get("evidenceSha256"),
         })
 
+    declared_models = {
+        environment.get("model")
+        for environment in (precommitment.get("environments") or [])
+        if isinstance(environment, dict)
+    } - {None}
+    used_models = {
+        environment_by_id[repetition["environmentId"]].get("model")
+        for repetition in repetitions
+        if isinstance(repetition, dict)
+        and repetition.get("status") != "cancelled"
+        and repetition.get("environmentId") in environment_by_id
+    } - {None}
+    if len(used_models) != 1 or used_models != declared_models:
+        _failure(failures, "model consistency check failed: "
+                 f"declared={sorted(declared_models)} used={sorted(used_models)}")
+    qualified_model = next(iter(used_models), None) or next(
+        iter(declared_models), "unqualified")
+
     stratum_report = []
     for identifier, items in sorted(strata.items()):
         if len(items) < 5:
@@ -473,7 +491,8 @@ def evaluate(
         "runs": run_results,
         "statistics": {
             "method": manifest.get("statisticalMethod"),
-            "scope": "observed matched pairs only; no population or universal determinism claim",
+            "scope": (f"observed matched pairs only, model {qualified_model}; "
+                      "no population or universal determinism claim"),
             "costs": summaries,
         },
     }

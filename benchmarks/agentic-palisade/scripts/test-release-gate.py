@@ -310,6 +310,35 @@ class ReleaseGateTest(unittest.TestCase):
         self.assertFalse(decision["passed"])
         self.assertTrue(any("cross-repetition capture" in item for item in decision["failures"]))
 
+    def test_decision_rejects_conflicting_stratum_models(self):
+        manifest = sealed_manifest()
+        second = copy.deepcopy(manifest["environments"][0])
+        second["id"] = "linux-nvidia-alt"
+        second["model"] = "anthropic/claude-sonnet-4.6:high"
+        manifest["environments"].append(second)
+        manifest["repetitions"][0]["environmentId"] = "linux-nvidia-alt"
+        precommitment = sealed_precommitment(manifest)
+        decision = GATE.evaluate(manifest, precommitment, "1" * 40, "1.1.0")
+        self.assertFalse(decision["passed"])
+        self.assertTrue(any("model" in item for item in decision["failures"]))
+
+    def test_decision_accepts_single_model(self):
+        manifest = sealed_manifest()
+        precommitment = sealed_precommitment(manifest)
+        decision = GATE.evaluate(manifest, precommitment, "1" * 40, "1.1.0")
+        self.assertTrue(decision["passed"])
+        self.assertFalse(any("model" in item for item in decision["failures"]))
+
+    def test_scope_names_qualified_model(self):
+        manifest = sealed_manifest()
+        precommitment = sealed_precommitment(manifest)
+        decision = GATE.evaluate(manifest, precommitment, "1" * 40, "1.1.0")
+        model = manifest["environments"][0]["model"]
+        self.assertIn(model, decision["statistics"]["scope"])
+        self.assertIn("observed matched pairs only", decision["statistics"]["scope"])
+        self.assertIn("no population or universal determinism claim",
+                      decision["statistics"]["scope"])
+
     def test_cli_verifies_precommitted_decision_byte_for_byte(self):
         manifest = sealed_manifest()
         precommitment = sealed_precommitment(manifest)
