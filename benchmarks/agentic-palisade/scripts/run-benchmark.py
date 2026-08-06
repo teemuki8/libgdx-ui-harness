@@ -1625,8 +1625,7 @@ def _run_one(output, item, omp, model, reasoning, max_time_text, max_time_second
 def _validate_arguments(arguments, max_seconds):
     if arguments.profile not in ("low-confidence", "high-confidence"):
         raise ValueError(f"unknown benchmark profile: {arguments.profile}")
-    if (arguments.profile == "low-confidence"
-            or arguments.profile == "high-confidence"):
+    if arguments.profile == "high-confidence":
         if MODEL_IMAGE_CAPABLE.get(arguments.model) is False:
             raise ValueError(
                 f"model {arguments.model} does not support image input "

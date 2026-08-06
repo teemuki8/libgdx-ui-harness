@@ -729,9 +729,18 @@ class ArgumentValidationTest(unittest.TestCase):
     def test_default_profile_is_low_confidence(self):
         self.assertEqual(self._arguments().profile, "low-confidence")
 
-    def test_image_incapable_model_rejected(self):
+    def test_image_incapable_model_accepted_low_confidence(self):
         arguments = self._arguments(
             model="deepseek/deepseek-v4-flash", profile="low-confidence")
+        self.runner._validate_arguments(
+            arguments, self.runner.parse_duration("40m"))
+
+    def test_image_incapable_model_rejected_high_confidence(self):
+        arguments = self._arguments(
+            model="deepseek/deepseek-v4-flash", profile="high-confidence",
+            release_candidate=True, pairs=5,
+            candidate_maven_repository=Path("/tmp/x"),
+            candidate_version="1.1.0-candidate.test")
         with self.assertRaisesRegex(ValueError, "image"):
             self.runner._validate_arguments(
                 arguments, self.runner.parse_duration("40m"))

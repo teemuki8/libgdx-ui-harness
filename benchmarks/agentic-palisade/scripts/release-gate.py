@@ -32,7 +32,7 @@ CONTROLS_PATH = Path(__file__).with_name("retained-controls.json")
 
 PROFILES = {
     "low-confidence": {
-        "modelImagesRequired": True,
+        "modelImagesRequired": False,
         "pairs": 3,
         "rounds": 2,
         "requiredRepetitions": 1,

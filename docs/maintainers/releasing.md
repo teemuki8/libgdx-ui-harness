@@ -18,9 +18,9 @@ Before preparing a tag:
    profile: 3 pairs, 2 rounds, 1 repetition schedule, a >=60% assertion
    pass rate, 3 PNG digests per observation, and 1 blind reviewer at
    median fidelity >=3, with tighter cost ceilings than the historical
-   requirements. The qualified model must be image-capable; the runner
-   validates this before any schedule is produced and fails closed for
-   models whose image support is unknown. `--profile` selects the sealed
+   requirements. The low-confidence profile does not require model image input, so image-incapable
+   models can qualify; the high-confidence profile requires an image-capable model
+   and the runner fails closed for models whose image support is unknown. `--profile` selects the sealed
    qualification profile and defaults to `low-confidence`; the
    `high-confidence` profile preserves the historical strict requirements
    (5 pairs, 3 rounds, 2+ repetition schedules, 25/25 semantic, 5 digests,
