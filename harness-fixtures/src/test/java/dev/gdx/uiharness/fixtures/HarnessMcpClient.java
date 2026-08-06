@@ -451,6 +451,24 @@ final class HarnessMcpClient implements Closeable {
         return content;
     }
 
+    JsonNode validateLayout(String sessionId, long deadlineMillis) throws Exception {
+        Map<String, Object> spec = Map.of(
+                "targetMode", "stage",
+                "enabledChecks", List.of("zero-size", "duplicate-test-id"),
+                "minTargetWidth", 64.0,
+                "minTargetHeight", 64.0,
+                "maxAlignmentDelta", 1.0,
+                "minSpacing", 1.0,
+                "failOn", "error",
+                "maxFindings", 256,
+                "maxNodes", 10000,
+                "maxDurationMillis", 2000);
+        JsonNode content = call("ui_validate_layout", Map.of(
+                "sessionId", sessionId, "spec", spec, "deadlineMillis", deadlineMillis));
+        requireKind(content, "layout-validation-result");
+        return content;
+    }
+
     private JsonNode call(String tool, Map<String, Object> arguments) throws Exception {
         JsonNode result = request("tools/call", Map.of("name", tool, "arguments", arguments));
         if (result.path("isError").asBoolean()) {

@@ -24,6 +24,9 @@ import dev.gdx.uiharness.core.typography.CoordinateSpace;
 import dev.gdx.uiharness.core.typography.TypographyControlReference;
 import dev.gdx.uiharness.core.typography.TypographyObservation;
 import dev.gdx.uiharness.core.typography.TypographyReference;
+import dev.gdx.uiharness.core.layout.LayoutValidationCheck;
+import dev.gdx.uiharness.core.layout.LayoutValidationConfig;
+import dev.gdx.uiharness.core.layout.LayoutValidationSeverity;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.locator.StrictResolution;
@@ -119,7 +122,7 @@ public final class FixtureControl implements AutoCloseable {
     private static final List<String> CAPABILITIES = List.of(
             "action", "compare", "query", "scenario-list", "scenario-start",
             "screenshot", "snapshot", "layout", "trace", "typography", "ui_assert", "wait",
-            "ui_navigation_inspect", "ui_navigation_validate");
+            "ui_navigation_inspect", "ui_navigation_validate", "ui_validate_layout");
 
     private final Path processRoot;
     private final Path artifactRoot;
@@ -148,6 +151,7 @@ public final class FixtureControl implements AutoCloseable {
     private final RegisteredLaunchCoordinator launchCoordinator;
     private final Scene2dScenarioRunner scenarioRunner;
     private final Scene2dNavigationRunner navigationRunner;
+    private final dev.gdx.uiharness.scene2d.Scene2dLayoutValidator layoutValidator;
     private HarnessMcpServer server;
     private Future<?> terminationTask;
 
@@ -192,6 +196,8 @@ public final class FixtureControl implements AutoCloseable {
                         "navigation", 7, Map.of(), RESTART_PROFILE.id(), APPLICATION_ID, PROCESS_ID,
                         SESSION_ID),
                 8);
+        layoutValidator = new dev.gdx.uiharness.scene2d.Scene2dLayoutValidator(
+                sceneSession, new StrictResolution());
         replacementExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-replacement-launch-", 0).factory());
         replacementCoordinator = new ReplacementProcessCoordinator(
@@ -271,12 +277,21 @@ public final class FixtureControl implements AutoCloseable {
                         return navigationRunner.validate(toCoreNavigationRequest(spec, deadline));
                     }
                 };
+        HarnessProtocolService.LayoutValidationCoordinator layoutCoordinator =
+                (spec, deadline) -> CompletableFuture.completedFuture(
+                        layoutValidator.validate(
+                                clock.revision(),
+                                clock.frame(),
+                                spec.locator() == null ? null : spec.locator().toCore(),
+                                toCoreLayoutConfig(spec),
+                                null));
         HarnessProtocolService.Session session = new HarnessProtocolService.Session(
                 tracingHarness, new StrictResolution(), waits, tracingCapture,
                 capabilities, traces, Optional.of(scenarios),
                 Optional.of(this::startScenario),
                 Optional.of(navigationCoordinator),
-                Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
+                Optional.of(layoutCoordinator),
+                Optional.empty(), Optional.empty(), Optional.empty());
         VisualReference reference = reference();
         VisualPolicy policy = new VisualPolicy(
                 "reference-smoke", 1, 1280L * 720, 0.125, true, true);
@@ -331,6 +346,26 @@ public final class FixtureControl implements AutoCloseable {
         fence.completedFrame(clock.revision(), clock.frame());
         sceneSession.completedFrame(
                 scenarioRunner, navigationRunner, clock.revision(), clock.frame());
+    }
+
+    private static LayoutValidationConfig toCoreLayoutConfig(
+            Command.LayoutValidationSpec spec) {
+        java.util.EnumSet<LayoutValidationCheck> checks = java.util.EnumSet.noneOf(
+                LayoutValidationCheck.class);
+        for (String check : spec.enabledChecks()) {
+            checks.add(LayoutValidationCheck.valueOf(
+                    check.toUpperCase(java.util.Locale.ROOT).replace('-', '_')));
+        }
+        return new LayoutValidationConfig(
+                checks,
+                spec.minTargetWidth(),
+                spec.minTargetHeight(),
+                spec.maxAlignmentDelta(),
+                spec.minSpacing(),
+                LayoutValidationSeverity.valueOf(
+                        spec.failOn().toUpperCase(java.util.Locale.ROOT)),
+                spec.maxFindings(),
+                spec.maxNodes());
     }
 
     private static dev.gdx.uiharness.core.navigation.NavigationRequest toCoreNavigationRequest(

@@ -322,7 +322,7 @@ final class HarnessToolCatalogTest {
 
     private void assertValid(String name, Map<String, Object> arguments) {
         assertTrue(McpJsonDefaults.getSchemaValidator()
-                .validate(catalog.tool(name).inputSchema(), arguments).valid());
+                .validate(catalog.tool(name).inputSchema(), arguments).valid(), name);
     }
 
     private void assertInvalid(String name, Map<String, Object> arguments) {

@@ -460,19 +460,43 @@ public final class HarnessToolCatalog {
     }
 
     private static Map<String, Object> layoutValidationResultSchema() {
-        return Map.ofEntries(
-                Map.entry("result", object(Map.ofEntries(
-                        Map.entry("status", enumString("PASS", "FAIL", "INCOMPLETE")),
-                        Map.entry("findings", array(object(Map.ofEntries(
-                                Map.entry("reason", enumString(java.util.Arrays.stream(
-                                        dev.gdx.uiharness.core.layout.LayoutValidationReason
-                                                .values())
-                                        .map(Enum::name).toArray(String[]::new)))),
-                                List.of("reason")), 4_096)),
-                        Map.entry("examinedNodes", integer(0, 10_000)),
-                        Map.entry("truncated", Map.of("type", "boolean")),
-                        Map.entry("appliedConfig", object(Map.of(), List.of()))),
-                        List.of("status", "findings", "examinedNodes", "truncated"))));
+        Map<String, Object> findingProperties = new LinkedHashMap<>();
+        findingProperties.put("reason", enumString(java.util.Arrays.stream(
+                dev.gdx.uiharness.core.layout.LayoutValidationReason.values())
+                .map(Enum::name).toArray(String[]::new)));
+        findingProperties.put("severity", enumString("INFO", "WARNING", "ERROR"));
+        findingProperties.put("nodeId", string(1, ProtocolJson.MAX_STRING_LENGTH));
+        findingProperties.put("relatedActorId", nullableString());
+        findingProperties.put("stageBounds", object(Map.of(
+                "x", number(0.0, Double.MAX_VALUE),
+                "y", number(0.0, Double.MAX_VALUE),
+                "width", number(0.0, Double.MAX_VALUE),
+                "height", number(0.0, Double.MAX_VALUE)),
+                List.of("x", "y", "width", "height")));
+        findingProperties.put("evidence", string(1, ProtocolJson.MAX_STRING_LENGTH));
+        Map<String, Object> resultProperties = new LinkedHashMap<>();
+        resultProperties.put("status", enumString("PASS", "FAIL", "INCOMPLETE"));
+        resultProperties.put("findings", array(
+                object(findingProperties, List.of("reason", "severity", "nodeId", "evidence")),
+                4_096));
+        resultProperties.put("examinedNodes", integer(0, 10_000));
+        resultProperties.put("truncated", Map.of("type", "boolean"));
+        resultProperties.put("appliedConfig", object(Map.ofEntries(
+                Map.entry("enabledChecks", array(enumString(java.util.Arrays.stream(
+                        dev.gdx.uiharness.core.layout.LayoutValidationCheck.values())
+                        .map(Enum::name).toArray(String[]::new)), 32)),
+                Map.entry("minTargetWidth", number(0.0, Double.MAX_VALUE)),
+                Map.entry("minTargetHeight", number(0.0, Double.MAX_VALUE)),
+                Map.entry("maxAlignmentDelta", number(0.0, Double.MAX_VALUE)),
+                Map.entry("minSpacing", number(0.0, Double.MAX_VALUE)),
+                Map.entry("failOn", enumString("INFO", "WARNING", "ERROR")),
+                Map.entry("maxFindings", integer(1, 4_096)),
+                Map.entry("maxNodes", integer(1, 10_000))),
+                List.of("enabledChecks", "minTargetWidth", "minTargetHeight",
+                        "maxAlignmentDelta", "minSpacing", "failOn", "maxFindings",
+                        "maxNodes")));
+        return Map.ofEntries(Map.entry("result", object(resultProperties,
+                List.of("status", "findings", "examinedNodes", "truncated"))));
     }
 
     private static Map<String, Object> traceQuerySpecSchema() {

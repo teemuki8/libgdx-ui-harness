@@ -6547,7 +6547,51 @@
         "properties" : {
           "appliedConfig" : {
             "additionalProperties" : false,
-            "properties" : { },
+            "properties" : {
+              "enabledChecks" : {
+                "items" : {
+                  "enum" : [ "OUTSIDE_VIEWPORT", "CLIPPED_TEXT", "INTERACTIVE_OVERLAP", "ZERO_SIZE", "BELOW_TARGET_SIZE", "DUPLICATE_TEST_ID", "MISSING_ACCESSIBLE_NAME", "KEYBOARD_UNREACHABLE", "OBSCURED", "INVALID_CLIP_SCROLL", "INCONSISTENT_ALIGNMENT", "INCONSISTENT_SPACING" ],
+                  "type" : "string"
+                },
+                "maxItems" : 32,
+                "type" : "array"
+              },
+              "failOn" : {
+                "enum" : [ "INFO", "WARNING", "ERROR" ],
+                "type" : "string"
+              },
+              "maxAlignmentDelta" : {
+                "maximum" : 1.7976931348623157E308,
+                "minimum" : 0.0,
+                "type" : "number"
+              },
+              "maxFindings" : {
+                "maximum" : 4096,
+                "minimum" : 1,
+                "type" : "integer"
+              },
+              "maxNodes" : {
+                "maximum" : 10000,
+                "minimum" : 1,
+                "type" : "integer"
+              },
+              "minSpacing" : {
+                "maximum" : 1.7976931348623157E308,
+                "minimum" : 0.0,
+                "type" : "number"
+              },
+              "minTargetHeight" : {
+                "maximum" : 1.7976931348623157E308,
+                "minimum" : 0.0,
+                "type" : "number"
+              },
+              "minTargetWidth" : {
+                "maximum" : 1.7976931348623157E308,
+                "minimum" : 0.0,
+                "type" : "number"
+              }
+            },
+            "required" : [ "enabledChecks", "minTargetWidth", "minTargetHeight", "maxAlignmentDelta", "minSpacing", "failOn", "maxFindings", "maxNodes" ],
             "type" : "object"
           },
           "examinedNodes" : {
@@ -6559,12 +6603,57 @@
             "items" : {
               "additionalProperties" : false,
               "properties" : {
+                "evidence" : {
+                  "maxLength" : 16384,
+                  "minLength" : 1,
+                  "type" : "string"
+                },
+                "nodeId" : {
+                  "maxLength" : 16384,
+                  "minLength" : 1,
+                  "type" : "string"
+                },
                 "reason" : {
                   "enum" : [ "OUTSIDE_VIEWPORT", "CLIPPED_TEXT", "INTERACTIVE_OVERLAP", "ZERO_SIZE", "BELOW_TARGET_SIZE", "DUPLICATE_TEST_ID", "MISSING_ACCESSIBLE_NAME", "KEYBOARD_UNREACHABLE", "OBSCURED", "INVALID_CLIP_SCROLL", "INCONSISTENT_ALIGNMENT", "INCONSISTENT_SPACING", "CHECK_UNAVAILABLE" ],
                   "type" : "string"
+                },
+                "relatedActorId" : {
+                  "maxLength" : 16384,
+                  "type" : [ "string", "null" ]
+                },
+                "severity" : {
+                  "enum" : [ "INFO", "WARNING", "ERROR" ],
+                  "type" : "string"
+                },
+                "stageBounds" : {
+                  "additionalProperties" : false,
+                  "properties" : {
+                    "height" : {
+                      "maximum" : 1.7976931348623157E308,
+                      "minimum" : 0.0,
+                      "type" : "number"
+                    },
+                    "width" : {
+                      "maximum" : 1.7976931348623157E308,
+                      "minimum" : 0.0,
+                      "type" : "number"
+                    },
+                    "x" : {
+                      "maximum" : 1.7976931348623157E308,
+                      "minimum" : 0.0,
+                      "type" : "number"
+                    },
+                    "y" : {
+                      "maximum" : 1.7976931348623157E308,
+                      "minimum" : 0.0,
+                      "type" : "number"
+                    }
+                  },
+                  "required" : [ "x", "y", "width", "height" ],
+                  "type" : "object"
                 }
               },
-              "required" : [ "reason" ],
+              "required" : [ "reason", "severity", "nodeId", "evidence" ],
               "type" : "object"
             },
             "maxItems" : 4096,
