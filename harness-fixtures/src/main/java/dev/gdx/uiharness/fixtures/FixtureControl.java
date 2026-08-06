@@ -52,6 +52,7 @@ import dev.gdx.uiharness.protocol.ArtifactStore;
 import dev.gdx.uiharness.protocol.CapabilitySet;
 import dev.gdx.uiharness.protocol.Command;
 import dev.gdx.uiharness.protocol.FileArtifactStore;
+import dev.gdx.uiharness.protocol.Command;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
 import dev.gdx.uiharness.protocol.HarnessResponse;
 import dev.gdx.uiharness.protocol.InspectCaptureCompareService;
@@ -61,7 +62,11 @@ import dev.gdx.uiharness.scene2d.ControlledStageClock;
 import dev.gdx.uiharness.scene2d.LayoutCaptureContext;
 import dev.gdx.uiharness.scene2d.RenderThreadScheduler;
 import dev.gdx.uiharness.scene2d.Scene2dHarness;
+import dev.gdx.uiharness.scene2d.Scene2dNavigationRunner;
+import dev.gdx.uiharness.scene2d.Scene2dScenarioRunner;
+import dev.gdx.uiharness.scene2d.Scene2dInputDispatcher;
 import dev.gdx.uiharness.scene2d.Scene2dSession;
+import dev.gdx.uiharness.scene2d.Scene2dScenarioDeadlineScheduler;
 import dev.gdx.uiharness.scene2d.TypographyCaptureContext;
 import java.io.IOException;
 import java.io.InputStream;
@@ -113,7 +118,8 @@ public final class FixtureControl implements AutoCloseable {
     private static final Duration ARTIFACT_LIFETIME = Duration.ofHours(1);
     private static final List<String> CAPABILITIES = List.of(
             "action", "compare", "query", "scenario-list", "scenario-start",
-            "screenshot", "snapshot", "layout", "trace", "typography", "ui_assert", "wait");
+            "screenshot", "snapshot", "layout", "trace", "typography", "ui_assert", "wait",
+            "ui_navigation_inspect", "ui_navigation_validate");
 
     private final Path processRoot;
     private final Path artifactRoot;
@@ -140,6 +146,8 @@ public final class FixtureControl implements AutoCloseable {
     private final AtomicBoolean withholdAssertionFrames = new AtomicBoolean();
     private final AtomicBoolean withholdScenarioFrames = new AtomicBoolean();
     private final RegisteredLaunchCoordinator launchCoordinator;
+    private final Scene2dScenarioRunner scenarioRunner;
+    private final Scene2dNavigationRunner navigationRunner;
     private HarnessMcpServer server;
     private Future<?> terminationTask;
 
@@ -167,6 +175,23 @@ public final class FixtureControl implements AutoCloseable {
         scenarios.register(scenario("incompatible-reference", "another-application"), lifecycle);
         scenarioDeadlines = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofPlatform().name("reference-scenario-deadline").factory());
+        scenarios.register(scenario("navigation", APPLICATION_ID), lifecycle);
+        Scene2dScenarioDeadlineScheduler scenarioDeadlineScheduler = (delay, signal) -> {
+            java.util.concurrent.ScheduledFuture<?> scheduled =
+                    scenarioDeadlines.schedule(signal, delay.toMillis(),
+                            java.util.concurrent.TimeUnit.MILLISECONDS);
+            return () -> scheduled.cancel(false);
+        };
+        scenarioRunner = new Scene2dScenarioRunner(
+                scenarios, scheduler, clock, scenarioDeadlineScheduler);
+        navigationRunner = new Scene2dNavigationRunner(
+                scenarioRunner, sceneSession,
+                new Scene2dInputDispatcher(stage, stage), scheduler, clock,
+                scenarioDeadlineScheduler, clock::revision, clock::frame,
+                new Scene2dNavigationRunner.Scenario(
+                        "navigation", 7, Map.of(), RESTART_PROFILE.id(), APPLICATION_ID, PROCESS_ID,
+                        SESSION_ID),
+                8);
         replacementExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-replacement-launch-", 0).factory());
         replacementCoordinator = new ReplacementProcessCoordinator(
@@ -232,10 +257,26 @@ public final class FixtureControl implements AutoCloseable {
         }
         CapabilitySet capabilities = new CapabilitySet(CAPABILITIES);
         ScreenCapture tracingCapture = new TracingCapture(capture, traces);
+        HarnessProtocolService.NavigationCoordinator navigationCoordinator =
+                new HarnessProtocolService.NavigationCoordinator() {
+                    @Override public CompletionStage<
+                            dev.gdx.uiharness.core.navigation.NavigationResult> inspect(
+                            Command.NavigationSpec spec, Deadline deadline) {
+                        return navigationRunner.inspect(toCoreNavigationRequest(spec, deadline));
+                    }
+
+                    @Override public CompletionStage<
+                            dev.gdx.uiharness.core.navigation.NavigationResult> validate(
+                            Command.NavigationSpec spec, Deadline deadline) {
+                        return navigationRunner.validate(toCoreNavigationRequest(spec, deadline));
+                    }
+                };
         HarnessProtocolService.Session session = new HarnessProtocolService.Session(
                 tracingHarness, new StrictResolution(), waits, tracingCapture,
                 capabilities, traces, Optional.of(scenarios),
-                Optional.of(this::startScenario));
+                Optional.of(this::startScenario),
+                Optional.of(navigationCoordinator),
+                Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
         VisualReference reference = reference();
         VisualPolicy policy = new VisualPolicy(
                 "reference-smoke", 1, 1280L * 720, 0.125, true, true);
@@ -288,6 +329,26 @@ public final class FixtureControl implements AutoCloseable {
     public void afterDraw() {
         // Replacement JVM owns and advances its own LWJGL3 frame loop.
         fence.completedFrame(clock.revision(), clock.frame());
+        sceneSession.completedFrame(
+                scenarioRunner, navigationRunner, clock.revision(), clock.frame());
+    }
+
+    private static dev.gdx.uiharness.core.navigation.NavigationRequest toCoreNavigationRequest(
+            Command.NavigationSpec spec, Deadline deadline) {
+        List<dev.gdx.uiharness.core.navigation.NavigationStep> steps = new ArrayList<>();
+        for (int index = 0; index < spec.inputs().size(); index++) {
+            dev.gdx.uiharness.core.navigation.NavigationInput input =
+                    dev.gdx.uiharness.core.navigation.NavigationInput.valueOf(
+                            spec.inputs().get(index).toUpperCase(java.util.Locale.ROOT)
+                                    .replace('-', '_'));
+            steps.add(new dev.gdx.uiharness.core.navigation.NavigationStep(
+                    input, index + 1L, index + 1L, index + 2L, index + 2L,
+                    "state:no-focus", "state:no-focus", null));
+        }
+        return new dev.gdx.uiharness.core.navigation.NavigationRequest(
+                1, steps, List.of(), spec.startFocus(), null, spec.controllerSupported(),
+                false, spec.maxSteps(), spec.maxActors(), spec.maxResultBytes(),
+                spec.maxEvidenceBytes(), deadline.timeout());
     }
 
     /** Closes every resource in dependency order and removes its server-owned directories. */
@@ -407,6 +468,33 @@ public final class FixtureControl implements AutoCloseable {
             textField("username").setText("");
             textField("password").setText("");
             stage.unfocusAll();
+            if ("navigation".equals(request.scenarioId())) {
+                com.badlogic.gdx.scenes.scene2d.Actor focus = firstFocusable();
+                if (focus != null) {
+                    stage.setKeyboardFocus(focus);
+                }
+            }
+        }
+
+        private com.badlogic.gdx.scenes.scene2d.Actor firstFocusable() {
+            return firstFocusable(stage.getActors());
+        }
+
+        private com.badlogic.gdx.scenes.scene2d.Actor firstFocusable(
+                Iterable<com.badlogic.gdx.scenes.scene2d.Actor> actors) {
+            for (com.badlogic.gdx.scenes.scene2d.Actor actor : actors) {
+                if (actor instanceof com.badlogic.gdx.scenes.scene2d.ui.Button
+                        || actor instanceof com.badlogic.gdx.scenes.scene2d.ui.TextField) {
+                    return actor;
+                }
+                if (actor instanceof com.badlogic.gdx.scenes.scene2d.Group group) {
+                    com.badlogic.gdx.scenes.scene2d.Actor nested = firstFocusable(group.getChildren());
+                    if (nested != null) {
+                        return nested;
+                    }
+                }
+            }
+            return null;
         }
 
         @Override public boolean ready(ScenarioRequest request) {

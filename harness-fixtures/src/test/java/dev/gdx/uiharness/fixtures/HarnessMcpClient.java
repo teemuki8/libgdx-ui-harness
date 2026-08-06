@@ -428,6 +428,29 @@ final class HarnessMcpClient implements Closeable {
         input.close();
     }
 
+    JsonNode navigate(String sessionId, List<String> inputs, long deadlineMillis)
+            throws Exception {
+        Map<String, Object> spec = Map.ofEntries(
+                Map.entry("scenarioId", "navigation"),
+                Map.entry("seed", 7),
+                Map.entry("configuration", Map.of()),
+                Map.entry("profileId", "desktop-restart-1280x720"),
+                Map.entry("applicationId", "reference-ui-app"),
+                Map.entry("processId", "reference-ui-process"),
+                Map.entry("sessionId", "reference-ui"),
+                Map.entry("inputs", inputs),
+                Map.entry("controllerSupported", true),
+                Map.entry("maxSteps", 16),
+                Map.entry("maxActors", 16),
+                Map.entry("maxResultBytes", 262144),
+                Map.entry("maxEvidenceBytes", 262144),
+                Map.entry("maxDurationMillis", 5000));
+        JsonNode content = call("ui_navigation_inspect", Map.of(
+                "sessionId", sessionId, "spec", spec, "deadlineMillis", deadlineMillis));
+        requireKind(content, "navigation-result");
+        return content;
+    }
+
     private JsonNode call(String tool, Map<String, Object> arguments) throws Exception {
         JsonNode result = request("tools/call", Map.of("name", tool, "arguments", arguments));
         if (result.path("isError").asBoolean()) {
