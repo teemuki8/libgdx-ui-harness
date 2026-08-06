@@ -143,7 +143,8 @@ public final class Scene2dSnapshotter {
                     stageBounds,
                     screenBounds,
                     nodeFrame.zIndex(),
-                    builder.properties);
+                    builder.properties,
+                    builder.binding);
             nodes.put(node.id(), node);
             estimatedBytes += estimateBytes(node);
         }

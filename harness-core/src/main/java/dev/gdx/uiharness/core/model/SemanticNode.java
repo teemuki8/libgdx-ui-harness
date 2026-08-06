@@ -24,6 +24,7 @@ import java.util.Objects;
  * @param screenBounds screen-space bounds
  * @param zIndex sibling z-order
  * @param properties bounded adapter-specific properties
+ * @param binding explicit runtime entity binding, or {@code null} when unbound
  */
 public record SemanticNode(
         String id,
@@ -41,9 +42,33 @@ public record SemanticNode(
         Bounds stageBounds,
         Bounds screenBounds,
         int zIndex,
-        Map<String, String> properties) {
+        Map<String, String> properties,
+        RuntimeBinding binding) {
     private static final int MAX_STRING_LENGTH = 16_384;
     private static final int MAX_PROPERTIES = 256;
+
+    /** Backward-compatible constructor for nodes without a runtime binding. */
+    public SemanticNode(
+            String id,
+            String parentId,
+            List<String> children,
+            Role role,
+            String accessibleName,
+            String text,
+            String label,
+            String testId,
+            String actorName,
+            String actorType,
+            SemanticState state,
+            Bounds localBounds,
+            Bounds stageBounds,
+            Bounds screenBounds,
+            int zIndex,
+            Map<String, String> properties) {
+        this(id, parentId, children, role, accessibleName, text, label, testId, actorName,
+                actorType, state, localBounds, stageBounds, screenBounds, zIndex, properties,
+                null);
+    }
 
     /** Validates scalar values and defensively copies child and property collections. */
     public SemanticNode {

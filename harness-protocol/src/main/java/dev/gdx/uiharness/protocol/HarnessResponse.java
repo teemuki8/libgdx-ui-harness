@@ -114,7 +114,8 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(value = Result.MatrixRunStarted.class, name = "matrix-run-started"),
         @JsonSubTypes.Type(value = Result.MatrixReportData.class, name = "matrix-report"),
         @JsonSubTypes.Type(value = Result.SemanticCompare.class, name = "semantic-compare"),
-        @JsonSubTypes.Type(value = Result.TraceQuery.class, name = "trace-query")
+        @JsonSubTypes.Type(value = Result.TraceQuery.class, name = "trace-query"),
+        @JsonSubTypes.Type(value = Result.RuntimeCompare.class, name = "runtime-compare")
     })
     sealed interface Result permits Result.Sessions, Result.Capabilities, Result.Snapshot,
             Result.Query, Result.Action, Result.Assertion, Result.Wait, Result.Screenshot,
@@ -122,7 +123,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             Result.LayoutDiagnostic, Result.TraceStopped, Result.ScenarioList,
             Result.ScenarioStart, Result.Navigation, Result.LayoutValidation,
             Result.MatrixRunStarted, Result.MatrixReportData, Result.SemanticCompare,
-            Result.TraceQuery {
+            Result.TraceQuery, Result.RuntimeCompare {
         /** Active session catalog. */
         record Sessions(List<SessionInfo> sessions) implements Result {
             /** Defensively copies the session catalog. */
@@ -213,6 +214,15 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             /** Requires a closed projection result. */
             public TraceQuery {
                 result = Objects.requireNonNull(result, "result");
+            }
+        }
+
+        /** Bounded typed displayed/runtime comparison. */
+        record RuntimeCompare(dev.gdx.uiharness.core.runtime.DisplayedRuntimeComparison comparison)
+                implements Result {
+            /** Requires a closed comparison. */
+            public RuntimeCompare {
+                comparison = Objects.requireNonNull(comparison, "comparison");
             }
         }
 

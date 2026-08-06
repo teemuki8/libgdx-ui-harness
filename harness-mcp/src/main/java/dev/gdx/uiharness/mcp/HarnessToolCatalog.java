@@ -302,6 +302,25 @@ public final class HarnessToolCatalog {
                                 List.of("runId")),
                         output("matrix-report", matrixReportSchema(),
                                 List.of("report"))),
+                tool("ui_runtime_compare",
+                        "Compare one bound node's displayed value against its runtime "
+                                + "observation with typed correlation",
+                        locatorInput(Map.of(
+                                "maxDurationMillis", integer(
+                                        1, HarnessRequest.MAX_DEADLINE_MILLIS)),
+                                List.of("maxDurationMillis")),
+                        output("runtime-compare-result", Map.of(
+                                "status", enumString(
+                                        "EQUAL", "MISMATCH", "STALE", "UNCORRELATED",
+                                        "MISSING", "UNAVAILABLE", "AMBIGUOUS"),
+                                "entityId", string(1, MAX_IDENTIFIER),
+                                "propertyId", string(1, MAX_IDENTIFIER),
+                                "displayedValue", string(0, ProtocolJson.MAX_STRING_LENGTH),
+                                "runtimeValue", nullableString(),
+                                "displayedFrame", integer(0, Long.MAX_VALUE),
+                                "runtimeFrame", nullableInt()),
+                                List.of("status", "entityId", "propertyId",
+                                        "displayedFrame"))),
                 tool("ui_trace_query",
                         "Query compact state-transition summaries from one retained bounded "
                                 + "trace without downloading the archive",
@@ -905,6 +924,10 @@ public final class HarnessToolCatalog {
                 Map.entry("maxFindings", 256),
                 Map.entry("maxNodes", 10000),
                 Map.entry("maxDurationMillis", 2000));
+        values.put("ui_runtime_compare", List.of(Map.of(
+                "sessionId", "SESSION",
+                "locator", roleButton,
+                "maxDurationMillis", 2000)));
         values.put("ui_trace_query", List.of(Map.of(
                 "sessionId", "SESSION",
                 "spec", Map.ofEntries(

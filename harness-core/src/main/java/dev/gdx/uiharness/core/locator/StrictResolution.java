@@ -122,6 +122,12 @@ public final class StrictResolution implements LocatorEngine {
                         limits.validateString(testId.testId(), "locator testId");
                 case ActorLocator actor ->
                         limits.validateString(actor.text().source(), "locator actor text");
+                case EntityLocator entity ->
+                        limits.validateString(entity.entityId(), "locator entityId");
+                case EntityPropertyLocator property -> {
+                    limits.validateString(property.entityId(), "locator entityId");
+                    limits.validateString(property.propertyId(), "locator propertyId");
+                }
                 case RelationLocator relation -> {
                     pending.push(relation.target());
                     pending.push(relation.anchor());
@@ -329,6 +335,12 @@ public final class StrictResolution implements LocatorEngine {
                 case ActorLocator ignored -> {
                     // Leaf locator.
                 }
+                case EntityLocator ignored -> {
+                    // Leaf locator.
+                }
+                case EntityPropertyLocator ignored -> {
+                    // Leaf locator.
+                }
             }
         }
         return Optional.empty();
@@ -390,6 +402,11 @@ public final class StrictResolution implements LocatorEngine {
                     case NAME -> node.actorName();
                     case TYPE -> node.actorType();
                 });
+                case EntityLocator entity -> node.binding() != null
+                        && entity.entityId().equals(node.binding().entityId());
+                case EntityPropertyLocator property -> node.binding() != null
+                        && property.entityId().equals(node.binding().entityId())
+                        && property.propertyId().equals(node.binding().propertyId());
                 case RelationLocator relation -> matchesRelation(relation, node);
                 case FilteredLocator filtered ->
                         matches(filtered.locator(), node) && matchesFilter(filtered.filter(), node);

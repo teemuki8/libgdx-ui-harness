@@ -17,10 +17,12 @@ public record ActorMetadata(
         String viewportId,
         TypographyMetadata typography,
         LayoutMetadata layout,
-        Map<String, String> properties) {
+        Map<String, String> properties,
+        dev.gdx.uiharness.core.model.RuntimeBinding binding) {
     static final ActorMetadata EMPTY =
             new ActorMetadata(
-                    null, null, null, null, null, null, null, null, null, null, Map.of());
+                    null, null, null, null, null, null, null, null, null, null, Map.of(),
+                    null);
 
     /** Defensively copies the custom property map. */
     public ActorMetadata {
@@ -36,7 +38,7 @@ public record ActorMetadata(
             String testId,
             Map<String, String> properties) {
         this(role, accessibleName, text, label, testId,
-                null, null, null, null, null, properties);
+                null, null, null, null, null, properties, null);
     }
 
     /** Retains the evaluator-complete constructor introduced in protocol V1. */
@@ -51,7 +53,7 @@ public record ActorMetadata(
             String viewportId,
             Map<String, String> properties) {
         this(role, accessibleName, text, label, testId,
-                control, currentValue, viewportId, null, null, properties);
+                control, currentValue, viewportId, null, null, properties, null);
     }
 
     /** Retains the evaluator/typography constructor introduced before layout V1. */
@@ -67,7 +69,7 @@ public record ActorMetadata(
             TypographyMetadata typography,
             Map<String, String> properties) {
         this(role, accessibleName, text, label, testId,
-                control, currentValue, viewportId, typography, null, properties);
+                control, currentValue, viewportId, typography, null, properties, null);
     }
 
     ActorMetadata withRole(Role value) {
@@ -93,6 +95,12 @@ public record ActorMetadata(
     ActorMetadata withTestId(String value) {
         return copy(role, accessibleName, text, label, value,
                 control, currentValue, viewportId, typography);
+    }
+
+    ActorMetadata withBinding(dev.gdx.uiharness.core.model.RuntimeBinding value) {
+        return new ActorMetadata(
+                role, accessibleName, text, label, testId,
+                control, currentValue, viewportId, typography, layout, properties, value);
     }
 
     ActorMetadata withControl(ControlMetadata value) {
@@ -124,7 +132,7 @@ public record ActorMetadata(
         var updated = new java.util.LinkedHashMap<>(properties);
         updated.put(key, value);
         return new ActorMetadata(role, accessibleName, text, label, testId,
-                control, currentValue, viewportId, typography, layout, updated);
+                control, currentValue, viewportId, typography, layout, updated, binding);
     }
 
     private ActorMetadata copy(
@@ -154,6 +162,6 @@ public record ActorMetadata(
             LayoutMetadata nextLayout) {
         return new ActorMetadata(nextRole, nextAccessibleName, nextText, nextLabel, nextTestId,
                 nextControl, nextCurrentValue, nextViewportId,
-                nextTypography, nextLayout, properties);
+                nextTypography, nextLayout, properties, binding);
     }
 }

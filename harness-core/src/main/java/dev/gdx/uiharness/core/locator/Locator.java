@@ -7,7 +7,8 @@ import dev.gdx.uiharness.core.model.Role;
  * backend actor.
  */
 public sealed interface Locator permits RoleLocator, TextLocator, TestIdLocator,
-        ActorLocator, RelationLocator, FilteredLocator, IndexedLocator {
+        ActorLocator, RelationLocator, FilteredLocator, IndexedLocator, EntityLocator,
+        EntityPropertyLocator {
     /** Creates a locator for a semantic role. */
     static Locator role(Role role) {
         return new RoleLocator(role);
@@ -36,6 +37,16 @@ public sealed interface Locator permits RoleLocator, TextLocator, TestIdLocator,
     /** Creates a locator for a backend actor type used as a fallback. */
     static Locator actorType(TextMatch actorType) {
         return new ActorLocator(ActorField.TYPE, actorType);
+    }
+
+    /** Creates a locator for nodes explicitly bound to one runtime entity. */
+    static Locator entity(String entityId) {
+        return new EntityLocator(entityId);
+    }
+
+    /** Creates a locator for nodes explicitly bound to one runtime entity property. */
+    static Locator entityProperty(String entityId, String propertyId) {
+        return new EntityPropertyLocator(entityId, propertyId);
     }
 
     /** Adds a predicate to this locator. */

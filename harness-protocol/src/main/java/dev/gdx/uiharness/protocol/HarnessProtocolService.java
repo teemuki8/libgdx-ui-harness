@@ -275,6 +275,10 @@ public final class HarnessProtocolService {
             requireCapability(session, capability(command));
             return traceQuery(session, traceQuery.spec(), deadline);
         }
+        if (command instanceof Command.RuntimeCompare compare) {
+            requireCapability(session, capability(command));
+            return runtimeCompare(session, compare.locator(), deadline);
+        }
 
 
         requireCapability(session, capability(command));
@@ -393,6 +397,9 @@ public final class HarnessProtocolService {
         if (command instanceof Command.TraceQuery) {
             return "ui_trace_query";
         }
+        if (command instanceof Command.RuntimeCompare) {
+            return "ui_runtime_compare";
+        }
         if (command instanceof Command.Query) {
             return "query";
         }
@@ -432,6 +439,18 @@ public final class HarnessProtocolService {
                     "Session does not support capability: " + capability,
                     ErrorEvidence.ofDetails(Map.of("capability", capability)));
         }
+    }
+
+    private static RoutedOperation<?> runtimeCompare(
+            Session session, Command.LocatorSpec locator, Deadline deadline) {
+        if (session.runtimeCompareCoordinator().isEmpty()) {
+            throw new HarnessException(ErrorCode.UNSUPPORTED_CAPABILITY,
+                    "Runtime comparison is unavailable for this session",
+                    ErrorEvidence.empty());
+        }
+        return RoutedOperation.map(
+                session.runtimeCompareCoordinator().orElseThrow().compare(locator, deadline),
+                HarnessResponse.Result.RuntimeCompare::new);
     }
 
     private static RoutedOperation<?> traceQuery(
@@ -768,7 +787,8 @@ public final class HarnessProtocolService {
             Optional<NavigationCoordinator> navigationCoordinator,
             Optional<LayoutValidationCoordinator> layoutValidationCoordinator,
             Optional<MatrixCoordinator> matrixCoordinator,
-            Optional<SemanticCompareCoordinator> semanticCompareCoordinator) {
+            Optional<SemanticCompareCoordinator> semanticCompareCoordinator,
+            Optional<RuntimeCompareCoordinator> runtimeCompareCoordinator) {
         /** Retains source compatibility for sessions without scenario lifecycle registration. */
         public Session(
                 Harness harness,
@@ -779,7 +799,7 @@ public final class HarnessProtocolService {
                 TraceController traces) {
             this(harness, locators, waits, capture, capabilities, traces,
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
-                    Optional.empty(), Optional.empty());
+                    Optional.empty(), Optional.empty(), Optional.empty());
         }
 
         /** Retains source compatibility for sessions without navigation wiring. */
@@ -794,7 +814,7 @@ public final class HarnessProtocolService {
                 Optional<ScenarioCoordinator> scenarioCoordinator) {
             this(harness, locators, waits, capture, capabilities, traces,
                     scenarioRegistry, scenarioCoordinator, Optional.empty(), Optional.empty(),
-                    Optional.empty(), Optional.empty());
+                    Optional.empty(), Optional.empty(), Optional.empty());
         }
 
         /** Retains source compatibility for sessions without layout validation wiring. */
@@ -810,7 +830,7 @@ public final class HarnessProtocolService {
                 Optional<NavigationCoordinator> navigationCoordinator) {
             this(harness, locators, waits, capture, capabilities, traces,
                     scenarioRegistry, scenarioCoordinator, navigationCoordinator,
-                    Optional.empty(), Optional.empty(), Optional.empty());
+                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
         }
 
         /** Retains source compatibility for sessions without matrix wiring. */
@@ -827,7 +847,8 @@ public final class HarnessProtocolService {
                 Optional<LayoutValidationCoordinator> layoutValidationCoordinator) {
             this(harness, locators, waits, capture, capabilities, traces,
                     scenarioRegistry, scenarioCoordinator, navigationCoordinator,
-                    layoutValidationCoordinator, Optional.empty(), Optional.empty());
+                    layoutValidationCoordinator, Optional.empty(), Optional.empty(),
+                    Optional.empty());
         }
 
         /** Retains source compatibility for sessions without semantic comparison wiring. */
@@ -845,7 +866,28 @@ public final class HarnessProtocolService {
                 Optional<MatrixCoordinator> matrixCoordinator) {
             this(harness, locators, waits, capture, capabilities, traces,
                     scenarioRegistry, scenarioCoordinator, navigationCoordinator,
-                    layoutValidationCoordinator, matrixCoordinator, Optional.empty());
+                    layoutValidationCoordinator, matrixCoordinator, Optional.empty(),
+                    Optional.empty());
+        }
+
+        /** Retains source compatibility for sessions without runtime comparison wiring. */
+        public Session(
+                Harness harness,
+                LocatorEngine locators,
+                WaitEngine waits,
+                ScreenCapture capture,
+                CapabilitySet capabilities,
+                TraceController traces,
+                Optional<ScenarioRegistry> scenarioRegistry,
+                Optional<ScenarioCoordinator> scenarioCoordinator,
+                Optional<NavigationCoordinator> navigationCoordinator,
+                Optional<LayoutValidationCoordinator> layoutValidationCoordinator,
+                Optional<MatrixCoordinator> matrixCoordinator,
+                Optional<SemanticCompareCoordinator> semanticCompareCoordinator) {
+            this(harness, locators, waits, capture, capabilities, traces,
+                    scenarioRegistry, scenarioCoordinator, navigationCoordinator,
+                    layoutValidationCoordinator, matrixCoordinator, semanticCompareCoordinator,
+                    Optional.empty());
         }
 
         /** Validates all required session operations and optional scenario registration. */
@@ -867,6 +909,8 @@ public final class HarnessProtocolService {
                     Objects.requireNonNull(matrixCoordinator, "matrixCoordinator");
             semanticCompareCoordinator = Objects.requireNonNull(
                     semanticCompareCoordinator, "semanticCompareCoordinator");
+            runtimeCompareCoordinator = Objects.requireNonNull(
+                    runtimeCompareCoordinator, "runtimeCompareCoordinator");
         }
     }
 
@@ -935,6 +979,14 @@ public final class HarnessProtocolService {
         /** Validates one atomic completed-frame whole-stage or subtree observation. */
         CompletionStage<dev.gdx.uiharness.core.layout.LayoutValidationResult> validate(
                 Command.LayoutValidationSpec spec, Deadline deadline);
+    }
+
+    /** Optional application-owned displayed/runtime comparison boundary for one session. */
+    @FunctionalInterface
+    public interface RuntimeCompareCoordinator {
+        /** Compares one strictly resolved bound node against its runtime observation. */
+        CompletionStage<dev.gdx.uiharness.core.runtime.DisplayedRuntimeComparison> compare(
+                Command.LocatorSpec locator, Deadline deadline);
     }
 
     /** Optional application-owned semantic baseline comparison boundary for one session. */

@@ -7,6 +7,7 @@ import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.contract.ConditionalRule;
 import dev.gdx.uiharness.core.contract.ContractValue;
 import dev.gdx.uiharness.core.model.Role;
+import dev.gdx.uiharness.core.model.RuntimeBinding;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.util.HashMap;
@@ -57,6 +58,27 @@ public final class Semantics {
     public void setTestId(Actor actor, String testId) {
         Objects.requireNonNull(testId, "testId");
         update(actor, value -> value.withTestId(testId));
+    }
+
+    /** Binds an actor to one runtime entity using explicit application metadata. */
+    public void bindEntity(Actor actor, String entityId) {
+        Objects.requireNonNull(entityId, "entityId");
+        update(actor, value -> value.withBinding(new RuntimeBinding(
+                entityId, null, null, null, null)));
+    }
+
+    /** Binds an actor to one runtime entity property using explicit application metadata. */
+    public void bindProperty(Actor actor, String entityId, String propertyId) {
+        Objects.requireNonNull(entityId, "entityId");
+        Objects.requireNonNull(propertyId, "propertyId");
+        update(actor, value -> value.withBinding(new RuntimeBinding(
+                entityId, propertyId, null, null, null)));
+    }
+
+    /** Replaces the explicit runtime binding for an actor, or clears it with {@code null}. */
+    public void bind(Actor actor, RuntimeBinding binding) {
+        update(actor, value -> binding == null
+                ? value.withBinding(null) : value.withBinding(binding));
     }
 
     /** Adds or replaces one bounded custom property. */

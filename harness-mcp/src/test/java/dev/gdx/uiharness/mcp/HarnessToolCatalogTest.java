@@ -23,13 +23,14 @@ final class HarnessToolCatalogTest {
             "ui_layout_diagnose", "ui_trace_start", "ui_trace_stop", "ui_capabilities",
             "ui_scenarios", "ui_scenario_start", "ui_navigation_inspect",
             "ui_navigation_validate", "ui_validate_layout", "ui_matrix_run",
-            "ui_matrix_results", "ui_semantic_compare", "ui_trace_query");
+            "ui_matrix_results", "ui_semantic_compare", "ui_trace_query",
+            "ui_runtime_compare");
 
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
 
     @Test void exposesOnlyTheApprovedBoundedTools() {
         assertEquals(APPROVED, catalog.toolNames());
-        assertEquals(22, catalog.tools().size());
+        assertEquals(23, catalog.tools().size());
         for (McpSchema.Tool tool : catalog.tools()) {
             assertEquals("object", tool.inputSchema().get("type"));
             assertEquals(false, tool.inputSchema().get("additionalProperties"));
