@@ -22,6 +22,7 @@ include(
     "harness-lwjgl3",
     "harness-protocol",
     "harness-mcp",
+    "harness-agent-runtime",
     "harness-fixtures",
     "benchmarks",
 )

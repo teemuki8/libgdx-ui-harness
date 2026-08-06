@@ -1,5 +1,6 @@
 [versions]
 gdx = "1.14.2"
+agent-runtime = "1.0.0"
 junit = "6.1.2"
 jackson = "2.22.1"
 mcp = "2.0.0"
@@ -7,6 +8,7 @@ japicmp = "0.23.1"
 
 [libraries]
 gdx = { module = "com.badlogicgames.gdx:gdx", version.ref = "gdx" }
+agent-runtime-core = { module = "io.github.teemuki8:agent-runtime-core", version.ref = "agent-runtime" }
 gdx-backend-lwjgl3 = { module = "com.badlogicgames.gdx:gdx-backend-lwjgl3", version.ref = "gdx" }
 jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
 japicmp = { module = "com.github.siom79.japicmp:japicmp", version.ref = "japicmp" }

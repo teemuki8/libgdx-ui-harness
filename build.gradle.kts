@@ -23,6 +23,7 @@ val publishableModules = listOf(
     "harness-lwjgl3",
     "harness-protocol",
     "harness-mcp",
+    "harness-agent-runtime",
 )
 val mavenGroup = "io.github.teemuki8"
 val mavenGroupPath = mavenGroup.replace('.', '/')
@@ -188,6 +189,12 @@ val apiCompatibilityTasks = publishableModules.map { moduleName ->
                     + "$moduleName-$baselineVersion.jar",
             )
             if (!oldJar.isFile) {
+                if (moduleName == "harness-agent-runtime") {
+                    logger.lifecycle(
+                        "apiCompatibility: no released baseline for $moduleName; skipping")
+                    throw org.gradle.api.tasks.StopExecutionException(
+                        "no released baseline for $moduleName")
+                }
                 throw GradleException("Missing API baseline artifact: $oldJar")
             }
             val newJar = project(":$moduleName").tasks.named<Jar>("jar")

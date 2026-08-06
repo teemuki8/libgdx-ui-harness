@@ -3,6 +3,7 @@ package dev.gdx.uiharness.fixtures;
 import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.TextField;
+import dev.gdx.uiharness.agentruntime.AgentRuntimeObservationSource;
 import dev.gdx.uiharness.core.action.Action;
 import dev.gdx.uiharness.core.action.ActionResult;
 import dev.gdx.uiharness.core.action.Harness;
@@ -42,7 +43,6 @@ import dev.gdx.uiharness.core.golden.SemanticComparator;
 import dev.gdx.uiharness.core.model.SemanticNode;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.runtime.RuntimeComparator;
-import dev.gdx.uiharness.core.runtime.RuntimeObservation;
 import dev.gdx.uiharness.core.runtime.RuntimeObservationSource;
 import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
 import dev.gdx.uiharness.core.scenario.ScenarioLifecycle;
@@ -180,6 +180,7 @@ public final class FixtureControl implements AutoCloseable {
     private final Scene2dNavigationRunner navigationRunner;
     private final dev.gdx.uiharness.scene2d.Scene2dLayoutValidator layoutValidator;
     private final Lwjgl3MatrixRunner matrixRunner;
+    private final io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime agentRuntime;
     private HarnessMcpServer server;
     private Future<?> terminationTask;
 
@@ -280,6 +281,20 @@ public final class FixtureControl implements AutoCloseable {
                         PROCESS_ID, SESSION_ID));
         terminationExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-mcp-termination-", 0).factory());
+        agentRuntime = io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime.builder()
+                .sessionId(new io.github.teemuki8.libgdx.agent.runtime.core.SessionId(SESSION_ID))
+                .build();
+        agentRuntime.start();
+        agentRuntime.entities().register(
+                io.github.teemuki8.libgdx.agent.runtime.core.EntityId.of("reference-ui-user"),
+                io.github.teemuki8.libgdx.agent.runtime.core.EntityType.of("user"),
+                () -> "Reference UI user",
+                inspector -> inspector.property("value", () -> {
+                    var field = stage.getRoot().findActor("username");
+                    return io.github.teemuki8.libgdx.agent.runtime.core.RuntimeValues.string(
+                            field instanceof com.badlogic.gdx.scenes.scene2d.ui.TextField usernameField
+                                    ? usernameField.getText() : "");
+                }));
     }
 
     /** Returns semantic metadata for actor tagging after session construction. */
@@ -321,15 +336,8 @@ public final class FixtureControl implements AutoCloseable {
                                 spec.locator() == null ? null : spec.locator().toCore(),
                                 toCoreLayoutConfig(spec),
                                 null));
-        RuntimeObservationSource runtimeSource = binding -> {
-            var field = stage.getRoot().findActor("username");
-            if (!(field instanceof com.badlogic.gdx.scenes.scene2d.ui.TextField usernameField)) {
-                return java.util.Optional.empty();
-            }
-            return java.util.Optional.of(new RuntimeObservation(
-                    binding.entityId(), binding.propertyId(),
-                    clock.frame(), clock.revision(), usernameField.getText(), null));
-        };
+        RuntimeObservationSource runtimeSource =
+                new AgentRuntimeObservationSource(agentRuntime, SESSION_ID);
         RuntimeComparator runtimeComparator = new RuntimeComparator(runtimeSource);
         HarnessProtocolService.RuntimeCompareCoordinator runtimeCoordinator =
                 (locator, deadline) -> scheduler.submit(
@@ -433,6 +441,14 @@ public final class FixtureControl implements AutoCloseable {
         fence.completedFrame(clock.revision(), clock.frame());
         sceneSession.completedFrame(
                 scenarioRunner, navigationRunner, clock.revision(), clock.frame());
+        agentRuntime.beginFrame(FIXED_STEP.toNanos());
+        agentRuntime.endFrame();
+        var completedFrame = agentRuntime.latestFrame().orElseThrow().frameId();
+        agentRuntime.uiCorrelations().recordFrame(
+                new io.github.teemuki8.libgdx.agent.runtime.core.UiFrameCorrelation(
+                        agentRuntime.currentEpoch(), completedFrame, SESSION_ID,
+                        java.util.Optional.of(Long.toString(clock.frame())),
+                        java.util.Optional.of("reference-ui-frame")));
     }
 
     private static BaselineNode toBaselineNode(
@@ -569,6 +585,7 @@ public final class FixtureControl implements AutoCloseable {
         failure = closeResource(capture, failure);
         failure = closeResource(fence, failure);
         failure = closeResource(replacementCoordinator, failure);
+        failure = closeResource(agentRuntime, failure);
         failure = closeResource(sceneHarness, failure);
         failure = closeResource(sceneSession, failure);
         failure = closeResource(scheduler, failure);

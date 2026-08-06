@@ -24,6 +24,7 @@ commons-beanutils:commons-beanutils:1.10.1=checkstyle
 commons-codec:commons-codec:1.15=checkstyle
 commons-collections:commons-collections:3.2.2=checkstyle
 info.picocli:picocli:4.7.7=checkstyle
+io.github.teemuki8:agent-runtime-core:1.0.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 io.modelcontextprotocol.sdk:mcp-core:2.0.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 io.modelcontextprotocol.sdk:mcp-json-jackson3:2.0.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 io.modelcontextprotocol.sdk:mcp:2.0.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath

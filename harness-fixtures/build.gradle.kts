@@ -4,6 +4,7 @@ dependencies {
     implementation(project(":harness-lwjgl3"))
     implementation(project(":harness-protocol"))
     implementation(project(":harness-mcp"))
+    implementation(project(":harness-agent-runtime"))
     implementation(libs.gdx.backend.lwjgl3)
     implementation(libs.jackson.databind)
     runtimeOnly("com.badlogicgames.gdx:gdx-platform:${libs.versions.gdx.get()}:natives-desktop")
