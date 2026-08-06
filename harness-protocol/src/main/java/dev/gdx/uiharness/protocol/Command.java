@@ -7,6 +7,8 @@ import dev.gdx.uiharness.core.assertion.UiAssertion;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.locator.ActorField;
 import dev.gdx.uiharness.core.locator.ActorLocator;
+import dev.gdx.uiharness.core.locator.EntityLocator;
+import dev.gdx.uiharness.core.locator.EntityPropertyLocator;
 import dev.gdx.uiharness.core.locator.FilteredLocator;
 import dev.gdx.uiharness.core.locator.HasFilter;
 import dev.gdx.uiharness.core.locator.HasTextFilter;
@@ -54,14 +56,16 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.MatrixRun.class, name = "matrix-run"),
     @JsonSubTypes.Type(value = Command.MatrixResults.class, name = "matrix-results"),
     @JsonSubTypes.Type(value = Command.SemanticCompare.class, name = "semantic-compare"),
-    @JsonSubTypes.Type(value = Command.TraceQuery.class, name = "trace-query")
+    @JsonSubTypes.Type(value = Command.TraceQuery.class, name = "trace-query"),
+    @JsonSubTypes.Type(value = Command.RuntimeCompare.class, name = "runtime-compare")
 })
 public sealed interface Command permits Command.Sessions, Command.Capabilities, Command.Snapshot,
         Command.Query, Command.Action, Command.Assert, Command.Wait, Command.Screenshot,
         Command.TraceStart, Command.InspectCompare, Command.TypographyDiagnose,
         Command.LayoutDiagnose, Command.TraceStop, Command.ScenarioList, Command.ScenarioStart,
         Command.NavigationInspect, Command.NavigationValidate, Command.LayoutValidate,
-        Command.MatrixRun, Command.MatrixResults, Command.SemanticCompare, Command.TraceQuery {
+        Command.MatrixRun, Command.MatrixResults, Command.SemanticCompare, Command.TraceQuery,
+        Command.RuntimeCompare {
     /** Lists active sessions. */
     record Sessions() implements Command {}
 
@@ -515,6 +519,18 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
         }
     }
 
+    /** Compares one bound node's displayed value against its runtime observation. */
+    record RuntimeCompare(LocatorSpec locator, long maxDurationMillis) implements Command {
+        /** Validates the locator and deadline bound. */
+        public RuntimeCompare {
+            Objects.requireNonNull(locator, "locator");
+            if (maxDurationMillis < 1 || maxDurationMillis > 3_600_000) {
+                throw new IllegalArgumentException(
+                        "maxDurationMillis must be between 1 and 3600000");
+            }
+        }
+    }
+
     /** Queries compact state transitions from one retained trace. */
     record TraceQuery(TraceQuerySpec spec) implements Command {
         /** Validates the query. */
@@ -958,10 +974,13 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
         @JsonSubTypes.Type(value = LocatorSpec.Actor.class, name = "actor"),
         @JsonSubTypes.Type(value = LocatorSpec.Relation.class, name = "relation"),
         @JsonSubTypes.Type(value = LocatorSpec.Filter.class, name = "filter"),
-        @JsonSubTypes.Type(value = LocatorSpec.Index.class, name = "index")
+        @JsonSubTypes.Type(value = LocatorSpec.Index.class, name = "index"),
+        @JsonSubTypes.Type(value = LocatorSpec.Entity.class, name = "entity"),
+        @JsonSubTypes.Type(value = LocatorSpec.EntityProperty.class, name = "entity-property")
     })
     sealed interface LocatorSpec permits LocatorSpec.Role, LocatorSpec.Text, LocatorSpec.TestId,
-            LocatorSpec.Actor, LocatorSpec.Relation, LocatorSpec.Filter, LocatorSpec.Index {
+            LocatorSpec.Actor, LocatorSpec.Relation, LocatorSpec.Filter, LocatorSpec.Index,
+            LocatorSpec.Entity, LocatorSpec.EntityProperty {
         Locator toCore();
 
         /** Maps a core locator to its closed wire representation. */
@@ -991,6 +1010,9 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
                         FilterSpec.fromCore(filtered.filter()));
                 case IndexedLocator indexed -> new LocatorSpec.Index(
                         LocatorSpec.fromCore(indexed.locator()), indexed.index());
+                case EntityLocator entity -> new LocatorSpec.Entity(entity.entityId());
+                case EntityPropertyLocator property -> new LocatorSpec.EntityProperty(
+                        property.entityId(), property.propertyId());
             };
         }
 
@@ -1077,6 +1099,31 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
 
             @Override public Locator toCore() {
                 return locator.toCore().filter(filter.toCore());
+            }
+        }
+
+        /** Explicit runtime entity binding selection. */
+        record Entity(String entityId) implements LocatorSpec {
+            /** Validates the entity identifier. */
+            public Entity {
+                ProtocolJson.requireText(entityId, "entityId");
+            }
+
+            @Override public Locator toCore() {
+                return Locator.entity(entityId);
+            }
+        }
+
+        /** Explicit runtime entity property binding selection. */
+        record EntityProperty(String entityId, String propertyId) implements LocatorSpec {
+            /** Validates both identifiers. */
+            public EntityProperty {
+                ProtocolJson.requireText(entityId, "entityId");
+                ProtocolJson.requireText(propertyId, "propertyId");
+            }
+
+            @Override public Locator toCore() {
+                return Locator.entityProperty(entityId, propertyId);
             }
         }
 

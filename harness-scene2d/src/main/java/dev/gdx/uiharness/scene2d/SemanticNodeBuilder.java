@@ -18,6 +18,7 @@ final class SemanticNodeBuilder implements ActorSemanticAdapter.Target {
     String text;
     String label;
     String testId;
+    dev.gdx.uiharness.core.model.RuntimeBinding binding;
     Boolean enabled;
     Boolean checked;
     Boolean selected;
@@ -124,6 +125,9 @@ final class SemanticNodeBuilder implements ActorSemanticAdapter.Target {
         }
         if (metadata.testId() != null) {
             testId = metadata.testId();
+        }
+        if (metadata.binding() != null) {
+            binding = metadata.binding();
         }
         if (metadata.currentValue() != null) {
             currentValue = metadata.currentValue();

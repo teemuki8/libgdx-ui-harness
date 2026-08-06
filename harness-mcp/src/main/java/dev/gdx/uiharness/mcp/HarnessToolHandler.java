@@ -202,6 +202,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             case "ui_matrix_results" -> "matrix-results";
             case "ui_semantic_compare" -> "semantic-compare";
             case "ui_trace_query" -> "trace-query";
+            case "ui_runtime_compare" -> "runtime-compare";
             case "ui_capabilities" -> "capabilities";
             default -> throw new IllegalArgumentException("Unknown tool: " + toolName);
         };
@@ -556,6 +557,17 @@ public final class HarnessToolHandler implements AutoCloseable {
             content.put("truncated", traceQuery.result().truncated());
             content.put("gapCount", traceQuery.result().gapCount());
             content.put("unknownCauseCount", traceQuery.result().unknownCauseCount());
+            return Map.copyOf(content);
+        }
+        if (result instanceof HarnessResponse.Result.RuntimeCompare compare) {
+            LinkedHashMap<String, Object> content = content("runtime-compare-result");
+            content.put("status", compare.comparison().status().name());
+            content.put("entityId", compare.comparison().entityId());
+            content.put("propertyId", compare.comparison().propertyId());
+            content.put("displayedValue", compare.comparison().displayedValue());
+            content.put("runtimeValue", compare.comparison().runtimeValue());
+            content.put("displayedFrame", compare.comparison().displayedFrame());
+            content.put("runtimeFrame", compare.comparison().runtimeFrame());
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.Navigation navigation) {
