@@ -167,6 +167,7 @@ def sealed_manifest():
 def sealed_precommitment(manifest):
     precommitment = {
         "schemaVersion": "agentic-palisade/repeatability-precommitment-v1",
+        "profile": "high-confidence",
         "candidateCommit": manifest["candidateCommit"],
         "candidateSourceSha256": manifest["candidateSourceSha256"],
         "releaseVersion": manifest["releaseVersion"],
@@ -200,6 +201,44 @@ def sealed_precommitment(manifest):
     manifest["precommitmentSha256"] = precommitment["precommitmentSha256"]
     manifest["manifestSha256"] = GATE.seal(manifest)
     return precommitment
+
+
+def load_schema(name):
+    schema = json.loads((SCRIPT.parent / "schemas" / name).read_text())
+    return jsonschema.Draft202012Validator(schema)
+
+
+def sealed_fixture_without(key):
+    precommitment = sealed_precommitment(sealed_manifest())
+    precommitment.pop(key)
+    return precommitment
+
+
+def sealed_fixture_with(key, value):
+    precommitment = sealed_precommitment(sealed_manifest())
+    precommitment[key] = value
+    return precommitment
+
+
+def low_confidence_fixture(profile="low-confidence"):
+    """A sealed pair meeting the low-confidence thresholds: three matched
+    pairs in one schedule, one blind reviewer at median fidelity 3, a 15/25
+    semantic pass rate, and three identical PNG digests per observation."""
+    manifest = sealed_manifest()
+    manifest["repetitions"] = manifest["repetitions"][:3]
+    for repetition in manifest["repetitions"]:
+        candidate = repetition["candidate"]
+        candidate["semantic"]["passed"] = 15
+        for observation in candidate["captures"].values():
+            observation["pngSha256"] = observation["pngSha256"][:3]
+        repetition["humanReview"]["reviewerIds"] = ["reviewer-a"]
+        repetition["humanReview"]["fidelityRatings"] = [3]
+    precommitment = sealed_precommitment(manifest)
+    precommitment["profile"] = profile
+    precommitment["precommitmentSha256"] = GATE.seal_precommitment(precommitment)
+    manifest["precommitmentSha256"] = precommitment["precommitmentSha256"]
+    manifest["manifestSha256"] = GATE.seal(manifest)
+    return manifest, precommitment
 
 
 def cancelled_manifest(fail_fast=True, trigger_failed=True):
@@ -261,6 +300,15 @@ class ReleaseGateTest(unittest.TestCase):
         self.assertFalse(validator.is_valid(without_model))
         self.assertTrue(any(
             "model" in error.message for error in validator.iter_errors(without_model)))
+
+    def test_precommitment_schema_requires_profile(self):
+        validator = load_schema("repeatability-precommitment.schema.json")
+        without_profile = sealed_fixture_without("profile")
+        self.assertFalse(validator.is_valid(without_profile))
+        with_profile = sealed_fixture_with("profile", "low-confidence")
+        self.assertTrue(validator.is_valid(with_profile))
+        bad_profile = sealed_fixture_with("profile", "medium-confidence")
+        self.assertFalse(validator.is_valid(bad_profile))
 
     def test_complete_conjunction_passes_and_is_deterministic(self):
         manifest = sealed_manifest()
@@ -363,6 +411,23 @@ class ReleaseGateTest(unittest.TestCase):
         self.assertIn("observed matched pairs only", decision["statistics"]["scope"])
         self.assertIn("no population or universal determinism claim",
                       decision["statistics"]["scope"])
+
+    def test_low_confidence_profile_applies_lowered_thresholds(self):
+        manifest, precommitment = low_confidence_fixture()
+        decision = GATE.evaluate(manifest, precommitment, "1" * 40, "1.1.0")
+        self.assertTrue(decision["passed"])
+        self.assertEqual([], decision["failures"])
+
+    def test_high_confidence_profile_still_strict(self):
+        manifest = sealed_manifest()
+        precommitment = sealed_precommitment(manifest)
+        decision = GATE.evaluate(manifest, precommitment, "1" * 40, "1.1.0")
+        self.assertTrue(decision["passed"])
+        low_manifest, low_precommitment = low_confidence_fixture(
+            profile="high-confidence")
+        strict_decision = GATE.evaluate(
+            low_manifest, low_precommitment, "1" * 40, "1.1.0")
+        self.assertFalse(strict_decision["passed"])
 
     def test_cli_verifies_precommitted_decision_byte_for_byte(self):
         manifest = sealed_manifest()

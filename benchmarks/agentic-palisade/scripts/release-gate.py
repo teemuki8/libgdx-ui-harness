@@ -30,6 +30,41 @@ PRECOMMIT_HASHES = (
 )
 CONTROLS_PATH = Path(__file__).with_name("retained-controls.json")
 
+PROFILES = {
+    "low-confidence": {
+        "modelImagesRequired": True,
+        "pairs": 3,
+        "rounds": 2,
+        "requiredRepetitions": 1,
+        "semanticPassRate": 0.6,
+        "pngDigests": 3,
+        "settlingFrames": 3,
+        "reviewers": 1,
+        "medianFidelity": 3,
+        "unusableMajority": True,
+        "costInputTokens": 500_000,
+        "costBuilds": 10,
+        "costLaunches": 30,
+        "wallSeconds": 40 * 60,
+    },
+    "high-confidence": {
+        "modelImagesRequired": True,
+        "pairs": 5,
+        "rounds": 3,
+        "requiredRepetitions": 2,
+        "semanticPassRate": 1.0,
+        "pngDigests": 5,
+        "settlingFrames": 3,
+        "reviewers": 2,
+        "medianFidelity": 5,
+        "unusableMajority": True,
+        "costInputTokens": 1_000_000,
+        "costBuilds": 100,
+        "costLaunches": 100,
+        "wallSeconds": None,  # per-arm sealed value, unchanged
+    },
+}
+
 
 def canonical_bytes(value):
     return (json.dumps(value, sort_keys=True, separators=(",", ":"),
@@ -134,6 +169,11 @@ def evaluate(
             or precommitment.get("schemaVersion") != PRECOMMITMENT_SCHEMA):
         _failure(failures, "Precommitment schema is unsupported")
         precommitment = precommitment if isinstance(precommitment, dict) else {}
+    profile_key = precommitment.get("profile", "high-confidence")
+    profile = PROFILES.get(profile_key)
+    if profile is None:
+        _failure(failures, f"Unknown profile: {profile_key}")
+        profile = PROFILES["high-confidence"]
     if precommitment.get("precommitmentSha256") != seal_precommitment(precommitment):
         _failure(failures, "Precommitment seal does not match its canonical content")
     if not isinstance(manifest, dict) or manifest.get("schemaVersion") != SCHEMA:
@@ -328,8 +368,11 @@ def evaluate(
             _failure(failures, f"{prefix} frozen input digest is malformed")
 
         semantic = candidate.get("semantic", {})
-        if semantic.get("passed") != 25 or semantic.get("total") != 25:
-            _failure(failures, f"{prefix} semantic channel is not 25/25")
+        if (not isinstance(semantic.get("passed"), (int, float))
+                or semantic.get("passed") < profile["semanticPassRate"] * 25
+                or semantic.get("total") != 25):
+            _failure(failures, f"{prefix} semantic channel is not "
+                     f"{profile['semanticPassRate'] * 25:g}/25")
         checkpoints = semantic.get("checkpoints", [])
         if (not isinstance(checkpoints, list) or len(checkpoints) != 25
                 or any(not item.get("actionId")
@@ -378,7 +421,8 @@ def evaluate(
         for observation in OBSERVATIONS:
             capture = captures.get(observation, {})
             hashes = capture.get("pngSha256", [])
-            if (not isinstance(hashes, list) or len(hashes) != 5
+            if (not isinstance(hashes, list)
+                    or len(hashes) != profile["pngDigests"]
                     or any(not _valid_hash(item) for item in hashes)
                     or len(set(hashes)) != 1
                     or capture.get("sessionId") != candidate.get("sessionId")
@@ -400,13 +444,18 @@ def evaluate(
         review = repetition.get("humanReview", {})
         reviewers = review.get("reviewerIds", [])
         ratings = review.get("fidelityRatings", [])
-        if (not isinstance(reviewers, list) or len(reviewers) < 2
+        if (not isinstance(reviewers, list)
+                or len(reviewers) < profile["reviewers"]
                 or len(set(reviewers)) != len(reviewers)):
-            _failure(failures, f"{prefix} human channel lacks two blind reviewers")
+            _failure(failures, f"{prefix} human channel lacks "
+                     f"{profile['reviewers']} blind reviewer(s)")
         if (not isinstance(ratings, list) or len(ratings) != len(reviewers)
-                or not ratings or _median(ratings) < 5):
-            _failure(failures, f"{prefix} human fidelity channel is below 5")
-        if isinstance(reviewers, list) and review.get("unusableVotes", 0) > len(reviewers) / 2:
+                or not ratings
+                or _median(ratings) < profile["medianFidelity"]):
+            _failure(failures, f"{prefix} human fidelity channel is below "
+                     f"{profile['medianFidelity']}")
+        if (profile["unusableMajority"] and isinstance(reviewers, list)
+                and review.get("unusableVotes", 0) > len(reviewers) / 2):
             _failure(failures, f"{prefix} human channel has a majority unusable verdict")
         if not all(_valid_hash(review.get(key)) for key in
                    ("responseSha256", "mappingSha256")):
@@ -425,8 +474,19 @@ def evaluate(
             if not isinstance(current, (int, float)) or not isinstance(reference, (int, float)):
                 _failure(failures, f"{prefix} cost channel {cost} is unavailable")
                 continue
-            if cost in ceilings and current > ceilings[cost]:
-                _failure(failures, f"{prefix} cost channel {cost} exceeds its ceiling")
+            if cost in ceilings:
+                ceiling = ceilings[cost]
+                if cost == "inputTokens":
+                    ceiling = min(ceiling, profile["costInputTokens"])
+                elif cost == "builds":
+                    ceiling = min(ceiling, profile["costBuilds"])
+                elif cost == "launches":
+                    ceiling = min(ceiling, profile["costLaunches"])
+                elif (cost == "wallTimeMillis"
+                        and profile.get("wallSeconds") is not None):
+                    ceiling = min(ceiling, profile["wallSeconds"] * 1000)
+                if current > ceiling:
+                    _failure(failures, f"{prefix} cost channel {cost} exceeds its ceiling")
             raw_costs[cost].append({"pair": repetition.get("id"),
                                     "candidate": current, "baseline": reference})
             paired_deltas[cost].append(current - reference)
@@ -465,19 +525,28 @@ def evaluate(
     qualified_model = next(iter(used_models), None) or next(
         iter(declared_models), "unqualified")
 
+    non_cancelled_count = sum(
+        1 for repetition in repetitions
+        if isinstance(repetition, dict)
+        and repetition.get("status") != "cancelled")
+    cross_schedule_required = (
+        non_cancelled_count >= profile["requiredRepetitions"])
+
     stratum_report = []
     for identifier, items in sorted(strata.items()):
-        if len(items) < 5:
-            _failure(failures, f"Environment stratum {identifier} has fewer than five matched pairs")
-        for collection, label in ((canonical_states, "canonical state"),
-                                  (transition_hashes, "transition")):
-            if len(collection.get(identifier, set())) != 1:
-                _failure(failures, f"Environment stratum {identifier} has divergent {label} hashes")
-        for observation in OBSERVATIONS:
-            if len(capture_sets.get((identifier, observation), set())) != 1:
-                _failure(failures,
-                         f"Environment stratum {identifier} has cross-repetition capture drift "
-                         f"for {observation}")
+        if len(items) < profile["pairs"]:
+            _failure(failures, f"Environment stratum {identifier} has fewer than "
+                     f"{profile['pairs']} matched pairs")
+        if cross_schedule_required:
+            for collection, label in ((canonical_states, "canonical state"),
+                                      (transition_hashes, "transition")):
+                if len(collection.get(identifier, set())) != 1:
+                    _failure(failures, f"Environment stratum {identifier} has divergent {label} hashes")
+            for observation in OBSERVATIONS:
+                if len(capture_sets.get((identifier, observation), set())) != 1:
+                    _failure(failures,
+                             f"Environment stratum {identifier} has cross-repetition capture drift "
+                             f"for {observation}")
         stratum_report.append({"environmentId": identifier, "matchedPairs": len(items)})
     scheduled_ids = [
         item.get("id") for item in precommitment.get("schedule", [])
@@ -486,7 +555,8 @@ def evaluate(
     result_ids = [
         item.get("id") for item in repetitions if isinstance(item, dict)
     ]
-    if (len(scheduled_ids) < 5 or len(set(scheduled_ids)) != len(scheduled_ids)
+    if (len(scheduled_ids) < profile["pairs"]
+            or len(set(scheduled_ids)) != len(scheduled_ids)
             or scheduled_ids != result_ids):
         _failure(failures, "Result set is not the complete sealed schedule")
 

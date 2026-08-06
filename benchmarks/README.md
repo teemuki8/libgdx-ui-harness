@@ -44,6 +44,10 @@ The runner refuses to mix a new execution with existing raw JSON. Choose a fresh
 
 `--model` and `--max-time` are free parameters of the qualification runner: `--model` selects the model under qualification, and `--max-time` seals the per-run wall ceiling with a 10-minute floor and a 40-minute prepare default derived from the retained distribution of measured run durations. When the sealed schedule declares `failFast`, the supervisor cancels the remaining arms as soon as any required run fails.
 
+## Qualification profiles
+
+`--profile` selects the sealed qualification profile recorded in the benchmark manifest. The default is `low-confidence`, the release gate: 3 pairs, 2 rounds, 1 repetition schedule, a >=60% assertion pass rate, 3 PNG digests per observation, and 1 blind reviewer at median fidelity >=3, with tighter cost ceilings. The `high-confidence` profile preserves the historical strict requirements (5 pairs, 3 rounds, 2+ repetition schedules, 25/25 semantic, 5 digests, 2 reviewers at median fidelity 5) and is not a release gate. Both profiles require a model that supports image input; the runner validates the selected model's image capability before any schedule is prepared or executed and fails closed for unknown models. Deepseek models do not support image input.
+
 ## Corpus and symmetry
 
 `corpus/scenarios.json` is a strict schema-versioned, ordered definition of exactly:

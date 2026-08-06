@@ -9,10 +9,11 @@
     "releaseVersion", "sealedAt", "dynamicMask", "statisticalMethod",
     "allocationSeed", "exclusionPolicy", "scenarioAssertionGroups",
     "observations", "precommitmentHashes", "costCeilings", "environments",
-    "schedule", "precommitmentSha256"
+    "schedule", "profile", "precommitmentSha256"
   ],
   "properties": {
     "schemaVersion": {"const": "agentic-palisade/repeatability-precommitment-v1"},
+    "profile": {"type": "string", "enum": ["low-confidence", "high-confidence"]},
     "candidateCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "candidateSourceSha256": {"$ref": "#/$defs/sha256"},
     "releaseVersion": {"type": "string"},

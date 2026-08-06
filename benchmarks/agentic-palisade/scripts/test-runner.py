@@ -689,6 +689,7 @@ class ArgumentValidationTest(unittest.TestCase):
             candidate_maven_repository=None,
             candidate_version=None,
             reasoning=FIXED_REASONING,
+            profile="low-confidence",
             dry_run=True,
             prepare_only=False,
             execute_prepared=False,
@@ -698,18 +699,18 @@ class ArgumentValidationTest(unittest.TestCase):
         return arguments
 
     def test_accepts_any_model_and_bounded_max_time(self):
-        arguments = self._arguments(model="anthropic/claude-sonnet-4.5")
+        arguments = self._arguments(model="gitlab-duo/claude-sonnet-4-5-20250929")
         max_seconds = self.runner.parse_duration("30m")
         self.runner._validate_arguments(arguments, max_seconds)
 
     def test_accepts_high_reasoning(self):
         arguments = self._arguments(
-            model="deepseek/deepseek-v4-flash", reasoning="high")
+            model=MODEL, reasoning="high")
         self.runner._validate_arguments(arguments, self.runner.parse_duration("15m"))
 
     def test_rejects_blank_reasoning(self):
         arguments = self._arguments(
-            model="deepseek/deepseek-v4-flash", reasoning="")
+            model=MODEL, reasoning="")
         with self.assertRaisesRegex(ValueError, "reasoning"):
             self.runner._validate_arguments(arguments, self.runner.parse_duration("15m"))
 
@@ -718,6 +719,28 @@ class ArgumentValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at least"):
             self.runner._validate_arguments(
                 arguments, self.runner.parse_duration("5m"))
+
+    def test_unknown_profile_rejected(self):
+        arguments = self._arguments(profile="medium-confidence")
+        with self.assertRaisesRegex(ValueError, "profile"):
+            self.runner._validate_arguments(
+                arguments, self.runner.parse_duration("40m"))
+
+    def test_default_profile_is_low_confidence(self):
+        self.assertEqual(self._arguments().profile, "low-confidence")
+
+    def test_image_incapable_model_rejected(self):
+        arguments = self._arguments(
+            model="deepseek/deepseek-v4-flash", profile="low-confidence")
+        with self.assertRaisesRegex(ValueError, "image"):
+            self.runner._validate_arguments(
+                arguments, self.runner.parse_duration("40m"))
+
+    def test_image_capable_model_accepted(self):
+        arguments = self._arguments(
+            model="openai-codex/gpt-5.6-sol:medium", profile="low-confidence")
+        self.runner._validate_arguments(
+            arguments, self.runner.parse_duration("40m"))
 
 
 class AuthPreflightTest(unittest.TestCase):

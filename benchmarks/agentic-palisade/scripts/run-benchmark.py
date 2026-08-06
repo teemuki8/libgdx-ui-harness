@@ -30,6 +30,17 @@ SCRIPT_ROOT = Path(__file__).resolve().parent
 BENCHMARK_ROOT = SCRIPT_ROOT.parent
 REPOSITORY_ROOT = BENCHMARK_ROOT.parent.parent
 FIXED_MODEL = "openai-codex/gpt-5.6-sol:medium"
+# Authoritative image capability (`omp models` images column), mirrored from the
+# PROFILES modelImagesRequired contract in release-gate.py; the runner stays
+# standalone, so the two profile names and this capability map are duplicated
+# here as the runner's small local constant set.
+MODEL_IMAGE_CAPABLE = {
+    "deepseek/deepseek-v4-flash": False,
+    "deepseek/deepseek-v4-pro": False,
+    "openai-codex/gpt-5.6-sol:medium": True,
+    "gitlab-duo/claude-sonnet-4-5-20250929": True,
+    "gitlab-duo/claude-haiku-4-5-20251001": True,
+}
 FIXED_REASONING = "medium"
 FIXED_BROKER_URL = "http://127.0.0.1:9000"
 PROTOCOL_AMENDMENT = "agentic-palisade/task-8-auth-broker-amendment-v1"
@@ -600,7 +611,7 @@ def _relative(output, path):
 
 def _prepare_run(
         output, pair, treatment, index, hashes, treatment_inputs,
-        model, reasoning, max_seconds,
+        model, reasoning, profile, max_seconds,
         candidate_repository=None, candidate_version=None):
     run_id = str(uuid.uuid4())
     run_dir = output / "runs" / run_id
@@ -685,6 +696,7 @@ def _prepare_run(
         "treatment": treatment,
         "model": model,
         "reasoning": reasoning,
+        "profile": profile,
         "maxTimeSeconds": max_seconds,
         "rounds": FIXED_ROUNDS,
         "protocolAmendment": PROTOCOL_AMENDMENT,
@@ -1611,9 +1623,24 @@ def _run_one(output, item, omp, model, reasoning, max_time_text, max_time_second
 
 
 def _validate_arguments(arguments, max_seconds):
+    if arguments.profile not in ("low-confidence", "high-confidence"):
+        raise ValueError(f"unknown benchmark profile: {arguments.profile}")
+    if (arguments.profile == "low-confidence"
+            or arguments.profile == "high-confidence"):
+        if MODEL_IMAGE_CAPABLE.get(arguments.model) is False:
+            raise ValueError(
+                f"model {arguments.model} does not support image input "
+                f"required by profile {arguments.profile}")
+        if MODEL_IMAGE_CAPABLE.get(arguments.model) is None:
+            raise ValueError(
+                f"model image capability unknown for {arguments.model}; "
+                f"add it to MODEL_IMAGE_CAPABLE")
     required_pairs = RELEASE_PAIRS if arguments.release_candidate else FIXED_PAIRS
-    if arguments.pairs != required_pairs:
+    effective_pairs = arguments.pairs or (
+        3 if arguments.profile == "low-confidence" else 5)
+    if effective_pairs != required_pairs:
         raise ValueError(f"pairs must be exactly {required_pairs}")
+    arguments.pairs = effective_pairs
     if max_seconds < MIN_SECONDS:
         raise ValueError(f"--max-time must be at least {MIN_SECONDS // 60} minutes")
     if not arguments.reasoning or len(arguments.reasoning) > 64:
@@ -1647,8 +1674,9 @@ def main(argv=None):
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--model", required=True)
     parser.add_argument("--reasoning", default=FIXED_REASONING)
+    parser.add_argument("--profile", default="low-confidence")
     parser.add_argument("--max-time", required=True)
-    parser.add_argument("--pairs", required=True, type=int)
+    parser.add_argument("--pairs", type=int, default=None)
     parser.add_argument(
         "--auth-broker-url",
         help=(
@@ -1700,6 +1728,7 @@ def main(argv=None):
                 raise ValueError("prepared candidate Maven identity is missing")
             if (manifest.get("model") != arguments.model
                     or manifest.get("reasoning") != arguments.reasoning
+                    or manifest.get("profile") != arguments.profile
                     or manifest.get("pairs") != arguments.pairs
                     or manifest.get("maxTimeSeconds") != max_seconds):
                 raise ValueError("prepared benchmark arguments do not match")
@@ -1742,7 +1771,8 @@ def main(argv=None):
                 for treatment in ("baseline", "harness"):
                     runs.append(_prepare_run(
                         output, pair, treatment, index, hashes, treatment_inputs,
-                        arguments.model, arguments.reasoning, max_seconds,
+                        arguments.model, arguments.reasoning, arguments.profile,
+                        max_seconds,
                         candidate_repository, arguments.candidate_version))
                     index += 1
 
@@ -1757,6 +1787,7 @@ def main(argv=None):
                 "candidateMavenRepositorySha256": candidate_repository_hash,
                 "model": arguments.model,
                 "reasoning": arguments.reasoning,
+                "profile": arguments.profile,
                 "maxTimeSeconds": max_seconds,
                 "rounds": FIXED_ROUNDS,
                 "pairs": arguments.pairs,

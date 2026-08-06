@@ -14,18 +14,29 @@ Before preparing a tag:
 4. Verify the latest `main` CI run is green.
 5. Confirm the release notes describe the exact version being published.
 6. Complete the repeatability qualification for the exact candidate commit
-   under the qualified model. The model and the per-run wall ceiling are
+   under the qualified model. The release gate is the `low-confidence`
+   profile: 3 pairs, 2 rounds, 1 repetition schedule, a >=60% assertion
+   pass rate, 3 PNG digests per observation, and 1 blind reviewer at
+   median fidelity >=3, with tighter cost ceilings than the historical
+   requirements. The qualified model must be image-capable; the runner
+   validates this before any schedule is produced and fails closed for
+   models whose image support is unknown. `--profile` selects the sealed
+   qualification profile and defaults to `low-confidence`; the
+   `high-confidence` profile preserves the historical strict requirements
+   (5 pairs, 3 rounds, 2+ repetition schedules, 25/25 semantic, 5 digests,
+   2 reviewers at median fidelity 5) and is optional additional evidence,
+   not a release gate. The model and the per-run wall ceiling are
    parameters of `run-benchmark.py`: `--model` selects the model whose
    evidence is being produced, and `--max-time` seals the per-arm ceiling
-   with a 10-minute floor and a 40-minute prepare default. The schedule may
-   seal `failFast: true`; under fail-fast the supervisor cancels the
+   with a 10-minute floor and a 40-minute prepare default. The schedule
+   may seal `failFast: true`; under fail-fast the supervisor cancels the
    remaining arms once any required run fails, and each cancelled arm is
    recorded with its run ID and the triggering failure's classification
-   reason. The gate accepts a cancelled arm only when the schedule declared
-   fail-fast and the triggering failure is present; otherwise it treats the
-   arm exactly as missing. Evidence is scoped to the qualified model:
-   historical evidence is model-scoped and does not carry over to a
-   different model.
+   reason. The gate accepts a cancelled arm only when the schedule
+   declared fail-fast and the triggering failure is present; otherwise it
+   treats the arm exactly as missing. Evidence is scoped to the qualified
+   model: historical evidence is model-scoped and does not carry over to
+   a different model.
 7. Review the
    [Maven Central compliance checklist](maven-central-compliance.md), including
    the maintainer attestations that automation cannot make.
