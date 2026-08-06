@@ -10,6 +10,9 @@ import dev.gdx.uiharness.core.assertion.DeadlineWakeup;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
+import dev.gdx.uiharness.core.error.ErrorCode;
+import dev.gdx.uiharness.core.error.ErrorEvidence;
+import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.layout.LayoutControlReference;
 import dev.gdx.uiharness.core.layout.LayoutEvidence;
 import dev.gdx.uiharness.core.layout.LayoutObservation;
@@ -36,9 +39,14 @@ import dev.gdx.uiharness.core.scenario.ScenarioLifecycle;
 import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
 import dev.gdx.uiharness.core.scenario.ScenarioRequest;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.trace.SemanticObservation;
+import dev.gdx.uiharness.core.trace.SemanticObservationStore;
 import dev.gdx.uiharness.core.trace.TraceEvent;
 import dev.gdx.uiharness.core.trace.TraceManifest;
 import dev.gdx.uiharness.core.trace.TraceRecorder;
+import dev.gdx.uiharness.core.trace.TransitionProjector;
+import dev.gdx.uiharness.core.trace.TransitionQuery;
+import dev.gdx.uiharness.core.trace.TransitionQueryResult;
 import dev.gdx.uiharness.core.wait.FrameSignal;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
@@ -122,7 +130,8 @@ public final class FixtureControl implements AutoCloseable {
     private static final List<String> CAPABILITIES = List.of(
             "action", "compare", "query", "scenario-list", "scenario-start",
             "screenshot", "snapshot", "layout", "trace", "typography", "ui_assert", "wait",
-            "ui_navigation_inspect", "ui_navigation_validate", "ui_validate_layout");
+            "ui_navigation_inspect", "ui_navigation_validate", "ui_trace_query",
+            "ui_validate_layout");
 
     private final Path processRoot;
     private final Path artifactRoot;
@@ -209,7 +218,7 @@ public final class FixtureControl implements AutoCloseable {
         artifactStore = new FileArtifactStore(artifactRoot,
                 new ArtifactStore.Limits(32L * 1_024 * 1_024, 64), Clock.systemUTC());
         publisher = new StorePublisher(artifactStore, proofRoot);
-        traces = new ReferenceTraceController(traceRoot, publisher);
+        traces = new ReferenceTraceController(traceRoot, publisher, locators);
         tracingHarness = new TracingHarness(sceneHarness, traces);
         protocolExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("reference-protocol-", 0).factory());
@@ -941,13 +950,37 @@ public final class FixtureControl implements AutoCloseable {
             implements HarnessProtocolService.TraceController, AutoCloseable {
         private final TraceRecorder recorder;
         private final ArtifactReference.Publisher publisher;
+        private final LocatorEngine locators;
+        private final SemanticObservationStore observationStore =
+                new SemanticObservationStore(256);
         private final AtomicLong operationSequence = new AtomicLong();
         private String traceId;
         private boolean active;
 
-        ReferenceTraceController(Path root, ArtifactReference.Publisher publisher) {
+        ReferenceTraceController(
+                Path root, ArtifactReference.Publisher publisher) {
+            this(root, publisher, new StrictResolution());
+        }
+
+        ReferenceTraceController(
+                Path root, ArtifactReference.Publisher publisher, LocatorEngine locators) {
             recorder = new TraceRecorder(root, Clock.systemUTC());
             this.publisher = publisher;
+            this.locators = locators;
+        }
+
+        @Override public synchronized CompletionStage<TransitionQueryResult> query(
+                TransitionQuery query, Deadline deadline) {
+            if (traceId == null || !traceId.equals(query.traceId())) {
+                return CompletableFuture.failedFuture(new HarnessException(
+                        ErrorCode.NOT_FOUND,
+                        "No retained observations for trace " + query.traceId(),
+                        ErrorEvidence.empty()));
+            }
+            List<SemanticObservation> observations =
+                    observationStore.observations(query.traceId());
+            return CompletableFuture.completedFuture(
+                    new TransitionProjector().query(observations, query, locators));
         }
 
         @Override public synchronized CompletionStage<HarnessResponse.Result.TraceStarted> start(
@@ -1000,6 +1033,8 @@ public final class FixtureControl implements AutoCloseable {
             long sequence = recorder.record(TraceEvent.commandStarted(
                     SESSION_ID, requestId, logicalTime(before), before,
                     Map.of("operation", operation)));
+            observationStore.retain(traceId, new SemanticObservation(
+                    sequence, before.frame(), before.revision(), before, null));
             return new TraceSpan(sequence, requestId);
         }
 
@@ -1008,9 +1043,11 @@ public final class FixtureControl implements AutoCloseable {
             if (!active || span == null) {
                 return;
             }
-            recorder.record(TraceEvent.commandCompleted(
+            long sequence = recorder.record(TraceEvent.commandCompleted(
                     SESSION_ID, span.requestId(), logicalTime(after), after,
                     span.sequence(), Map.of("operation", operation)));
+            observationStore.retain(traceId, new SemanticObservation(
+                    sequence, after.frame(), after.revision(), after, span.sequence()));
         }
 
         synchronized void commandFailed(String operation, SemanticSnapshot before,

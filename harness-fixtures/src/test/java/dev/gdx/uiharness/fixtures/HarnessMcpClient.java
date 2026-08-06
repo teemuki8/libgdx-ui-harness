@@ -451,6 +451,41 @@ final class HarnessMcpClient implements Closeable {
         return content;
     }
 
+    String startTrace(String sessionId, long deadlineMillis) throws Exception {
+        JsonNode content = call("ui_trace_start", Map.of(
+                "sessionId", sessionId,
+                "maxDurationMillis", 30_000,
+                "maxBytes", 64L * 1_024 * 1_024,
+                "deadlineMillis", deadlineMillis));
+        requireKind(content, "trace-started");
+        return content.path("traceId").asText();
+    }
+
+    JsonNode stopTrace(String sessionId, long deadlineMillis) throws Exception {
+        JsonNode content = call("ui_trace_stop", Map.of(
+                "sessionId", sessionId, "deadlineMillis", deadlineMillis));
+        requireKind(content, "trace-stopped");
+        return content;
+    }
+
+    JsonNode queryTrace(String sessionId, String traceId, long deadlineMillis)
+            throws Exception {
+        Map<String, Object> spec = Map.of(
+                "traceId", traceId,
+                "propertyPaths", List.of(),
+                "kinds", List.of(
+                        "appeared", "disappeared", "enabled", "disabled", "text-changed",
+                        "bounds-changed", "focus-changed", "modal-changed",
+                        "obscuration-changed", "z-order-changed", "identity-ambiguous"),
+                "maxTransitions", 4096,
+                "maxEvidenceBytes", 262144,
+                "maxDurationMillis", 5000);
+        JsonNode content = call("ui_trace_query", Map.of(
+                "sessionId", sessionId, "spec", spec, "deadlineMillis", deadlineMillis));
+        requireKind(content, "trace-query-result");
+        return content;
+    }
+
     JsonNode validateLayout(String sessionId, long deadlineMillis) throws Exception {
         Map<String, Object> spec = Map.of(
                 "targetMode", "stage",

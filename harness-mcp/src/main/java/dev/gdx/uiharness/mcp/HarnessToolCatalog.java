@@ -327,21 +327,13 @@ public final class HarnessToolCatalog {
                         sessionInput(Map.of(
                                 "spec", traceQuerySpecSchema()),
                                 List.of("spec")),
-                        output("trace-query-result", Map.of(
-                                "traceId", string(1, ProtocolJson.MAX_STRING_LENGTH),
-                                "transitions", array(object(Map.of(
-                                        "kind", enumString(
-                                                "APPEARED", "DISAPPEARED", "ENABLED",
-                                                "DISABLED", "TEXT_CHANGED", "BOUNDS_CHANGED",
-                                                "FOCUS_CHANGED", "MODAL_CHANGED",
-                                                "OBSCURATION_CHANGED", "Z_ORDER_CHANGED",
-                                                "IDENTITY_AMBIGUOUS"),
-                                        "actorIdentity",
+                        output("trace-query-result", Map.ofEntries(
+                                Map.entry("traceId",
                                         string(1, ProtocolJson.MAX_STRING_LENGTH)),
-                                        List.of("kind", "actorIdentity")), 4_096),
-                                "truncated", Map.of("type", "boolean"),
-                                "gapCount", integer(0, 1_024),
-                                "unknownCauseCount", integer(0, 4_096)),
+                                Map.entry("transitions", array(transitionSchema(), 4_096)),
+                                Map.entry("truncated", Map.of("type", "boolean")),
+                                Map.entry("gapCount", integer(0, 1_024)),
+                                Map.entry("unknownCauseCount", integer(0, 4_096))),
                                 List.of("traceId", "transitions", "truncated", "gapCount",
                                         "unknownCauseCount"))),
                 tool("ui_semantic_compare",
@@ -497,6 +489,32 @@ public final class HarnessToolCatalog {
                         "maxNodes")));
         return Map.ofEntries(Map.entry("result", object(resultProperties,
                 List.of("status", "findings", "examinedNodes", "truncated"))));
+    }
+
+    private static Map<String, Object> transitionSchema() {
+        return object(Map.ofEntries(
+                Map.entry("kind", enumString(
+                        "APPEARED", "DISAPPEARED", "ENABLED",
+                        "DISABLED", "TEXT_CHANGED", "BOUNDS_CHANGED",
+                        "FOCUS_CHANGED", "MODAL_CHANGED",
+                        "OBSCURATION_CHANGED", "Z_ORDER_CHANGED",
+                        "IDENTITY_AMBIGUOUS")),
+                Map.entry("beforeSequence", integer(0, Long.MAX_VALUE)),
+                Map.entry("afterSequence", integer(0, Long.MAX_VALUE)),
+                Map.entry("beforeFrame", integer(0, Long.MAX_VALUE)),
+                Map.entry("afterFrame", integer(0, Long.MAX_VALUE)),
+                Map.entry("beforeRevision", integer(0, Long.MAX_VALUE)),
+                Map.entry("afterRevision", integer(0, Long.MAX_VALUE)),
+                Map.entry("actorIdentity", string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                Map.entry("propertyPaths", array(
+                        string(1, ProtocolJson.MAX_STRING_LENGTH), 16)),
+                Map.entry("beforeValues", evidenceSchema()),
+                Map.entry("afterValues", evidenceSchema()),
+                Map.entry("causeSequence", nullableInt())),
+                List.of("kind", "beforeSequence", "afterSequence", "beforeFrame",
+                        "afterFrame", "beforeRevision", "afterRevision",
+                        "actorIdentity", "propertyPaths", "beforeValues", "afterValues",
+                        "causeSequence"));
     }
 
     private static Map<String, Object> traceQuerySpecSchema() {

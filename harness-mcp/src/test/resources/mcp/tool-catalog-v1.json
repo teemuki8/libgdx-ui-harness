@@ -7639,12 +7639,78 @@
               "minLength" : 1,
               "type" : "string"
             },
+            "afterFrame" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "afterRevision" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "afterSequence" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "afterValues" : {
+              "additionalProperties" : {
+                "maxLength" : 16384,
+                "minLength" : 0,
+                "type" : "string"
+              },
+              "maxProperties" : 256,
+              "type" : "object"
+            },
+            "beforeFrame" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "beforeRevision" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "beforeSequence" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "beforeValues" : {
+              "additionalProperties" : {
+                "maxLength" : 16384,
+                "minLength" : 0,
+                "type" : "string"
+              },
+              "maxProperties" : 256,
+              "type" : "object"
+            },
+            "causeSequence" : {
+              "oneOf" : [ {
+                "maximum" : 9223372036854775807,
+                "minimum" : 0,
+                "type" : "integer"
+              }, {
+                "type" : "null"
+              } ]
+            },
             "kind" : {
               "enum" : [ "APPEARED", "DISAPPEARED", "ENABLED", "DISABLED", "TEXT_CHANGED", "BOUNDS_CHANGED", "FOCUS_CHANGED", "MODAL_CHANGED", "OBSCURATION_CHANGED", "Z_ORDER_CHANGED", "IDENTITY_AMBIGUOUS" ],
               "type" : "string"
+            },
+            "propertyPaths" : {
+              "items" : {
+                "maxLength" : 16384,
+                "minLength" : 1,
+                "type" : "string"
+              },
+              "maxItems" : 16,
+              "type" : "array"
             }
           },
-          "required" : [ "kind", "actorIdentity" ],
+          "required" : [ "kind", "beforeSequence", "afterSequence", "beforeFrame", "afterFrame", "beforeRevision", "afterRevision", "actorIdentity", "propertyPaths", "beforeValues", "afterValues", "causeSequence" ],
           "type" : "object"
         },
         "maxItems" : 4096,
