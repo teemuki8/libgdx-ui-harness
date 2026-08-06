@@ -71,3 +71,7 @@ high reasoning cannot complete even the reduced low-confidence schedule at a
 40-minute ceiling. Completing the corpus at the observed pace would require
 roughly 3 hours per run, which is not practical. The low-confidence gate awaits
 a faster vision-capable (or pace-adequate) model.
+
+Resolution: `openai-codex/gpt-5.6-luna:medium` completed the full low-confidence schedule
+(6/6 runs, 3/3 rounds accepted, 9.5-14.9 min per run against the 40-minute ceiling); see
+`qualification-evidence-2026-08-06-gpt-5.6-luna-medium.md`.
