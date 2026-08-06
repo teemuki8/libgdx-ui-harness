@@ -52,6 +52,7 @@ def sealed_manifest():
         }
         candidate = {
             **common,
+            "classification": "success",
             "runId": f"candidate-{index}",
             "workspaceId": f"candidate-workspace-{index}",
             "sessionId": f"candidate-session-{index}",
@@ -83,6 +84,7 @@ def sealed_manifest():
         }
         baseline = {
             **common,
+            "classification": "success",
             "runId": f"baseline-{index}",
             "workspaceId": f"baseline-workspace-{index}",
             "sessionId": f"baseline-session-{index}",
@@ -198,6 +200,29 @@ def sealed_precommitment(manifest):
     manifest["precommitmentSha256"] = precommitment["precommitmentSha256"]
     manifest["manifestSha256"] = GATE.seal(manifest)
     return precommitment
+
+
+def cancelled_manifest(fail_fast=True, trigger_failed=True):
+    """A sealed pair of manifest and precommitment where the last repetition
+    (pair-5) is cancelled with a cancelReason naming pair-4; when
+    trigger_failed is true, pair-4's candidate arm carries a failed
+    classification. Re-seals whatever it mutates."""
+    manifest = sealed_manifest()
+    precommitment = sealed_precommitment(manifest)
+    if fail_fast:
+        for item in precommitment["schedule"]:
+            item["failFast"] = True
+        precommitment["precommitmentSha256"] = GATE.seal_precommitment(precommitment)
+        manifest["precommitmentSha256"] = precommitment["precommitmentSha256"]
+    if trigger_failed:
+        manifest["repetitions"][3]["candidate"]["classification"] = "crashed"
+    manifest["repetitions"][4]["status"] = "cancelled"
+    manifest["repetitions"][4]["cancelReason"] = {
+        "runId": "pair-4",
+        "classification": "crashed",
+    }
+    manifest["manifestSha256"] = GATE.seal(manifest)
+    return manifest, precommitment
 
 
 class ReleaseGateTest(unittest.TestCase):
@@ -374,6 +399,30 @@ class ReleaseGateTest(unittest.TestCase):
                 "--release-version", "1.1.0",
                 "--evidence-root", str(root),
             ]))
+
+
+    def test_justified_cancellation_accepted(self):
+        manifest, precommitment = cancelled_manifest()
+        decision = GATE.evaluate(manifest, precommitment, "1" * 40, "1.1.0")
+        self.assertTrue(decision["passed"])
+        self.assertFalse(any(
+            "cancelled" in item.lower() for item in decision["failures"]))
+
+    def test_cancellation_without_fail_fast_is_missing_run(self):
+        manifest, precommitment = cancelled_manifest(fail_fast=False)
+        decision = GATE.evaluate(manifest, precommitment, "1" * 40, "1.1.0")
+        self.assertFalse(decision["passed"])
+        self.assertTrue(any(
+            "cancelled without a precommitted fail-fast rule" in item.lower()
+            for item in decision["failures"]))
+
+    def test_cancellation_without_triggering_failure_rejected(self):
+        manifest, precommitment = cancelled_manifest(trigger_failed=False)
+        decision = GATE.evaluate(manifest, precommitment, "1" * 40, "1.1.0")
+        self.assertFalse(decision["passed"])
+        self.assertTrue(any(
+            "cancellation reason does not name a failed run" in item.lower()
+            for item in decision["failures"]))
 
 
 if __name__ == "__main__":

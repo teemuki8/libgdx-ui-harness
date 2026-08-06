@@ -259,6 +259,34 @@ def evaluate(
              and item.get("id") == repetition.get("id")),
             None,
         )
+        if repetition.get("status") == "cancelled":
+            fail_fast = any(isinstance(item, dict)
+                            and item.get("failFast") is True
+                            for item in schedule)
+            if not fail_fast:
+                _failure(failures,
+                         f"{prefix} cancelled without a precommitted fail-fast rule")
+                continue
+            reason = repetition.get("cancelReason")
+            if not isinstance(reason, dict) or not reason.get("runId"):
+                _failure(failures, f"{prefix} cancellation lacks a runId reason")
+                continue
+            triggering = next(
+                (item for item in manifest.get("repetitions", [])
+                 if isinstance(item, dict)
+                 and item.get("status") != "cancelled"
+                 and item.get("id") == reason.get("runId")),
+                None,
+            )
+            failed = bool(triggering) and any(
+                arm.get("classification") != "success"
+                for arm_name in ("candidate", "baseline")
+                for arm in [triggering.get(arm_name, {})])
+            if not failed:
+                _failure(failures,
+                         f"{prefix} cancellation reason does not name a failed run")
+                continue
+            continue  # justified cancellation: skip the strict schedule comparison
         if scheduled is None:
             _failure(failures, f"{prefix} is absent from the sealed schedule")
         else:
@@ -277,7 +305,9 @@ def evaluate(
                                 "resourceLimits")
                 },
             }
-            if scheduled != planned:
+            expected = {key: value for key, value in scheduled.items()
+                        if key != "failFast"}
+            if expected != planned:
                 _failure(failures, f"{prefix} differs from the sealed schedule")
         for arm_name, arm in (("candidate", candidate), ("baseline", baseline)):
             if not isinstance(arm, dict):
