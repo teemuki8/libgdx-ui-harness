@@ -19,30 +19,40 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
     private final Path processRoot;
     private final String benchmarkScenario;
     private final int benchmarkDelayMillis;
-    private ReferenceScreen screen;
+    private final boolean markup;
+    private FixtureScreen screen;
+    private MarkupSigninScreen markupScreen;
     private FixtureControl control;
 
     private ReferenceUiApplication(
-            Path processRoot, String benchmarkScenario, int benchmarkDelayMillis) {
+            Path processRoot, String benchmarkScenario, int benchmarkDelayMillis,
+            boolean markup) {
         this.processRoot = processRoot;
         this.benchmarkScenario = benchmarkScenario;
         this.benchmarkDelayMillis = benchmarkDelayMillis;
+        this.markup = markup;
     }
 
     /** Launches one hidden, non-networked fixture process. */
     public static void main(String[] args) {
-        if (args.length != 1 && args.length != 3) {
+        if (args.length != 1 && args.length != 2 && args.length != 3 && args.length != 4) {
             throw new IllegalArgumentException(
-                    "Expected a process root and optional benchmark scenario/delay");
+                    "Expected a process root, optional benchmark scenario/delay, and an "
+                            + "optional final \"markup\" flag");
         }
         Path root = Path.of(args[0]).toAbsolutePath().normalize();
         if (!Files.isDirectory(root)) {
             throw new IllegalArgumentException("Process root must already exist");
         }
-        String benchmarkScenario = args.length == 3 ? args[1] : null;
-        int benchmarkDelayMillis = args.length == 3
+        boolean markup = (args.length == 2 || args.length == 4)
+                && "markup".equals(args[args.length - 1]);
+        if ((args.length == 2 || args.length == 4) && !markup) {
+            throw new IllegalArgumentException("Final argument must be \"markup\"");
+        }
+        String benchmarkScenario = (args.length == 3 || args.length == 4) ? args[1] : null;
+        int benchmarkDelayMillis = (args.length == 3 || args.length == 4)
                 ? Integer.parseInt(args[2]) : 0;
-        if (args.length == 3
+        if (benchmarkScenario != null
                 && (benchmarkScenario.isBlank() || benchmarkDelayMillis <= 0
                         || benchmarkDelayMillis % 16 != 0)) {
             throw new IllegalArgumentException(
@@ -61,14 +71,26 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
         configuration.setIdleFPS(60);
         configuration.disableAudio(true);
         new Lwjgl3Application(new ReferenceUiApplication(
-                root, benchmarkScenario, benchmarkDelayMillis), configuration);
+                root, benchmarkScenario, benchmarkDelayMillis, markup), configuration);
     }
 
     @Override public void create() {
-        screen = new ReferenceScreen(benchmarkScenario, benchmarkDelayMillis);
-        control = new FixtureControl(screen.stage(), processRoot);
-        screen.attachAssertionFrameControl(control::withholdAssertionFrames);
-        screen.attachSemantics(control.semantics());
+        if (markup) {
+            markupScreen = new MarkupSigninScreen();
+            screen = markupScreen;
+            control = new FixtureControl(screen.stage(), processRoot,
+                    screen.typographyControlIds(), screen.layoutControlIds());
+            markupScreen.attachSemantics(control.semantics(), control.agentRuntime(),
+                    FixtureControl.SESSION_ID);
+        } else {
+            ReferenceScreen referenceScreen =
+                    new ReferenceScreen(benchmarkScenario, benchmarkDelayMillis);
+            screen = referenceScreen;
+            control = new FixtureControl(screen.stage(), processRoot,
+                    screen.typographyControlIds(), screen.layoutControlIds());
+            referenceScreen.attachAssertionFrameControl(control::withholdAssertionFrames);
+            referenceScreen.attachSemantics(control.semantics());
+        }
         Gdx.input.setInputProcessor(screen.stage());
         control.startMcp(System.in, System.out);
         System.err.println("REFERENCE_UI_READY");
@@ -90,6 +112,15 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
 
     @Override public void dispose() {
         RuntimeException failure = null;
+        if (markupScreen != null) {
+            // The markup runtime registrations must close before FixtureControl closes the
+            // shared AgentRuntime, mirroring the preview's source-then-runtime order.
+            try {
+                markupScreen.closeRuntimeSource();
+            } catch (RuntimeException closeFailure) {
+                failure = closeFailure;
+            }
+        }
         if (control != null) {
             try {
                 control.close();

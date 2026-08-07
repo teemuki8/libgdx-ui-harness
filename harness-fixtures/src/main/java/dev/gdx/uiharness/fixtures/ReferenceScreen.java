@@ -33,7 +33,7 @@ import dev.gdx.uiharness.core.typography.UnavailableReason;
 import java.util.LinkedHashMap;
 import java.util.Map;
 /** Fixed-layout Scene2D screen used by the real LWJGL3 process fixture. */
-public final class ReferenceScreen implements AutoCloseable {
+public final class ReferenceScreen implements FixtureScreen {
     private static final Color BACKGROUND = Color.valueOf("172033ff");
     private static final Color PANEL = Color.valueOf("26324aff");
     private static final Color PANEL_ALT = Color.valueOf("303e5aff");
@@ -133,6 +133,16 @@ public final class ReferenceScreen implements AutoCloseable {
     /** Updates only the viewport; fixture coordinates remain pixel-stable. */
     public void resize(int width, int height) {
         stage.getViewport().update(width, height, true);
+    }
+
+    /** Returns the test identifiers of the typography-marked labels. */
+    @Override public java.util.Set<String> typographyControlIds() {
+        return java.util.Set.of("harness-title", "body-caption");
+    }
+
+    /** Returns the test identifiers of the layout-marked actors. */
+    @Override public java.util.Set<String> layoutControlIds() {
+        return java.util.Set.of("harness-title", "settings-list");
     }
 
     @Override public void close() {

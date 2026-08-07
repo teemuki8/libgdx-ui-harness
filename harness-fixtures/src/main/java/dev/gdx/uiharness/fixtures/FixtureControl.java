@@ -131,6 +131,9 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class FixtureControl implements AutoCloseable {
     /** Stable protocol session selected by all reference workflows. */
     public static final String SESSION_ID = "reference-ui";
+
+    /** Frame-correlation token recorded each rendered frame; runtime bindings must carry it. */
+    public static final String CORRELATION_TOKEN = "reference-ui-frame";
     private static final String APPLICATION_ID = "reference-ui-app";
     private static final String VIEWPORT_ID = "main";
     private static final String REFERENCE_ID = "reference-screen";
@@ -183,11 +186,26 @@ public final class FixtureControl implements AutoCloseable {
     private final io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime agentRuntime;
     private HarnessMcpServer server;
     private Future<?> terminationTask;
+    private final java.util.Set<String> typographyControlIds;
+    private final java.util.Set<String> layoutControlIds;
 
-    /** Attaches one named production protocol session to the supplied real Stage. */
-    public FixtureControl(Stage stage, Path newProcessRoot) {
+    /**
+     * Attaches one named production protocol session to the supplied real Stage.
+     *
+     * @param typographyControlIds test identifiers of the screen's typography-marked actors;
+     *     the typography reference is built from exactly these controls
+     * @param layoutControlIds test identifiers of the screen's layout-marked actors; the layout
+     *     reference is built from exactly these controls
+     */
+    public FixtureControl(Stage stage, Path newProcessRoot,
+            java.util.Set<String> typographyControlIds,
+            java.util.Set<String> layoutControlIds) {
         Objects.requireNonNull(stage, "stage");
         this.stage = stage;
+        this.typographyControlIds = java.util.Set.copyOf(
+                Objects.requireNonNull(typographyControlIds, "typographyControlIds"));
+        this.layoutControlIds = java.util.Set.copyOf(
+                Objects.requireNonNull(layoutControlIds, "layoutControlIds"));
         processRoot = Objects.requireNonNull(newProcessRoot, "processRoot")
                 .toAbsolutePath().normalize();
         artifactRoot = processRoot.resolve("artifacts");
@@ -300,6 +318,11 @@ public final class FixtureControl implements AutoCloseable {
     /** Returns semantic metadata for actor tagging after session construction. */
     public dev.gdx.uiharness.scene2d.Semantics semantics() {
         return sceneSession.semantics();
+    }
+
+    /** Returns the agent runtime shared with the active screen for value registration. */
+    public io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime agentRuntime() {
+        return agentRuntime;
     }
     /** Stops assertion frame notifications while the deterministic clock keeps advancing. */
     public void withholdAssertionFrames() {
@@ -448,7 +471,7 @@ public final class FixtureControl implements AutoCloseable {
                 new io.github.teemuki8.libgdx.agent.runtime.core.UiFrameCorrelation(
                         agentRuntime.currentEpoch(), completedFrame, SESSION_ID,
                         java.util.Optional.of(Long.toString(clock.frame())),
-                        java.util.Optional.of("reference-ui-frame")));
+                        java.util.Optional.of(CORRELATION_TOKEN)));
     }
 
     private static BaselineNode toBaselineNode(
@@ -791,9 +814,10 @@ public final class FixtureControl implements AutoCloseable {
 
     private TypographyReference typographyReference(byte[] png) {
         String hash = sha256(png);
-        Map<String, Double> residuals = Map.of(
-                "harness-title", 0.0,
-                "body-caption", 0.0);
+        Map<String, Double> residuals = new java.util.LinkedHashMap<>();
+        for (String controlId : typographyControlIds) {
+            residuals.put(controlId, 0.0);
+        }
         List<TypographyObservation> observations = sceneSession.typography(
                 0,
                 0,
@@ -919,7 +943,7 @@ public final class FixtureControl implements AutoCloseable {
                         1280,
                         720,
                         0,
-                        Set.of("harness-title", "settings-list")));
+                        layoutControlIds));
         List<LayoutControlReference> controls = observations.stream()
                 .map(observation -> new LayoutControlReference(
                         observation.controlId(),

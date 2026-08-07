@@ -1,6 +1,7 @@
 [versions]
 gdx = "1.14.2"
 agent-runtime = "1.0.0"
+markup = "0.2.0"
 junit = "6.1.2"
 jackson = "2.22.1"
 mcp = "2.0.0"
@@ -15,3 +16,6 @@ japicmp = { module = "com.github.siom79.japicmp:japicmp", version.ref = "japicmp
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
 mcp = { module = "io.modelcontextprotocol.sdk:mcp", version.ref = "mcp" }
+markup-core = { module = "io.github.teemuki8:libgdx-ui-markup", version.ref = "markup" }
+markup-harness = { module = "io.github.teemuki8:libgdx-ui-markup-harness", version.ref = "markup" }
+markup-runtime = { module = "io.github.teemuki8:libgdx-ui-markup-runtime", version.ref = "markup" }

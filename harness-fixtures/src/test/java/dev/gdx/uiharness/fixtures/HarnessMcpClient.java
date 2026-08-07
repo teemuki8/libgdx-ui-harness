@@ -233,6 +233,32 @@ final class HarnessMcpClient implements Closeable {
                         "force", false)));
     }
 
+    /** Queries one strict match by role and exact accessible name, returning the match node. */
+    JsonNode queryByRoleAndName(String sessionId, String role, String name) throws Exception {
+        JsonNode content = call("ui_query", Map.of(
+                "sessionId", sessionId,
+                "locator", Map.of(
+                        "kind", "filter",
+                        "locator", Map.of("kind", "role", "role", role),
+                        "filter", Map.of("kind", "name", "match", exact(name)))));
+        return singleMatch(content);
+    }
+
+    /** Waits until one strict match has the requested boolean widget state. */
+    void waitForState(String sessionId, Map<String, Object> locator, String state,
+            boolean expected, long deadlineMillis) throws Exception {
+        JsonNode content = call("ui_wait", Map.of(
+                "sessionId", sessionId,
+                "locator", Map.of(
+                        "kind", "filter",
+                        "locator", locator,
+                        "filter", Map.of("kind", "state", "state", state,
+                                "expected", expected)),
+                "condition", "present",
+                "deadlineMillis", deadlineMillis));
+        requireKind(content, "wait-result");
+    }
+
     void clickMissing(String sessionId, String testId, long deadlineMillis) throws Exception {
         call("ui_action", Map.of(
                 "sessionId", sessionId,

@@ -39,17 +39,24 @@ final class ReferenceProcess implements AutoCloseable {
     }
 
     static ReferenceProcess launch() throws Exception {
+        return launch(new String[0]);
+    }
+
+    static ReferenceProcess launch(String... extraArguments) throws Exception {
         String classpath = System.getProperty("reference.app.classpath");
         if (classpath == null || classpath.isBlank()) {
             throw new IllegalStateException("Gradle did not provide the reference app classpath");
         }
         Path root = Files.createTempDirectory("gdx-ui-reference-");
         String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        String[] applicationArguments = new String[extraArguments.length + 1];
+        applicationArguments[0] = root.toString();
+        System.arraycopy(extraArguments, 0, applicationArguments, 1, extraArguments.length);
         ProcessBuilder builder = new ProcessBuilder(ReferenceJvmCommand.build(
                 java,
                 classpath,
                 System.getProperty("os.name"),
-                root.toString()));
+                applicationArguments));
         Process process = builder.start();
         ReferenceProcess reference = new ReferenceProcess(root, process);
         try {
