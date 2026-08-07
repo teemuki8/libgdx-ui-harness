@@ -9,7 +9,7 @@ A semantic UI automation library for libGDX Scene2D. It gives coding agents and 
 
 The design brings Playwright-style principles to libGDX: lazy strict locators, actionability checks, automatic waits, immutable semantic snapshots, completed-frame screenshots, and causal traces. Live `Stage`, `Actor`, input, and framebuffer work remains confined to the application's render thread.
 
-> **Release:** `1.0.0` is the first stable release. Published modules require Java 25.
+> **Release:** `1.1.0` is the current release (see [v1.1.0 notes](docs/releases/v1.1.0.md)). Published modules require Java 25.
 
 ## Why use it?
 
@@ -38,8 +38,8 @@ repositories {
 }
 
 dependencies {
-    implementation("io.github.teemuki8:harness-lwjgl3:1.0.0")
-    implementation("io.github.teemuki8:harness-mcp:1.0.0")
+    implementation("io.github.teemuki8:harness-lwjgl3:1.1.0")
+    implementation("io.github.teemuki8:harness-mcp:1.1.0")
 }
 ```
 
