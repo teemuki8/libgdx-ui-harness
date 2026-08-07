@@ -42,7 +42,12 @@ def prepare_pair(output, candidate_repository, candidate_version):
     return {
         treatment: runner._prepare_run(
             output, 1, treatment, index, hashes, treatment_inputs,
-            repository, candidate_version)
+            model="treatment-preflight",
+            reasoning=runner.FIXED_REASONING,
+            profile="low-confidence",
+            max_seconds=runner.MIN_SECONDS,
+            candidate_repository=candidate_repository,
+            candidate_version=candidate_version)
         for index, treatment in enumerate(("baseline", "harness"))
     }
 
