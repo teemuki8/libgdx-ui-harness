@@ -76,8 +76,10 @@ the next valid frame is still delivered. EOF yields `EndOfInput`, or `frame-too-
 an oversized frame, or `unterminated-frame` after an in-limit unterminated frame. Rejected
 frame content is never echoed; only the rejection code is retained.
 
-Every rejected or parse-failed frame produces exactly one bounded JSON-RPC parse error
-(`-32700`, `id: null` per JSON-RPC 2.0) and the read loop continues. The parse error is
+Every newline-terminated rejected or parse-failed frame produces exactly one bounded JSON-RPC
+parse error (`-32700`, `id: null` per JSON-RPC 2.0) and the read loop continues. An in-limit
+frame left unterminated at EOF produces one parse error as well, after which the next read
+yields `EndOfInput` and the transport terminates normally. The parse error is
 written synchronously on the read-loop thread, serialized with response writes through the
 `output` monitor (matching the MCP SDK's own stdio pattern), so a failed parse-error write
 deterministically terminates the transport exceptionally instead of being swallowed by a
