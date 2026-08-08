@@ -20,9 +20,14 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
@@ -157,6 +162,41 @@ final class Scene2dScenarioRunnerTest {
             assertEquals(ScenarioFailure.DISPATCH_FAILED, result.failure().orElseThrow());
             assertFalse(result.cleanupCompleted());
             assertEquals(null, cleanupThread.get());
+        }
+    }
+
+    @Test void racedDeadlineCancellationRunsOutsideTheRunMonitor() {
+        AtomicBoolean monitorHeld = new AtomicBoolean();
+        // A scheduler whose cancellation synchronously reenters the runner: the deadline
+        // signal is bound to the racing Run, so running it from a helper thread can only
+        // proceed once the arming thread leaves the run monitor. A bounded wait records the
+        // stall as monitor ownership.
+        DeadlineScheduler probing = (delay, signal) -> () -> {
+            CompletableFuture<Boolean> entered = CompletableFuture.supplyAsync(() -> {
+                signal.run();
+                return Boolean.TRUE;
+            });
+            try {
+                entered.get(1, TimeUnit.SECONDS);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("deadline probe interrupted", exception);
+            } catch (ExecutionException | TimeoutException exception) {
+                monitorHeld.set(true);
+            }
+        };
+        try (Fixture fixture = new Fixture(16, probing)) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            // The initial submission fails before the deadline arm runs, so the run is already
+            // terminal when armDeadline reconciles its fresh token with the terminal state.
+            fixture.scheduler.close();
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(1));
+
+            assertFalse(monitorHeld.get(),
+                    "armDeadline must cancel the raced token only after leaving the run monitor");
+            ScenarioResult result = started.toCompletableFuture().join();
+            assertEquals(ScenarioFailure.DISPATCH_FAILED, result.failure().orElseThrow());
+            assertFalse(result.cleanupCompleted());
         }
     }
 
@@ -634,6 +674,11 @@ final class Scene2dScenarioRunnerTest {
         Fixture(int schedulerCapacity) {
             scheduler = new RenderThreadScheduler(schedulerCapacity);
             runner = new Scene2dScenarioRunner(registry, scheduler, clock, deadlines);
+        }
+
+        Fixture(int schedulerCapacity, DeadlineScheduler deadlineScheduler) {
+            scheduler = new RenderThreadScheduler(schedulerCapacity);
+            runner = new Scene2dScenarioRunner(registry, scheduler, clock, deadlineScheduler);
         }
 
         void register(ScenarioLifecycle lifecycle) {

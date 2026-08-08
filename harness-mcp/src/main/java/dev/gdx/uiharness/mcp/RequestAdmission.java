@@ -25,28 +25,9 @@ final class RequestAdmission implements AutoCloseable {
     static final int DEFAULT_PER_SESSION_LIMIT = 4;
     static final int DEFAULT_MAX_QUEUED_MUTATIONS = 16;
 
-    /**
-     * Package-private observation seam at the genuine admission boundary: fires under the
-     * admission monitor at the exact moment a request is accepted (started immediately or
-     * enqueued), so tests can observe the true enqueue order without racing virtual-thread
-     * dispatch or recording rejected attempts. Never fired for rejected or closed requests.
-     *
-     * <p>The callback is invoked only after all admission validation passes and before any
-     * admission state (lane insertion, counters, queue) is committed, so a throwing observer
-     * leaves the admission untouched and the exception propagates out of {@link #submit}
-     * without leaking permits or lane slots.
-     */
-    interface AdmissionObserver {
-        AdmissionObserver NOOP = requestId -> {};
-
-        /** Called under the admission monitor exactly when a request is admitted. */
-        void onAdmitted(String requestId);
-    }
-
     private final int globalLimit;
     private final int perSessionLimit;
     private final int maxQueuedMutations;
-    private final AdmissionObserver observer;
     private final Object monitor = new Object();
     private final Map<SessionKey, SessionLane> lanes = new HashMap<>();
     private int globalInFlight;
@@ -79,11 +60,6 @@ final class RequestAdmission implements AutoCloseable {
     }
 
     RequestAdmission(int globalLimit, int perSessionLimit, int maxQueuedMutations) {
-        this(globalLimit, perSessionLimit, maxQueuedMutations, AdmissionObserver.NOOP);
-    }
-
-    RequestAdmission(int globalLimit, int perSessionLimit, int maxQueuedMutations,
-            AdmissionObserver observer) {
         if (globalLimit <= 0) {
             throw new IllegalArgumentException("globalLimit must be positive");
         }
@@ -96,7 +72,6 @@ final class RequestAdmission implements AutoCloseable {
         this.globalLimit = globalLimit;
         this.perSessionLimit = perSessionLimit;
         this.maxQueuedMutations = maxQueuedMutations;
-        this.observer = Objects.requireNonNull(observer, "observer");
     }
 
     /**
@@ -105,20 +80,13 @@ final class RequestAdmission implements AutoCloseable {
      * start immediately and may overlap; admitted mutations start in submission order per session
      * and never overlap. The permit is released only after the stage returned by {@code work}
      * (which includes result translation and output accounting) reaches a terminal state.
+     *
+     * <p>The admission decision is made atomically under the monitor, but the rejection itself
+     * completes the returned future only after leaving the monitor, so a synchronous continuation
+     * on a rejected future can reenter {@code submit} or {@link #close} without owning the
+     * admission monitor.
      */
     <T> CompletionStage<T> submit(
-            SessionKey sessionKey,
-            HarnessToolCatalog.AccessMode mode,
-            Supplier<CompletionStage<T>> work) {
-        return submit(null, sessionKey, mode, work);
-    }
-
-    /**
-     * Admits one named request or rejects it immediately. The {@code requestId} is opaque and
-     * forwarded to the {@link AdmissionObserver}; callers that do not name requests pass null.
-     */
-    <T> CompletionStage<T> submit(
-            String requestId,
             SessionKey sessionKey,
             HarnessToolCatalog.AccessMode mode,
             Supplier<CompletionStage<T>> work) {
@@ -127,52 +95,51 @@ final class RequestAdmission implements AutoCloseable {
         Objects.requireNonNull(work, "work");
         CompletableFuture<T> result = new CompletableFuture<>();
         QueuedWork item = new QueuedWork(result, work, mode);
-        SessionLane lane;
+        SessionLane lane = null;
         boolean startNow = false;
+        LimitExceededException rejection = null;
         synchronized (monitor) {
             if (closed) {
-                result.completeExceptionally(new LimitExceededException("Admission closed"));
-                return result;
-            }
-            if (globalInFlight >= globalLimit) {
-                result.completeExceptionally(new LimitExceededException(
-                        "Global admission limit exceeded (limit=" + globalLimit + ")"));
-                return result;
-            }
-            lane = laneFor(lanes, sessionKey);
-            if (lane.inFlight >= perSessionLimit) {
-                result.completeExceptionally(new LimitExceededException(
-                        "Session admission limit exceeded (limit=" + perSessionLimit + ")"));
-                return result;
-            }
-            if (mode == HarnessToolCatalog.AccessMode.MUTATING
-                    && (lane.runningMutation != null || !lane.queue.isEmpty())) {
-                if (lane.queue.size() >= maxQueuedMutations) {
-                    result.completeExceptionally(new LimitExceededException(
-                            "Mutation queue limit exceeded (limit=" + maxQueuedMutations + ")"));
-                    return result;
+                rejection = new LimitExceededException("Admission closed");
+            } else if (globalInFlight >= globalLimit) {
+                rejection = new LimitExceededException(
+                        "Global admission limit exceeded (limit=" + globalLimit + ")");
+            } else {
+                lane = laneFor(lanes, sessionKey);
+                if (lane.inFlight >= perSessionLimit) {
+                    rejection = new LimitExceededException(
+                            "Session admission limit exceeded (limit=" + perSessionLimit + ")");
+                } else if (mode == HarnessToolCatalog.AccessMode.MUTATING
+                        && (lane.runningMutation != null || !lane.queue.isEmpty())) {
+                    if (lane.queue.size() >= maxQueuedMutations) {
+                        rejection = new LimitExceededException(
+                                "Mutation queue limit exceeded (limit=" + maxQueuedMutations + ")");
+                    } else {
+                        lanes.put(sessionKey, lane);
+                        lane.queue.add(item);
+                        globalInFlight++;
+                        lane.inFlight++;
+                        // A queued mutation cancelled before it starts releases its permit and
+                        // queue slot immediately instead of leaking until the lane drains.
+                        SessionLane admittedLane = lane;
+                        result.whenComplete((value, failure) ->
+                                cancelQueued(sessionKey, admittedLane, item));
+                        return result;
+                    }
+                } else {
+                    lanes.put(sessionKey, lane);
+                    globalInFlight++;
+                    lane.inFlight++;
+                    if (mode == HarnessToolCatalog.AccessMode.MUTATING) {
+                        lane.runningMutation = result;
+                    }
+                    startNow = true;
                 }
-                // Notify only after validation and before any admission state is committed
-                // (lane insertion, counters, queue), so a throwing observer leaves the
-                // admission untouched and the exception propagates without leaking permits.
-                observer.onAdmitted(requestId);
-                lanes.put(sessionKey, lane);
-                lane.queue.add(item);
-                globalInFlight++;
-                lane.inFlight++;
-                // A queued mutation cancelled before it starts releases its permit and queue
-                // slot immediately instead of leaking until the lane drains.
-                result.whenComplete((value, failure) -> cancelQueued(sessionKey, lane, item));
-                return result;
             }
-            observer.onAdmitted(requestId);
-            lanes.put(sessionKey, lane);
-            globalInFlight++;
-            lane.inFlight++;
-            if (mode == HarnessToolCatalog.AccessMode.MUTATING) {
-                lane.runningMutation = result;
-            }
-            startNow = true;
+        }
+        if (rejection != null) {
+            result.completeExceptionally(rejection);
+            return result;
         }
         if (startNow) {
             run(sessionKey, lane, item);
@@ -182,8 +149,8 @@ final class RequestAdmission implements AutoCloseable {
 
     /**
      * Returns the lane for one session, creating it without inserting it into the map. The
-     * lane enters the map only when a request is actually admitted, so rejected or
-     * observer-failed requests never leave an empty lane behind.
+     * lane enters the map only when a request is actually admitted, so rejected requests never
+     * leave an empty lane behind.
      */
     private static SessionLane laneFor(Map<SessionKey, SessionLane> lanes, SessionKey sessionKey) {
         SessionLane lane = lanes.get(sessionKey);

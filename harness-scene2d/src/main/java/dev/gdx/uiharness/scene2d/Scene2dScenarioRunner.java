@@ -237,12 +237,18 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             }
             DeadlineScheduler.Cancellation scheduled =
                     deadlineScheduler.schedule(delay, this::deadlineReached);
+            boolean cancelNow;
             synchronized (this) {
-                if (phase == Phase.TERMINAL) {
-                    scheduled.cancel();
-                } else {
+                cancelNow = phase == Phase.TERMINAL;
+                if (!cancelNow) {
                     deadlineCancellation = scheduled;
                 }
+            }
+            if (cancelNow) {
+                // The run already reached a terminal state while the token was being armed:
+                // invalidate it only after leaving the run monitor, so a cancellation that
+                // synchronously reenters the runner never runs under monitor ownership.
+                scheduled.cancel();
             }
         }
 

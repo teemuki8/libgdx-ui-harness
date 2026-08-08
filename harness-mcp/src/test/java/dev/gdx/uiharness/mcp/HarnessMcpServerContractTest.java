@@ -963,28 +963,24 @@ final class HarnessMcpServerContractTest {
                     structured(second.get(5, TimeUnit.SECONDS)).get("kind"));
         }
 
-        CompletableFuture<HarnessResponse> mutationOne = new CompletableFuture<>();
-        CompletableFuture<HarnessResponse> mutationTwo = new CompletableFuture<>();
-        CompletableFuture<HarnessResponse> mutationThree = new CompletableFuture<>();
-        AtomicInteger actionCalls = new AtomicInteger();
+        // Mutations are gated in protocol-start order, so completing gate N frees the lane for
+        // start N+1 regardless of which virtual-thread submission was admitted first. The
+        // contract under test is non-overlap: the lane must never run a second mutation while
+        // the previous one is still at the protocol. FIFO start order is proven directly by
+        // RequestAdmissionTest.sameSessionMutationsStartInSubmissionOrderAndNeverOverlap.
+        List<CompletableFuture<HarnessResponse>> gates =
+                Collections.synchronizedList(new ArrayList<>());
         AtomicBoolean overlappedWhilePreviousMutationRunning = new AtomicBoolean();
         AtomicReference<CompletableFuture<HarnessResponse>> previousGate = new AtomicReference<>();
         HarnessResponse action = new HarnessResponse.Success(
                 ProtocolVersion.V1, "mcp-1", "game",
                 new HarnessResponse.Result.Action(1, 2, "clicked", Map.of()));
-        // The observer sits on the genuine admission boundary inside RequestAdmission's
-        // monitor, so the recorded enqueue order is exact regardless of virtual-thread
-        // dispatch order. Protocol starts come from the stub, in invocation order.
-        RecordingObserver admissionObserver = new RecordingObserver();
         ProtocolSignals mutationStarts = new ProtocolSignals();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
                 HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    CompletableFuture<HarnessResponse> gate = new CompletableFuture<>();
+                    gates.add(gate);
                     mutationStarts.record(request.requestId());
-                    CompletableFuture<HarnessResponse> gate = switch (actionCalls.incrementAndGet()) {
-                        case 1 -> mutationOne;
-                        case 2 -> mutationTwo;
-                        default -> mutationThree;
-                    };
                     // The lane starts the next mutation only after the previous mutation's
                     // stage is terminal, so every new protocol call must observe the previous
                     // gate already completed; a lane that ran two mutations at once could not.
@@ -994,7 +990,7 @@ final class HarnessMcpServerContractTest {
                     }
                     return gate;
                 }, new RecordingArtifacts(), executor, 1024, System::nanoTime,
-                new RequestAdmission(8, 4, 4, admissionObserver))) {
+                new RequestAdmission(8, 4, 4))) {
             Map<String, Object> arguments = Map.of(
                     "sessionId", "game",
                     "locator", Map.of("kind", "role", "role", "button"),
@@ -1007,33 +1003,27 @@ final class HarnessMcpServerContractTest {
             CompletableFuture<McpSchema.CallToolResult> third = handler.handle(call(
                     "ui_action", arguments)).toFuture();
 
-            // Wait until all three mutations are admitted: exactly one starts immediately, the
-            // other two sit in the bounded lane in whichever order their virtual-thread defers
-            // ran. The observer's admission order is the true enqueue order.
-            admissionObserver.admissionSignal(3).get(5, TimeUnit.SECONDS);
-            List<String> enqueueOrder = admissionObserver.admissions();
+            // Exactly one mutation starts immediately at the protocol; the other two sit in
+            // the bounded lane in whichever order their virtual-thread submissions ran.
+            mutationStarts.signal(1).get(5, TimeUnit.SECONDS);
 
-            mutationOne.complete(action);
-            // Completing the first gate starts exactly one queued mutation: the first enqueued
-            // one. A LIFO lane would start the last enqueued one and fail the order assertion.
+            // Completing the first gate starts exactly one more mutation: the lane head. The
+            // last queued mutation must not start while the second is still running.
+            gates.get(0).complete(action);
             mutationStarts.signal(2).get(5, TimeUnit.SECONDS);
-            assertEquals(enqueueOrder.subList(0, 2), mutationStarts.starts());
-            // The last queued mutation must not have started while the second was running.
             assertFalse(mutationStarts.signal(3).isDone());
 
-            mutationTwo.complete(action);
+            gates.get(1).complete(action);
             mutationStarts.signal(3).get(5, TimeUnit.SECONDS);
 
-            mutationThree.complete(action);
+            gates.get(2).complete(action);
             assertEquals("action-result",
                     structured(first.get(5, TimeUnit.SECONDS)).get("kind"));
             assertEquals("action-result",
                     structured(second.get(5, TimeUnit.SECONDS)).get("kind"));
             assertEquals("action-result",
                     structured(third.get(5, TimeUnit.SECONDS)).get("kind"));
-            // Protocol-start order equals the monitor-recorded admission order (FIFO lane),
-            // and no two same-session mutations were ever concurrently at the protocol.
-            assertEquals(enqueueOrder, mutationStarts.starts());
+            // No two same-session mutations were ever concurrently at the protocol.
             assertFalse(overlappedWhilePreviousMutationRunning.get());
         }
     }
@@ -1638,48 +1628,6 @@ final class HarnessMcpServerContractTest {
 
         @Override public CompletionStage<SemanticSnapshot> snapshot(Deadline deadline) {
             return CompletableFuture.completedFuture(SNAPSHOT);
-        }
-    }
-
-    /**
-     * Records the monitor-protected admission order and completes one signal per admission, so
-     * tests can await the true enqueue order without polling or assuming virtual-thread
-     * dispatch order. Rejected requests never fire.
-     */
-    private static final class RecordingObserver implements RequestAdmission.AdmissionObserver {
-        private final List<String> admissions = Collections.synchronizedList(new ArrayList<>());
-        private final Map<Integer, CompletableFuture<Void>> admissionSignals =
-                new ConcurrentHashMap<>();
-
-        @Override public void onAdmitted(String requestId) {
-            synchronized (admissions) {
-                admissions.add(requestId);
-                complete(admissionSignals, admissions.size());
-            }
-        }
-
-        private static void complete(Map<Integer, CompletableFuture<Void>> signals, int count) {
-            CompletableFuture<Void> signal = signals.get(count);
-            if (signal != null) {
-                signal.complete(null);
-            }
-        }
-
-        CompletableFuture<Void> admissionSignal(int count) {
-            synchronized (admissions) {
-                CompletableFuture<Void> signal = admissionSignals.computeIfAbsent(
-                        count, ignored -> new CompletableFuture<>());
-                if (admissions.size() >= count) {
-                    signal.complete(null);
-                }
-                return signal;
-            }
-        }
-
-        List<String> admissions() {
-            synchronized (admissions) {
-                return List.copyOf(admissions);
-            }
         }
     }
 

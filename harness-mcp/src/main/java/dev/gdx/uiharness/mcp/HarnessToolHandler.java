@@ -168,7 +168,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             // with a stable LIMIT_EXCEEDED diagnostic and never reaches the protocol service.
             HarnessToolCatalog.AccessMode mode = catalog.accessMode(call.name());
             CompletionStage<McpSchema.CallToolResult> admitted = admission.submit(
-                    requestId, admissionKey(arguments), mode,
+                    admissionKey(arguments), mode,
                     () -> execute(request, call.name(), sequence, arguments));
             return Mono.fromFuture(admitted.toCompletableFuture())
                     .onErrorResume(RequestAdmission.LimitExceededException.class,

@@ -9,7 +9,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 
@@ -326,73 +328,50 @@ final class RequestAdmissionTest {
                 .toCompletableFuture().join());
     }
 
-    @Test void throwingAdmissionObserverLeaksNoPermitOrLaneSlot() {
-        AtomicInteger observerCalls = new AtomicInteger();
-        RequestAdmission admission = new RequestAdmission(1, 1, 1, requestId -> {
-            if (observerCalls.getAndIncrement() == 0) {
-                throw new IllegalStateException("observer exploded");
-            }
-        });
-        CompletableFuture<String> g0 = new CompletableFuture<>();
+    @Test void rejectedFutureContinuationCanReenterAdmissionAndCloseWithoutMonitorOwnership() {
+        RequestAdmission admission = new RequestAdmission(1, 1, 1);
+        CompletableFuture<String> gate = new CompletableFuture<>();
         AtomicInteger invoked = new AtomicInteger();
         AtomicInteger index = new AtomicInteger();
 
-        // The observer throws before any permit or lane state is committed, so the failure
-        // propagates out of submit and neither the global nor the per-session permit is used.
-        assertThrows(IllegalStateException.class, () -> admission.submit(
+        // Occupy the single global permit; every later submission is rejected.
+        CompletionStage<String> running = admission.submit(
                 RequestAdmission.SessionKey.session("s"), READ,
-                gated(invoked, index, g0)));
-        assertEquals(0, invoked.get());
+                gated(invoked, index, gate));
 
-        // With both limits at 1, the next request would be rejected if the throwing observer
-        // had consumed either permit or left a stale lane entry behind.
-        CompletionStage<String> next = admission.submit(
+        // A synchronous continuation on the rejected future reenters admission (still over the
+        // limit) and then close. The continuation must never run while the admission monitor
+        // is owned, so both reentries complete without deadlocking or observing torn state.
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        AtomicBoolean reenteredSubmitRejected = new AtomicBoolean();
+        AtomicBoolean closeRejectedNewAdmission = new AtomicBoolean();
+        CompletionStage<String> rejected = admission.submit(
                 RequestAdmission.SessionKey.session("s"), READ,
-                gated(invoked, index, g0));
-        assertEquals(1, invoked.get());
-        assertFalse(next.toCompletableFuture().isDone());
-
-        g0.complete("ok");
-        assertEquals("ok", next.toCompletableFuture().join());
-    }
-
-    @Test void throwingObserverOnQueuedMutationLeaksNoQueueSlotOrPermit() {
-        AtomicInteger observerCalls = new AtomicInteger();
-        RequestAdmission admission = new RequestAdmission(8, 8, 1, requestId -> {
-            if (observerCalls.getAndIncrement() == 1) {
-                throw new IllegalStateException("observer exploded");
-            }
+                () -> {
+                    throw new AssertionError("rejected work must never run");
+                });
+        rejected.toCompletableFuture().whenComplete((value, failure) -> {
+            observed.set(failure);
+            reenteredSubmitRejected.set(limitExceeded(admission.submit(
+                    RequestAdmission.SessionKey.session("s"), READ,
+                    () -> CompletableFuture.completedFuture("reentered"))));
+            admission.close();
+            closeRejectedNewAdmission.set(limitExceeded(admission.submit(
+                    RequestAdmission.SessionKey.session("s"), READ,
+                    () -> CompletableFuture.completedFuture("after-close"))));
         });
-        CompletableFuture<String> m0 = new CompletableFuture<>();
-        CompletableFuture<String> m1 = new CompletableFuture<>();
-        AtomicInteger invoked = new AtomicInteger();
-        AtomicInteger index = new AtomicInteger();
 
-        CompletionStage<String> first = admission.submit(
-                RequestAdmission.SessionKey.session("s"), WRITE,
-                gated(invoked, index, m0, m1));
+        assertTrue(rejected.toCompletableFuture().isDone());
+        assertInstanceOf(RequestAdmission.LimitExceededException.class, observed.get());
+        assertTrue(reenteredSubmitRejected.get(),
+                "a continuation reentering admission must observe the unchanged global limit");
+        assertTrue(closeRejectedNewAdmission.get(),
+                "close from a rejected-future continuation must reject new admission");
         assertEquals(1, invoked.get());
 
-        // The queued-path observer throws before the queue slot or its permits are committed,
-        // so the failed attempt must not occupy the single queue slot or hold a permit.
-        assertThrows(IllegalStateException.class, () -> admission.submit(
-                RequestAdmission.SessionKey.session("s"), WRITE,
-                gated(invoked, index, m0, m1)));
-        assertEquals(1, invoked.get());
-
-        // The single queue slot is still free: a replacement mutation is admitted and runs
-        // after the first completes, proving no slot or permit leaked.
-        CompletionStage<String> next = admission.submit(
-                RequestAdmission.SessionKey.session("s"), WRITE,
-                gated(invoked, index, m0, m1));
-        assertEquals(1, invoked.get());
-        assertFalse(next.toCompletableFuture().isDone());
-
-        m0.complete("m0");
-        assertEquals("m0", first.toCompletableFuture().join());
-        assertEquals(2, invoked.get());
-        m1.complete("m1");
-        assertEquals("m1", next.toCompletableFuture().join());
+        // The request admitted before close still completes normally.
+        gate.complete("ok");
+        assertEquals("ok", running.toCompletableFuture().join());
     }
 
     @SafeVarargs
@@ -415,6 +394,20 @@ final class RequestAdmissionTest {
             throw new AssertionError("expected exceptional completion");
         } catch (CompletionException failure) {
             assertInstanceOf(RequestAdmission.LimitExceededException.class, failure.getCause());
+        }
+    }
+
+    /** Returns whether the stage completed exceptionally with {@link LimitExceededException}. */
+    private static boolean limitExceeded(CompletionStage<?> stage) {
+        CompletableFuture<?> future = stage.toCompletableFuture();
+        if (!future.isDone() || !future.isCompletedExceptionally()) {
+            return false;
+        }
+        try {
+            future.join();
+            return false;
+        } catch (CompletionException failure) {
+            return failure.getCause() instanceof RequestAdmission.LimitExceededException;
         }
     }
 }
