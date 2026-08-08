@@ -151,13 +151,13 @@ final class HarnessToolCatalogTest {
                 catalog.tool("ui_matrix_results").outputSchema());
         JsonNode items = output.at("/properties/report/properties/results/items");
         assertNotNull(items.get("properties"), "matrix-report results items must declare properties");
-        assertMatrixObservedIdentityField(items, "observedLocale", 1);
-        assertMatrixObservedIdentityField(items, "observedFontSetId", 0);
-        assertMatrixObservedIdentityField(items, "observedRestartProfileId", 1);
+        assertMatrixObservedIdentityField(items, "observedLocale", 1, true);
+        assertMatrixObservedIdentityField(items, "observedFontSetId", 0, false);
+        assertMatrixObservedIdentityField(items, "observedRestartProfileId", 1, true);
     }
 
     private static void assertMatrixObservedIdentityField(
-            JsonNode items, String field, int minimum) {
+            JsonNode items, String field, int minimum, boolean nonBlank) {
         JsonNode schema = items.at("/properties/" + field);
         assertEquals("string", schema.at("/oneOf/0/type").asText(), field + " string variant");
         assertEquals(minimum, schema.at("/oneOf/0/minLength").asInt(),
@@ -165,6 +165,73 @@ final class HarnessToolCatalogTest {
         assertEquals(256, schema.at("/oneOf/0/maxLength").asInt(),
                 field + " must cap at the core model bound of 256");
         assertEquals("null", schema.at("/oneOf/1/type").asText(), field + " null variant");
+        assertEquals(nonBlank, !schema.at("/oneOf/0/pattern").isMissingNode(),
+                field + " non-blank pattern presence");
+    }
+
+    @Test void matrixReportObservedIdentitySchemaRejectsBlankAndAcceptsRepresentativeValues() {
+        Map<String, Object> outputSchema = catalog.tool("ui_matrix_results").outputSchema();
+        var validator = McpJsonDefaults.getSchemaValidator();
+        assertFalse(validator.validate(outputSchema, matrixReport(
+                "   ", "", "   ")).valid(),
+                "whitespace-only observed identity values must be rejected like the core model");
+        assertFalse(validator.validate(outputSchema, matrixReport(
+                "   ", "", "desktop-restart-1280x720")).valid(),
+                "blank observedLocale must be rejected");
+        assertFalse(validator.validate(outputSchema, matrixReport(
+                "en", "", "   ")).valid(),
+                "blank observedRestartProfileId must be rejected");
+        var representative = validator.validate(outputSchema, matrixReport(
+                "en", "", "desktop-restart-1280x720"));
+        assertTrue(representative.valid(),
+                "representative non-blank observed identities must be accepted: "
+                        + representative);
+        assertTrue(validator.validate(outputSchema, matrixReport(
+                "en", "   ", "desktop-restart-1280x720")).valid(),
+                "observedFontSetId stays blank-allowed");
+        assertTrue(validator.validate(outputSchema, matrixReport(
+                "en", "", null)).valid(),
+                "observed identities stay nullable");
+    }
+
+    private static Map<String, Object> matrixReport(
+            String observedLocale, String observedFontSetId, String observedRestartProfileId) {
+        Map<String, Object> caseSummary = new java.util.LinkedHashMap<>();
+        caseSummary.put("index", 0);
+        caseSummary.put("window", Map.of("width", 1280, "height", 720));
+        caseSummary.put("uiScale", 1.0);
+        caseSummary.put("devicePixelRatio", 1.0);
+        caseSummary.put("hiDpiMode", "LOGICAL");
+        caseSummary.put("locale", "en");
+        caseSummary.put("fontSetId", "");
+        caseSummary.put("aspectRatio", 16.0 / 9.0);
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("caseSummary", caseSummary);
+        result.put("status", "PASSED");
+        result.put("observedLocale", observedLocale);
+        result.put("observedFontSetId", observedFontSetId);
+        result.put("observedRestartProfileId", observedRestartProfileId);
+        return Map.of(
+                "kind", "matrix-report",
+                "progress", Map.of(
+                        "status", "unavailable",
+                        "dimensions", Map.of(),
+                        "ruleId", "progress-fingerprint/v1"),
+                "recovery", Map.of(
+                        "policyVersion", "recovery-policy/v1",
+                        "consumedBefore", 0,
+                        "consumed", 0,
+                        "limit", 3,
+                        "remainingBefore", 3,
+                        "remaining", 3,
+                        "elapsedMillis", 10,
+                        "maxWallTimeMillis", 30_000,
+                        "terminatingRule", "success/v1"),
+                "report", Map.of(
+                        "runId", "run-1",
+                        "scenarioId", "matrix",
+                        "results", List.of(result),
+                        "truncated", false));
     }
 
     @Test void everyAdvertisedExampleValidatesAgainstItsInputSchema() {

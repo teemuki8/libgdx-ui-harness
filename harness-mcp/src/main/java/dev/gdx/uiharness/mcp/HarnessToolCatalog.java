@@ -16,6 +16,17 @@ import java.util.function.Consumer;
 /** Immutable catalog of the fifteen allowlisted MCP tools and their bounded JSON schemas. */
 public final class HarnessToolCatalog {
     private static final int MAX_IDENTIFIER = 256;
+
+    /**
+     * Matches a non-blank string per Java {@link String#isBlank()}: at least one
+     * character outside {@link Character#isWhitespace(int)}. The Java whitespace code
+     * points are enumerated explicitly because ECMA-262 {@code \s} differs (it excludes
+     * U+001C..U+001F and includes U+00A0/U+FEFF, while Java's set excludes the
+     * non-breaking U+2007 and U+202F).
+     */
+    private static final String NON_BLANK_PATTERN =
+            ".*[^\\u0009-\\u000D\\u001C-\\u001F\\u0020\\u1680"
+                    + "\\u2000-\\u2006\\u2008-\\u200A\\u2028\\u2029\\u205F\\u3000].*";
     private static final Map<String, Object> ARTIFACT_SCHEMA = object(Map.of(
             "reference", string(1, ProtocolJson.MAX_STRING_LENGTH),
             "mediaType", string(1, 256),
@@ -651,9 +662,9 @@ public final class HarnessToolCatalog {
         resultProperties.put("observedDevicePixelRatio", nullableNumber());
         resultProperties.put("observedHiDpiMode", nullableEnum(
                 "LOGICAL", "PIXELS"));
-        resultProperties.put("observedLocale", nullableIdentifier(1));
-        resultProperties.put("observedFontSetId", nullableIdentifier(0));
-        resultProperties.put("observedRestartProfileId", nullableIdentifier(1));
+        resultProperties.put("observedLocale", nullableIdentifier(1, NON_BLANK_PATTERN));
+        resultProperties.put("observedFontSetId", nullableIdentifier(0, null));
+        resultProperties.put("observedRestartProfileId", nullableIdentifier(1, NON_BLANK_PATTERN));
         resultProperties.put("passedAssertions", array(integer(0, 255), 256));
         resultProperties.put("failedAssertions", array(integer(0, 255), 256));
         resultProperties.put("artifactReferences", array(
@@ -681,11 +692,19 @@ public final class HarnessToolCatalog {
     /**
      * Nullable identifier-sized string mirroring the core model bound of
      * {@link #MAX_IDENTIFIER} characters; {@code minimum} is the length of the
-     * non-null variant.
+     * non-null variant and {@code pattern} an optional content constraint applied to
+     * the non-null variant only.
      */
-    private static Map<String, Object> nullableIdentifier(int minimum) {
+    private static Map<String, Object> nullableIdentifier(int minimum, String pattern) {
+        Map<String, Object> text = new java.util.LinkedHashMap<>();
+        text.put("type", "string");
+        text.put("minLength", minimum);
+        text.put("maxLength", MAX_IDENTIFIER);
+        if (pattern != null) {
+            text.put("pattern", pattern);
+        }
         return Map.of("oneOf", List.of(
-                string(minimum, MAX_IDENTIFIER), Map.of("type", "null")));
+                Map.copyOf(text), Map.of("type", "null")));
     }
 
     private static Map<String, Object> nullableObject(
