@@ -13,8 +13,8 @@ import java.util.Objects;
  * expected receipt digest, length, and media type, so a mutating or lying
  * delegate cannot redefine those receipt claims. Opaque-reference storage and
  * readback integrity remain the publisher's responsibility. A delegate
- * failure — runtime exception or non-fatal error — a null receipt, or a
- * mismatched receipt all surface as one fixed
+ * failure — runtime exception, error, or sneaky-thrown checked throwable —
+ * a null receipt, or a mismatched receipt all surface as one fixed
  * {@link ArtifactReference.ArtifactUnavailableException} — the delegate's own
  * message never escapes the boundary. Fatal errors
  * ({@link VirtualMachineError}, {@link ThreadDeath}) propagate unchanged.
@@ -39,13 +39,10 @@ public final class VerifiedArtifactPublisher implements ArtifactReference.Publis
         ArtifactReference receipt;
         try {
             receipt = delegate.publish(mediaType, snapshot);
-        } catch (RuntimeException failure) {
-            throw new ArtifactReference.ArtifactUnavailableException(
-                    UNAVAILABLE_MESSAGE, failure);
-        } catch (Error failure) {
+        } catch (Throwable failure) {
             if (failure instanceof VirtualMachineError
                     || failure instanceof ThreadDeath) {
-                throw failure;   // fatal errors are not a public diagnostic
+                throw (Error) failure;   // fatal errors are not a public diagnostic
             }
             throw new ArtifactReference.ArtifactUnavailableException(
                     UNAVAILABLE_MESSAGE, failure);

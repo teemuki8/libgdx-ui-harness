@@ -557,6 +557,33 @@ final class HarnessMcpServerContractTest {
         assertInstanceOf(AssertionError.class, failure.getCause());
     }
 
+    @Test void verifiedPublisherNormalizesSneakyCheckedFailures() {
+        String secret = "checked-exception-leak";
+        ArtifactReference.Publisher sneaky = (mediaType, content) ->
+                sneakyThrow(new java.io.IOException(secret));
+        ArtifactReference.ArtifactUnavailableException failure =
+                assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                        () -> new VerifiedArtifactPublisher(sneaky)
+                                .publish("image/png", new byte[] {1, 2, 3}));
+        assertEquals("Artifact publisher receipt is unavailable or invalid",
+                failure.getMessage());
+        assertFalse(failure.getMessage().contains(secret));
+        assertInstanceOf(java.io.IOException.class, failure.getCause());
+    }
+
+    @Test void verifiedPublisherNormalizesLinkageErrors() {
+        ArtifactReference.Publisher linkage = (mediaType, content) -> {
+            throw new LinkageError("delegate linkage failure");
+        };
+        ArtifactReference.ArtifactUnavailableException failure =
+                assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                        () -> new VerifiedArtifactPublisher(linkage)
+                                .publish("image/png", new byte[] {1, 2, 3}));
+        assertEquals("Artifact publisher receipt is unavailable or invalid",
+                failure.getMessage());
+        assertInstanceOf(LinkageError.class, failure.getCause());
+    }
+
     @Test void verifiedPublisherRethrowsFatalErrors() {
         StackOverflowError fatal = new StackOverflowError("simulated");
         ArtifactReference.Publisher overflowing = (mediaType, content) -> {
@@ -3160,5 +3187,12 @@ final class HarnessMcpServerContractTest {
             content.get(copy);
             return publish(mediaType, copy);
         }
+    }
+
+    /** Sneaky-throws a checked failure through an unchecked signature. */
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> ArtifactReference sneakyThrow(Throwable failure)
+            throws T {
+        throw (T) failure;
     }
 }
