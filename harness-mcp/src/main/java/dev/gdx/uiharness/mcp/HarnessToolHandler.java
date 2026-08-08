@@ -144,7 +144,8 @@ public final class HarnessToolHandler implements AutoCloseable {
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes, LongSupplier nanoClock, RequestAdmission admission) {
         this.protocol = Objects.requireNonNull(protocol, "protocol");
-        this.artifacts = Objects.requireNonNull(artifacts, "artifacts");
+        this.artifacts = new VerifiedArtifactPublisher(
+                Objects.requireNonNull(artifacts, "artifacts"));
         this.executor = Objects.requireNonNull(executor, "executor");
         this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
         if (artifactThresholdBytes <= 0) {
@@ -514,7 +515,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("heatmapArtifact", artifactMap(heatmap));
             }
             ArtifactReference evidence = artifacts.publish(
-                    "application/json", encoded.clone());
+                    "application/json", encoded);
             content.put("evidenceArtifact", artifactMap(evidence));
             return Map.copyOf(content);
         }
@@ -550,7 +551,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("sha256", typography.current().sha256());
             }
             ArtifactReference evidence = artifacts.publish(
-                    "application/json", encoded.clone());
+                    "application/json", encoded);
             content.put("evidenceArtifact", artifactMap(evidence));
             return Map.copyOf(content);
         }
@@ -604,7 +605,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("sha256", layout.current().sha256());
             }
             ArtifactReference evidence = artifacts.publish(
-                    "application/json", encoded.clone());
+                    "application/json", encoded);
             content.put("evidenceArtifact", artifactMap(evidence));
             return Map.copyOf(content);
         }
@@ -918,12 +919,21 @@ public final class HarnessToolHandler implements AutoCloseable {
 
     private record LocatorFrame(Object value, int depth) {}
 
+    private ArtifactReference publishCapture(byte[] png, String claimedSha256) {
+        ArtifactReference reference = artifacts.publish("image/png", png);
+        if (!claimedSha256.equals(reference.sha256())) {
+            throw new ArtifactReference.ArtifactUnavailableException(
+                    "Capture digest does not match the published bytes");
+        }
+        return reference;
+    }
+
     private void offloadLarge(LinkedHashMap<String, Object> content, byte[] encoded,
             String mediaType, String... bulkyFields) {
         if (encoded.length <= artifactThresholdBytes) {
             return;
         }
-        ArtifactReference reference = artifacts.publish(mediaType, encoded.clone());
+        ArtifactReference reference = artifacts.publish(mediaType, encoded);
         for (String field : bulkyFields) {
             content.remove(field);
         }
