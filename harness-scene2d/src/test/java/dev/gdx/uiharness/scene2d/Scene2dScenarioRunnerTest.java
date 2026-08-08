@@ -230,7 +230,7 @@ final class Scene2dScenarioRunnerTest {
         }
     }
 
-    @Test void deadlineExpirySchedulesRenderThreadCleanupWithoutAnotherFrame() {
+    @Test void deadlineExpiryPublishesTerminalResultWithoutAnotherFrame() throws Exception {
         try (Fixture fixture = new Fixture()) {
             AtomicReference<Thread> cleanupThread = new AtomicReference<>();
             fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never") {
@@ -243,13 +243,96 @@ final class Scene2dScenarioRunnerTest {
 
             fixture.clock.advance(Duration.ofMillis(10));
             fixture.deadlines.expire();
-            assertFalse(started.toCompletableFuture().isDone());
+            // The monotonic deadline publishes the terminal result on its own thread without
+            // waiting for a render drain; hook cleanup is deferred to the render thread.
+            ScenarioResult result = started.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.READINESS_DEADLINE, result.failure().orElseThrow());
+            assertFalse(result.cleanupCompleted(),
+                    "the deadline-published result reports cleanup before the render thread drains");
+            assertEquals(null, cleanupThread.get(),
+                    "hook cleanup must not run before the render thread drains");
+
+            fixture.scheduler.drain();
+            assertEquals(Thread.currentThread(), cleanupThread.get(),
+                    "deferred cleanup runs exactly once on the render thread");
+        }
+    }
+
+    @Test void noFrameDeadlineFailsAcquisitionWithoutRenderDrain() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            AtomicReference<Thread> cleanupThread = new AtomicReference<>();
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never") {
+                @Override public void cleanup(ScenarioRequest request) {
+                    cleanupThread.set(Thread.currentThread());
+                }
+            });
+            CompletionStage<Scene2dScenarioRunner.Lease> acquired =
+                    fixture.acquire(Duration.ofMillis(10));
             fixture.scheduler.drain();
 
-            ScenarioResult result = started.toCompletableFuture().join();
-            assertEquals(ScenarioFailure.READINESS_DEADLINE, result.failure().orElseThrow());
-            assertEquals(Thread.currentThread(), cleanupThread.get());
-            assertTrue(result.cleanupCompleted());
+            fixture.clock.advance(Duration.ofMillis(10));
+            fixture.deadlines.expire();
+
+            try {
+                acquired.toCompletableFuture().get(5, TimeUnit.SECONDS);
+                throw new AssertionError("acquisition unexpectedly succeeded");
+            } catch (ExecutionException failure) {
+                Scene2dScenarioRunner.AcquisitionException rejection = assertInstanceOf(
+                        Scene2dScenarioRunner.AcquisitionException.class, failure.getCause());
+                assertEquals(ScenarioFailure.READINESS_DEADLINE,
+                        rejection.result().failure().orElseThrow());
+                assertFalse(rejection.result().cleanupCompleted());
+            }
+            assertEquals(null, cleanupThread.get(),
+                    "hook cleanup must not run before the render thread drains");
+
+            fixture.scheduler.drain();
+            assertEquals(Thread.currentThread(), cleanupThread.get(),
+                    "deferred cleanup runs exactly once on the render thread");
+        }
+    }
+
+    @Test void newAcquisitionStaysBusyBeforeDeferredCleanupThenSucceedsAfterDrain()
+            throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            java.util.concurrent.atomic.AtomicInteger cleanups =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready") {
+                @Override public void cleanup(ScenarioRequest request) {
+                    cleanups.incrementAndGet();
+                }
+            });
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofMillis(10));
+            fixture.scheduler.drain();
+
+            fixture.clock.advance(Duration.ofMillis(10));
+            fixture.deadlines.expire();
+
+            ScenarioResult first = started.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.READINESS_DEADLINE, first.failure().orElseThrow());
+            assertFalse(first.cleanupCompleted());
+            assertEquals(0, cleanups.get());
+
+            // While the deferred cleanup still owns the active slot, a competing acquisition
+            // is rejected as busy instead of starting a second run.
+            CompletionStage<ScenarioResult> competing = fixture.start(Duration.ofSeconds(1));
+            ScenarioResult busy = competing.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.SESSION_BUSY, busy.failure().orElseThrow());
+            assertEquals(0, cleanups.get(),
+                    "cleanup must not run before the render thread drains");
+
+            fixture.scheduler.drain();
+            assertEquals(1, cleanups.get(),
+                    "deferred cleanup runs exactly once on the render thread");
+
+            // After the owner cleanup drains, a new acquisition is admitted and succeeds.
+            CompletionStage<ScenarioResult> next = fixture.start(Duration.ofSeconds(1));
+            fixture.scheduler.drain();
+            fixture.completedFrame();
+            ScenarioResult nextResult = next.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertTrue(nextResult.failure().isEmpty(),
+                    "a new acquisition succeeds after the owner cleanup drains");
+            assertTrue(nextResult.cleanupCompleted());
         }
     }
 
@@ -387,7 +470,7 @@ final class Scene2dScenarioRunnerTest {
         }
     }
 
-    @Test void everyTerminalPathReleasesTheLeaseBeforeTheNextAcquisition() {
+    @Test void everyTerminalPathReleasesTheLeaseBeforeTheNextAcquisition() throws Exception {
         for (TerminalPath path : TerminalPath.values()) {
             releaseOnTerminalPath(path);
         }
@@ -435,7 +518,7 @@ final class Scene2dScenarioRunnerTest {
         CLOSE
     }
 
-    private static void releaseOnTerminalPath(TerminalPath path) {
+    private static void releaseOnTerminalPath(TerminalPath path) throws Exception {
         switch (path) {
             case SUCCESS -> successReleasesThenReacquires();
             case CALLER_CANCELLATION -> callerCancellationReleasesThenReacquires();
@@ -477,16 +560,18 @@ final class Scene2dScenarioRunnerTest {
         }
     }
 
-    private static void deadlineReleasesThenReacquires() {
+    private static void deadlineReleasesThenReacquires() throws Exception {
         try (Fixture fixture = new Fixture()) {
             fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready"));
             Scene2dScenarioRunner.Lease lease = fixture.acquireReady(Duration.ofMillis(20));
             fixture.clock.advance(Duration.ofMillis(10));
             fixture.deadlines.expire();
+            ScenarioResult result = lease.completion().toCompletableFuture()
+                    .get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.READINESS_DEADLINE, result.failure().orElseThrow());
+            assertFalse(result.cleanupCompleted(),
+                    "the deadline-published result cannot claim cleanup before the drain");
             fixture.scheduler.drain();
-            assertEquals(ScenarioFailure.READINESS_DEADLINE,
-                    lease.completion().toCompletableFuture().join().failure().orElseThrow());
-            assertTrue(lease.completion().toCompletableFuture().join().cleanupCompleted());
             assertSubsequentAcquisitionSucceeds(fixture, "deadline");
         }
     }

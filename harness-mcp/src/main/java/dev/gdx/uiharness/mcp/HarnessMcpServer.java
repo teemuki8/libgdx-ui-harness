@@ -31,6 +31,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import reactor.core.publisher.Mono;
 
 /** MCP SDK 2.0 server exposing only the fixed harness tool catalog over stdio. */
@@ -49,6 +50,24 @@ public final class HarnessMcpServer implements AutoCloseable {
      */
     static final Duration OUTER_REQUEST_TIMEOUT = Duration.ofMillis(
             HarnessRequest.MAX_SCENARIO_DEADLINE_MILLIS + OUTER_TRANSLATION_ALLOWANCE.toMillis());
+
+    /**
+     * Transport-level admission cap aligned with the handler's global admission limit: at most
+     * this many messages may be dispatched onto virtual threads at once. Each admitted task
+     * blocks through {@code handle(message).block()}, which completes only after the response
+     * send finishes, so the output queue stays bounded by the same cap.
+     */
+    static final int TRANSPORT_ADMISSION_LIMIT = RequestAdmission.DEFAULT_GLOBAL_LIMIT;
+
+    /**
+     * JSON-RPC error code for a request rejected at the transport boundary because the bounded
+     * admission slots are full. Uses the JSON-RPC implementation-defined server-error range
+     * (-32000..-32099), distinct from every code the MCP SDK emits itself.
+     */
+    static final int TRANSPORT_BUSY_ERROR_CODE = -32000;
+
+    static final String TRANSPORT_BUSY_ERROR_MESSAGE =
+            "Admission limit exceeded (limit=" + TRANSPORT_ADMISSION_LIMIT + ")";
 
     private final VirtualStdioProvider transport;
     private final HarnessToolHandler handler;
@@ -116,6 +135,7 @@ public final class HarnessMcpServer implements AutoCloseable {
         private final CompletableFuture<Void> terminated = new CompletableFuture<>();
         private final Set<MessageTask> inFlight = ConcurrentHashMap.newKeySet();
         private final Map<Object, MessageTask> requests = new ConcurrentHashMap<>();
+        private final AtomicInteger dispatched = new AtomicInteger();
         private volatile McpServerSession session;
 
         private VirtualStdioProvider(InputStream input, OutputStream output) {
@@ -232,13 +252,49 @@ public final class HarnessMcpServer implements AutoCloseable {
             }
         }
 
-        private void dispatch(McpSchema.JSONRPCMessage message) {
+        /**
+         * Dispatches one message onto a virtual thread only while a bounded admission slot is
+         * free. Excess {@link McpSchema.JSONRPCRequest}s receive an immediate typed JSON-RPC
+         * limit response written synchronously under the output monitor; excess notifications
+         * and other messages are dropped. The slot is released in {@link MessageTask#finish()}
+         * only after {@code handle(message).block()} returns, which completes only once the
+         * response send finishes, so the output queue is bounded by the same admission cap.
+         */
+        private void dispatch(McpSchema.JSONRPCMessage message) throws IOException {
+            if (dispatched.get() >= TRANSPORT_ADMISSION_LIMIT) {
+                if (message instanceof McpSchema.JSONRPCRequest request) {
+                    writeOverloadResponse(request.id());
+                }
+                return;
+            }
             MessageTask task = new MessageTask(message);
             inFlight.add(task);
             if (task.requestId != null) {
                 requests.put(task.requestId, task);
             }
-            connectionExecutor.execute(task);
+            dispatched.incrementAndGet();
+            try {
+                connectionExecutor.execute(task);
+            } catch (java.util.concurrent.RejectedExecutionException closing) {
+                // The transport is closing: the task never runs, so release its slot at once
+                // instead of leaking the admission permit.
+                task.finish();
+            }
+        }
+
+        /**
+         * Writes one bounded typed JSON-RPC limit response synchronously on the read-loop
+         * thread for a request rejected by the transport admission gate. Like a parse error it
+         * is written directly under the output monitor and never queued on the output executor,
+         * so an excess flood cannot recursively grow the output queue.
+         */
+        private void writeOverloadResponse(Object requestId) throws IOException {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("jsonrpc", McpSchema.JSONRPC_VERSION);
+            body.put("id", requestId);
+            body.put("error", new McpSchema.JSONRPCResponse.JSONRPCError(
+                    TRANSPORT_BUSY_ERROR_CODE, TRANSPORT_BUSY_ERROR_MESSAGE));
+            writeLine(mapper.writeValueAsString(body));
         }
 
         private boolean cancelRequest(McpSchema.JSONRPCMessage message) {
@@ -315,6 +371,7 @@ public final class HarnessMcpServer implements AutoCloseable {
                     if (requestId != null) {
                         requests.remove(requestId, this);
                     }
+                    dispatched.decrementAndGet();
                     finishedSignal.countDown();
                 }
             }

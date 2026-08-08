@@ -198,6 +198,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         private final ResultFuture result = new ResultFuture(this);
         private final AcquisitionFuture acquisition = new AcquisitionFuture(this);
         private Phase phase = Phase.QUEUED;
+        private boolean deadlinePublished;
         private long startFrame;
         private long startRevision;
         private long readyFrame;
@@ -253,17 +254,44 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         }
 
         private void deadlineReached() {
+            boolean publish;
             synchronized (this) {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
                     return;
                 }
-            }
-            observeSubmission(this, scheduler.submit(() -> {
-                if (expired()) {
-                    terminate(ScenarioFailure.READINESS_DEADLINE);
+                if (!expired()) {
+                    return;
                 }
-                return null;
-            }, dispatchDeadline()));
+                // The deadline thread atomically publishes the terminal result so a paused or
+                // stopped render loop can never leave the call hanging; the run keeps owning
+                // the active slot and hook cleanup is deferred to the render thread.
+                phase = Phase.CLEANING;
+                deadlinePublished = true;
+                publish = true;
+            }
+            if (publish) {
+                publishTerminal(ScenarioFailure.READINESS_DEADLINE, false);
+                observeSubmission(this, scheduler.submit(() -> {
+                    deferredCleanup();
+                    return null;
+                }, dispatchDeadline()));
+            }
+        }
+
+        /**
+         * Runs the deferred cleanup hook exactly once on the render thread after the deadline
+         * thread published the terminal result, then releases the active owner slot so the next
+         * acquisition can proceed. The already-published result is never republished (no double
+         * result); a failing cleanup hook cannot change the immutable published outcome.
+         */
+        private void deferredCleanup() {
+            try {
+                hooks.cleanup(request);
+            } catch (RuntimeException cleanupFailure) {
+                // The terminal result was published when the deadline fired; cleanup failure
+                // cannot be republished, but the active slot must still be released.
+            }
+            releaseIfOwner(this);
         }
 
         /** Terminates a competing acquisition without scheduling any hook execution. */
@@ -410,13 +438,23 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     || elapsed().compareTo(definition.maxDuration()) >= 0;
         }
         private void dispatchFailed() {
+            boolean publish = false;
+            boolean release = false;
             synchronized (this) {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
+                    // A deadline-published run still owns the active slot until its deferred
+                    // cleanup drains; a failed cleanup submission must still release it.
+                    release = deadlinePublished;
                     return;
                 }
                 phase = Phase.TERMINAL;
+                publish = true;
             }
-            completeTerminal(ScenarioFailure.DISPATCH_FAILED, false);
+            if (publish) {
+                completeTerminal(ScenarioFailure.DISPATCH_FAILED, false);
+            } else if (release) {
+                releaseIfOwner(this);
+            }
         }
 
 
@@ -440,7 +478,13 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             completeTerminal(failure, cleaned);
         }
 
-        private void completeTerminal(ScenarioFailure failure, boolean cleaned) {
+        /**
+         * Publishes the terminal result and acquisition outcome exactly once. Does not release
+         * the active owner slot: the normal render-thread paths call {@link #completeTerminal},
+         * while the deadline path publishes first and releases only after the deferred cleanup
+         * drains on the render thread.
+         */
+        private void publishTerminal(ScenarioFailure failure, boolean cleaned) {
             DeadlineScheduler.Cancellation scheduled;
             synchronized (this) {
                 scheduled = deadlineCancellation;
@@ -468,11 +512,15 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     setupAttempts,
                     cleaned,
                     Optional.ofNullable(failure));
-            releaseIfOwner(this);
             result.complete(value);
             if (!acquisition.isDone()) {
                 acquisition.completeExceptionally(new AcquisitionException(value));
             }
+        }
+
+        private void completeTerminal(ScenarioFailure failure, boolean cleaned) {
+            publishTerminal(failure, cleaned);
+            releaseIfOwner(this);
         }
 
         private Duration elapsed() {

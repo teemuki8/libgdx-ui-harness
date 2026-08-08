@@ -74,6 +74,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -1236,6 +1237,282 @@ final class HarnessMcpServerContractTest {
 
     @Test
     @Timeout(10)
+    void admittedSlotsAreHeldThroughResponseSendSoExcessGetsTypedBusyResponse() throws Exception {
+        CompletableFuture<ActionResult> pending = new CompletableFuture<>();
+        AtomicInteger protocolCalls = new AtomicInteger();
+        CompletableFuture<Void> firstAdmitted = new CompletableFuture<>();
+        RecordingHarness harness = new RecordingHarness() {
+            @Override public CompletionStage<ActionResult> perform(Locator locator,
+                    dev.gdx.uiharness.core.action.Action action, Deadline deadline) {
+                if (protocolCalls.incrementAndGet() == 1) {
+                    firstAdmitted.complete(null);
+                }
+                return pending;
+            }
+        };
+        try (PipedInputStream serverInput = new PipedInputStream();
+                PipedOutputStream clientOutput = new PipedOutputStream(serverInput);
+                PipedInputStream clientInput = new PipedInputStream();
+                PipedOutputStream serverOutputDelegate = new PipedOutputStream(clientInput);
+                GatedOutputStream gated = new GatedOutputStream(serverOutputDelegate);
+                HarnessMcpServer server = HarnessMcpServer.open(
+                        service(harness), new RecordingArtifacts(), serverInput, gated);
+                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+                        clientOutput, StandardCharsets.UTF_8));
+                BufferedReader reader = new BufferedReader(new InputStreamReader(
+                        clientInput, StandardCharsets.UTF_8));
+                ExecutorService readerExecutor = Executors.newVirtualThreadPerTaskExecutor()) {
+            initialize(writer, reader);
+            send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
+            gated.hold();
+
+            // The admitted-or-rejected tool calls translate immediately, but every response
+            // send is blocked by the output gate: all transport slots stay occupied until the
+            // sends complete. The first request that exceeds the cap must receive the typed
+            // limit response instead of being dispatched, and nothing may leak while the
+            // output is blocked.
+            List<JsonNode> collected = Collections.synchronizedList(new ArrayList<>());
+            CompletableFuture<Void> excessCollected = new CompletableFuture<>();
+            CompletableFuture<Void> allCollected = new CompletableFuture<>();
+            readerExecutor.submit(() -> {
+                try {
+                    for (int index = 0; index < 9; index++) {
+                        collected.add(read(reader));
+                        if (collected.size() == 5) {
+                            excessCollected.complete(null);
+                        }
+                    }
+                    allCollected.complete(null);
+                } catch (Exception failure) {
+                    allCollected.completeExceptionally(failure);
+                    excessCollected.completeExceptionally(failure);
+                }
+            });
+            for (int id = 100; id < 108; id++) {
+                send(writer, actionCallJson(id));
+            }
+            send(writer, "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\",\"params\":{}}");
+
+            firstAdmitted.get(5, TimeUnit.SECONDS);
+            assertEquals(1, protocolCalls.get(),
+                    "only the single running mutation may reach the protocol");
+
+            gated.release();
+            // The five non-action answers (limit diagnostics and the transport busy response)
+            // arrive while the four admitted mutations stay blocked; only then is the protocol
+            // released so the queued mutations drain.
+            excessCollected.get(5, TimeUnit.SECONDS);
+            pending.complete(new ActionResult(1, 2, "clicked", Map.of("target", "root")));
+            allCollected.get(5, TimeUnit.SECONDS);
+
+            Map<Integer, JsonNode> byId = new java.util.HashMap<>();
+            for (JsonNode response : collected) {
+                byId.put(response.path("id").asInt(), response);
+            }
+            assertEquals(9, byId.size(), "every flooded request is answered exactly once");
+            assertEquals(4, protocolCalls.get(),
+                    "the four admitted mutations drain exactly once after release");
+            int actionResults = 0;
+            int limitDiagnostics = 0;
+            int busy = 0;
+            for (Map.Entry<Integer, JsonNode> entry : byId.entrySet()) {
+                int id = entry.getKey();
+                JsonNode response = entry.getValue();
+                String kind = response.at("/result/structuredContent/kind").asText();
+                if ("action-result".equals(kind)) {
+                    actionResults++;
+                } else if (response.path("result").path("isError").asBoolean(false)
+                        && "LIMIT_EXCEEDED".equals(
+                                response.at("/result/structuredContent/code").asText())) {
+                    limitDiagnostics++;
+                } else if (response.path("error").path("code").asInt()
+                        == HarnessMcpServer.TRANSPORT_BUSY_ERROR_CODE) {
+                    busy++;
+                } else if (id == 9 && response.path("result").isObject()) {
+                    // The ping can only be dispatched after the gate releases and a rejected
+                    // send drains; when it is dispatched it is still answered bounded.
+                } else {
+                    throw new AssertionError("unexpected response for " + id + ": " + response);
+                }
+            }
+            assertEquals(4, actionResults,
+                    "the admitted mutations answer after their sends complete");
+            assertTrue(limitDiagnostics >= 3 && limitDiagnostics <= 4,
+                    "the handler rejects every call beyond its own session bound");
+            assertEquals(1, busy,
+                    "the first excess request receives the typed limit response while every "
+                            + "send slot is held");
+        }
+    }
+
+    @Test
+    @Timeout(10)
+    void transportFloodWithBlockedOutputBoundsDispatchedWorkAndBackpressuresExcess()
+            throws Exception {
+        CompletableFuture<ActionResult> pending = new CompletableFuture<>();
+        AtomicInteger protocolCalls = new AtomicInteger();
+        CompletableFuture<Void> firstAdmitted = new CompletableFuture<>();
+        RecordingHarness harness = new RecordingHarness() {
+            @Override public CompletionStage<ActionResult> perform(Locator locator,
+                    dev.gdx.uiharness.core.action.Action action, Deadline deadline) {
+                if (protocolCalls.incrementAndGet() == 1) {
+                    firstAdmitted.complete(null);
+                }
+                return pending;
+            }
+        };
+        try (PipedInputStream serverInput = new PipedInputStream();
+                PipedOutputStream clientOutput = new PipedOutputStream(serverInput);
+                PipedInputStream clientInput = new PipedInputStream();
+                PipedOutputStream serverOutputDelegate = new PipedOutputStream(clientInput);
+                GatedOutputStream gated = new GatedOutputStream(serverOutputDelegate);
+                HarnessMcpServer server = HarnessMcpServer.open(
+                        service(harness), new RecordingArtifacts(), serverInput, gated);
+                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+                        clientOutput, StandardCharsets.UTF_8));
+                BufferedReader reader = new BufferedReader(new InputStreamReader(
+                        clientInput, StandardCharsets.UTF_8));
+                ExecutorService readerExecutor = Executors.newVirtualThreadPerTaskExecutor();
+                ExecutorService writerExecutor = Executors.newVirtualThreadPerTaskExecutor()) {
+            initialize(writer, reader);
+            send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
+            gated.hold();
+
+            // A flood far larger than the admission cap must not grow the transport's
+            // dispatched work or its output queue: while the output is blocked, only the
+            // single running mutation executes, the read loop applies input backpressure
+            // instead of dispatching everything, and the first excess request receives the
+            // typed limit response once the gate opens.
+            AtomicReference<JsonNode> busyResponse = new AtomicReference<>();
+            CompletableFuture<Void> busySeen = new CompletableFuture<>();
+            readerExecutor.submit(() -> {
+                try {
+                    while (true) {
+                        JsonNode response = read(reader);
+                        if (response.path("error").path("code").asInt()
+                                == HarnessMcpServer.TRANSPORT_BUSY_ERROR_CODE) {
+                            busyResponse.set(response);
+                            busySeen.complete(null);
+                            return;
+                        }
+                    }
+                } catch (Exception failure) {
+                    busySeen.completeExceptionally(failure);
+                }
+            });
+            CompletableFuture<Void> writeAll = CompletableFuture.runAsync(() -> {
+                try {
+                    for (int id = 100; id < 120; id++) {
+                        send(writer, actionCallJson(id));
+                    }
+                } catch (Exception failure) {
+                    throw new IllegalStateException("writer failed", failure);
+                }
+            }, writerExecutor);
+
+            firstAdmitted.get(5, TimeUnit.SECONDS);
+            assertEquals(1, protocolCalls.get(),
+                    "only the single running mutation may reach the protocol");
+            assertThrows(TimeoutException.class, () -> writeAll.get(1, TimeUnit.SECONDS),
+                    "the blocked output must backpressure the flood instead of dispatching it "
+                            + "unboundedly");
+
+            gated.release();
+            busySeen.get(5, TimeUnit.SECONDS);
+            assertEquals(HarnessMcpServer.TRANSPORT_BUSY_ERROR_CODE,
+                    busyResponse.get().path("error").path("code").asInt(),
+                    "the typed limit response identifies the transport rejection");
+            assertFalse(busyResponse.get().path("error").path("message").asText().isBlank(),
+                    "the typed limit response carries a bounded message");
+            assertEquals(1, protocolCalls.get(),
+                    "the flood never grows protocol work beyond the admission bound while "
+                            + "the admitted mutations stay blocked");
+        }
+    }
+
+    @Test
+    @Timeout(10)
+    void unknownAndSchemaInvalidFloodIsBoundedAndExcessGetsTypedLimitResponse()
+            throws Exception {
+        RecordingHarness harness = new RecordingHarness();
+        int total = 40;
+        try (PipedInputStream serverInput = new PipedInputStream();
+                PipedOutputStream clientOutput = new PipedOutputStream(serverInput);
+                PipedInputStream clientInput = new PipedInputStream();
+                PipedOutputStream serverOutput = new PipedOutputStream(clientInput);
+                HarnessMcpServer server = HarnessMcpServer.open(
+                        service(harness), new RecordingArtifacts(), serverInput, serverOutput);
+                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+                        clientOutput, StandardCharsets.UTF_8));
+                BufferedReader reader = new BufferedReader(new InputStreamReader(
+                        clientInput, StandardCharsets.UTF_8));
+                ExecutorService readerExecutor = Executors.newVirtualThreadPerTaskExecutor()) {
+            initialize(writer, reader);
+            send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
+
+            // Unknown-method and schema-invalid calls must not bypass the transport bound:
+            // they are answered with their own bounded errors up to the admission cap, and
+            // every excess request receives the typed limit response instead of being
+            // dispatched onto an unbounded queue.
+            List<JsonNode> collected = Collections.synchronizedList(new ArrayList<>());
+            CompletableFuture<Void> allCollected = CompletableFuture.runAsync(() -> {
+                try {
+                    for (int index = 0; index < total + 1; index++) {
+                        collected.add(read(reader));
+                    }
+                } catch (Exception failure) {
+                    throw new IllegalStateException("reader failed", failure);
+                }
+            }, readerExecutor);
+            for (int id = 200; id < 220; id++) {
+                send(writer, "{\"jsonrpc\":\"2.0\",\"id\":" + id
+                        + ",\"method\":\"unknown/procedure\",\"params\":{}}");
+            }
+            for (int id = 300; id < 320; id++) {
+                send(writer, "{\"jsonrpc\":\"2.0\",\"id\":" + id
+                        + ",\"method\":\"tools/call\","
+                        + "\"params\":{\"name\":\"ui_action\","
+                        + "\"arguments\":{\"sessionId\":\"game\"}}}");
+            }
+            send(writer, "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\",\"params\":{}}");
+            allCollected.get(5, TimeUnit.SECONDS);
+
+            Map<Integer, JsonNode> byId = new java.util.HashMap<>();
+            for (JsonNode response : collected) {
+                byId.put(response.path("id").asInt(), response);
+            }
+            assertEquals(total + 1, byId.size(),
+                    "every flooded request and the follow-up ping is answered exactly once");
+            int busy = 0;
+            for (Map.Entry<Integer, JsonNode> entry : byId.entrySet()) {
+                int id = entry.getKey();
+                JsonNode response = entry.getValue();
+                if (response.path("error").path("code").asInt()
+                        == HarnessMcpServer.TRANSPORT_BUSY_ERROR_CODE) {
+                    busy++;
+                } else if (id >= 200 && id < 220) {
+                    assertEquals(-32601, response.path("error").path("code").asInt(),
+                            "an unknown-method flood call is boundedly answered: " + id);
+                } else if (id >= 300 && id < 320) {
+                    String code = response.at("/result/structuredContent/code").asText();
+                    assertTrue(response.path("result").path("isError").asBoolean(false)
+                                    && !code.isBlank(),
+                            "a schema-invalid flood call is boundedly answered: " + id
+                                    + " but was: " + code);
+                } else if (id == 9) {
+                    assertTrue(response.path("result").isObject()
+                                    || !response.path("error").isMissingNode(),
+                            "the follow-up ping is answered after the flood");
+                }
+            }
+            assertTrue(busy >= 1,
+                    "the transport must reject excess invalid requests with the typed "
+                            + "limit response instead of dispatching them unboundedly");
+        }
+    }
+
+    @Test
+    @Timeout(10)
     void parseErrorWriteFailureTerminatesTransport() throws Exception {
         RecordingHarness harness = new RecordingHarness();
         ExecutorService waiter = Executors.newVirtualThreadPerTaskExecutor();
@@ -1568,6 +1845,64 @@ final class HarnessMcpServerContractTest {
         return new SemanticSnapshot(1, 1, "root", Map.of("root", root));
     }
 
+    /**
+     * An output stream that stalls every write while {@link #hold()} is active and forwards to
+     * the delegate once {@link #release()} opens the gate, so a test can prove that a blocked
+     * response path bounds dispatch and applies input backpressure instead of queueing output.
+     */
+    private static final class GatedOutputStream extends java.io.OutputStream {
+        private final PipedOutputStream delegate;
+        private final Object gate = new Object();
+        private boolean blocked;
+
+        GatedOutputStream(PipedOutputStream delegate) {
+            this.delegate = delegate;
+        }
+
+        void hold() {
+            synchronized (gate) {
+                blocked = true;
+            }
+        }
+
+        void release() {
+            synchronized (gate) {
+                blocked = false;
+                gate.notifyAll();
+            }
+        }
+
+        @Override public void write(int value) throws java.io.IOException {
+            awaitOpen();
+            delegate.write(value);
+        }
+
+        @Override public void write(byte[] bytes, int offset, int length)
+                throws java.io.IOException {
+            awaitOpen();
+            delegate.write(bytes, offset, length);
+        }
+
+        @Override public void flush() throws java.io.IOException {
+            awaitOpen();
+            delegate.flush();
+        }
+
+        private void awaitOpen() throws java.io.IOException {
+            synchronized (gate) {
+                while (blocked) {
+                    try {
+                        gate.wait();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new java.io.IOException(
+                                "interrupted waiting for output gate", interrupted);
+                    }
+                }
+            }
+        }
+    }
+
     private static final class BlockingFailingOutputStream extends java.io.OutputStream {
         private final java.util.concurrent.CountDownLatch writeStarted =
                 new java.util.concurrent.CountDownLatch(1);
@@ -1611,7 +1946,7 @@ final class HarnessMcpServerContractTest {
         }
     }
 
-    private static final class RecordingHarness implements Harness {
+    private static class RecordingHarness implements Harness {
         private final AtomicInteger actionCalls = new AtomicInteger();
         private volatile boolean actionThreadWasVirtual;
         private volatile Locator lastLocator;
