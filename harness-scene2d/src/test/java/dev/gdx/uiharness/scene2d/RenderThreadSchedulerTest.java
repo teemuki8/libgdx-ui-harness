@@ -11,13 +11,20 @@ import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -251,6 +258,59 @@ final class RenderThreadSchedulerTest {
         assertEquals(ErrorCode.LIMIT_EXCEEDED, error.code());
     }
 
+    @Test
+    void cancellationCannotDeadlockWithDrainOrClose() throws Exception {
+        for (int iteration = 0; iteration < 25; iteration++) {
+            FakeClock clock = new FakeClock();
+            RenderThreadScheduler scheduler = new RenderThreadScheduler(8);
+            Deadline deadline = Deadline.after(clock, Duration.ofSeconds(1));
+            List<CompletableFuture<String>> submitted = new ArrayList<>();
+            List<AtomicInteger> completions = new ArrayList<>();
+            for (int i = 0; i < 8; i++) {
+                CompletableFuture<String> future = scheduler.submit(
+                        () -> "value", deadline).toCompletableFuture();
+                AtomicInteger count = new AtomicInteger();
+                future.whenComplete((value, error) -> count.incrementAndGet());
+                submitted.add(future);
+                completions.add(count);
+            }
+
+            CyclicBarrier start = new CyclicBarrier(3);
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                CompletableFuture<Void> cancelling = CompletableFuture.runAsync(
+                        () -> {
+                            await(start);
+                            submitted.forEach(future -> future.cancel(false));
+                        },
+                        executor);
+                CompletableFuture<Void> closing = CompletableFuture.runAsync(
+                        () -> {
+                            await(start);
+                            scheduler.close();
+                        },
+                        executor);
+                await(start);
+                scheduler.drain();
+                cancelling.get(2, TimeUnit.SECONDS);
+                closing.get(2, TimeUnit.SECONDS);
+            }
+
+            for (int i = 0; i < submitted.size(); i++) {
+                CompletableFuture<String> future = submitted.get(i);
+                assertEquals(1, completions.get(i).get(), "command completed more than once");
+                try {
+                    assertEquals("value", future.get(2, TimeUnit.SECONDS));
+                } catch (CancellationException expected) {
+                    // exactly-once outcome: cancelled before dispatch
+                } catch (ExecutionException execution) {
+                    HarnessException error = assertInstanceOf(
+                            HarnessException.class, execution.getCause());
+                    assertEquals(ErrorCode.SESSION_CLOSED, error.code());
+                }
+            }
+        }
+    }
+
     @Test void reportsWhetherCallerIsTheOwningRenderThread() {
         RenderThreadScheduler scheduler = new RenderThreadScheduler(1);
 
@@ -275,6 +335,17 @@ final class RenderThreadSchedulerTest {
             latch.await();
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
+            throw new IllegalStateException(error);
+        }
+    }
+
+    private static void await(CyclicBarrier barrier) {
+        try {
+            barrier.await();
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(error);
+        } catch (BrokenBarrierException error) {
             throw new IllegalStateException(error);
         }
     }
