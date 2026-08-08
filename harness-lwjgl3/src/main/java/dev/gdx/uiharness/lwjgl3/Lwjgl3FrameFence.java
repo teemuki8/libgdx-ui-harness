@@ -79,16 +79,22 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
         requireOwnerThread();
         Frame completed = new Frame(revision, frame);
         List<Command<?>> batch;
+        List<DeadlineScheduler.Cancellation> cancellations;
         synchronized (lifecycle) {
             if (!open) {
                 throw new IllegalStateException("frame fence is closed");
             }
             batch = new ArrayList<>(queued);
+            cancellations = new ArrayList<>(batch.size());
             for (Command<?> command : batch) {
-                command.markClaimed();
+                DeadlineScheduler.Cancellation cancellation = command.markClaimed();
+                if (cancellation != null) {
+                    cancellations.add(cancellation);
+                }
             }
             queued.clear();
         }
+        cancelAll(cancellations);
         for (Command<?> command : batch) {
             command.execute(completed);
         }
@@ -117,17 +123,23 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
     /** Fails queued work and closes all frame subscriptions without touching the window. */
     @Override public void close() {
         List<Command<?>> pending;
+        List<DeadlineScheduler.Cancellation> cancellations;
         synchronized (lifecycle) {
             if (!open) {
                 return;
             }
             open = false;
             pending = new ArrayList<>(queued);
+            cancellations = new ArrayList<>(pending.size());
             for (Command<?> command : pending) {
-                command.markClaimed();
+                DeadlineScheduler.Cancellation cancellation = command.markClaimed();
+                if (cancellation != null) {
+                    cancellations.add(cancellation);
+                }
             }
             queued.clear();
         }
+        cancelAll(cancellations);
         HarnessException failure = closedFailure();
         for (Command<?> command : pending) {
             command.completeExceptionally(failure);
@@ -136,6 +148,12 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
             listener.onClosed();
         }
         listeners.clear();
+    }
+
+    private static void cancelAll(List<DeadlineScheduler.Cancellation> cancellations) {
+        for (DeadlineScheduler.Cancellation cancellation : cancellations) {
+            cancellation.cancel();
+        }
     }
 
     private void requireOwnerThread() {
@@ -238,27 +256,34 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
             }
         }
 
-        void markClaimed() {
+        /**
+         * Claims the timeout under {@link #lifecycle} and detaches its token. The caller must
+         * invoke the returned {@link Cancellation} only after leaving the monitor so a synchronous
+         * cancellation never runs under the lifecycle lock. Returns {@code null} when no signal
+         * was armed.
+         */
+        DeadlineScheduler.Cancellation markClaimed() {
             if (state != CommandState.QUEUED) {
                 throw new IllegalStateException("only queued frame work can be claimed");
             }
             state = CommandState.CLAIMED;
-            if (deadlineCancellation != null) {
-                deadlineCancellation.cancel();
-                deadlineCancellation = null;
-            }
+            DeadlineScheduler.Cancellation cancellation = deadlineCancellation;
+            deadlineCancellation = null;
+            return cancellation;
         }
 
         @Override public boolean cancel(boolean mayInterruptIfRunning) {
+            DeadlineScheduler.Cancellation cancellation;
             synchronized (lifecycle) {
                 if (state != CommandState.QUEUED || !queued.remove(this)) {
                     return false;
                 }
                 state = CommandState.TERMINAL;
-                if (deadlineCancellation != null) {
-                    deadlineCancellation.cancel();
-                    deadlineCancellation = null;
-                }
+                cancellation = deadlineCancellation;
+                deadlineCancellation = null;
+            }
+            if (cancellation != null) {
+                cancellation.cancel();
             }
             return super.cancel(mayInterruptIfRunning);
         }

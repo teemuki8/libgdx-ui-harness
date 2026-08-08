@@ -34,7 +34,9 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -320,8 +322,103 @@ final class Lwjgl3ScreenCaptureTest {
                 "a late signal must not overwrite the terminal close outcome");
     }
 
+    @Test void claimedFrameCancellationRunsOutsideTheLifecycleMonitor() {
+        AtomicReference<Lwjgl3FrameFence> fenceRef = new AtomicReference<>();
+        AtomicBoolean monitorHeld = new AtomicBoolean();
+        DeadlineScheduler probing = (delay, signal) ->
+                monitorProbe(fenceRef, fixture.deadline(), monitorHeld);
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(probing, 1);
+        fenceRef.set(localFence);
+        localFence.afterNextFrame(frame -> "claimed", fixture.deadline());
+
+        localFence.completedFrame(1, 1);
+
+        assertFalse(monitorHeld.get(),
+                "claiming frame work must cancel the deadline token only after leaving the lifecycle monitor");
+        localFence.close();
+    }
+
+    @Test void closingCancellationRunsOutsideTheLifecycleMonitor() {
+        AtomicReference<Lwjgl3FrameFence> fenceRef = new AtomicReference<>();
+        AtomicBoolean monitorHeld = new AtomicBoolean();
+        DeadlineScheduler probing = (delay, signal) ->
+                monitorProbe(fenceRef, fixture.deadline(), monitorHeld);
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(probing, 1);
+        fenceRef.set(localFence);
+        localFence.afterNextFrame(frame -> "unreachable", fixture.deadline());
+
+        localFence.close();
+
+        assertFalse(monitorHeld.get(),
+                "closing the fence must cancel the deadline token only after leaving the lifecycle monitor");
+    }
+
+    @Test void publicCancellationRunsOutsideTheLifecycleMonitor() {
+        AtomicReference<Lwjgl3FrameFence> fenceRef = new AtomicReference<>();
+        AtomicBoolean monitorHeld = new AtomicBoolean();
+        DeadlineScheduler probing = (delay, signal) ->
+                monitorProbe(fenceRef, fixture.deadline(), monitorHeld);
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(probing, 1);
+        fenceRef.set(localFence);
+        CompletionStage<String> pending = localFence.afterNextFrame(
+                frame -> "unreachable", fixture.deadline());
+
+        assertTrue(pending.toCompletableFuture().cancel(false));
+
+        assertFalse(monitorHeld.get(),
+                "public cancellation must cancel the deadline token only after leaving the lifecycle monitor");
+        localFence.close();
+    }
+
+    @Test void registrationRaceCancellationRunsOutsideTheLifecycleMonitor() {
+        AtomicReference<Lwjgl3FrameFence> fenceRef = new AtomicReference<>();
+        AtomicBoolean claimedDuringRegistration = new AtomicBoolean();
+        AtomicBoolean monitorHeld = new AtomicBoolean();
+        DeadlineScheduler inlineClaiming = (delay, signal) -> {
+            if (claimedDuringRegistration.compareAndSet(false, true)) {
+                fenceRef.get().completedFrame(1, 1);
+            }
+            return monitorProbe(fenceRef, fixture.deadline(), monitorHeld);
+        };
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(inlineClaiming, 1);
+        fenceRef.set(localFence);
+        CompletionStage<String> pending = localFence.afterNextFrame(
+                frame -> "claimed-during-registration", fixture.deadline());
+
+        assertEquals("claimed-during-registration", await(pending));
+        assertFalse(monitorHeld.get(),
+                "a registration race must cancel the late token only after leaving the lifecycle monitor");
+        localFence.close();
+    }
+
     private static DeadlineScheduler noopDeadlines() {
         return (delay, signal) -> () -> {};
+    }
+
+    /**
+     * Returns a cancellation that verifies the fence's lifecycle monitor is not held while it
+     * runs: a helper thread synchronously reenters the fence via {@link #afterNextFrame}, which
+     * can only pass once the monitor is free. A bounded wait records {@code true} in
+     * {@code monitorHeld} when the probe could not enter while the cancellation was running.
+     */
+    private static DeadlineScheduler.Cancellation monitorProbe(
+            AtomicReference<Lwjgl3FrameFence> fenceRef,
+            Deadline deadline,
+            AtomicBoolean monitorHeld) {
+        return () -> {
+            CompletableFuture<Boolean> entered = CompletableFuture.supplyAsync(() -> {
+                fenceRef.get().afterNextFrame(ignored -> "probe", deadline);
+                return Boolean.TRUE;
+            });
+            try {
+                entered.get(1, TimeUnit.SECONDS);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("monitor probe interrupted", exception);
+            } catch (ExecutionException | TimeoutException exception) {
+                monitorHeld.set(true);
+            }
+        };
     }
 
     private static String sha256(byte[] bytes) {
