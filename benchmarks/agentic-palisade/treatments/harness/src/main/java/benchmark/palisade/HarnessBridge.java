@@ -172,16 +172,6 @@ public final class HarnessBridge implements AutoCloseable {
         return executor;
     }
 
-    /** Test seam: tasks still queued on the bridge-owned deadline executor. */
-    int pendingDeadlineTasks() {
-        return deadlineExecutor.getQueue().size();
-    }
-
-    /** Test seam: true once close has terminated the deadline executor with no queued tasks. */
-    boolean deadlineExecutorQuiescent() {
-        return deadlineExecutor.isTerminated() && deadlineExecutor.getQueue().isEmpty();
-    }
-
     /** Returns metadata tagging for actors in the attached application-owned Stage. */
     public Semantics semantics() {
         requireOpen();

@@ -102,12 +102,10 @@ final class HarnessBridgeTest {
         }
         assertTrue(application.closeCompleted,
                 "close must complete despite an outstanding delayed deadline");
-        assertTrue(application.deadlineExecutorQuiescent,
-                "close must terminate the deadline executor with no queued tasks");
-        assertTrue(application.deadlineArmed,
-                "the capture must arm its long delayed deadline before close");
         assertTrue(application.screenshotReleasedByClose,
                 "closing must release the pending capture");
+        assertTrue(application.noDeadlineThreadAfterClose,
+                "no live deadline worker thread may remain after close");
     }
 
     @Test void fixedJsonCliExercisesOneApplicationOwnedSessionAndArtifacts() throws Exception {
@@ -404,9 +402,14 @@ final class HarnessBridgeTest {
 
     /**
      * Queues one real capture with a 120s deadline, stops completing frames, and closes the
-     * bridge through a bounded future while the deadline signal is still armed.
+     * bridge through a bounded future while the deadline signal is still armed. Arming is
+     * observed purely through the public JVM lifecycle: the named
+     * {@code palisade-harness-deadlines} worker thread only exists once the real executor has
+     * started a scheduled signal, and the capture future must still be pending (no frame has
+     * claimed it, so the signal has neither fired nor been cancelled).
      */
     private static final class CloseOrderingApplication extends ApplicationAdapter {
+        private static final String DEADLINE_THREAD_NAME = "palisade-harness-deadlines";
         private final Path artifactRoot;
         private final AtomicReference<Throwable> failure = new AtomicReference<>();
         private Stage stage;
@@ -414,10 +417,10 @@ final class HarnessBridgeTest {
         private CompletableFuture<?> screenshot;
         private boolean warmupDone;
         private int warmupFrames;
-        private boolean deadlineArmed;
+        private int threadPolls;
         private boolean closeCompleted;
-        private boolean deadlineExecutorQuiescent;
         private boolean screenshotReleasedByClose;
+        private boolean noDeadlineThreadAfterClose;
 
         CloseOrderingApplication(Path artifactRoot) {
             this.artifactRoot = artifactRoot;
@@ -481,20 +484,23 @@ final class HarnessBridgeTest {
                     }
                     return;
                 }
-                if (!deadlineArmed) {
-                    if (bridge.pendingDeadlineTasks() > 0) {
-                        deadlineArmed = true;
-                        closeBridge();
-                        Gdx.app.exit();
-                        return;
-                    }
-                    if (screenshot != null && screenshot.isDone()) {
-                        failure.compareAndSet(null, new AssertionError(
-                                "capture completed before close released it"));
-                        Gdx.app.exit();
-                        return;
-                    }
-                    return; // no more frames: the queued capture stays pending
+                // No more frames complete: the queued capture stays pending and its 120s
+                // deadline signal stays armed until close releases it.
+                if (!closeCompleted && deadlineThreadAlive() && !screenshot.isDone()) {
+                    closeBridge();
+                    Gdx.app.exit();
+                    return;
+                }
+                if (screenshot.isDone()) {
+                    failure.compareAndSet(null, new AssertionError(
+                            "capture completed before close released it"));
+                    Gdx.app.exit();
+                    return;
+                }
+                if (++threadPolls > 100_000) {
+                    failure.compareAndSet(null, new AssertionError(
+                            "the real deadline worker thread never started for the pending capture"));
+                    Gdx.app.exit();
                 }
             } catch (Throwable thrown) {
                 failure.compareAndSet(null, thrown);
@@ -507,14 +513,28 @@ final class HarnessBridgeTest {
                 CompletableFuture<Void> closing = CompletableFuture.runAsync(bridge::close);
                 closing.get(2, TimeUnit.SECONDS);
                 closeCompleted = true;
-                deadlineExecutorQuiescent = bridge.deadlineExecutorQuiescent();
                 screenshotReleasedByClose = screenshot.isDone();
+                // close() only returns after its bounded awaitTermination, so the worker is
+                // gone; the loop absorbs any thread-map bookkeeping lag without sleeping.
+                for (int retries = 0; deadlineThreadAlive() && retries < 1_000; retries++) {
+                    // re-check the live-thread event
+                }
+                noDeadlineThreadAfterClose = !deadlineThreadAlive();
             } catch (TimeoutException timedOut) {
                 failure.compareAndSet(null, new AssertionError(
                         "close must not await an outstanding delayed deadline", timedOut));
             } catch (Throwable thrown) {
                 failure.compareAndSet(null, thrown);
             }
+        }
+
+        private static boolean deadlineThreadAlive() {
+            for (Thread thread : Thread.getAllStackTraces().keySet()) {
+                if (DEADLINE_THREAD_NAME.equals(thread.getName()) && thread.isAlive()) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         @Override public void dispose() {
