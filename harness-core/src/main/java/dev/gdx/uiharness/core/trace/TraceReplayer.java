@@ -18,8 +18,12 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
+import java.util.zip.ZipInputStream;
 
-/** Streams a bounded trace archive to validate its manifest and causal transitions. */
+/** Streams a bounded trace archive to validate its manifest and causal transitions.
+ *  Entry names, duplicates, and per-entry compression ratios are checked against
+ *  bytes measured directly from the archive streams, so forgeable central-directory
+ *  size fields cannot bypass the limits. */
 public final class TraceReplayer {
     private final Limits limits;
 
@@ -43,8 +47,8 @@ public final class TraceReplayer {
                 throw failure(ErrorCode.LIMIT_EXCEEDED,
                         "Trace archive exceeds replay byte limit", null);
             }
+            validateEntriesBounded(archive);
             try (ZipFile zip = new ZipFile(archive.toFile())) {
-                validateEntries(zip);
                 ReplayBudget budget = new ReplayBudget();
                 TraceManifest manifest = readManifest(archive, zip, budget);
                 return readEvents(zip, manifest, budget);
@@ -237,34 +241,55 @@ public final class TraceReplayer {
         }
     }
 
-    private void validateEntries(ZipFile zip) {
-        Set<String> names = new HashSet<>();
-        int entries = 0;
-        var enumeration = zip.entries();
-        while (enumeration.hasMoreElements()) {
-            ZipEntry entry = enumeration.nextElement();
-            String name = entry.getName();
-            entries++;
-            if (entries > limits.maxEvents() + 10_000L) {
-                throw failure(ErrorCode.LIMIT_EXCEEDED,
-                        "Trace archive contains too many entries", null);
-            }
-            if (name.isBlank() || name.startsWith("/") || name.startsWith("\\")
-                    || name.contains("\\") || isDriveQualified(name)
-                    || containsParentSegment(name)) {
-                throw failure(ErrorCode.INVALID_REQUEST,
-                        "Trace archive contains an unsafe entry", null);
-            }
-            if (!names.add(name)) {
-                throw failure(ErrorCode.INVALID_REQUEST,
-                        "Trace archive contains duplicate entries", null);
-            }
-            long stored = entry.getCompressedSize();
-            long inflated = entry.getSize();
-            if (stored > 0 && inflated > 0
-                    && inflated / limits.maxCompressionRatio() > stored) {
-                throw failure(ErrorCode.LIMIT_EXCEEDED,
-                        "Trace entry compression ratio exceeds replay limit", null);
+    /** Rejects unsafe names, duplicates, and unreasonable per-entry compression
+     *  ratios in one bounded streaming pass before any trusted parse. Sizes are
+     *  measured from the actual DEFLATE streams, never from the forgeable
+     *  central-directory fields. */
+    private void validateEntriesBounded(Path archive) throws IOException {
+        int ratioLimit = limits.maxCompressionRatio();
+        try (InputStream raw = Files.newInputStream(archive);
+                MeasuringZipInputStream zip = new MeasuringZipInputStream(raw)) {
+            Set<String> names = new HashSet<>();
+            byte[] buffer = new byte[8192];
+            long inflatedTotal = 0;
+            int entries = 0;
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                entries++;
+                if (entries > limits.maxEvents() + 10_000L) {
+                    throw failure(ErrorCode.LIMIT_EXCEEDED,
+                            "Trace archive contains too many entries", null);
+                }
+                String name = entry.getName();
+                if (name.isBlank() || name.startsWith("/") || name.startsWith("\\")
+                        || name.contains("\\") || isDriveQualified(name)
+                        || containsParentSegment(name)) {
+                    throw failure(ErrorCode.INVALID_REQUEST,
+                            "Trace archive contains an unsafe entry", null);
+                }
+                if (!names.add(name)) {
+                    throw failure(ErrorCode.INVALID_REQUEST,
+                            "Trace archive contains duplicate entries", null);
+                }
+                long inflated = 0;
+                int read;
+                while ((read = zip.read(buffer)) != -1) {
+                    inflated += read;
+                    inflatedTotal += read;
+                    if (inflatedTotal > limits.maxTotalInflatedBytes()) {
+                        throw failure(ErrorCode.LIMIT_EXCEEDED,
+                                "Trace exceeds cumulative inflated byte limit", null);
+                    }
+                }
+                long stored = entry.getMethod() == ZipEntry.STORED
+                        ? inflated : zip.compressedBytes();
+                if (stored > 0 && inflated > 0
+                        && (inflated / ratioLimit > stored
+                        || (inflated / ratioLimit == stored
+                        && inflated % ratioLimit != 0))) {
+                    throw failure(ErrorCode.LIMIT_EXCEEDED,
+                            "Trace entry compression ratio exceeds replay limit", null);
+                }
             }
         }
     }
@@ -331,6 +356,15 @@ public final class TraceReplayer {
                     128L * 1024 * 1024, 100_000, TraceEvent.MAX_ENCODED_BYTES,
                     128L * 1024 * 1024, 100);
         }
+
+        /** Backward-compatible bounds for callers that only tune archive, event,
+         *  and line sizes: the cumulative inflated-byte ceiling and the per-entry
+         *  compression-ratio limit take the conservative defaults(). */
+        public Limits(long maxArchiveBytes, long maxEvents, int maxEventBytes) {
+            this(maxArchiveBytes, maxEvents, maxEventBytes,
+                    defaults().maxTotalInflatedBytes(),
+                    defaults().maxCompressionRatio());
+        }
     }
 
     /** Cumulative inflated-byte accounting for one archive load. */
@@ -356,6 +390,27 @@ public final class TraceReplayer {
     }
 
     private record RequestState(long lastSequence) {}
+
+    /** ZipInputStream that reports the compressed bytes actually consumed per
+     *  entry, immune to forgeable central-directory size fields. */
+    private static final class MeasuringZipInputStream extends ZipInputStream {
+        private long compressedStart;
+
+        MeasuringZipInputStream(InputStream input) {
+            super(input);
+        }
+
+        @Override
+        public ZipEntry getNextEntry() throws IOException {
+            ZipEntry entry = super.getNextEntry();
+            compressedStart = inf.getBytesRead();
+            return entry;
+        }
+
+        long compressedBytes() {
+            return inf.getBytesRead() - compressedStart;
+        }
+    }
 
     @SuppressWarnings("serial")
     private static final class LineLimitException extends Exception {}
