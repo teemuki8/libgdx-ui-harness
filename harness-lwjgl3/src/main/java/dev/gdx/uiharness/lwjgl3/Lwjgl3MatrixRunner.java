@@ -161,7 +161,7 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                     dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
                     deadline.isExpired() ? MatrixCaseStatus.UNSTARTED
                             : MatrixCaseStatus.CANCELLED,
-                    null, null, null, null,
+                    null, null, null, null, null, null, null,
                     List.of(), List.of(), List.of(), ""));
             return CompletableFuture.completedFuture(null);
         }
@@ -180,7 +180,7 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                         results.add(new MatrixCaseResult(
                                 dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
                                 MatrixCaseStatus.FAILED,
-                                null, null, null, null,
+                                null, null, null, null, null, null, null,
                                 List.of(), List.of(), List.of(),
                                 bounded(rootMessage(failure))));
                     } else {
@@ -269,6 +269,7 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                 observed.uiScale(),
                 observed.devicePixelRatio(),
                 observed.hiDpiMode(),
+                null, null, null,
                 List.copyOf(passed),
                 List.copyOf(failed),
                 List.of(),

@@ -641,7 +641,8 @@ public final class HarnessToolCatalog {
                 List.of("index", "window", "uiScale", "devicePixelRatio",
                         "hiDpiMode", "locale", "aspectRatio")));
         resultProperties.put("status", enumString(
-                "PASSED", "FAILED", "UNSTARTED", "CANCELLED"));
+                "PASSED", "FAILED", "UNSTARTED", "CANCELLED",
+                "UNSUPPORTED", "MISAPPLIED"));
         resultProperties.put("observedWindow", nullableObject(Map.of(
                 "width", integer(1, 16_384),
                 "height", integer(1, 16_384)),
@@ -650,6 +651,9 @@ public final class HarnessToolCatalog {
         resultProperties.put("observedDevicePixelRatio", nullableNumber());
         resultProperties.put("observedHiDpiMode", nullableEnum(
                 "LOGICAL", "PIXELS"));
+        resultProperties.put("observedLocale", nullableString());
+        resultProperties.put("observedFontSetId", nullableString());
+        resultProperties.put("observedRestartProfileId", nullableString());
         resultProperties.put("passedAssertions", array(integer(0, 255), 256));
         resultProperties.put("failedAssertions", array(integer(0, 255), 256));
         resultProperties.put("artifactReferences", array(

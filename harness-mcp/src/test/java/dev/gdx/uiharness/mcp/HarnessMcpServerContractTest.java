@@ -403,6 +403,7 @@ final class HarnessMcpServerContractTest {
                                         new MatrixWindow(1280, 722),
                                         1.0, 1.0,
                                         MatrixHiDpi.LOGICAL,
+                                        "en", "", null,
                                         List.of(0), List.of(), List.of(), "")),
                                 false));
                     }

@@ -7092,6 +7092,10 @@
                     "type" : "null"
                   } ]
                 },
+                "observedFontSetId" : {
+                  "maxLength" : 16384,
+                  "type" : [ "string", "null" ]
+                },
                 "observedHiDpiMode" : {
                   "oneOf" : [ {
                     "enum" : [ "LOGICAL", "PIXELS" ],
@@ -7099,6 +7103,14 @@
                   }, {
                     "type" : "null"
                   } ]
+                },
+                "observedLocale" : {
+                  "maxLength" : 16384,
+                  "type" : [ "string", "null" ]
+                },
+                "observedRestartProfileId" : {
+                  "maxLength" : 16384,
+                  "type" : [ "string", "null" ]
                 },
                 "observedUiScale" : {
                   "oneOf" : [ {
@@ -7140,7 +7152,7 @@
                   "type" : "array"
                 },
                 "status" : {
-                  "enum" : [ "PASSED", "FAILED", "UNSTARTED", "CANCELLED" ],
+                  "enum" : [ "PASSED", "FAILED", "UNSTARTED", "CANCELLED", "UNSUPPORTED", "MISAPPLIED" ],
                   "type" : "string"
                 }
               },
