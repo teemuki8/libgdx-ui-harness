@@ -168,7 +168,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             // with a stable LIMIT_EXCEEDED diagnostic and never reaches the protocol service.
             HarnessToolCatalog.AccessMode mode = catalog.accessMode(call.name());
             CompletionStage<McpSchema.CallToolResult> admitted = admission.submit(
-                    sessionKey(arguments), mode,
+                    admissionKey(arguments), mode,
                     () -> execute(request, call.name(), sequence, arguments));
             return Mono.fromFuture(admitted.toCompletableFuture())
                     .onErrorResume(RequestAdmission.LimitExceededException.class,
@@ -1023,6 +1023,20 @@ public final class HarnessToolHandler implements AutoCloseable {
         Object value = arguments.get("sessionId");
         return value instanceof String sessionId && !sessionId.isBlank()
                 ? sessionId : "catalog";
+    }
+
+    /**
+     * Returns the typed admission scope for one tool call. Requests without a session
+     * identifier use the distinct sessionless scope instead of a string sentinel, so a real
+     * client session literally named "catalog" never shares per-session admission with
+     * sessionless calls.
+     */
+    private static RequestAdmission.SessionKey admissionKey(Map<String, Object> arguments) {
+        Object value = arguments.get("sessionId");
+        if (value instanceof String sessionId && !sessionId.isBlank()) {
+            return RequestAdmission.SessionKey.session(sessionId);
+        }
+        return RequestAdmission.SessionKey.sessionless();
     }
 
     private static String recoveryRule(DiagnosticCode code) {

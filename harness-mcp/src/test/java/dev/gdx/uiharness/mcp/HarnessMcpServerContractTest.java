@@ -1012,6 +1012,55 @@ final class HarnessMcpServerContractTest {
     }
 
     @Test
+    void sessionlessCallsDoNotShareAdmissionWithClientSessionNamedCatalog() throws Exception {
+        CompletableFuture<HarnessResponse> sessionlessGate = new CompletableFuture<>();
+        CompletableFuture<HarnessResponse> catalogGate = new CompletableFuture<>();
+        AtomicInteger calls = new AtomicInteger();
+        HarnessResponse sessions = new HarnessResponse.Success(
+                ProtocolVersion.V1, "mcp-1", "game",
+                new HarnessResponse.Result.Sessions(List.of(new HarnessResponse.SessionInfo(
+                        "catalog", List.of("action")))));
+        HarnessResponse action = new HarnessResponse.Success(
+                ProtocolVersion.V1, "mcp-1", "game",
+                new HarnessResponse.Result.Action(1, 2, "clicked", Map.of()));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    calls.incrementAndGet();
+                    return request.command() instanceof Command.Sessions
+                            ? sessionlessGate : catalogGate;
+                }, new RecordingArtifacts(), executor, 1024, System::nanoTime,
+                new RequestAdmission(8, 1, 1))) {
+            CompletableFuture<McpSchema.CallToolResult> sessionless = handler.handle(call(
+                    "ui_sessions", Map.of())).toFuture();
+            for (int attempt = 0; attempt < 200 && calls.get() < 1; attempt++) {
+                Thread.sleep(5);
+            }
+            assertEquals(1, calls.get());
+
+            // A real client session literally named "catalog" must have its own per-session
+            // lane and be admitted even while the sessionless lane is occupied.
+            CompletableFuture<McpSchema.CallToolResult> catalogSession = handler.handle(call(
+                    "ui_action", Map.of(
+                            "sessionId", "catalog",
+                            "locator", Map.of("kind", "role", "role", "button"),
+                            "action", Map.of("kind", "click", "pointer", 0, "button", 0,
+                                    "force", false)))).toFuture();
+            for (int attempt = 0; attempt < 200 && calls.get() < 2; attempt++) {
+                Thread.sleep(5);
+            }
+            assertEquals(2, calls.get());
+            assertFalse(catalogSession.isDone());
+
+            sessionlessGate.complete(sessions);
+            catalogGate.complete(action);
+            assertEquals("sessions-result",
+                    structured(sessionless.get(5, TimeUnit.SECONDS)).get("kind"));
+            assertEquals("action-result",
+                    structured(catalogSession.get(5, TimeUnit.SECONDS)).get("kind"));
+        }
+    }
+
+    @Test
     @Timeout(10)
     void stdioContinuesReadingAndDrainsInFlightCallsAfterEof() throws Exception {
         RecordingHarness harness = new RecordingHarness();

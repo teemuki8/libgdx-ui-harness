@@ -28,11 +28,11 @@ final class RequestAdmissionTest {
         AtomicInteger index = new AtomicInteger();
 
         CompletionStage<String> first =
-                admission.submit("s", READ, gated(invoked, index, g0, g1, g2));
+                admission.submit(RequestAdmission.SessionKey.session("s"), READ, gated(invoked, index, g0, g1, g2));
         CompletionStage<String> second =
-                admission.submit("s", READ, gated(invoked, index, g0, g1, g2));
+                admission.submit(RequestAdmission.SessionKey.session("s"), READ, gated(invoked, index, g0, g1, g2));
         CompletionStage<String> third =
-                admission.submit("s", READ, gated(invoked, index, g0, g1, g2));
+                admission.submit(RequestAdmission.SessionKey.session("s"), READ, gated(invoked, index, g0, g1, g2));
 
         assertEquals(2, invoked.get());
         assertFalse(first.toCompletableFuture().isDone());
@@ -42,7 +42,7 @@ final class RequestAdmissionTest {
         g0.complete("one");
         assertEquals("one", first.toCompletableFuture().join());
         CompletionStage<String> fourth =
-                admission.submit("s", READ, gated(invoked, index, g0, g1, g2));
+                admission.submit(RequestAdmission.SessionKey.session("s"), READ, gated(invoked, index, g0, g1, g2));
         assertEquals(3, invoked.get());
         g1.complete("two");
         g2.complete("three");
@@ -61,13 +61,13 @@ final class RequestAdmissionTest {
         AtomicInteger indexB = new AtomicInteger();
 
         CompletionStage<String> a1st =
-                admission.submit("A", READ, gated(invoked, indexA, a0, a1, a2));
+                admission.submit(RequestAdmission.SessionKey.session("A"), READ, gated(invoked, indexA, a0, a1, a2));
         CompletionStage<String> a2nd =
-                admission.submit("A", READ, gated(invoked, indexA, a0, a1, a2));
+                admission.submit(RequestAdmission.SessionKey.session("A"), READ, gated(invoked, indexA, a0, a1, a2));
         CompletionStage<String> a3rd =
-                admission.submit("A", READ, gated(invoked, indexA, a0, a1, a2));
+                admission.submit(RequestAdmission.SessionKey.session("A"), READ, gated(invoked, indexA, a0, a1, a2));
         CompletionStage<String> b1st =
-                admission.submit("B", READ, gated(invoked, indexB, b0));
+                admission.submit(RequestAdmission.SessionKey.session("B"), READ, gated(invoked, indexB, b0));
 
         assertEquals(3, invoked.get());
         assertRejected(a3rd);
@@ -81,6 +81,32 @@ final class RequestAdmissionTest {
         assertEquals("b0", b1st.toCompletableFuture().join());
     }
 
+    @Test void sessionlessScopeIsIndependentFromAClientSessionNamedCatalog() {
+        RequestAdmission admission = new RequestAdmission(8, 1, 1);
+        CompletableFuture<String> g0 = new CompletableFuture<>();
+        CompletableFuture<String> g1 = new CompletableFuture<>();
+        AtomicInteger invoked = new AtomicInteger();
+        AtomicInteger index = new AtomicInteger();
+
+        // The sessionless scope occupies its own lane while a real client session literally
+        // named "catalog" has a separate per-session lane and capacity.
+        CompletionStage<String> sessionless = admission.submit(
+                RequestAdmission.SessionKey.sessionless(), READ,
+                gated(invoked, index, g0, g1));
+        CompletionStage<String> catalogSession = admission.submit(
+                RequestAdmission.SessionKey.session("catalog"), WRITE,
+                gated(invoked, index, g0, g1));
+
+        assertEquals(2, invoked.get());
+        assertFalse(sessionless.toCompletableFuture().isDone());
+        assertFalse(catalogSession.toCompletableFuture().isDone());
+
+        g0.complete("a");
+        g1.complete("b");
+        assertEquals("a", sessionless.toCompletableFuture().join());
+        assertEquals("b", catalogSession.toCompletableFuture().join());
+    }
+
     @Test void sameSessionMutationsStartInSubmissionOrderAndNeverOverlap() {
         RequestAdmission admission = new RequestAdmission(8, 8, 4);
         CompletableFuture<String> m0 = new CompletableFuture<>();
@@ -90,11 +116,11 @@ final class RequestAdmissionTest {
         AtomicInteger index = new AtomicInteger();
 
         CompletionStage<String> first =
-                admission.submit("s", WRITE, gated(invoked, index, m0, m1, m2));
+                admission.submit(RequestAdmission.SessionKey.session("s"), WRITE, gated(invoked, index, m0, m1, m2));
         CompletionStage<String> second =
-                admission.submit("s", WRITE, gated(invoked, index, m0, m1, m2));
+                admission.submit(RequestAdmission.SessionKey.session("s"), WRITE, gated(invoked, index, m0, m1, m2));
         CompletionStage<String> third =
-                admission.submit("s", WRITE, gated(invoked, index, m0, m1, m2));
+                admission.submit(RequestAdmission.SessionKey.session("s"), WRITE, gated(invoked, index, m0, m1, m2));
 
         // Only the first mutation started; the others wait for the lane tail.
         assertEquals(1, invoked.get());
@@ -124,9 +150,9 @@ final class RequestAdmissionTest {
         AtomicInteger index = new AtomicInteger();
 
         CompletionStage<String> first =
-                admission.submit("s", READ, gated(invoked, index, r0, r1));
+                admission.submit(RequestAdmission.SessionKey.session("s"), READ, gated(invoked, index, r0, r1));
         CompletionStage<String> second =
-                admission.submit("s", READ, gated(invoked, index, r0, r1));
+                admission.submit(RequestAdmission.SessionKey.session("s"), READ, gated(invoked, index, r0, r1));
 
         // Both read-only requests started while the other was still in flight.
         assertEquals(2, invoked.get());
@@ -147,12 +173,12 @@ final class RequestAdmissionTest {
         AtomicInteger index = new AtomicInteger();
 
         CompletionStage<String> first =
-                admission.submit("s", READ, gated(invoked, index, g0, g1));
+                admission.submit(RequestAdmission.SessionKey.session("s"), READ, gated(invoked, index, g0, g1));
         first.toCompletableFuture().cancel(false);
         assertTrue(g0.isCancelled());
 
         CompletionStage<String> second =
-                admission.submit("s", READ, gated(invoked, index, g0, g1));
+                admission.submit(RequestAdmission.SessionKey.session("s"), READ, gated(invoked, index, g0, g1));
         assertEquals(2, invoked.get());
         g1.complete("ok");
         assertEquals("ok", second.toCompletableFuture().join());
@@ -166,15 +192,15 @@ final class RequestAdmissionTest {
         AtomicInteger index = new AtomicInteger();
 
         CompletionStage<String> first =
-                admission.submit("s", WRITE, gated(invoked, index, m0, m1));
+                admission.submit(RequestAdmission.SessionKey.session("s"), WRITE, gated(invoked, index, m0, m1));
         CompletionStage<String> queued =
-                admission.submit("s", WRITE, gated(invoked, index, m0, m1));
+                admission.submit(RequestAdmission.SessionKey.session("s"), WRITE, gated(invoked, index, m0, m1));
         assertEquals(1, invoked.get());
 
         queued.toCompletableFuture().cancel(false);
         // The released queue slot admits a replacement mutation immediately.
         CompletionStage<String> next =
-                admission.submit("s", WRITE, gated(invoked, index, m0, m1));
+                admission.submit(RequestAdmission.SessionKey.session("s"), WRITE, gated(invoked, index, m0, m1));
         assertFalse(next.toCompletableFuture().isDone());
 
         m0.complete("m0");
@@ -192,12 +218,12 @@ final class RequestAdmissionTest {
         AtomicInteger index = new AtomicInteger();
 
         CompletionStage<String> first =
-                admission.submit("s", READ, gated(invoked, index, g0, g1));
+                admission.submit(RequestAdmission.SessionKey.session("s"), READ, gated(invoked, index, g0, g1));
         g0.completeExceptionally(new IllegalStateException("boom"));
         assertThrows(CompletionException.class, first.toCompletableFuture()::join);
 
         CompletionStage<String> second =
-                admission.submit("s", READ, gated(invoked, index, g0, g1));
+                admission.submit(RequestAdmission.SessionKey.session("s"), READ, gated(invoked, index, g0, g1));
         assertEquals(2, invoked.get());
         g1.complete("ok");
         assertEquals("ok", second.toCompletableFuture().join());
@@ -209,7 +235,7 @@ final class RequestAdmissionTest {
         AtomicInteger invoked = new AtomicInteger();
         AtomicInteger index = new AtomicInteger();
 
-        CompletionStage<String> first = admission.submit("s", READ, () -> {
+        CompletionStage<String> first = admission.submit(RequestAdmission.SessionKey.session("s"), READ, () -> {
             invoked.incrementAndGet();
             throw new IllegalStateException("supplier exploded");
         });
@@ -217,7 +243,7 @@ final class RequestAdmissionTest {
         assertEquals(1, invoked.get());
 
         CompletionStage<String> second =
-                admission.submit("s", READ, gated(invoked, index, g1));
+                admission.submit(RequestAdmission.SessionKey.session("s"), READ, gated(invoked, index, g1));
         assertEquals(2, invoked.get());
         g1.complete("ok");
         assertEquals("ok", second.toCompletableFuture().join());
@@ -233,13 +259,13 @@ final class RequestAdmissionTest {
         AtomicInteger index = new AtomicInteger();
 
         CompletionStage<String> first =
-                admission.submit("s", WRITE, gated(invoked, index, m0, m1, m2, m3));
+                admission.submit(RequestAdmission.SessionKey.session("s"), WRITE, gated(invoked, index, m0, m1, m2, m3));
         CompletionStage<String> second =
-                admission.submit("s", WRITE, gated(invoked, index, m0, m1, m2, m3));
+                admission.submit(RequestAdmission.SessionKey.session("s"), WRITE, gated(invoked, index, m0, m1, m2, m3));
         CompletionStage<String> third =
-                admission.submit("s", WRITE, gated(invoked, index, m0, m1, m2, m3));
+                admission.submit(RequestAdmission.SessionKey.session("s"), WRITE, gated(invoked, index, m0, m1, m2, m3));
         CompletionStage<String> fourth =
-                admission.submit("s", WRITE, gated(invoked, index, m0, m1, m2, m3));
+                admission.submit(RequestAdmission.SessionKey.session("s"), WRITE, gated(invoked, index, m0, m1, m2, m3));
 
         assertEquals(1, invoked.get());
         assertRejected(fourth);
@@ -248,7 +274,7 @@ final class RequestAdmissionTest {
         assertEquals("m0", first.toCompletableFuture().join());
         assertEquals(2, invoked.get());
         CompletionStage<String> fifth =
-                admission.submit("s", WRITE, gated(invoked, index, m0, m1, m2, m3));
+                admission.submit(RequestAdmission.SessionKey.session("s"), WRITE, gated(invoked, index, m0, m1, m2, m3));
         assertFalse(fifth.toCompletableFuture().isDone());
 
         m1.complete("m1");
@@ -267,14 +293,14 @@ final class RequestAdmissionTest {
         AtomicInteger index = new AtomicInteger();
 
         CompletionStage<String> first =
-                admission.submit("s", WRITE, gated(invoked, index, m0, m1));
+                admission.submit(RequestAdmission.SessionKey.session("s"), WRITE, gated(invoked, index, m0, m1));
         CompletionStage<String> queued =
-                admission.submit("s", WRITE, gated(invoked, index, m0, m1));
+                admission.submit(RequestAdmission.SessionKey.session("s"), WRITE, gated(invoked, index, m0, m1));
         assertEquals(1, invoked.get());
 
         admission.close();
         assertRejected(queued);
-        assertRejected(admission.submit("s", READ, () -> CompletableFuture.completedFuture("x")));
+        assertRejected(admission.submit(RequestAdmission.SessionKey.session("s"), READ, () -> CompletableFuture.completedFuture("x")));
         assertEquals(1, invoked.get());
 
         // Running work admitted before close still completes normally.
@@ -287,16 +313,16 @@ final class RequestAdmissionTest {
         RequestAdmission admission = new RequestAdmission(1, 4, 4);
         CompletableFuture<String> translation = new CompletableFuture<>();
 
-        CompletionStage<String> first = admission.submit("s", READ, () -> translation);
+        CompletionStage<String> first = admission.submit(RequestAdmission.SessionKey.session("s"), READ, () -> translation);
         // The permit is still held while the work stage (which includes result translation
         // and output accounting) is not terminal.
-        assertRejected(admission.submit(
-                "s", READ, () -> CompletableFuture.completedFuture("x")));
+        assertRejected(admission.submit(RequestAdmission.SessionKey.session("s"), READ,
+                () -> CompletableFuture.completedFuture("x")));
 
         translation.complete("done");
         assertEquals("done", first.toCompletableFuture().join());
-        assertEquals("x", admission.submit(
-                "s", READ, () -> CompletableFuture.completedFuture("x"))
+        assertEquals("x", admission.submit(RequestAdmission.SessionKey.session("s"), READ,
+                () -> CompletableFuture.completedFuture("x"))
                 .toCompletableFuture().join());
     }
 

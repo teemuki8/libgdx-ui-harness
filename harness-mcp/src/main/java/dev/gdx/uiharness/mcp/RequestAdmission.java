@@ -29,9 +29,29 @@ final class RequestAdmission implements AutoCloseable {
     private final int perSessionLimit;
     private final int maxQueuedMutations;
     private final Object monitor = new Object();
-    private final Map<String, SessionLane> lanes = new HashMap<>();
+    private final Map<SessionKey, SessionLane> lanes = new HashMap<>();
     private int globalInFlight;
     private boolean closed;
+
+    /**
+     * Admission scope key. A real client session identifier is wrapped so it can never collide
+     * with the distinct sessionless scope, even when a client literally names its session
+     * "catalog" or any other historical sentinel.
+     */
+    record SessionKey(String sessionId) {
+        /** Distinct scope for requests that carry no session identifier. */
+        static final SessionKey SESSIONLESS = new SessionKey(null);
+
+        /** Wraps one client session identifier. */
+        static SessionKey session(String sessionId) {
+            return new SessionKey(Objects.requireNonNull(sessionId, "sessionId"));
+        }
+
+        /** Returns the scope for requests without a session identifier. */
+        static SessionKey sessionless() {
+            return SESSIONLESS;
+        }
+    }
 
     /** Returns the admission used by the stdio server. */
     static RequestAdmission serverDefaults() {
@@ -62,10 +82,10 @@ final class RequestAdmission implements AutoCloseable {
      * (which includes result translation and output accounting) reaches a terminal state.
      */
     <T> CompletionStage<T> submit(
-            String sessionId,
+            SessionKey sessionKey,
             HarnessToolCatalog.AccessMode mode,
             Supplier<CompletionStage<T>> work) {
-        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(sessionKey, "sessionKey");
         Objects.requireNonNull(mode, "mode");
         Objects.requireNonNull(work, "work");
         CompletableFuture<T> result = new CompletableFuture<>();
@@ -82,7 +102,7 @@ final class RequestAdmission implements AutoCloseable {
                         "Global admission limit exceeded (limit=" + globalLimit + ")"));
                 return result;
             }
-            lane = lanes.computeIfAbsent(sessionId, ignored -> new SessionLane());
+            lane = lanes.computeIfAbsent(sessionKey, ignored -> new SessionLane());
             if (lane.inFlight >= perSessionLimit) {
                 result.completeExceptionally(new LimitExceededException(
                         "Session admission limit exceeded (limit=" + perSessionLimit + ")"));
@@ -100,7 +120,7 @@ final class RequestAdmission implements AutoCloseable {
                 lane.inFlight++;
                 // A queued mutation cancelled before it starts releases its permit and queue
                 // slot immediately instead of leaking until the lane drains.
-                result.whenComplete((value, failure) -> cancelQueued(sessionId, lane, item));
+                result.whenComplete((value, failure) -> cancelQueued(sessionKey, lane, item));
                 return result;
             }
             globalInFlight++;
@@ -111,13 +131,13 @@ final class RequestAdmission implements AutoCloseable {
             startNow = true;
         }
         if (startNow) {
-            run(sessionId, lane, item);
+            run(sessionKey, lane, item);
         }
         return result;
     }
 
     /** Releases one queued mutation whose result reached a terminal state before it started. */
-    private void cancelQueued(String sessionId, SessionLane lane, QueuedWork item) {
+    private void cancelQueued(SessionKey sessionKey, SessionLane lane, QueuedWork item) {
         synchronized (monitor) {
             if (lane.queue.remove(item)) {
                 globalInFlight--;
@@ -125,21 +145,21 @@ final class RequestAdmission implements AutoCloseable {
                 if (lane.inFlight == 0
                         && lane.queue.isEmpty()
                         && lane.runningMutation == null) {
-                    lanes.remove(sessionId);
+                    lanes.remove(sessionKey);
                 }
             }
         }
     }
 
     /** Starts one admitted request. The supplier is invoked outside the monitor. */
-    private void run(String sessionId, SessionLane lane, QueuedWork item) {
+    private void run(SessionKey sessionKey, SessionLane lane, QueuedWork item) {
         CompletableFuture<?> result = item.result;
         CompletionStage<?> stage;
         try {
             stage = Objects.requireNonNull(item.work.get(), "work stage");
         } catch (Throwable failure) {
             result.completeExceptionally(failure);
-            finish(sessionId, lane, item.mode == HarnessToolCatalog.AccessMode.MUTATING);
+            finish(sessionKey, lane, item.mode == HarnessToolCatalog.AccessMode.MUTATING);
             return;
         }
         CompletableFuture<?> stageFuture = stage.toCompletableFuture();
@@ -156,7 +176,7 @@ final class RequestAdmission implements AutoCloseable {
             } else {
                 result.completeExceptionally(failure);
             }
-            finish(sessionId, lane, item.mode == HarnessToolCatalog.AccessMode.MUTATING);
+            finish(sessionKey, lane, item.mode == HarnessToolCatalog.AccessMode.MUTATING);
         });
     }
 
@@ -164,7 +184,7 @@ final class RequestAdmission implements AutoCloseable {
      * Releases the permits of one admitted request and starts the next live queued mutation for
      * its session. Runs exactly once per admitted request from the terminal-state path.
      */
-    private void finish(String sessionId, SessionLane lane, boolean wasRunningMutation) {
+    private void finish(SessionKey sessionKey, SessionLane lane, boolean wasRunningMutation) {
         QueuedWork next = null;
         synchronized (monitor) {
             globalInFlight--;
@@ -187,11 +207,11 @@ final class RequestAdmission implements AutoCloseable {
             if (lane.inFlight == 0
                     && lane.queue.isEmpty()
                     && lane.runningMutation == null) {
-                lanes.remove(sessionId);
+                lanes.remove(sessionKey);
             }
         }
         if (next != null) {
-            run(sessionId, lane, next);
+            run(sessionKey, lane, next);
         }
     }
 
