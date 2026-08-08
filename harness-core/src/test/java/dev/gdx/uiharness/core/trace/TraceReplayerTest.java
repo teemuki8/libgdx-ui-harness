@@ -351,6 +351,75 @@ final class TraceReplayerTest {
                 1_000_000, 100, 1_048_576, 1_000_000, 2)).load(archive));
     }
 
+    @Test void centralDirectoryAliasEntryIsRejected() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(line, line, line);
+        Path archive = temporaryDirectory.resolve("alias.zip");
+        Files.write(archive, renameCentralEntry(
+                zipBytes("events.ndjson", events, "manifest.json",
+                        v1ManifestBytes(3, events.length)),
+                "manifest.json", "other-13.json"));
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer(new TraceReplayer.Limits(
+                        1_000_000, 100, 1_048_576, 1_000_000, 1_000))
+                        .load(archive));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("does not match"));
+    }
+
+    @Test void centralDirectoryDuplicateEntryIsRejected() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(line, line, line);
+        Path archive = temporaryDirectory.resolve("duplicate.zip");
+        Files.write(archive, renameCentralEntry(
+                zipBytes("events.ndjson", events, "manifest.json",
+                        v1ManifestBytes(3, events.length)),
+                "manifest.json", "events.ndjson"));
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer(new TraceReplayer.Limits(
+                        1_000_000, 100, 1_048_576, 1_000_000, 1_000))
+                        .load(archive));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("duplicate"));
+    }
+
+    @Test void centralDirectorySwappedOffsetsFailIdentityVerification() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(line, line, line);
+        Path archive = temporaryDirectory.resolve("swapped.zip");
+        Files.write(archive, swapCentralEntryOffsets(
+                zipBytes("events.ndjson", events, "manifest.json",
+                        v1ManifestBytes(3, events.length)),
+                "events.ndjson", "manifest.json"));
+
+        // The central directory still names exactly events.ndjson and manifest.json,
+        // but points each name at the other local header: the SHA-256 identity the
+        // prepass recorded for manifest.json must not match the swapped content.
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer(new TraceReplayer.Limits(
+                        1_000_000, 100, 1_048_576, 1_000_000, 1_000))
+                        .load(archive));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("content"));
+    }
+
     private static byte[] zipBytes(String firstName, byte[] firstContent,
             String secondName, byte[] secondContent) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -369,27 +438,55 @@ final class TraceReplayerTest {
     private static byte[] forgeCentralDirectorySizes(byte[] zip, String entryName,
             long compressedSize, long uncompressedSize) {
         byte[] forged = zip.clone();
-        int eocd = endOfCentralDirectory(forged);
-        int centralOffset = littleEndianInt(forged, eocd + 16);
-        int entryCount = littleEndianShort(forged, eocd + 10);
+        int cursor = findCentralEntry(forged, entryName);
+        putLittleEndianInt(forged, cursor + 20, compressedSize);
+        putLittleEndianInt(forged, cursor + 24, uncompressedSize);
+        return forged;
+    }
+
+    private static byte[] renameCentralEntry(byte[] zip, String oldName, String newName) {
+        if (oldName.length() != newName.length()) {
+            throw new IllegalArgumentException("central rename must keep the name length");
+        }
+        byte[] forged = zip.clone();
+        int cursor = findCentralEntry(forged, oldName);
+        byte[] nameBytes = newName.getBytes(StandardCharsets.UTF_8);
+        System.arraycopy(nameBytes, 0, forged, cursor + 46, nameBytes.length);
+        return forged;
+    }
+
+    private static byte[] swapCentralEntryOffsets(byte[] zip, String firstName,
+            String secondName) {
+        byte[] forged = zip.clone();
+        int first = findCentralEntry(forged, firstName);
+        int second = findCentralEntry(forged, secondName);
+        int firstOffset = littleEndianInt(forged, first + 42);
+        int secondOffset = littleEndianInt(forged, second + 42);
+        putLittleEndianInt(forged, first + 42, secondOffset);
+        putLittleEndianInt(forged, second + 42, firstOffset);
+        return forged;
+    }
+
+    private static int findCentralEntry(byte[] zip, String name) {
+        int eocd = endOfCentralDirectory(zip);
+        int centralOffset = littleEndianInt(zip, eocd + 16);
+        int entryCount = littleEndianShort(zip, eocd + 10);
         int cursor = centralOffset;
         for (int index = 0; index < entryCount; index++) {
-            if (littleEndianInt(forged, cursor) != 0x02014b50) {
+            if (littleEndianInt(zip, cursor) != 0x02014b50) {
                 throw new AssertionError("unexpected central-directory signature");
             }
-            int nameLength = littleEndianShort(forged, cursor + 28);
-            int extraLength = littleEndianShort(forged, cursor + 30);
-            int commentLength = littleEndianShort(forged, cursor + 32);
-            String name = new String(forged, cursor + 46, nameLength,
+            int nameLength = littleEndianShort(zip, cursor + 28);
+            int extraLength = littleEndianShort(zip, cursor + 30);
+            int commentLength = littleEndianShort(zip, cursor + 32);
+            String entryName = new String(zip, cursor + 46, nameLength,
                     StandardCharsets.UTF_8);
-            if (name.equals(entryName)) {
-                putLittleEndianInt(forged, cursor + 20, compressedSize);
-                putLittleEndianInt(forged, cursor + 24, uncompressedSize);
-                return forged;
+            if (entryName.equals(name)) {
+                return cursor;
             }
             cursor += 46 + nameLength + extraLength + commentLength;
         }
-        throw new AssertionError("central-directory entry not found: " + entryName);
+        throw new AssertionError("central-directory entry not found: " + name);
     }
 
     private static int endOfCentralDirectory(byte[] zip) {

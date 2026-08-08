@@ -4,11 +4,14 @@ import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
 import java.io.ByteArrayOutputStream;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -21,9 +24,10 @@ import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
 
 /** Streams a bounded trace archive to validate its manifest and causal transitions.
- *  Entry names, duplicates, and per-entry compression ratios are checked against
- *  bytes measured directly from the archive streams, so forgeable central-directory
- *  size fields cannot bypass the limits. */
+ *  Entry names, duplicates, per-entry compression ratios, and per-entry SHA-256
+ *  identities are checked against bytes measured directly from the archive streams,
+ *  and the central directory must match the local headers exactly, so forgeable
+ *  central-directory fields cannot bypass the limits or substitute content. */
 public final class TraceReplayer {
     private final Limits limits;
 
@@ -47,11 +51,12 @@ public final class TraceReplayer {
                 throw failure(ErrorCode.LIMIT_EXCEEDED,
                         "Trace archive exceeds replay byte limit", null);
             }
-            validateEntriesBounded(archive);
+            Map<String, EntryIdentity> identities = validateEntriesBounded(archive);
             try (ZipFile zip = new ZipFile(archive.toFile())) {
+                validateCentralEntries(zip, identities.keySet());
                 ReplayBudget budget = new ReplayBudget();
-                TraceManifest manifest = readManifest(archive, zip, budget);
-                return readEvents(zip, manifest, budget);
+                TraceManifest manifest = readManifest(archive, zip, budget, identities);
+                return readEvents(zip, manifest, budget, identities);
             }
         } catch (HarnessException exception) {
             throw exception;
@@ -60,8 +65,8 @@ public final class TraceReplayer {
         }
     }
 
-    private TraceReplay readEvents(ZipFile zip, TraceManifest manifest, ReplayBudget budget)
-            throws IOException {
+    private TraceReplay readEvents(ZipFile zip, TraceManifest manifest, ReplayBudget budget,
+            Map<String, EntryIdentity> identities) throws IOException {
         ZipEntry eventsEntry = zip.getEntry("events.ndjson");
         if (eventsEntry == null || eventsEntry.isDirectory()) {
             throw failure(ErrorCode.INVALID_REQUEST, "Trace archive is missing events.ndjson", null);
@@ -75,11 +80,13 @@ public final class TraceReplayer {
         long lastFrame = -1;
         long lastRevision = -1;
         boolean malformed = false;
-        try (InputStream input = zip.getInputStream(eventsEntry)) {
+        try (InputStream raw = zip.getInputStream(eventsEntry);
+                CountingInputStream input = new CountingInputStream(raw)) {
+            MessageDigest digest = sha256();
             while (true) {
                 byte[] line;
                 try {
-                    line = readBoundedLine(input, limits.maxEventBytes(), budget);
+                    line = readBoundedLine(input, limits.maxEventBytes(), budget, digest);
                 } catch (LineLimitException exception) {
                     throw failure(ErrorCode.LIMIT_EXCEEDED,
                             "Trace event exceeds replay byte limit", exception);
@@ -87,11 +94,14 @@ public final class TraceReplayer {
                 if (line == null) {
                     break;
                 }
+                budget.recordContent(line.length + 1L);
+                if (malformed) {
+                    continue;
+                }
                 if (expectedSequence >= limits.maxEvents()) {
                     throw failure(ErrorCode.LIMIT_EXCEEDED,
                             "Trace exceeds replay event limit", null);
                 }
-                budget.recordContent(line.length + 1L);
                 TraceEvent event;
                 try {
                     event = TraceEvent.fromJson(line);
@@ -99,7 +109,7 @@ public final class TraceReplayer {
                     diagnostics.add("malformed event " + expectedSequence + ": "
                             + exception.getMessage());
                     malformed = true;
-                    break;
+                    continue;
                 }
                 validateEvent(event, manifest, expectedSequence, lastLogicalTime, lastFrame,
                         lastRevision, activeRequests, errors);
@@ -117,6 +127,7 @@ public final class TraceReplayer {
                 }
                 expectedSequence++;
             }
+            verifyIdentity("events.ndjson", digest.digest(), input.count(), identities);
         }
         if (expectedSequence != manifest.eventCount()) {
             diagnostics.add("manifest event count " + manifest.eventCount()
@@ -217,19 +228,21 @@ public final class TraceReplayer {
         }
     }
 
-    private TraceManifest readManifest(Path archive, ZipFile zip, ReplayBudget budget)
-            throws IOException {
+    private TraceManifest readManifest(Path archive, ZipFile zip, ReplayBudget budget,
+            Map<String, EntryIdentity> identities) throws IOException {
         ZipEntry entry = zip.getEntry("manifest.json");
         if (entry == null || entry.isDirectory()) {
             throw failure(ErrorCode.INVALID_REQUEST, "Trace archive is missing manifest.json", null);
         }
         try (InputStream input = zip.getInputStream(entry)) {
             ByteArrayOutputStream json = new ByteArrayOutputStream();
+            MessageDigest digest = sha256();
             byte[] buffer = new byte[4096];
             long total = 0;
             int read;
             while ((read = input.read(buffer)) != -1) {
                 budget.charge(read);
+                digest.update(buffer, 0, read);
                 total += read;
                 if (total > limits.maxEventBytes()) {
                     throw failure(ErrorCode.LIMIT_EXCEEDED,
@@ -237,19 +250,22 @@ public final class TraceReplayer {
                 }
                 json.write(buffer, 0, read);
             }
+            verifyIdentity("manifest.json", digest.digest(), total, identities);
             return TraceManifest.fromJson(archive, json.toByteArray());
         }
     }
 
     /** Rejects unsafe names, duplicates, and unreasonable per-entry compression
-     *  ratios in one bounded streaming pass before any trusted parse. Sizes are
-     *  measured from the actual DEFLATE streams, never from the forgeable
-     *  central-directory fields. */
-    private void validateEntriesBounded(Path archive) throws IOException {
+     *  ratios in one bounded streaming pass before any trusted parse, recording a
+     *  SHA-256 identity per entry so the central-directory parse cannot substitute
+     *  different content for the same name. Sizes are measured from the actual
+     *  DEFLATE streams, never from the forgeable central-directory fields. */
+    private Map<String, EntryIdentity> validateEntriesBounded(Path archive) throws IOException {
         int ratioLimit = limits.maxCompressionRatio();
         try (InputStream raw = Files.newInputStream(archive);
                 MeasuringZipInputStream zip = new MeasuringZipInputStream(raw)) {
             Set<String> names = new HashSet<>();
+            Map<String, EntryIdentity> identities = new HashMap<>();
             byte[] buffer = new byte[8192];
             long inflatedTotal = 0;
             int entries = 0;
@@ -261,9 +277,7 @@ public final class TraceReplayer {
                             "Trace archive contains too many entries", null);
                 }
                 String name = entry.getName();
-                if (name.isBlank() || name.startsWith("/") || name.startsWith("\\")
-                        || name.contains("\\") || isDriveQualified(name)
-                        || containsParentSegment(name)) {
+                if (isUnsafeName(name)) {
                     throw failure(ErrorCode.INVALID_REQUEST,
                             "Trace archive contains an unsafe entry", null);
                 }
@@ -271,9 +285,11 @@ public final class TraceReplayer {
                     throw failure(ErrorCode.INVALID_REQUEST,
                             "Trace archive contains duplicate entries", null);
                 }
+                MessageDigest digest = sha256();
                 long inflated = 0;
                 int read;
                 while ((read = zip.read(buffer)) != -1) {
+                    digest.update(buffer, 0, read);
                     inflated += read;
                     inflatedTotal += read;
                     if (inflatedTotal > limits.maxTotalInflatedBytes()) {
@@ -290,8 +306,46 @@ public final class TraceReplayer {
                     throw failure(ErrorCode.LIMIT_EXCEEDED,
                             "Trace entry compression ratio exceeds replay limit", null);
                 }
+                identities.put(name, new EntryIdentity(digest.digest(), inflated));
+            }
+            return identities;
+        }
+    }
+
+    /** Rejects unsafe, duplicate, or extra central-directory entries and requires
+     *  the central entry set to match the local headers exactly, so aliases and
+     *  central-only entries cannot hide from the local prepass. */
+    private void validateCentralEntries(ZipFile zip, Set<String> localNames) {
+        Set<String> centralNames = new HashSet<>();
+        int entries = 0;
+        var enumeration = zip.entries();
+        while (enumeration.hasMoreElements()) {
+            ZipEntry entry = enumeration.nextElement();
+            String name = entry.getName();
+            entries++;
+            if (entries > limits.maxEvents() + 10_000L) {
+                throw failure(ErrorCode.LIMIT_EXCEEDED,
+                        "Trace archive contains too many entries", null);
+            }
+            if (isUnsafeName(name)) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive contains an unsafe entry", null);
+            }
+            if (!centralNames.add(name)) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive contains duplicate entries", null);
             }
         }
+        if (!centralNames.equals(localNames)) {
+            throw failure(ErrorCode.INVALID_REQUEST,
+                    "Trace archive entry set does not match its local headers", null);
+        }
+    }
+
+    private static boolean isUnsafeName(String name) {
+        return name.isBlank() || name.startsWith("/") || name.startsWith("\\")
+                || name.contains("\\") || isDriveQualified(name)
+                || containsParentSegment(name);
     }
 
     private static boolean isDriveQualified(String name) {
@@ -311,11 +365,13 @@ public final class TraceReplayer {
     }
 
     private static byte[] readBoundedLine(InputStream input, int maximum,
-            ReplayBudget budget) throws IOException, LineLimitException {
+            ReplayBudget budget, MessageDigest digest)
+            throws IOException, LineLimitException {
         ByteArrayOutputStream line = new ByteArrayOutputStream(Math.min(maximum, 1024));
         int value;
         while ((value = input.read()) != -1) {
             budget.charge(1);
+            digest.update((byte) value);
             if (value == '\n') {
                 return line.toByteArray();
             }
@@ -390,6 +446,59 @@ public final class TraceReplayer {
     }
 
     private record RequestState(long lastSequence) {}
+
+    /** Immutable SHA-256 identity of one entry's inflated content, recorded by the
+     *  local prepass and verified while the central-directory parse streams it. */
+    private record EntryIdentity(byte[] sha256, long inflatedSize) {}
+
+    private static MessageDigest sha256() {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 unavailable", exception);
+        }
+    }
+
+    private static void verifyIdentity(String name, byte[] sha256, long inflatedSize,
+            Map<String, EntryIdentity> identities) {
+        EntryIdentity expected = identities.get(name);
+        if (expected == null || expected.inflatedSize() != inflatedSize
+                || !MessageDigest.isEqual(expected.sha256(), sha256)) {
+            throw failure(ErrorCode.INVALID_REQUEST,
+                    "Trace archive entry content does not match its local header", null);
+        }
+    }
+
+    /** InputStream that counts the bytes actually delivered, with no buffering. */
+    private static final class CountingInputStream extends FilterInputStream {
+        private long count;
+
+        CountingInputStream(InputStream input) {
+            super(input);
+        }
+
+        @Override
+        public int read() throws IOException {
+            int value = super.read();
+            if (value != -1) {
+                count++;
+            }
+            return value;
+        }
+
+        @Override
+        public int read(byte[] bytes, int offset, int length) throws IOException {
+            int read = super.read(bytes, offset, length);
+            if (read > 0) {
+                count += read;
+            }
+            return read;
+        }
+
+        long count() {
+            return count;
+        }
+    }
 
     /** ZipInputStream that reports the compressed bytes actually consumed per
      *  entry, immune to forgeable central-directory size fields. */
