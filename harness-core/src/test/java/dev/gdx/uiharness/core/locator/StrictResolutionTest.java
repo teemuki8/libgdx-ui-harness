@@ -1,8 +1,10 @@
 package dev.gdx.uiharness.core.locator;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.HarnessException;
@@ -17,6 +19,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.Test;
 
 final class StrictResolutionTest {
@@ -73,6 +80,42 @@ final class StrictResolutionTest {
         assertEquals(ErrorCode.NOT_FOUND, error.code());
         assertEquals("true", error.evidence().details().get("fragileIndex"));
         assertEquals("9", error.evidence().details().get("index"));
+    }
+
+    @Test void pathologicalRegexCannotBlockResolution() throws Exception {
+        String pathologicalCandidate = "a".repeat(16_383) + "!";
+        TextMatch regex = TextMatch.regex("(a+)+$");
+        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+        Future<Boolean> evaluation = executor.submit(() -> regex.matches(pathologicalCandidate));
+        try {
+            assertFalse(evaluation.get(2, TimeUnit.SECONDS),
+                    "regex evaluation must complete within two seconds");
+        } catch (TimeoutException deadline) {
+            fail("regex evaluation exceeded the two-second deadline");
+        } finally {
+            evaluation.cancel(true);
+            executor.shutdownNow();
+        }
+    }
+
+    @Test void regexFindSemanticsSupportGroupingAlternationUnicodeAndAnchors() {
+        assertTrue(TextMatch.regex("game").matches("Save game"));
+        assertTrue(TextMatch.regex("(ab)+").matches("xababy"));
+        assertTrue(TextMatch.regex("cat|dog").matches("a dog here"));
+        assertTrue(TextMatch.regex("\\p{L}+").matches("caf\u00e9"));
+        assertTrue(TextMatch.regex("^Save").matches("Save game"));
+        assertTrue(TextMatch.regex("game$").matches("Save game"));
+        assertFalse(TextMatch.regex("^game$").matches("Save game"));
+    }
+
+    @Test void re2UnsupportedConstructsFailAtConstructionBoundedly() {
+        String candidate = "f0a9-secret-candidate";
+        IllegalArgumentException backreference = assertThrows(IllegalArgumentException.class,
+                () -> TextMatch.regex("(a)\\1" + candidate));
+        IllegalArgumentException lookbehind = assertThrows(IllegalArgumentException.class,
+                () -> TextMatch.regex("(?<=a)b" + candidate));
+        assertFalse(backreference.getMessage().contains(candidate));
+        assertFalse(lookbehind.getMessage().contains(candidate));
     }
 
     private static SemanticSnapshot twoSaveButtons() {
