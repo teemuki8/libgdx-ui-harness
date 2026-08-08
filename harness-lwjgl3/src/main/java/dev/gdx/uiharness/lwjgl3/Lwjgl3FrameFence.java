@@ -259,13 +259,17 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
 
     /**
      * Combines per-step cleanup failures, keeping the first as the primary failure and attaching
-     * later failures as suppressed so the caller observes one consistent close outcome.
+     * later failures as suppressed so the caller observes one consistent close outcome. The same
+     * instance thrown again is retained once: {@link Throwable#addSuppressed} forbids
+     * self-suppression and would otherwise abort the remaining cleanup.
      */
     private static Throwable aggregate(Throwable first, Throwable next) {
         if (first == null) {
             return next;
         }
-        first.addSuppressed(next);
+        if (first != next) {
+            first.addSuppressed(next);
+        }
         return first;
     }
 

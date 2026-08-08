@@ -322,6 +322,40 @@ final class Lwjgl3ScreenCaptureTest {
                 "close must clear listener retention even when cleanup steps fail");
     }
 
+    @Test void sameCleanupFailureInstanceAcrossCallbacksStillRunsEveryPhase() {
+        IllegalStateException shared = new IllegalStateException("shared-failure");
+        DeadlineScheduler failingCancellations = (delay, signal) -> () -> {
+            throw shared;
+        };
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(failingCancellations, 2);
+        CompletionStage<String> first = localFence.afterNextFrame(
+                frame -> "first", fixture.deadline());
+        CompletionStage<String> second = localFence.afterNextFrame(
+                frame -> "second", fixture.deadline());
+        AtomicBoolean listenerNotified = new AtomicBoolean();
+        localFence.subscribe(new FrameSignal.FrameListener() {
+            @Override public void onFrame(FrameSignal.Frame frame) { }
+
+            @Override public void onClosed() {
+                listenerNotified.set(true);
+            }
+        });
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                localFence::close);
+
+        assertSame(shared, failure,
+                "the shared failure instance must be the primary close failure");
+        assertEquals(ErrorCode.SESSION_CLOSED,
+                assertThrows(HarnessException.class, () -> await(first)).code());
+        assertEquals(ErrorCode.SESSION_CLOSED,
+                assertThrows(HarnessException.class, () -> await(second)).code());
+        assertTrue(listenerNotified.get(),
+                "a shared failure instance across cancellations must not abort listener cleanup");
+        assertTrue(retainedListeners(localFence).isEmpty(),
+                "a shared failure instance must not leak listener retention");
+    }
+
     @Test void ownedSchedulerShutsDownEvenWhenListenerCleanupFails() {
         Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(1);
         CompletionStage<String> pending = localFence.afterNextFrame(
