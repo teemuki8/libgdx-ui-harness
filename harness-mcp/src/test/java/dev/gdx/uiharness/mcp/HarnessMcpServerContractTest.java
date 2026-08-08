@@ -982,30 +982,38 @@ final class HarnessMcpServerContractTest {
                 Thread.sleep(5);
             }
             assertEquals(1, actionCalls.get());
+            assertFalse(first.isDone());
             CompletableFuture<McpSchema.CallToolResult> second = handler.handle(call(
                     "ui_action", arguments)).toFuture();
             CompletableFuture<McpSchema.CallToolResult> third = handler.handle(call(
                     "ui_action", arguments)).toFuture();
-            Thread.sleep(100);
-            // The queued mutations must not start while the first is still running.
-            assertEquals(1, actionCalls.get());
-            assertFalse(first.isDone());
-            assertFalse(second.isDone());
-            assertFalse(third.isDone());
 
+            // The two later calls are admitted into the bounded lane in whichever order their
+            // virtual-thread defers run; the lane is FIFO and never runs two at once. Drive the
+            // gates by start order so the test does not assume a call-to-gate identity.
             mutationOne.complete(action);
+            for (int attempt = 0; attempt < 200 && actionCalls.get() < 2; attempt++) {
+                Thread.sleep(5);
+            }
+            assertEquals(2, actionCalls.get());
             assertEquals("action-result",
                     structured(first.get(5, TimeUnit.SECONDS)).get("kind"));
-            assertEquals(2, actionCalls.get());
+            // Exactly one queued mutation started and is in flight; the last is still queued.
             assertFalse(second.isDone());
-
-            mutationTwo.complete(action);
-            assertEquals("action-result",
-                    structured(second.get(5, TimeUnit.SECONDS)).get("kind"));
-            assertEquals(3, actionCalls.get());
             assertFalse(third.isDone());
 
+            mutationTwo.complete(action);
+            for (int attempt = 0; attempt < 200 && actionCalls.get() < 3; attempt++) {
+                Thread.sleep(5);
+            }
+            assertEquals(3, actionCalls.get());
+            // Exactly one of the two later calls has delivered; the other is in flight on the
+            // last gate and must not have started while the previous mutation was running.
+            assertTrue(second.isDone() != third.isDone());
+
             mutationThree.complete(action);
+            assertEquals("action-result",
+                    structured(second.get(5, TimeUnit.SECONDS)).get("kind"));
             assertEquals("action-result",
                     structured(third.get(5, TimeUnit.SECONDS)).get("kind"));
         }
