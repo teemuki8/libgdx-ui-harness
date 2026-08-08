@@ -38,6 +38,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -699,6 +700,87 @@ final class Lwjgl3ScreenCaptureTest {
         assertFalse(monitorHeld.get(),
                 "a registration race must cancel the late token only after leaving the lifecycle monitor");
         localFence.close();
+    }
+
+    @Test void rejectedExternalDeadlineSchedulingRestoresCapacityAndNeverRuns() {
+        AtomicBoolean rejectNext = new AtomicBoolean(true);
+        DeadlineScheduler rejectingOnce = (delay, signal) -> {
+            if (rejectNext.compareAndSet(true, false)) {
+                throw new RejectedExecutionException("scheduler shut down");
+            }
+            return () -> {};
+        };
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(rejectingOnce, 1);
+        AtomicBoolean rejectedWorkRan = new AtomicBoolean();
+
+        RejectedExecutionException rejection = assertThrows(RejectedExecutionException.class,
+                () -> localFence.afterNextFrame(frame -> {
+                    rejectedWorkRan.set(true);
+                    return "must-never-run";
+                }, fixture.deadline()));
+        assertEquals("scheduler shut down", rejection.getMessage(),
+                "the original scheduler rejection must remain observable to the caller");
+
+        CompletionStage<String> admitted = localFence.afterNextFrame(
+                frame -> "admitted", fixture.deadline());
+        localFence.completedFrame(1, 1);
+        localFence.close();
+
+        assertEquals("admitted", await(admitted),
+                "the released capacity must admit the next command immediately");
+        assertFalse(rejectedWorkRan.get(),
+                "a rejected deadline registration must never execute on a completed frame");
+    }
+
+    @Test void frameClaimRacingRejectedDeadlineRegistrationRunsExactlyOnce() {
+        AtomicBoolean claimBeforeReject = new AtomicBoolean(true);
+        Lwjgl3FrameFence[] holder = new Lwjgl3FrameFence[1];
+        DeadlineScheduler claimingThenRejecting = (delay, signal) -> {
+            if (claimBeforeReject.compareAndSet(true, false)) {
+                holder[0].completedFrame(1, 1);
+            }
+            throw new RejectedExecutionException("scheduler shut down");
+        };
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(claimingThenRejecting, 1);
+        holder[0] = localFence;
+        AtomicInteger taskRuns = new AtomicInteger();
+
+        assertThrows(RejectedExecutionException.class,
+                () -> localFence.afterNextFrame(frame -> {
+                    taskRuns.incrementAndGet();
+                    return "claimed-by-frame";
+                }, fixture.deadline()));
+
+        localFence.close();
+        assertEquals(1, taskRuns.get(),
+                "a frame that claims the work before the rejected registration must run it exactly once");
+    }
+
+    @Test void closeClaimingBeforeRejectedDeadlineRegistrationCompletesExactlyOnce() {
+        AtomicBoolean closeBeforeReject = new AtomicBoolean(true);
+        Lwjgl3FrameFence[] holder = new Lwjgl3FrameFence[1];
+        DeadlineScheduler closingThenRejecting = (delay, signal) -> {
+            if (closeBeforeReject.compareAndSet(true, false)) {
+                holder[0].close();
+            }
+            throw new RejectedExecutionException("scheduler shut down");
+        };
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(closingThenRejecting, 1);
+        holder[0] = localFence;
+        AtomicBoolean taskRan = new AtomicBoolean();
+
+        assertThrows(RejectedExecutionException.class,
+                () -> localFence.afterNextFrame(frame -> {
+                    taskRan.set(true);
+                    return "must-not-run";
+                }, fixture.deadline()));
+
+        assertFalse(taskRan.get(), "work claimed by a racing close must not execute");
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> await(localFence.afterNextFrame(
+                        frame -> "unreachable", fixture.deadline())));
+        assertEquals(ErrorCode.SESSION_CLOSED, failure.code(),
+                "the racing close must leave the fence closed for subsequent work");
     }
 
     private static DeadlineScheduler noopDeadlines() {

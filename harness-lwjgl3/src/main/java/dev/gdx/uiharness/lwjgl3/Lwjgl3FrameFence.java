@@ -380,7 +380,10 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
          * Arms one deadline signal for the queued command. A frame may claim the command before
          * the registration lands; the claim under {@link #lifecycle} then cancels it immediately.
          * The token's {@link Cancellation} is invoked only after leaving the monitor so a
-         * synchronous cancellation never runs under the lifecycle lock.
+         * synchronous cancellation never runs under the lifecycle lock. When an external
+         * scheduler rejects the registration, the admission is rolled back terminally before the
+         * original failure is rethrown, so the queued slot is released at once and the command
+         * can never run on a completed frame.
          */
         void armDeadline() {
             DeadlineScheduler.Cancellation scheduled;
@@ -388,6 +391,11 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
                 scheduled = deadlines.schedule(deadline.remaining(), this::deadlineReached);
             } catch (RejectedExecutionException failure) {
                 if (ownedScheduler == null) {
+                    // An external scheduler rejected the registration after this command was
+                    // admitted. Roll the admission back so its capacity slot is released
+                    // immediately and no completed frame can claim it, then surface the original
+                    // synchronous failure.
+                    rollbackAdmission(failure);
                     throw failure;
                 }
                 // The fence's own scheduler was shut down after this command was queued, either
@@ -407,6 +415,27 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
             }
             if (cancelScheduled) {
                 scheduled.cancel();
+            }
+        }
+
+        /**
+         * Rolls back an admitted command whose deadline registration was rejected, so the queued
+         * slot and its capacity are released immediately and no completed frame can ever claim
+         * the work. Claims terminal state under {@link #lifecycle} and completes the future
+         * outside it; a concurrent frame or close that already claimed the command wins and its
+         * terminal outcome stays exactly-once.
+         */
+        void rollbackAdmission(RejectedExecutionException failure) {
+            boolean claimed;
+            synchronized (lifecycle) {
+                claimed = state == CommandState.QUEUED && queued.remove(this);
+                if (claimed) {
+                    state = CommandState.TERMINAL;
+                    deadlineCancellation = null;
+                }
+            }
+            if (claimed) {
+                completeExceptionally(failure);
             }
         }
 
