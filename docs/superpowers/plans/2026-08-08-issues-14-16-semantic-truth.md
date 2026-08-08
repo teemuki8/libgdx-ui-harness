@@ -50,6 +50,7 @@ Create `harness-core/src/test/java/dev/gdx/uiharness/core/golden/SemanticBaselin
 package dev.gdx.uiharness.core.golden;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -112,6 +113,38 @@ final class SemanticBaselineCatalogTest {
                 new SemanticBaseline(1, 0, "reference-screen", ROOT, false, "0".repeat(64));
 
         assertThrows(IllegalArgumentException.class, () -> catalog.register(tampered));
+    }
+
+    @Test void digestDistinguishesCollidingPropertyEncodings() {
+        BaselineNode singleValue = new BaselineNode(
+                Role.GROUP, "root", null, null, null, null, null,
+                null, null, null, null, null, null, null, null,
+                null, null, Map.of("a", "b, c=d"), List.of());
+        BaselineNode twoValues = new BaselineNode(
+                Role.GROUP, "root", null, null, null, null, null,
+                null, null, null, null, null, null, null, null,
+                null, null, Map.of("a", "b", "c", "d"), List.of());
+
+        assertNotEquals(
+                SemanticBaseline.registered(1, 0, "r", singleValue, false).digest(),
+                SemanticBaseline.registered(1, 0, "r", twoValues, false).digest(),
+                "the canonical encoding must be injective for property maps");
+    }
+
+    @Test void digestDistinguishesPropertySplitAcrossEntries() {
+        BaselineNode first = new BaselineNode(
+                Role.GROUP, "root", null, null, null, null, null,
+                null, null, null, null, null, null, null, null,
+                null, null, Map.of("a", "b, c=d", "e", "f"), List.of());
+        BaselineNode second = new BaselineNode(
+                Role.GROUP, "root", null, null, null, null, null,
+                null, null, null, null, null, null, null, null,
+                null, null, Map.of("a", "b", "c", "d, e=f"), List.of());
+
+        assertNotEquals(
+                SemanticBaseline.registered(1, 0, "r", first, false).digest(),
+                SemanticBaseline.registered(1, 0, "r", second, false).digest(),
+                "the length-prefixed encoding must keep entry boundaries unambiguous");
     }
 }
 ```
@@ -177,12 +210,12 @@ public final class BaselineDigest {
         String indent = "  ".repeat(depth);
         out.append(indent).append("node\n");
         out.append(indent).append("  role=").append(node.role()).append('\n');
-        out.append(indent).append("  accessibleName=").append(node.accessibleName()).append('\n');
-        out.append(indent).append("  text=").append(node.text()).append('\n');
-        out.append(indent).append("  label=").append(node.label()).append('\n');
-        out.append(indent).append("  testId=").append(node.testId()).append('\n');
-        out.append(indent).append("  actorName=").append(node.actorName()).append('\n');
-        out.append(indent).append("  actorType=").append(node.actorType()).append('\n');
+        appendText(out, indent + "  accessibleName", node.accessibleName());
+        appendText(out, indent + "  text", node.text());
+        appendText(out, indent + "  label", node.label());
+        appendText(out, indent + "  testId", node.testId());
+        appendText(out, indent + "  actorName", node.actorName());
+        appendText(out, indent + "  actorType", node.actorType());
         out.append(indent).append("  visible=").append(node.visible()).append('\n');
         out.append(indent).append("  enabled=").append(node.enabled()).append('\n');
         out.append(indent).append("  checked=").append(node.checked()).append('\n');
@@ -192,12 +225,31 @@ public final class BaselineDigest {
         out.append(indent).append("  focused=").append(node.focused()).append('\n');
         out.append(indent).append("  focusable=").append(node.focusable()).append('\n');
         out.append(indent).append("  stageBounds=").append(node.stageBounds()).append('\n');
-        out.append(indent).append("  placement=").append(node.placement()).append('\n');
-        out.append(indent).append("  properties=")
-                .append(new TreeMap<>(node.properties())).append('\n');
+        appendText(out, indent + "  placement", node.placement());
+        out.append(indent).append("  properties.count=")
+                .append(node.properties().size()).append('\n');
+        for (Map.Entry<String, String> property
+                : new TreeMap<>(node.properties()).entrySet()) {
+            appendText(out, indent + "    propertyKey", property.getKey());
+            appendText(out, indent + "    propertyValue", property.getValue());
+        }
         for (BaselineNode child : node.children()) {
             appendNode(out, child, depth + 1);
         }
+    }
+
+    /**
+     * Appends a possibly null, possibly multi-line string with an explicit length prefix so
+     * the encoding is injective: embedded newlines, colons, or comma-space sequences inside a
+     * value can never be confused with the next field boundary.
+     */
+    private static void appendText(StringBuilder out, String label, String value) {
+        if (value == null) {
+            out.append(label).append("=null\n");
+            return;
+        }
+        out.append(label).append(".len=").append(value.length()).append(':')
+                .append(value).append('\n');
     }
 
     private static String sha256(byte[] bytes) {
@@ -372,13 +424,17 @@ final class ReferenceBaselineDumpTest {
     @Timeout(120)
     void dumpedBaselineMatchesTheCommittedResource() throws Exception {
         Path resource = Path.of("src/main/resources/reference-ui/reference-baseline.json");
-        assertTrue(Files.isRegularFile(resource), "the reference baseline resource must exist");
+        boolean update = "true".equals(System.getenv("UPDATE_REFERENCE_BASELINE_GOLDEN"));
+        if (!update) {
+            assertTrue(Files.isRegularFile(resource),
+                    "the reference baseline resource must exist");
+        }
         try (ReferenceProcess app = ReferenceProcess.launch("dump-baseline")) {
             Path generated = app.root().resolve("reference-baseline.json");
             assertTrue(Files.isRegularFile(generated),
                     "the reference process must dump its pristine baseline");
             byte[] actual = Files.readAllBytes(generated);
-            if ("true".equals(System.getenv("UPDATE_REFERENCE_BASELINE_GOLDEN"))) {
+            if (update) {
                 Files.write(resource, actual);
             }
             assertArrayEquals(Files.readAllBytes(resource), actual,
@@ -1249,7 +1305,7 @@ git commit -m "feat(core): classify unsupported and misapplied matrix cases with
 
 **Interfaces:**
 - Consumes: Task 6 statuses/fields.
-- Produces: `Lwjgl3MatrixRunner.MatrixCaseApplicator` (replaces `DisplayObserver`) with `ApplyResult apply(MatrixCase matrixCase, String restartProfileId)` and `void restore()`; sealed `ApplyResult permits Applied, Unsupported` where `Applied(DisplayObservation observed)` and `Unsupported(String reason)` (reason bounded 1..512); `DisplayObservation(MatrixWindow window, double uiScale, double devicePixelRatio, MatrixHiDpi hiDpiMode, String locale, String fontSetId, String restartProfileId)`. Runner sequence per case: deadline/open check → `apply` → `Unsupported` ⇒ `UNSUPPORTED` terminal (no acquisition) → requested/observed mismatch ⇒ `MISAPPLIED` terminal (no acquisition, no assertions) → acquire → assertions → release → `restore` → terminal result. `DisplayObservation` gains the three identity fields validated (locale/restartProfileId non-blank ≤ 256; fontSetId ≤ 256). This task intentionally leaves `harness-fixtures` uncompilable until Task 8 rewires `FixtureControl`; verify with `:harness-lwjgl3:test` only.
+- Produces: `Lwjgl3MatrixRunner.MatrixCaseApplicator` (replaces `DisplayObserver`) with `ApplyResult apply(MatrixCase matrixCase, String restartProfileId)` and `void restore()`; sealed `ApplyResult permits Applied, Unsupported` where `Applied(DisplayObservation observed)` and `Unsupported(String reason)` (reason bounded 1..512); `DisplayObservation(MatrixWindow window, double uiScale, double devicePixelRatio, MatrixHiDpi hiDpiMode, String locale, String fontSetId, String restartProfileId)`. Runner sequence per case: deadline/open check → `apply` → `Unsupported` ⇒ `UNSUPPORTED` terminal (no acquisition) → requested/observed mismatch (including the restart profile vs the runner's scenario profile) ⇒ `MISAPPLIED` terminal (no acquisition, no assertions, display restored) → acquire → assertions → release → `restore` → terminal result. `DisplayObservation` gains the three identity fields validated (locale/restartProfileId non-blank ≤ 256; fontSetId ≤ 256). This task intentionally leaves `harness-fixtures` uncompilable until Task 8 rewires `FixtureControl`; verify with `:harness-lwjgl3:test` only.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1260,6 +1316,9 @@ final AtomicInteger applied = new AtomicInteger();
 final AtomicInteger restored = new AtomicInteger();
 String unsupportedReason;
 Double observedUiScaleOverride;
+String observedRestartProfileOverride;
+/** Host-owned active restart profile, never derived from the runner's request. */
+final String hostRestartProfile = "desktop";
 final Lwjgl3MatrixRunner.MatrixCaseApplicator applicator =
         new Lwjgl3MatrixRunner.MatrixCaseApplicator() {
             @Override public Lwjgl3MatrixRunner.ApplyResult apply(
@@ -1278,7 +1337,9 @@ final Lwjgl3MatrixRunner.MatrixCaseApplicator applicator =
                                 matrixCase.hiDpiMode(),
                                 matrixCase.locale(),
                                 matrixCase.fontSetId(),
-                                restartProfileId));
+                                observedRestartProfileOverride != null
+                                        ? observedRestartProfileOverride
+                                        : hostRestartProfile));
             }
 
             @Override public void restore() {
@@ -1349,8 +1410,39 @@ Add three new tests:
         assertEquals(MatrixCaseStatus.MISAPPLIED, result.status());
         assertEquals(0, result.passedAssertions().size());
         assertEquals(0, fixture.acquisitions.get());
-        assertEquals(0, fixture.restored.get());
+        assertEquals(1, fixture.restored.get(),
+                "a misapplied case must restore the original display state");
         assertTrue(result.evidence().contains("uiScale requested=1.0 observed=2.0"));
+    }
+}
+
+@Test void hostRestartProfileMismatchIsDistinctTerminalWithoutAssertions() {
+    try (Fixture fixture = new Fixture()) {
+        fixture.observedRestartProfileOverride = "other-profile";
+        MatrixDefinition definition = new MatrixDefinition(
+                1,
+                "matrix",
+                List.of(new MatrixWindow(1280, 720)),
+                List.of(1.0),
+                List.of(1.0),
+                List.of(MatrixHiDpi.LOGICAL),
+                List.of("en"),
+                List.of(),
+                List.of(new AssertionRequest(1, Locator.testId("save"),
+                        new UiAssertion.Visible(), fixture.deadline())));
+
+        String runId = fixture.runner.run(
+                definition, MatrixLimits.defaults(), fixture.deadline())
+                .toCompletableFuture().join();
+
+        MatrixReport report = fixture.runner.results(runId).orElseThrow();
+        var result = report.results().getFirst();
+        assertEquals(MatrixCaseStatus.MISAPPLIED, result.status());
+        assertEquals(0, result.passedAssertions().size());
+        assertEquals(0, fixture.acquisitions.get());
+        assertEquals(1, fixture.restored.get());
+        assertTrue(result.evidence().contains(
+                "restartProfile requested=desktop observed=other-profile"));
     }
 }
 
@@ -1504,8 +1596,11 @@ private CompletionStage<Void> executeCase(
         return CompletableFuture.completedFuture(null);
     }
     DisplayObservation observed = ((ApplyResult.Applied) applied).observed();
-    String mismatch = requestedMismatch(matrixCase, observed);
+    String mismatch = requestedMismatch(matrixCase, observed, scenario.profileId());
     if (mismatch != null) {
+        // The case was applied but does not match the request: restore the original display
+        // state so the next case starts clean, then record the distinct terminal status.
+        applicator.restore();
         results.add(new MatrixCaseResult(
                 dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
                 MatrixCaseStatus.MISAPPLIED,
@@ -1543,7 +1638,7 @@ private CompletionStage<Void> executeCase(
 }
 
 private static String requestedMismatch(
-        MatrixCase matrixCase, DisplayObservation observed) {
+        MatrixCase matrixCase, DisplayObservation observed, String requestedRestartProfile) {
     if (!observed.window().equals(matrixCase.window())) {
         return "window requested=" + matrixCase.window()
                 + " observed=" + observed.window();
@@ -1568,6 +1663,10 @@ private static String requestedMismatch(
         return "fontSetId requested=" + matrixCase.fontSetId()
                 + " observed=" + observed.fontSetId();
     }
+    if (!observed.restartProfileId().equals(requestedRestartProfile)) {
+        return "restartProfile requested=" + requestedRestartProfile
+                + " observed=" + observed.restartProfileId();
+    }
     return null;
 }
 
@@ -1576,7 +1675,10 @@ private static boolean nearlyEqual(double first, double second) {
 }
 ```
 
-Note: `requestedMismatch` intentionally does not compare `restartProfileId` — the applicator receives the profile id and reports it; the fixture's allowlist rejects unknown profiles (Task 8). The `restartProfileId` identity is recorded as observed evidence.
+The `restartProfileId` identity participates in mismatch validation against the runner's
+scenario profile: the observation must come from host-owned active state (never an echo of
+the request), so a host whose active profile differs from the requested profile is a
+`MISAPPLIED` terminal, not a pass.
 
 4. Change `runAssertions` to take the observed settings and pass them into `terminalCase`:
 
@@ -1646,7 +1748,7 @@ private MatrixCaseResult terminalCase(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :harness-lwjgl3:test --tests 'dev.gdx.uiharness.lwjgl3.Lwjgl3MatrixRunnerTest' --no-daemon --console=plain --warning-mode=fail`
-Expected: PASS — sequential execution applies/restores per case, unsupported cases are typed skips without acquisition, mismatches are distinct terminals without assertions, and expired deadlines never apply.
+Expected: PASS — sequential execution applies/restores per case, unsupported cases are typed skips without acquisition, misapplied cases (including a host restart-profile mismatch) are distinct terminals without assertions and restore the display, and expired deadlines never apply.
 Note: `:harness-fixtures` does not compile until Task 8 replaces the `DisplayObserver` wiring in `FixtureControl.java`; do not run the full `check` between Tasks 7 and 8.
 
 - [ ] **Step 5: Commit**
@@ -1662,6 +1764,7 @@ git commit -m "feat(lwjgl3): apply and verify each matrix case before scenario a
 
 **Files:**
 - Create: `harness-fixtures/src/main/java/dev/gdx/uiharness/fixtures/ReferenceCaseApplicator.java`
+- Create test: `harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/ReferenceCaseApplicatorTest.java`
 - Modify: `harness-fixtures/src/main/java/dev/gdx/uiharness/fixtures/FixtureControl.java` (wire `ReferenceCaseApplicator`)
 - Modify: `harness-fixtures/src/main/java/dev/gdx/uiharness/fixtures/ReferenceUiApplication.java` (resizable window, bounded size limits)
 - Modify test: `harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/HarnessMcpClient.java` (PIXELS default + `MatrixSpec` overload)
@@ -1670,7 +1773,7 @@ git commit -m "feat(lwjgl3): apply and verify each matrix case before scenario a
 
 **Interfaces:**
 - Consumes: Task 7 `MatrixCaseApplicator`/`ApplyResult`/`DisplayObservation`.
-- Produces: `ReferenceCaseApplicator(RenderThreadScheduler, MonotonicClock, String restartProfileId)` — allowlist `{1280×720, 1920×1080}` windows, locales `{en-US, fi-FI}`, uiScale `1.0`, DPR `1.0`, HiDPI `PIXELS`, font set `""`, registered restart profile only; applies window via `Gdx.graphics.setWindowedMode` on the render thread and locale via `Locale.setDefault`, waits for the backbuffer to match under a monotonic deadline, observes real graphics/locale state, restores the original window and locale. `FixtureControl` wires it with `RESTART_PROFILE.id()`.
+- Produces: `ReferenceCaseApplicator(RenderThreadScheduler, MonotonicClock, String restartProfileId)` (public) and `ReferenceCaseApplicator(RenderThreadScheduler, MonotonicClock, String, CaseApplication)` (package-private, injectable application step; `CaseApplication.apply(MatrixWindow, Locale, Deadline)`). The host's `restartProfileId` is the sole source of the observed restart-profile identity; a request naming a different profile is rejected as `Unsupported` before application; any apply/observe failure restores the original window and locale before propagating. Allowlist: windows `{1280×720, 1920×1080}`, locales `{en-US, fi-FI}`, uiScale `1.0`, DPR `1.0`, HiDPI `PIXELS`, font set `""`. `FixtureControl` wires it with `RESTART_PROFILE.id()`.
 
 - [ ] **Step 1: Write the failing smoke tests**
 
@@ -1815,7 +1918,12 @@ Expected: FAIL — the fixture still wires the removed `DisplayObserver` (compil
 
 - [ ] **Step 3: Implement the fixture applicator and wire it**
 
-Create `harness-fixtures/src/main/java/dev/gdx/uiharness/fixtures/ReferenceCaseApplicator.java`:
+Write `ReferenceCaseApplicatorTest` (below) first and run it red:
+
+Run: `./gradlew :harness-fixtures:test --tests 'dev.gdx.uiharness.fixtures.ReferenceCaseApplicatorTest' --no-daemon --console=plain --warning-mode=fail`
+Expected: FAIL — `ReferenceCaseApplicator` does not exist (compilation error). Then create the applicator class and `FixtureControl` wiring below and rerun the test (expected: PASS — the failure path restores window and locale; the unknown-profile request is rejected before application).
+
+Create `harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/ReferenceCaseApplicatorTest.java`:
 
 ```java
 package dev.gdx.uiharness.fixtures;
@@ -1842,18 +1950,34 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
     private static final MatrixWindow DEFAULT_WINDOW = new MatrixWindow(1280, 720);
     private static final Duration APPLY_DEADLINE = Duration.ofSeconds(15);
 
+    /** One host-owned window/locale application step; injectable for failure-path tests. */
+    interface CaseApplication {
+        void apply(MatrixWindow window, Locale locale, Deadline deadline);
+    }
+
     private final RenderThreadScheduler scheduler;
     private final MonotonicClock clock;
+    /** The host's active restart profile; observations come from this state, never the request. */
     private final String restartProfileId;
-    private final String originalLocaleTag;
+    private final Locale originalLocale;
+    private final CaseApplication caseApplication;
 
-    /** Creates an applicator for the registered restart profile. */
+    /** Creates an applicator for the registered restart profile using the real window backend. */
     public ReferenceCaseApplicator(
             RenderThreadScheduler scheduler, MonotonicClock clock, String restartProfileId) {
+        this(scheduler, clock, restartProfileId, null);
+    }
+
+    /** Creates an applicator with an injectable application step (package-private for tests). */
+    ReferenceCaseApplicator(
+            RenderThreadScheduler scheduler, MonotonicClock clock, String restartProfileId,
+            CaseApplication caseApplication) {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.restartProfileId = Objects.requireNonNull(restartProfileId, "restartProfileId");
-        originalLocaleTag = Locale.getDefault().toLanguageTag();
+        originalLocale = Locale.getDefault();
+        this.caseApplication =
+                caseApplication != null ? caseApplication : this::applyWindowAndLocale;
     }
 
     @Override
@@ -1863,16 +1987,27 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
         if (unsupported != null) {
             return new Lwjgl3MatrixRunner.ApplyResult.Unsupported(unsupported);
         }
-        applyWindow(matrixCase.window());
-        Locale.setDefault(Locale.forLanguageTag(matrixCase.locale()));
-        return new Lwjgl3MatrixRunner.ApplyResult.Applied(
-                observe(matrixCase, profileId));
+        try {
+            caseApplication.apply(matrixCase.window(),
+                    Locale.forLanguageTag(matrixCase.locale()),
+                    Deadline.after(clock, APPLY_DEADLINE));
+            return new Lwjgl3MatrixRunner.ApplyResult.Applied(observe(matrixCase));
+        } catch (RuntimeException failure) {
+            // Restore any partially applied window/locale state before propagating, so the
+            // next case always starts from the host-owned defaults.
+            restore();
+            throw failure;
+        }
     }
 
     @Override
     public void restore() {
-        applyWindow(DEFAULT_WINDOW);
-        Locale.setDefault(Locale.forLanguageTag(originalLocaleTag));
+        try {
+            caseApplication.apply(DEFAULT_WINDOW, originalLocale,
+                    Deadline.after(clock, APPLY_DEADLINE));
+        } catch (RuntimeException failure) {
+            // Best-effort restore: the next case still starts from the host-owned defaults.
+        }
     }
 
     private String unsupportedReason(MatrixCase matrixCase, String profileId) {
@@ -1900,14 +2035,13 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
         return null;
     }
 
-    private void applyWindow(MatrixWindow window) {
+    private void applyWindowAndLocale(MatrixWindow window, Locale locale, Deadline deadline) {
         scheduler.submit(() -> {
                     Gdx.graphics.setWindowedMode(window.width(), window.height());
                     return null;
                 },
-                Deadline.after(clock, APPLY_DEADLINE))
+                deadline)
                 .toCompletableFuture().join();
-        Deadline deadline = Deadline.after(clock, APPLY_DEADLINE);
         while (!deadline.isExpired()
                 && (Gdx.graphics.getBackBufferWidth() != window.width()
                         || Gdx.graphics.getBackBufferHeight() != window.height())) {
@@ -1920,10 +2054,10 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
                             Gdx.graphics.getBackBufferWidth(),
                             Gdx.graphics.getBackBufferHeight()));
         }
+        Locale.setDefault(locale);
     }
 
-    private Lwjgl3MatrixRunner.DisplayObservation observe(
-            MatrixCase matrixCase, String profileId) {
+    private Lwjgl3MatrixRunner.DisplayObservation observe(MatrixCase matrixCase) {
         int logicalWidth = Gdx.graphics.getWidth();
         int logicalHeight = Gdx.graphics.getHeight();
         return new Lwjgl3MatrixRunner.DisplayObservation(
@@ -1933,10 +2067,92 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
                 MatrixHiDpi.PIXELS,
                 Locale.getDefault().toLanguageTag(),
                 matrixCase.fontSetId() == null ? "" : matrixCase.fontSetId(),
-                profileId);
+                restartProfileId);
     }
 }
 ```
+
+Create `harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/ReferenceCaseApplicatorTest.java`:
+
+```java
+package dev.gdx.uiharness.fixtures;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import dev.gdx.uiharness.core.matrix.MatrixCase;
+import dev.gdx.uiharness.core.matrix.MatrixHiDpi;
+import dev.gdx.uiharness.core.matrix.MatrixWindow;
+import dev.gdx.uiharness.core.time.MonotonicClock;
+import dev.gdx.uiharness.scene2d.RenderThreadScheduler;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.junit.jupiter.api.Test;
+
+final class ReferenceCaseApplicatorTest {
+    private final MonotonicClock clock = System::nanoTime;
+
+    @Test
+    void applyRestoresPartialWindowAndLocaleStateWhenApplicationFails() {
+        Locale before = Locale.getDefault();
+        try (RenderThreadScheduler scheduler = new RenderThreadScheduler(16)) {
+            AtomicBoolean first = new AtomicBoolean(true);
+            List<MatrixWindow> appliedWindows = new ArrayList<>();
+            ReferenceCaseApplicator.CaseApplication failing = (window, locale, deadline) -> {
+                appliedWindows.add(window);
+                if (first.getAndSet(false)) {
+                    Locale.setDefault(locale);
+                    throw new IllegalStateException("window resize timed out");
+                }
+            };
+            ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
+                    scheduler, clock, "desktop-restart-1280x720", failing);
+            MatrixCase matrixCase = new MatrixCase(
+                    0, new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
+                    "en-US", "", 16.0 / 9.0, List.of());
+
+            try {
+                assertThrows(IllegalStateException.class,
+                        () -> applicator.apply(matrixCase, "desktop-restart-1280x720"));
+                assertEquals(List.of(new MatrixWindow(1920, 1080), new MatrixWindow(1280, 720)),
+                        appliedWindows,
+                        "the original window must be restored after the failure");
+                assertEquals(before, Locale.getDefault(),
+                        "the original locale must be restored after the failure");
+            } finally {
+                Locale.setDefault(before);
+            }
+        }
+    }
+
+    @Test
+    void unknownRestartProfileIsRejectedBeforeApplication() {
+        try (RenderThreadScheduler scheduler = new RenderThreadScheduler(16)) {
+            ReferenceCaseApplicator.CaseApplication noop = (window, locale, deadline) -> {};
+            ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
+                    scheduler, clock, "host-owned-profile", noop);
+            MatrixCase matrixCase = new MatrixCase(
+                    0, new MatrixWindow(1280, 720), 1.0, 1.0, MatrixHiDpi.PIXELS,
+                    "en-US", "", 16.0 / 9.0, List.of());
+
+            Lwjgl3MatrixRunner.ApplyResult unknown =
+                    applicator.apply(matrixCase, "other-profile");
+
+            assertEquals("unknown restart profile: other-profile",
+                    ((Lwjgl3MatrixRunner.ApplyResult.Unsupported) unknown).reason());
+        }
+    }
+}
+```
+
+Note: a request naming a profile the host does not own is rejected as `Unsupported` before any
+GL access; the applied-path observation reads the host-owned `restartProfileId` field rather
+than the request parameter (structural property), is exercised end-to-end by
+`MatrixProductionFixtureTest` (observed profile equals `RESTART_PROFILE`), and its mismatch
+terminal is covered by `hostRestartProfileMismatchIsDistinctTerminalWithoutAssertions` in
+Task 7.
 
 In `FixtureControl.java`, replace the `matrixRunner` construction (currently lines 293-297) with:
 
@@ -1959,8 +2175,8 @@ configuration.setResizable(true);
 
 - [ ] **Step 4: Run the smoke tests to verify they pass**
 
-Run: `./gradlew :harness-fixtures:test --tests 'dev.gdx.uiharness.fixtures.MatrixProductionFixtureTest' --tests 'dev.gdx.uiharness.fixtures.ReferenceApplicationSmokeTest' --no-daemon --console=plain --warning-mode=fail`
-Expected: PASS — two materially different cases are applied and observed (1280×720 and 1920×1080), the DPR-2.0 case is a typed `UNSUPPORTED` skip, and the full reference workflow (screenshots, typography, layout, traces at the restored 1280×720 window) still passes.
+Run: `./gradlew :harness-fixtures:test --tests 'dev.gdx.uiharness.fixtures.MatrixProductionFixtureTest' --tests 'dev.gdx.uiharness.fixtures.ReferenceCaseApplicatorTest' --tests 'dev.gdx.uiharness.fixtures.ReferenceApplicationSmokeTest' --no-daemon --console=plain --warning-mode=fail`
+Expected: PASS — the failure-path applicator test restores the original window and locale, two materially different cases are applied and observed (1280×720 and 1920×1080), the DPR-2.0 case is a typed `UNSUPPORTED` skip, and the full reference workflow (screenshots, typography, layout, traces at the restored 1280×720 window) still passes.
 
 - [ ] **Step 5: Amend ADR 0022**
 
@@ -1974,17 +2190,19 @@ verified before any assertion runs. A host-owned allowlisted `MatrixCaseApplicat
 and observes each requested dimension (window, UI scale, device pixel ratio, HiDPI mode,
 locale, font set, restart profile); a requested dimension that cannot be applied produces the
 closed `UNSUPPORTED` terminal status with bounded evidence, and a requested/observed mismatch
-produces the distinct `MISAPPLIED` terminal status with no passing assertion result. Observed
-settings are captured for the same case and frame window as the assertions, the original
-display state is restored deterministically after each started case, and the Cartesian product
-remains preflight-bounded. `MatrixCaseResult` now carries observed locale, font-set, and
-restart-profile identities.
+produces the distinct `MISAPPLIED` terminal status with no passing assertion result. The
+observed restart profile comes from host-owned active state and is never echoed from the
+request; a request naming an unowned profile is rejected as `UNSUPPORTED`. Observed settings
+are captured for the same case and frame window as the assertions, the original display state
+is restored deterministically after every started case (including misapplied ones and
+application failures), and the Cartesian product remains preflight-bounded. `MatrixCaseResult`
+now carries observed locale, font-set, and restart-profile identities.
 ```
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add harness-fixtures/src/main/java/dev/gdx/uiharness/fixtures/ReferenceCaseApplicator.java harness-fixtures/src/main/java/dev/gdx/uiharness/fixtures/FixtureControl.java harness-fixtures/src/main/java/dev/gdx/uiharness/fixtures/ReferenceUiApplication.java harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/HarnessMcpClient.java harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/MatrixProductionFixtureTest.java docs/adr/0022-display-matrix-lifecycle.md
+git add harness-fixtures/src/main/java/dev/gdx/uiharness/fixtures/ReferenceCaseApplicator.java harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/ReferenceCaseApplicatorTest.java harness-fixtures/src/main/java/dev/gdx/uiharness/fixtures/FixtureControl.java harness-fixtures/src/main/java/dev/gdx/uiharness/fixtures/ReferenceUiApplication.java harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/HarnessMcpClient.java harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/MatrixProductionFixtureTest.java docs/adr/0022-display-matrix-lifecycle.md
 git commit -m "feat(fixtures): apply and observe matrix cases through an allowlisted applicator"
 ```
 
@@ -2010,7 +2228,7 @@ Acceptance mapping (each criterion has direct current-state evidence):
 
 - #15: `SemanticBaselineCatalogTest` (unknown/misspelled ids rejected, conflicting replacement rejected, digest validated), `SemanticGoldensProductionFixtureTest` (typed `not-found` over MCP, no self-learning after a fill, deliberate text drift detected against the committed resource), `ReferenceBaselineDumpTest` (resource loads and matches a fresh pristine process).
 - #16: `RuntimeComparatorTest` (declared/runtime format mismatch cannot report `EQUAL`; value desync reports `MISMATCH`; null declared format keeps textual equality), `AgentRuntimeObservationSourceTest`/`RuntimeValueRendererTest` (runtime type identity through the observation boundary), `RuntimeProductionFixtureTest` (model-driven `EQUAL` after a fill; `MISMATCH` for a deliberately desynchronized model).
-- #14: `Lwjgl3MatrixRunnerTest` (apply before acquisition, `UNSUPPORTED` skip without acquisition, `MISAPPLIED` terminal without assertions, restore after started cases, unstarted without apply), `MatrixProductionFixtureTest` (two materially different applied+observed cases and a typed unsupported skip through real LWJGL3), `MatrixProtocolTest`/`HarnessToolCatalogTest` (statuses and observed identities round-trip and match the regenerated golden).
+- #14: `Lwjgl3MatrixRunnerTest` (apply before acquisition, `UNSUPPORTED` skip without acquisition, `MISAPPLIED` terminals — including a host restart-profile mismatch — without assertions and with display restore, restore after started cases, unstarted without apply), `ReferenceCaseApplicatorTest` (partial window/locale state restored on application failure; host profile governs application and observation), `MatrixProductionFixtureTest` (two materially different applied+observed cases and a typed unsupported skip through real LWJGL3), `MatrixProtocolTest`/`HarnessToolCatalogTest` (statuses and observed identities round-trip and match the regenerated golden).
 
 Pull request body (cluster 2, from `fix/issues-14-16-semantic-truth` into `main`):
 
