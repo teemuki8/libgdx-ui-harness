@@ -74,6 +74,29 @@ final class DiagnosticEnvelopeTest {
                 () -> envelope.problems().add(problem));
     }
 
+    @Test void releasedCompleteFactoryRemainsSourceCompatible() {
+        DiagnosticEnvelope envelope = DiagnosticEnvelope.create(
+                "request-1",
+                1,
+                "ui_action",
+                DiagnosticCode.LOCATOR_NOT_FOUND,
+                "No actor matched",
+                List.of(),
+                "role=button",
+                List.of(),
+                Map.of("matchCount", "0"),
+                12L,
+                "trace-1",
+                null,
+                DiagnosticEnvelope.Progress.unavailable(),
+                new DiagnosticEnvelope.Recovery(
+                        "recovery-policy/v1", 0, 1, 12, 30_000, "refine-locator"),
+                List.of());
+
+        assertEquals(List.of(), envelope.suggestions());
+        assertEquals("role=button", envelope.locator());
+    }
+
     @Test void terminalCodesCannotClaimRetryability() {
         DiagnosticEnvelope envelope = DiagnosticEnvelope.create(
                 "request-1",

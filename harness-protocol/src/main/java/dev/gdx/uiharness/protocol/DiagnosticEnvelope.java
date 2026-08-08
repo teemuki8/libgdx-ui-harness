@@ -166,6 +166,34 @@ public record DiagnosticEnvelope(
                 stateIdentity, progress, recovery, evidenceRefs);
     }
 
+    /**
+     * Constructs a complete envelope without locator suggestions.
+     *
+     * <p>This overload preserves the released protocol API; callers that provide structured
+     * suggestions use the overload accepting {@link LocatorSuggestionSpec} values.
+     */
+    public static DiagnosticEnvelope create(
+            String requestId,
+            long sequence,
+            String operation,
+            DiagnosticCode code,
+            String message,
+            List<FieldProblem> problems,
+            String locator,
+            List<Map<String, String>> candidates,
+            Map<String, String> details,
+            Long elapsedMillis,
+            String traceId,
+            StateIdentity stateIdentity,
+            Progress progress,
+            Recovery recovery,
+            List<String> evidenceRefs) {
+        return create(
+                requestId, sequence, operation, code, message, problems, locator, candidates,
+                details, List.of(), elapsedMillis, traceId, stateIdentity, progress, recovery,
+                evidenceRefs);
+    }
+
     /** Constructs a complete envelope retaining bounded protocol failure evidence. */
     public static DiagnosticEnvelope create(
             String requestId,
