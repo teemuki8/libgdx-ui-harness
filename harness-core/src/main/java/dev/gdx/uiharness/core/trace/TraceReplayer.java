@@ -45,8 +45,9 @@ public final class TraceReplayer {
             }
             try (ZipFile zip = new ZipFile(archive.toFile())) {
                 validateEntries(zip);
-                TraceManifest manifest = readManifest(archive, zip);
-                return readEvents(zip, manifest);
+                ReplayBudget budget = new ReplayBudget();
+                TraceManifest manifest = readManifest(archive, zip, budget);
+                return readEvents(zip, manifest, budget);
             }
         } catch (HarnessException exception) {
             throw exception;
@@ -55,7 +56,8 @@ public final class TraceReplayer {
         }
     }
 
-    private TraceReplay readEvents(ZipFile zip, TraceManifest manifest) throws IOException {
+    private TraceReplay readEvents(ZipFile zip, TraceManifest manifest, ReplayBudget budget)
+            throws IOException {
         ZipEntry eventsEntry = zip.getEntry("events.ndjson");
         if (eventsEntry == null || eventsEntry.isDirectory()) {
             throw failure(ErrorCode.INVALID_REQUEST, "Trace archive is missing events.ndjson", null);
@@ -73,7 +75,7 @@ public final class TraceReplayer {
             while (true) {
                 byte[] line;
                 try {
-                    line = readBoundedLine(input, limits.maxEventBytes());
+                    line = readBoundedLine(input, limits.maxEventBytes(), budget);
                 } catch (LineLimitException exception) {
                     throw failure(ErrorCode.LIMIT_EXCEEDED,
                             "Trace event exceeds replay byte limit", exception);
@@ -85,6 +87,7 @@ public final class TraceReplayer {
                     throw failure(ErrorCode.LIMIT_EXCEEDED,
                             "Trace exceeds replay event limit", null);
                 }
+                budget.recordContent(line.length + 1L);
                 TraceEvent event;
                 try {
                     event = TraceEvent.fromJson(line);
@@ -210,18 +213,27 @@ public final class TraceReplayer {
         }
     }
 
-    private TraceManifest readManifest(Path archive, ZipFile zip) throws IOException {
+    private TraceManifest readManifest(Path archive, ZipFile zip, ReplayBudget budget)
+            throws IOException {
         ZipEntry entry = zip.getEntry("manifest.json");
         if (entry == null || entry.isDirectory()) {
             throw failure(ErrorCode.INVALID_REQUEST, "Trace archive is missing manifest.json", null);
         }
         try (InputStream input = zip.getInputStream(entry)) {
-            byte[] json = input.readNBytes(limits.maxEventBytes() + 1);
-            if (json.length > limits.maxEventBytes() || input.read() != -1) {
-                throw failure(ErrorCode.LIMIT_EXCEEDED,
-                        "Trace manifest exceeds replay byte limit", null);
+            ByteArrayOutputStream json = new ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            long total = 0;
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                budget.charge(read);
+                total += read;
+                if (total > limits.maxEventBytes()) {
+                    throw failure(ErrorCode.LIMIT_EXCEEDED,
+                            "Trace manifest exceeds replay byte limit", null);
+                }
+                json.write(buffer, 0, read);
             }
-            return TraceManifest.fromJson(archive, json);
+            return TraceManifest.fromJson(archive, json.toByteArray());
         }
     }
 
@@ -247,6 +259,13 @@ public final class TraceReplayer {
                 throw failure(ErrorCode.INVALID_REQUEST,
                         "Trace archive contains duplicate entries", null);
             }
+            long stored = entry.getCompressedSize();
+            long inflated = entry.getSize();
+            if (stored > 0 && inflated > 0
+                    && inflated / limits.maxCompressionRatio() > stored) {
+                throw failure(ErrorCode.LIMIT_EXCEEDED,
+                        "Trace entry compression ratio exceeds replay limit", null);
+            }
         }
     }
 
@@ -266,11 +285,12 @@ public final class TraceReplayer {
         return false;
     }
 
-    private static byte[] readBoundedLine(InputStream input, int maximum)
-            throws IOException, LineLimitException {
+    private static byte[] readBoundedLine(InputStream input, int maximum,
+            ReplayBudget budget) throws IOException, LineLimitException {
         ByteArrayOutputStream line = new ByteArrayOutputStream(Math.min(maximum, 1024));
         int value;
         while ((value = input.read()) != -1) {
+            budget.charge(1);
             if (value == '\n') {
                 return line.toByteArray();
             }
@@ -295,10 +315,12 @@ public final class TraceReplayer {
     }
 
     /** Hard bounds applied before and during untrusted archive parsing. */
-    public record Limits(long maxArchiveBytes, long maxEvents, int maxEventBytes) {
+    public record Limits(long maxArchiveBytes, long maxEvents, int maxEventBytes,
+            long maxTotalInflatedBytes, int maxCompressionRatio) {
         /** Validates positive replay bounds. */
         public Limits {
-            if (maxArchiveBytes <= 0 || maxEvents <= 0 || maxEventBytes <= 0) {
+            if (maxArchiveBytes <= 0 || maxEvents <= 0 || maxEventBytes <= 0
+                    || maxTotalInflatedBytes <= 0 || maxCompressionRatio < 1) {
                 throw new IllegalArgumentException("replay limits must be positive");
             }
         }
@@ -306,7 +328,30 @@ public final class TraceReplayer {
         /** Conservative defaults for local replay. */
         public static Limits defaults() {
             return new Limits(
-                    128L * 1024 * 1024, 100_000, TraceEvent.MAX_ENCODED_BYTES);
+                    128L * 1024 * 1024, 100_000, TraceEvent.MAX_ENCODED_BYTES,
+                    128L * 1024 * 1024, 100);
+        }
+    }
+
+    /** Cumulative inflated-byte accounting for one archive load. */
+    private final class ReplayBudget {
+        private long inflatedBytes;
+        private long contentBytes;
+
+        void charge(long bytes) {
+            if (bytes < 0 || inflatedBytes > limits.maxTotalInflatedBytes() - bytes) {
+                throw failure(ErrorCode.LIMIT_EXCEEDED,
+                        "Trace exceeds cumulative inflated byte limit", null);
+            }
+            inflatedBytes += bytes;
+        }
+
+        void recordContent(long bytes) {
+            contentBytes += bytes;
+        }
+
+        long contentBytes() {
+            return contentBytes;
         }
     }
 

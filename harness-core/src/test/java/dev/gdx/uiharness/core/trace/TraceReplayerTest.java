@@ -1,5 +1,6 @@
 package dev.gdx.uiharness.core.trace;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -12,6 +13,7 @@ import dev.gdx.uiharness.core.model.Role;
 import dev.gdx.uiharness.core.model.SemanticNode;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.model.SemanticState;
+import java.io.ByteArrayOutputStream;
 import java.io.BufferedWriter;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
@@ -104,7 +106,7 @@ final class TraceReplayerTest {
         Path oversized = temporaryDirectory.resolve("oversized.zip");
         Files.write(oversized, new byte[101]);
         HarnessException sizeFailure = assertThrows(HarnessException.class,
-                () -> new TraceReplayer(new TraceReplayer.Limits(100, 10, 1_000))
+                () -> new TraceReplayer(new TraceReplayer.Limits(100, 10, 1_000, 1_000_000, 1_000))
                         .load(oversized));
         assertTrue(sizeFailure.code() == ErrorCode.LIMIT_EXCEEDED);
 
@@ -152,6 +154,145 @@ final class TraceReplayerTest {
                 () -> new TraceReplayer().load(archive));
 
         assertTrue(failure.code() == ErrorCode.INVALID_REQUEST);
+    }
+
+    @Test void cumulativeInflatedByteBudgetRejectsMultiLineBombs() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(line, line, line);
+        long manifestBytes = v1ManifestBytes(3, events.length).length;
+        Path archive = v1Archive(temporaryDirectory.resolve("bomb.zip"), events, 3);
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer(new TraceReplayer.Limits(
+                        1_000_000, 100, 1_048_576,
+                        manifestBytes + line.length * 2L, 1_000))
+                        .load(archive));
+
+        assertEquals(ErrorCode.LIMIT_EXCEEDED, failure.code());
+        assertTrue(failure.getMessage().contains("cumulative"));
+    }
+
+    @Test void exactCumulativeBudgetLoadsAndOneByteOverFails() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(line, line, line);
+        long manifestBytes = v1ManifestBytes(3, events.length).length;
+        Path archive = v1Archive(temporaryDirectory.resolve("exact.zip"), events, 3);
+        long exact = manifestBytes + line.length * 3L;
+
+        assertDoesNotThrow(() -> new TraceReplayer(new TraceReplayer.Limits(
+                1_000_000, 100, 1_048_576, exact, 1_000)).load(archive));
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer(new TraceReplayer.Limits(
+                        1_000_000, 100, 1_048_576, exact - 1, 1_000))
+                        .load(archive));
+        assertEquals(ErrorCode.LIMIT_EXCEEDED, failure.code());
+        assertTrue(failure.getMessage().contains("cumulative"));
+    }
+
+    @Test void manifestBytesCountTowardTheCumulativeBudget() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(line, line, line);
+        long manifestBytes = v1ManifestBytes(3, events.length).length;
+        Path archive = v1Archive(temporaryDirectory.resolve("manifest-only.zip"), events, 3);
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer(new TraceReplayer.Limits(
+                        1_000_000, 100, 1_048_576, manifestBytes - 1, 1_000))
+                        .load(archive));
+
+        assertEquals(ErrorCode.LIMIT_EXCEEDED, failure.code());
+        assertTrue(failure.getMessage().contains("cumulative"));
+    }
+
+    @Test void remainingBudgetSmallerThanNextLineFailsBeforeFullAllocation() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(line, line, line);
+        long manifestBytes = v1ManifestBytes(3, events.length).length;
+        Path archive = v1Archive(temporaryDirectory.resolve("short-budget.zip"), events, 3);
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer(new TraceReplayer.Limits(
+                        1_000_000, 100, 1_048_576,
+                        manifestBytes + line.length * 2L + line.length / 2, 1_000))
+                        .load(archive));
+
+        assertEquals(ErrorCode.LIMIT_EXCEEDED, failure.code());
+        assertTrue(failure.getMessage().contains("cumulative"));
+    }
+
+    @Test void unreasonablePerEntryCompressionRatioIsRejected() throws Exception {
+        byte[] inflated = "AAAAAAAAAABBBBBBBBBB".repeat(1_000)
+                .getBytes(StandardCharsets.UTF_8);
+        Path archive = temporaryDirectory.resolve("ratio.zip");
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
+            zip.setLevel(9);
+            zip.putNextEntry(new ZipEntry("events.ndjson"));
+            zip.write(inflated);
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry("manifest.json"));
+            zip.write(("{\"sessionId\":\"session-a\",\"startedAt\":"
+                    + "\"2026-07-28T00:00:00Z\",\"endedAt\":"
+                    + "\"2026-07-28T00:00:01Z\",\"complete\":false,"
+                    + "\"terminationReason\":\"interrupted\",\"eventCount\":0,"
+                    + "\"artifactCount\":0,\"uncompressedBytes\":" + inflated.length + "}")
+                    .getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer(new TraceReplayer.Limits(
+                        1_000_000, 100, 1_048_576, 1_000_000, 10)).load(archive));
+
+        assertEquals(ErrorCode.LIMIT_EXCEEDED, failure.code());
+        assertTrue(failure.getMessage().contains("compression ratio"));
+    }
+
+    private static byte[] v1ManifestBytes(long eventCount, long uncompressedBytes) {
+        return ("{\"sessionId\":\"session-a\",\"startedAt\":"
+                + "\"2026-07-28T00:00:00Z\",\"endedAt\":"
+                + "\"2026-07-28T00:00:01Z\",\"complete\":true,"
+                + "\"terminationReason\":\"completed\",\"eventCount\":" + eventCount + ","
+                + "\"artifactCount\":0,\"uncompressedBytes\":" + uncompressedBytes + "}")
+                .getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static Path v1Archive(Path archive, byte[] events, long eventCount) throws Exception {
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive),
+                StandardCharsets.UTF_8)) {
+            zip.putNextEntry(new ZipEntry("events.ndjson"));
+            zip.write(events);
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry("manifest.json"));
+            zip.write(v1ManifestBytes(eventCount, events.length));
+            zip.closeEntry();
+        }
+        return archive;
+    }
+
+    private static byte[] concat(byte[] first, byte[]... rest) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(first);
+        for (byte[] part : rest) {
+            out.write(part);
+        }
+        return out.toByteArray();
     }
 
     private static SemanticSnapshot snapshot(long revision, long frame) {
