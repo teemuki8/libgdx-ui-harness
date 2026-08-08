@@ -17,7 +17,8 @@ import java.util.TreeMap;
  *   <li>version components and {@code strictNodes} are fixed decimal and boolean literals;</li>
  *   <li>every user-controlled string ({@code id}, text fields, property keys and values) is
  *       emitted with an explicit UTF-16 code-unit length prefix;</li>
- *   <li>{@code role} is encoded as {@link Role#name()};</li>
+ *   <li>{@code role} is length-framed as {@link Role#name()} with a fixed {@code null}
+ *       marker when unconstrained;</li>
  *   <li>nullable booleans are the fixed literals {@code true}, {@code false}, {@code null};</li>
  *   <li>{@code stageBounds} encodes presence plus each component as fixed-width 16-hex
  *       characters from {@link Double#doubleToLongBits(double)}: stable IEEE-754 bits that
@@ -69,7 +70,8 @@ public final class BaselineDigest {
     private static void appendNode(StringBuilder out, BaselineNode node, int depth) {
         String indent = "  ".repeat(depth);
         out.append(indent).append("node\n");
-        out.append(indent).append("  role=").append(node.role().name()).append('\n');
+        Role role = node.role();
+        appendText(out, indent + "  role", role == null ? null : role.name());
         appendText(out, indent + "  accessibleName", node.accessibleName());
         appendText(out, indent + "  text", node.text());
         appendText(out, indent + "  label", node.label());

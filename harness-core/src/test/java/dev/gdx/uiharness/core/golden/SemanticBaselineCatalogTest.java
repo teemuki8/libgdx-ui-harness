@@ -105,6 +105,20 @@ final class SemanticBaselineCatalogTest {
                 "the length-prefixed encoding must keep entry boundaries unambiguous");
     }
 
+    @Test void nullRoleBaselineRegisters() {
+        SemanticBaselineCatalog catalog = new SemanticBaselineCatalog();
+        BaselineNode nullRole = new BaselineNode(
+                null, "root", null, null, null, null, null,
+                null, null, null, null, null, null, null, null,
+                null, null, Map.of(), List.of());
+        SemanticBaseline baseline =
+                SemanticBaseline.registered(1, 0, "null-role", nullRole, false);
+
+        catalog.register(baseline);
+
+        assertSame(baseline, catalog.require("null-role"));
+    }
+
     @Test void concurrentConflictingRegistrationSucceedsExactlyOnce() throws Exception {
         int threads = 8;
         SemanticBaselineCatalog catalog = new SemanticBaselineCatalog();

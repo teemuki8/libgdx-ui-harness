@@ -1,5 +1,6 @@
 package dev.gdx.uiharness.core.golden;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 import dev.gdx.uiharness.core.model.Bounds;
@@ -61,6 +62,25 @@ final class BaselineDigestTest {
 
         assertNotEquals(embedded.digest(), plain.digest(),
                 "identifier text must be length-framed, never merged with fields");
+    }
+
+    @Test void nullRoleBaselineDigestsStably() {
+        SemanticBaseline first =
+                SemanticBaseline.registered(1, 0, "null-role", nodeWithRole(null), false);
+        SemanticBaseline second =
+                SemanticBaseline.registered(1, 0, "null-role", nodeWithRole(null), false);
+
+        assertEquals(first.digest(), second.digest(),
+                "a null role must encode to a stable marker, not throw");
+        assertNotEquals(first.digest(),
+                SemanticBaseline.registered(1, 0, "null-role", ROOT, false).digest(),
+                "the null role marker must not collide with a named role");
+    }
+
+    private static BaselineNode nodeWithRole(Role role) {
+        return new BaselineNode(role, "root", null, null, null, null, null,
+                null, null, null, null, null, null, null, null,
+                null, null, Map.of(), List.of());
     }
 
     private static BaselineNode nodeWithText(String text) {
