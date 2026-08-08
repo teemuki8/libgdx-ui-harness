@@ -43,28 +43,42 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
         void applyLocale(Locale locale, Deadline deadline);
     }
 
+    /** One host-owned observation step; injectable for deadline-expiry tests. */
+    interface Observation {
+        Lwjgl3MatrixRunner.DisplayObservation observe(MatrixCase matrixCase);
+    }
+
     private final RenderThreadScheduler scheduler;
     private final MonotonicClock clock;
     /** The host's active restart profile; observations come from this state, never the request. */
     private final String restartProfileId;
     private final Locale originalLocale;
     private final CaseApplication caseApplication;
+    private final Observation observation;
 
     /** Creates an applicator for the registered restart profile using the real window backend. */
     public ReferenceCaseApplicator(
             RenderThreadScheduler scheduler, MonotonicClock clock, String restartProfileId) {
-        this(scheduler, clock, restartProfileId, null);
+        this(scheduler, clock, restartProfileId, null, null);
     }
 
     /** Creates an applicator with an injectable application step (package-private for tests). */
     ReferenceCaseApplicator(
             RenderThreadScheduler scheduler, MonotonicClock clock, String restartProfileId,
             CaseApplication caseApplication) {
+        this(scheduler, clock, restartProfileId, caseApplication, null);
+    }
+
+    /** Creates an applicator with injectable application and observation steps (for tests). */
+    ReferenceCaseApplicator(
+            RenderThreadScheduler scheduler, MonotonicClock clock, String restartProfileId,
+            CaseApplication caseApplication, Observation observation) {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.restartProfileId = Objects.requireNonNull(restartProfileId, "restartProfileId");
         originalLocale = Locale.getDefault();
         this.caseApplication = caseApplication != null ? caseApplication : new RealApplication();
+        this.observation = observation != null ? observation : this::observe;
     }
 
     @Override
@@ -95,7 +109,14 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
                 throw new IllegalStateException(
                         "case application deadline expired after locale apply");
             }
-            return new Lwjgl3MatrixRunner.ApplyResult.Applied(observe(matrixCase));
+            Lwjgl3MatrixRunner.DisplayObservation observed = observation.observe(matrixCase);
+            if (deadline.isExpired()) {
+                // Observation can cross the expiry: the case must never be reported applied
+                // after the request bound, so fail and let the catch perform bounded cleanup.
+                throw new IllegalStateException(
+                        "case application deadline expired during observation");
+            }
+            return new Lwjgl3MatrixRunner.ApplyResult.Applied(observed);
         } catch (RuntimeException failure) {
             // The runner contract requires the original display state to be restored before
             // throwing; the runner never observes a partially applied case. Restoration runs
@@ -218,6 +239,12 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
                 Gdx.graphics.setWindowedMode(window.width(), window.height());
             } else {
                 scheduler.submit(() -> {
+                            // The check before submit cannot cover the render-thread queue
+                            // delay: the mutation is re-checked immediately before it executes.
+                            if (deadline.isExpired()) {
+                                throw new IllegalStateException(
+                                        "case application deadline expired before window apply");
+                            }
                             Gdx.graphics.setWindowedMode(window.width(), window.height());
                             return null;
                         },

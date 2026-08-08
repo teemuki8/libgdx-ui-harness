@@ -340,6 +340,103 @@ final class ReferenceCaseApplicatorTest {
     }
 
     @Test
+    void queuedWindowMutationIsRecheckedAtExecutionTimeAfterQueueDelay() {
+        AtomicLong now = new AtomicLong(0L);
+        MonotonicClock manual = now::get;
+        try (RenderThreadScheduler scheduler = new RenderThreadScheduler(16)) {
+            List<MatrixWindow> appliedWindows = new ArrayList<>();
+            List<Locale> appliedLocales = new ArrayList<>();
+            AtomicBoolean firstWindow = new AtomicBoolean(true);
+            ReferenceCaseApplicator.CaseApplication queuedLate =
+                    new ReferenceCaseApplicator.CaseApplication() {
+                        @Override public void applyWindow(
+                                MatrixWindow window, Deadline deadline) {
+                            if (firstWindow.getAndSet(false)) {
+                                // Models the non-owner scheduler path for the case apply: the
+                                // check before submit passed, then the command sat queued on the
+                                // render thread past the run deadline, and the execution-time
+                                // check inside the real scheduled lambda refuses the mutation.
+                                // The bounded cleanup restore runs with a fresh deadline and
+                                // records normally.
+                                now.addAndGet(31_000_000_000L);
+                                if (deadline.isExpired()) {
+                                    throw new IllegalStateException(
+                                            "case application deadline expired before window apply");
+                                }
+                            }
+                            appliedWindows.add(window);
+                        }
+
+                        @Override public void applyLocale(Locale locale, Deadline deadline) {
+                            appliedLocales.add(locale);
+                        }
+                    };
+            ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
+                    scheduler, manual, "host-owned-profile", queuedLate);
+            Deadline run = Deadline.after(manual, Duration.ofSeconds(30));
+            MatrixCase matrixCase = new MatrixCase(
+                    0, new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
+                    "en-US", "", 16.0 / 9.0, List.of());
+
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> applicator.apply(matrixCase, "host-owned-profile", run));
+            assertTrue(failure.getMessage().contains("deadline expired"),
+                    "the execution-time check must refuse the late mutation: "
+                            + failure.getMessage());
+            assertEquals(List.of(new MatrixWindow(1280, 720)), appliedWindows,
+                    "the queued 1920x1080 mutation must not run after expiry; only the "
+                            + "bounded cleanup restore mutates");
+            assertEquals(List.of(Locale.getDefault()), appliedLocales,
+                    "the requested en-US locale must not be applied after expiry");
+        }
+    }
+
+    @Test
+    void applyNeverReturnsAppliedWhenRunDeadlineExpiresDuringObservation() {
+        AtomicLong now = new AtomicLong(0L);
+        MonotonicClock manual = now::get;
+        try (RenderThreadScheduler scheduler = new RenderThreadScheduler(16)) {
+            List<MatrixWindow> appliedWindows = new ArrayList<>();
+            List<Locale> appliedLocales = new ArrayList<>();
+            ReferenceCaseApplicator.CaseApplication recording =
+                    new ReferenceCaseApplicator.CaseApplication() {
+                        @Override public void applyWindow(
+                                MatrixWindow window, Deadline deadline) {
+                            appliedWindows.add(window);
+                        }
+
+                        @Override public void applyLocale(Locale locale, Deadline deadline) {
+                            appliedLocales.add(locale);
+                        }
+                    };
+            ReferenceCaseApplicator.Observation expiringObservation = matrixCase -> {
+                now.addAndGet(31_000_000_000L);
+                return new Lwjgl3MatrixRunner.DisplayObservation(
+                        new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
+                        "en-US", "", "host-owned-profile");
+            };
+            ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
+                    scheduler, manual, "host-owned-profile", recording, expiringObservation);
+            Deadline run = Deadline.after(manual, Duration.ofSeconds(30));
+            MatrixCase matrixCase = new MatrixCase(
+                    0, new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
+                    "en-US", "", 16.0 / 9.0, List.of());
+
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> applicator.apply(matrixCase, "host-owned-profile", run));
+            assertTrue(failure.getMessage().contains("deadline expired during observation"),
+                    "expiry during observation must fail before any Applied is returned: "
+                            + failure.getMessage());
+            assertEquals(List.of(new MatrixWindow(1920, 1080), new MatrixWindow(1280, 720)),
+                    appliedWindows,
+                    "the window apply and the bounded cleanup restore both run");
+            assertEquals(List.of(Locale.forLanguageTag("en-US"), Locale.getDefault()),
+                    appliedLocales,
+                    "the requested locale and the restored host locale are both applied");
+        }
+    }
+
+    @Test
     void restoreUsesSeparateBoundedCleanupDeadlineAfterRunExpiry() {
         AtomicLong now = new AtomicLong(0L);
         MonotonicClock manual = now::get;
