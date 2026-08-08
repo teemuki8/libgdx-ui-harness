@@ -37,7 +37,7 @@
 - `harness-mcp/.../HarnessToolCatalog.java`: authoritative read-only versus mutating tool classification.
 - `docs/adr/0031-request-boundary-and-render-lifecycle-hardening.md`: regex, framing, admission, deadline, and lease decisions.
 
-### Task 1: Remove scheduler lock inversion (#11)
+### Task 1: Unify scheduler locking (#11)
 
 **Files:**
 - Modify: `harness-scene2d/src/test/java/dev/gdx/uiharness/scene2d/RenderThreadSchedulerTest.java`
@@ -47,19 +47,19 @@
 - Consumes: existing `submit(Callable<T>, Deadline)`, `drain()`, `close()`, and returned-stage cancellation.
 - Produces: the same public API with all queue, batch, command-state, and lifecycle transitions guarded only by `lifecycle`; user callables still execute outside the monitor.
 
-- [ ] **Step 1: Add a deterministic lock-cycle regression**
+- [ ] **Step 1: Add the race and exactly-once characterization test**
 
-Add a test named `cancellationCannotDeadlockWithDrainOrClose` that uses a callable blocked on a `CountDownLatch`, starts `drain()` on the scheduler owner thread, races cancellation and `close()` from virtual threads, releases the callable, and joins both actors with `Future.get(2, SECONDS)`. Assert each returned stage reaches exactly one of success, cancellation, or the existing typed closed failure; do not accept a join timeout.
+Add a test named `cancellationCannotDeadlockWithDrainOrClose` that repeatedly creates an owner-thread scheduler, submits commands, releases cancellation and close actors together with a `CyclicBarrier`, drains on the owner thread, and joins both actors with `Future.get(2, SECONDS)`. Count completion callbacks and assert every returned stage reaches exactly one of success, cancellation, or the existing typed closed failure; do not accept a join timeout or a second completion.
 
-The plausible bug it defends against is a command monitor acquired before `lifecycle` while drain/close acquires them in reverse order.
+The test defends the issue's observable contract. Source inspection established that current `cancel()` releases the command monitor before acquiring `lifecycle`, so the audit's claimed nested reverse acquisition is not present on `main`.
 
-- [ ] **Step 2: Run the focused test and observe RED**
+- [ ] **Step 2: Run the focused test as a passing characterization**
 
 ```bash
 ./gradlew :harness-scene2d:test --tests '*RenderThreadSchedulerTest.cancellationCannotDeadlockWithDrainOrClose' --no-daemon --console=plain --warning-mode=fail
 ```
 
-Expected: FAIL by the test's two-second join deadline against the current cyclic lock order.
+Expected: PASS on current code, confirming the reported deadlock cannot be reproduced. The user explicitly approved this characterization-first exception on 2026-08-08 because Task 1 preserves observable behavior while replacing two monitors with one documented lock protocol.
 
 - [ ] **Step 3: Collapse command transitions under one monitor**
 
@@ -86,7 +86,7 @@ Expected: PASS, including the new race and all pre-existing queue/close behavior
 
 ```bash
 git add harness-scene2d/src/main/java/dev/gdx/uiharness/scene2d/RenderThreadScheduler.java harness-scene2d/src/test/java/dev/gdx/uiharness/scene2d/RenderThreadSchedulerTest.java
-git commit -m "fix(scene2d): remove scheduler lock inversion"
+git commit -m "refactor(scene2d): unify scheduler locking"
 ```
 
 ### Task 2: Bound JSON-RPC frames before materialization (#9)
