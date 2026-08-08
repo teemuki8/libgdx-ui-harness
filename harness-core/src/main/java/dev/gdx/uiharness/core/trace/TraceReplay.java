@@ -9,7 +9,9 @@ public record TraceReplay(
         List<Long> semanticRevisions,
         Causality causality,
         boolean partial,
-        List<String> diagnostics) {
+        List<String> diagnostics,
+        String archiveSha256,
+        Integrity integrity) {
 
     /** Defensively copies replay summaries. */
     public TraceReplay {
@@ -17,6 +19,16 @@ public record TraceReplay(
         semanticRevisions = List.copyOf(semanticRevisions);
         causality = Objects.requireNonNull(causality, "causality");
         diagnostics = List.copyOf(diagnostics);
+        Objects.requireNonNull(archiveSha256, "archiveSha256");
+        Objects.requireNonNull(integrity, "integrity");
+    }
+
+    /** Whether every manifest digest binding was recomputed and matched. */
+    public enum Integrity {
+        /** Every v2 binding (events, artifacts, counts, byte totals) matched. */
+        VERIFIED,
+        /** Legacy v1 archive without bindings; causally validated only. */
+        UNVERIFIED
     }
 
     /** Causal validation result. */

@@ -15,6 +15,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -27,7 +28,10 @@ import java.util.zip.ZipInputStream;
  *  Entry names, duplicates, per-entry compression ratios, and per-entry SHA-256
  *  identities are checked against bytes measured directly from the archive streams,
  *  and the central directory must match the local headers exactly, so forgeable
- *  central-directory fields cannot bypass the limits or substitute content. */
+ *  central-directory fields cannot bypass the limits or substitute content. V2
+ *  manifests additionally bind every event and artifact digest, size, and count to
+ *  the archive bytes, so a load reports {@link TraceReplay.Integrity#VERIFIED} only
+ *  when every binding matched. */
 public final class TraceReplayer {
     private final Limits limits;
 
@@ -54,9 +58,19 @@ public final class TraceReplayer {
             Map<String, EntryIdentity> identities = validateEntriesBounded(archive);
             try (ZipFile zip = new ZipFile(archive.toFile())) {
                 validateCentralEntries(zip, identities.keySet());
+                // one budget for the whole load: the manifest charges it first,
+                // then artifact bindings and events share it
                 ReplayBudget budget = new ReplayBudget();
                 TraceManifest manifest = readManifest(archive, zip, budget, identities);
-                return readEvents(zip, manifest, budget, identities);
+                boolean verifiedFormat = TraceManifest.V2.equals(manifest.schemaVersion());
+                if (verifiedFormat) {
+                    verifyBindings(zip, manifest, budget);
+                }
+                String archiveDigest = digestFile(archive);
+                return readEvents(zip, manifest, budget, identities, archiveDigest,
+                        verifiedFormat
+                                ? TraceReplay.Integrity.VERIFIED
+                                : TraceReplay.Integrity.UNVERIFIED);
             }
         } catch (HarnessException exception) {
             throw exception;
@@ -66,11 +80,13 @@ public final class TraceReplayer {
     }
 
     private TraceReplay readEvents(ZipFile zip, TraceManifest manifest, ReplayBudget budget,
-            Map<String, EntryIdentity> identities) throws IOException {
+            Map<String, EntryIdentity> identities, String archiveSha256,
+            TraceReplay.Integrity integrity) throws IOException {
         ZipEntry eventsEntry = zip.getEntry("events.ndjson");
         if (eventsEntry == null || eventsEntry.isDirectory()) {
             throw failure(ErrorCode.INVALID_REQUEST, "Trace archive is missing events.ndjson", null);
         }
+        boolean verifiedFormat = TraceReplay.Integrity.VERIFIED.equals(integrity);
         List<Long> revisions = new ArrayList<>();
         List<String> errors = new ArrayList<>();
         List<String> diagnostics = new ArrayList<>();
@@ -127,19 +143,34 @@ public final class TraceReplayer {
                 }
                 expectedSequence++;
             }
-            verifyIdentity("events.ndjson", digest.digest(), input.count(), identities);
-        }
-        if (expectedSequence != manifest.eventCount()) {
-            diagnostics.add("manifest event count " + manifest.eventCount()
-                    + " differs from readable count " + expectedSequence);
+            byte[] streamDigest = digest.digest();
+            verifyIdentity("events.ndjson", streamDigest, input.count(), identities);
+            if (verifiedFormat) {
+                String actual = HexFormat.of().formatHex(streamDigest);
+                if (!actual.equals(manifest.eventsSha256())) {
+                    throw failure(ErrorCode.INVALID_REQUEST,
+                            "Trace event digest does not match the manifest", null);
+                }
+                if (expectedSequence != manifest.eventCount()) {
+                    throw failure(ErrorCode.INVALID_REQUEST,
+                            "Trace event count does not match the manifest", null);
+                }
+                if (budget.contentBytes() != manifest.uncompressedBytes()) {
+                    throw failure(ErrorCode.INVALID_REQUEST,
+                            "Trace uncompressed byte count does not match the manifest", null);
+                }
+            } else if (expectedSequence != manifest.eventCount()) {
+                diagnostics.add("manifest event count " + manifest.eventCount()
+                        + " differs from readable count " + expectedSequence);
+            }
         }
         if (manifest.complete() && !activeRequests.isEmpty()) {
             errors.add("complete trace has unfinished requests: " + activeRequests.keySet());
         }
         boolean partial = !manifest.complete() || malformed
-                || expectedSequence != manifest.eventCount();
+                || (!verifiedFormat && expectedSequence != manifest.eventCount());
         return new TraceReplay(manifest, revisions, new TraceReplay.Causality(errors), partial,
-                diagnostics);
+                diagnostics, archiveSha256, integrity);
     }
 
     private static void validateEvent(
@@ -253,6 +284,77 @@ public final class TraceReplayer {
             verifyIdentity("manifest.json", digest.digest(), total, identities);
             return TraceManifest.fromJson(archive, json.toByteArray());
         }
+    }
+
+    /** Streams every bound artifact entry once, recomputing its SHA-256 and byte
+     *  count against the manifest binding, and rejects entries the manifest does
+     *  not declare. The events digest is verified in the single parse pass inside
+     *  readEvents, where the entry bytes are exactly Σ(line + '\n'). */
+    private void verifyBindings(ZipFile zip, TraceManifest manifest, ReplayBudget budget)
+            throws IOException {
+        Set<String> claimed = new HashSet<>();
+        for (Map.Entry<String, TraceManifest.ArtifactBinding> binding
+                : manifest.artifacts().entrySet()) {
+            if (!binding.getKey().equals(binding.getValue().sha256())) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace artifact identity is not its digest", null);
+            }
+            ZipEntry artifactEntry = zip.getEntry("artifacts/" + binding.getKey());
+            if (artifactEntry == null || artifactEntry.isDirectory()) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace artifact " + binding.getKey() + " is missing from the archive",
+                        null);
+            }
+            EntryDigest actual = digestEntry(zip, artifactEntry, budget, sha256());
+            if (!actual.sha256().equals(binding.getValue().sha256())) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace artifact digest does not match the manifest", null);
+            }
+            if (actual.size() != binding.getValue().size()) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace artifact size does not match the manifest", null);
+            }
+            claimed.add(binding.getKey());
+        }
+        var enumeration = zip.entries();
+        while (enumeration.hasMoreElements()) {
+            ZipEntry entry = enumeration.nextElement();
+            String name = entry.getName();
+            if (name.startsWith("artifacts/")) {
+                String id = name.substring("artifacts/".length());
+                if (!claimed.contains(id)) {
+                    throw failure(ErrorCode.INVALID_REQUEST,
+                            "Trace archive contains an undeclared artifact entry", null);
+                }
+            }
+        }
+        if (manifest.artifactCount() != manifest.artifacts().size()) {
+            throw failure(ErrorCode.INVALID_REQUEST,
+                    "Trace artifact count does not match the manifest bindings", null);
+        }
+    }
+
+    /** Digest and observed byte count of one streamed artifact entry. */
+    private record EntryDigest(String sha256, long size) {}
+
+    private static EntryDigest digestEntry(ZipFile zip, ZipEntry entry,
+            ReplayBudget budget, MessageDigest digest) throws IOException {
+        long total = 0;
+        byte[] buffer = new byte[16 * 1024];
+        try (InputStream input = zip.getInputStream(entry)) {
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                budget.charge(read);
+                budget.recordContent(read);
+                digest.update(buffer, 0, read);
+                total += read;
+            }
+        }
+        if (total != entry.getSize() && entry.getSize() != -1) {
+            throw failure(ErrorCode.INVALID_REQUEST,
+                    "Trace entry size changed while streaming", null);
+        }
+        return new EntryDigest(HexFormat.of().formatHex(digest.digest()), total);
     }
 
     /** Rejects unsafe names, duplicates, and unreasonable per-entry compression
@@ -450,6 +552,20 @@ public final class TraceReplayer {
     /** Immutable SHA-256 identity of one entry's inflated content, recorded by the
      *  local prepass and verified while the central-directory parse streams it. */
     private record EntryIdentity(byte[] sha256, long inflatedSize) {}
+
+    /** SHA-256 over the exact archive file bytes, computed after structural and
+     *  binding validation so only readable, bounded archives reach this pass. */
+    private static String digestFile(Path archive) throws IOException {
+        MessageDigest digest = sha256();
+        byte[] buffer = new byte[16 * 1024];
+        try (InputStream input = Files.newInputStream(archive)) {
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                digest.update(buffer, 0, read);
+            }
+        }
+        return HexFormat.of().formatHex(digest.digest());
+    }
 
     private static MessageDigest sha256() {
         try {

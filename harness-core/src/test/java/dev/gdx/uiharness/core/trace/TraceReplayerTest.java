@@ -13,17 +13,21 @@ import dev.gdx.uiharness.core.model.Role;
 import dev.gdx.uiharness.core.model.SemanticNode;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.model.SemanticState;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.BufferedWriter;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.Clock;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -420,6 +424,176 @@ final class TraceReplayerTest {
         assertTrue(failure.getMessage().contains("content"));
     }
 
+    @Test void recordedArchiveReportsVerifiedIntegrityAndExactArchiveDigest()
+            throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-verified", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-verified", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path archive = recorder.stop().archive();
+
+        TraceReplay replay = new TraceReplayer().load(archive);
+
+        assertEquals(TraceReplay.Integrity.VERIFIED, replay.integrity());
+        assertEquals(sha256(Files.readAllBytes(archive)), replay.archiveSha256());
+    }
+
+    @Test void legacyV1ArchiveRemainsReadableButUnverified() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        Path archive = v1Archive(temporaryDirectory.resolve("legacy.zip"), line, 1);
+
+        TraceReplay replay = new TraceReplayer().load(archive);
+
+        assertEquals(TraceReplay.Integrity.UNVERIFIED, replay.integrity());
+        assertFalse(replay.partial());
+        assertEquals(sha256(Files.readAllBytes(archive)), replay.archiveSha256());
+    }
+
+    @Test void eventByteChangeIsDetectedAgainstManifestBinding() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-tamper", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-tamper", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path archive = recorder.stop().archive();
+        byte[] tampered = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-tamper\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":999,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(
+                        rewrittenWithReplacedEntry(archive, "events.ndjson", tampered)));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("event digest"));
+    }
+
+    @Test void artifactByteChangeIsDetectedAgainstManifestBinding() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-tamper", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-tamper", "request-1", 1, snapshot(1, 1), Map.of()));
+        String hash = recorder.addArtifact("image/png",
+                new ByteArrayInputStream("original".getBytes(StandardCharsets.UTF_8)));
+        Path archive = recorder.stop().archive();
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(rewrittenWithReplacedEntry(
+                        archive, "artifacts/" + hash,
+                        "tampered".getBytes(StandardCharsets.UTF_8))));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+    }
+
+    @Test void extraAndMissingArtifactEntriesFail() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-tamper", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-tamper", "request-1", 1, snapshot(1, 1), Map.of()));
+        String hash = recorder.addArtifact("image/png",
+                new ByteArrayInputStream("original".getBytes(StandardCharsets.UTF_8)));
+        Path archive = recorder.stop().archive();
+
+        HarnessException extra = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(rewrittenWithAddedEntry(
+                        archive, "artifacts/" + "ab".repeat(32),
+                        "stray".getBytes(StandardCharsets.UTF_8))));
+        assertEquals(ErrorCode.INVALID_REQUEST, extra.code());
+        assertTrue(extra.getMessage().contains("undeclared"));
+
+        HarnessException missing = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(
+                        rewrittenWithoutEntry(archive, "artifacts/" + hash)));
+        assertEquals(ErrorCode.INVALID_REQUEST, missing.code());
+        assertTrue(missing.getMessage().contains("missing"));
+    }
+
+    @Test void v2CountMismatchFailsClosedAndValidArchiveStillLoadsAfterRejection()
+            throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-count", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-count", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path archive = recorder.stop().archive();
+
+        byte[] manifestJson;
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(archive.toFile())) {
+            manifestJson = zip.getInputStream(zip.getEntry("manifest.json")).readAllBytes();
+        }
+        String tampered = new String(manifestJson, StandardCharsets.UTF_8)
+                .replace("\"eventCount\":1", "\"eventCount\":2");
+        TraceReplayer replayer = new TraceReplayer();
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> replayer.load(rewrittenWithReplacedEntry(
+                        archive, "manifest.json",
+                        tampered.getBytes(StandardCharsets.UTF_8))));
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("event count"));
+
+        assertDoesNotThrow(() -> replayer.load(archive));
+    }
+
+    private static Path rewrittenWithReplacedEntry(Path source, String entryName,
+            byte[] replacement) throws Exception {
+        Path rewritten = source.resolveSibling(source.getFileName() + ".rewritten.zip");
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(source.toFile());
+                ZipOutputStream out = new ZipOutputStream(
+                        Files.newOutputStream(rewritten), StandardCharsets.UTF_8)) {
+            var entries = zip.stream().toList();
+            for (ZipEntry entry : entries) {
+                out.putNextEntry(new ZipEntry(entry.getName()));
+                if (entry.getName().equals(entryName)) {
+                    out.write(replacement);
+                } else {
+                    zip.getInputStream(entry).transferTo(out);
+                }
+                out.closeEntry();
+            }
+        }
+        return rewritten;
+    }
+
+    private static Path rewrittenWithoutEntry(Path source, String entryName) throws Exception {
+        Path rewritten = source.resolveSibling(source.getFileName() + ".missing.zip");
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(source.toFile());
+                ZipOutputStream out = new ZipOutputStream(
+                        Files.newOutputStream(rewritten), StandardCharsets.UTF_8)) {
+            var entries = zip.stream().toList();
+            for (ZipEntry entry : entries) {
+                if (!entry.getName().equals(entryName)) {
+                    out.putNextEntry(new ZipEntry(entry.getName()));
+                    zip.getInputStream(entry).transferTo(out);
+                    out.closeEntry();
+                }
+            }
+        }
+        return rewritten;
+    }
+
+    private static Path rewrittenWithAddedEntry(Path source, String entryName,
+            byte[] content) throws Exception {
+        Path rewritten = source.resolveSibling(source.getFileName() + ".extra.zip");
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(source.toFile());
+                ZipOutputStream out = new ZipOutputStream(
+                        Files.newOutputStream(rewritten), StandardCharsets.UTF_8)) {
+            var entries = zip.stream().toList();
+            for (ZipEntry entry : entries) {
+                out.putNextEntry(new ZipEntry(entry.getName()));
+                zip.getInputStream(entry).transferTo(out);
+                out.closeEntry();
+            }
+            out.putNextEntry(new ZipEntry(entryName));
+            out.write(content);
+            out.closeEntry();
+        }
+        return rewritten;
+    }
+
     private static byte[] zipBytes(String firstName, byte[] firstContent,
             String secondName, byte[] secondContent) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -545,6 +719,11 @@ final class TraceReplayerTest {
             out.write(part);
         }
         return out.toByteArray();
+    }
+
+    private static String sha256(byte[] bytes) throws Exception {
+        return HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(bytes));
     }
 
     private static SemanticSnapshot snapshot(long revision, long frame) {
