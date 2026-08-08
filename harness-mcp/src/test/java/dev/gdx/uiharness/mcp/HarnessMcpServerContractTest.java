@@ -827,6 +827,155 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test void immediateSuccessReportsZeroElapsedOnALongLivedServer() {
+        AtomicLong nanos = new AtomicLong(999_000_000_000L);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        request -> CompletableFuture.completedFuture(
+                                new HarnessResponse.Success(ProtocolVersion.V1,
+                                        "mcp-1", "game",
+                                        new HarnessResponse.Result.Sessions(List.of()))),
+                        new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            Map<String, Object> content = structured(handler.handle(call(
+                    "ui_sessions", Map.of())).block(Duration.ofSeconds(10)));
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery = (Map<String, Object>) content.get("recovery");
+            assertEquals(0, ((Number) recovery.get("consumed")).intValue());
+            assertEquals(0, ((Number) recovery.get("elapsedMillis")).intValue());
+            assertTrue(((Number) recovery.get("elapsedMillis")).longValue()
+                    <= ((Number) recovery.get("maxWallTimeMillis")).longValue());
+        }
+    }
+
+    @Test void floodedNewSessionsAreTerminallyRejectedWithoutResettingBudgets() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        AtomicInteger calls = new AtomicInteger();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    calls.incrementAndGet();
+                    return CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            new ProtocolError(ProtocolError.Code.TIMEOUT,
+                                    "frame deadline expired", request.requestId(),
+                                    request.sessionId(), null, 0, null, null,
+                                    List.of(), Map.of(), null, List.of())));
+                }, new RecordingArtifacts(), executor, 1024, nanos::get, 2)) {
+            Map<String, Object> first = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "session-a")))
+                    .block(Duration.ofSeconds(10)));
+            Map<String, Object> second = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "session-b")))
+                    .block(Duration.ofSeconds(10)));
+            assertTrue(first.containsKey("code"));
+            assertTrue(second.containsKey("code"));
+
+            Map<String, Object> rejected = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "overflow")))
+                    .block(Duration.ofSeconds(10)));
+            assertEquals("RECOVERY_BUDGET_EXHAUSTED", rejected.get("code"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery = (Map<String, Object>) rejected.get("recovery");
+            assertEquals("accounting-capacity/v1", recovery.get("terminatingRule"));
+            assertEquals(3, ((Number) recovery.get("consumed")).intValue());
+            assertEquals(0, ((Number) recovery.get("remaining")).intValue());
+
+            Map<String, Object> again = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "overflow")))
+                    .block(Duration.ofSeconds(10)));
+            assertEquals("RECOVERY_BUDGET_EXHAUSTED", again.get("code"),
+                    "a rejected key must stay terminal and never reset any budget");
+
+            Map<String, Object> tracked = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "session-a")))
+                    .block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> trackedRecovery = (Map<String, Object>) tracked.get("recovery");
+            assertEquals(2, ((Number) trackedRecovery.get("consumed")).intValue(),
+                    "flooding must not reset an existing key's budget");
+        }
+    }
+
+    @Test void successAfterTransientReportsConsumedThenStartsFresh() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        AtomicInteger calls = new AtomicInteger();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    calls.incrementAndGet();
+                    if (calls.get() == 1) {
+                        // TIMEOUT maps to the transient DEADLINE_EXCEEDED diagnostic
+                        return CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                new ProtocolError(ProtocolError.Code.TIMEOUT,
+                                        "frame deadline expired", request.requestId(),
+                                        request.sessionId(), null, 0, null, null,
+                                        List.of(), Map.of(), null, List.of())));
+                    }
+                    return CompletableFuture.completedFuture(new HarnessResponse.Success(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            new HarnessResponse.Result.Sessions(List.of())));
+                }, new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            Map<String, Object> first = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            assertTrue(first.containsKey("code"),
+                    "first call must produce a transient diagnostic");
+
+            Map<String, Object> success = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery = (Map<String, Object>) success.get("recovery");
+            assertEquals(1, ((Number) recovery.get("consumed")).intValue());
+
+            Map<String, Object> third = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> thirdRecovery = (Map<String, Object>) third.get("recovery");
+            assertEquals(0, ((Number) thirdRecovery.get("consumed")).intValue(),
+                    "success must remove the session's recovery state");
+        }
+    }
+
+    @Test void sessionCloseFailureEvictsRecoveryState() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        AtomicInteger calls = new AtomicInteger();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    calls.incrementAndGet();
+                    if (calls.get() == 1) {
+                        return CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                new ProtocolError(ProtocolError.Code.TIMEOUT,
+                                        "frame deadline expired", request.requestId(),
+                                        request.sessionId(), null, 0, null, null,
+                                        List.of(), Map.of(), null, List.of())));
+                    }
+                    if (calls.get() == 2) {
+                        return CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                new ProtocolError(ProtocolError.Code.SESSION_CLOSED,
+                                        "session closed", request.requestId(),
+                                        request.sessionId(), null, 0, null, null,
+                                        List.of(), Map.of(), null, List.of())));
+                    }
+                    return CompletableFuture.completedFuture(new HarnessResponse.Success(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            new HarnessResponse.Result.Sessions(List.of())));
+                }, new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            Map<String, Object> arguments = Map.of("sessionId", "game");
+            assertTrue(structured(handler.handle(call(
+                    "ui_snapshot", arguments)).block(Duration.ofSeconds(10))).containsKey("code"));
+            assertTrue(structured(handler.handle(call(
+                    "ui_snapshot", arguments)).block(Duration.ofSeconds(10))).containsKey("code"));
+
+            Map<String, Object> success = structured(handler.handle(call(
+                    "ui_snapshot", arguments)).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery = (Map<String, Object>) success.get("recovery");
+            assertEquals(0, ((Number) recovery.get("consumed")).intValue(),
+                    "session close must evict the session's recovery state");
+        }
+    }
+
     @Test void diagnosticOverflowFailsClosedWithoutSilentFieldTruncation() {
         LinkedHashMap<String, Object> arguments = new LinkedHashMap<>();
         arguments.put("sessionId", "game");

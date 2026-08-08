@@ -83,3 +83,19 @@ schema diagnostics, every advertised example, one-step screenshot correction,
 request/process/key-order churn, exact schema/state/build/launch/deadline
 boundaries, semantic progress, safe reuse and invalidation, and durable
 digest-verified terminal retention.
+
+## Amendment 2026-08-08: Bounded MCP Recovery Accounting
+
+The MCP adapter's recovery accounting is globally bounded: session and
+fingerprint keys live in access-ordered stores capped at 4,096 entries each
+with a 10-minute monotonic TTL. A new key at capacity is deterministically
+terminally rejected with `accounting-capacity/v1` (`RECOVERY_BUDGET_EXHAUSTED`,
+consumed equals the limit, remaining zero) and never inserted, so an active
+key is never evicted, a rejected key stays terminal across repeated attempts,
+and flooding can never reset any tracked budget. `elapsedMillis` is measured
+from the first transient attempt of the current workflow, never from server
+construction, so an immediate success reports zero elapsed and never exceeds
+`maxWallTimeMillis`. Successful operations, terminal termination, session
+close, and server close remove the session's state; a later workflow starts
+fresh. The fixed schema/state/build/launch/deadline ceilings and the digest-
+bound terminal record are unchanged.
