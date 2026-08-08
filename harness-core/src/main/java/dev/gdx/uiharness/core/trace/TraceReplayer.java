@@ -7,12 +7,15 @@ import java.io.ByteArrayOutputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
@@ -34,29 +37,46 @@ import java.util.zip.ZipInputStream;
  *  when every binding matched. */
 public final class TraceReplayer {
     private final Limits limits;
+    private final Runnable afterSnapshotHook;
 
     /** Creates a replayer with conservative untrusted-archive limits. */
     public TraceReplayer() {
-        this(Limits.defaults());
+        this(Limits.defaults(), null);
     }
 
     /** Creates a replayer with explicit untrusted-archive limits. */
     public TraceReplayer(Limits limits) {
-        this.limits = Objects.requireNonNull(limits, "limits");
+        this(limits, null);
     }
 
-    /** Loads and validates one trace without retaining its event or artifact contents. */
+    /** Package-private test seam: runs once the untrusted archive bytes are safely
+     *  captured in a private snapshot, before any parsing of those bytes. */
+    TraceReplayer(Limits limits, Runnable afterSnapshotHook) {
+        this.limits = Objects.requireNonNull(limits, "limits");
+        this.afterSnapshotHook = afterSnapshotHook;
+    }
+
+    /** Loads and validates one trace without retaining its event or artifact contents.
+     *  The untrusted archive is captured once into a private owner-only snapshot
+     *  before any parsing, so a concurrent source replacement cannot change the
+     *  bytes that are validated or the digest that is reported. */
     public TraceReplay load(Path suppliedArchive) {
         Objects.requireNonNull(suppliedArchive, "archive");
         Path archive = suppliedArchive.toAbsolutePath().normalize();
         validateArchiveFile(archive);
+        Path snapshot = null;
         try {
             if (Files.size(archive) > limits.maxArchiveBytes()) {
                 throw failure(ErrorCode.LIMIT_EXCEEDED,
                         "Trace archive exceeds replay byte limit", null);
             }
-            Map<String, EntryIdentity> identities = validateEntriesBounded(archive);
-            try (ZipFile zip = new ZipFile(archive.toFile())) {
+            snapshot = createPrivateSnapshot();
+            String archiveDigest = captureSnapshot(archive, snapshot);
+            if (afterSnapshotHook != null) {
+                afterSnapshotHook.run();
+            }
+            Map<String, EntryIdentity> identities = validateEntriesBounded(snapshot);
+            try (ZipFile zip = new ZipFile(snapshot.toFile())) {
                 validateCentralEntries(zip, identities.keySet());
                 // one budget for the whole load: the manifest charges it first,
                 // then artifact bindings and events share it
@@ -64,18 +84,81 @@ public final class TraceReplayer {
                 TraceManifest manifest = readManifest(archive, zip, budget, identities);
                 boolean verifiedFormat = TraceManifest.V2.equals(manifest.schemaVersion());
                 if (verifiedFormat) {
-                    verifyBindings(zip, manifest, budget);
+                    verifyBindings(zip, manifest, budget, identities.keySet());
                 }
-                String archiveDigest = digestFile(archive);
-                return readEvents(zip, manifest, budget, identities, archiveDigest,
+                TraceReplay replay = readEvents(zip, manifest, budget, identities,
+                        archiveDigest,
                         verifiedFormat
                                 ? TraceReplay.Integrity.VERIFIED
                                 : TraceReplay.Integrity.UNVERIFIED);
+                deleteSnapshot(snapshot, null);
+                snapshot = null;
+                return replay;
             }
         } catch (HarnessException exception) {
+            deleteSnapshot(snapshot, exception);
             throw exception;
         } catch (IOException exception) {
+            deleteSnapshot(snapshot, exception);
             throw failure(ErrorCode.INVALID_REQUEST, "Trace archive is unreadable", exception);
+        } catch (RuntimeException exception) {
+            deleteSnapshot(snapshot, exception);
+            throw exception;
+        }
+    }
+
+    /** Copies the untrusted archive once into a private owner-only snapshot, hashing
+     *  the exact captured bytes while enforcing the archive byte ceiling, so every
+     *  later parse operates on immutable bytes that cannot be swapped out from under
+     *  the replayer. */
+    private String captureSnapshot(Path source, Path snapshot) throws IOException {
+        MessageDigest digest = sha256();
+        byte[] buffer = new byte[16 * 1024];
+        long total = 0;
+        try (InputStream input = Files.newInputStream(source, LinkOption.NOFOLLOW_LINKS);
+                OutputStream output = Files.newOutputStream(snapshot)) {
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                total += read;
+                if (total > limits.maxArchiveBytes()) {
+                    throw failure(ErrorCode.LIMIT_EXCEEDED,
+                            "Trace archive exceeds replay byte limit", null);
+                }
+                digest.update(buffer, 0, read);
+                output.write(buffer, 0, read);
+            }
+        }
+        return HexFormat.of().formatHex(digest.digest());
+    }
+
+    /** Creates a private owner-only temporary snapshot file in the system temp
+     *  directory; non-POSIX filesystems fall back to the default temp permissions. */
+    private static Path createPrivateSnapshot() throws IOException {
+        Path snapshot = Files.createTempFile("trace-replay-", ".zip");
+        try {
+            Files.setPosixFilePermissions(snapshot, EnumSet.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+        } catch (UnsupportedOperationException exception) {
+            // Non-POSIX filesystem: the default temp-directory permissions apply.
+        }
+        return snapshot;
+    }
+
+    /** Deletes the snapshot, aggregating a cleanup failure as a suppressed cause of
+     *  an in-flight failure, or failing closed on the success path. */
+    private static void deleteSnapshot(Path snapshot, Throwable failure) {
+        if (snapshot == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(snapshot);
+        } catch (IOException cleanupFailure) {
+            if (failure != null) {
+                failure.addSuppressed(cleanupFailure);
+            } else {
+                throw failure(ErrorCode.INTERNAL_ERROR,
+                        "Unable to clean up replay snapshot", cleanupFailure);
+            }
         }
     }
 
@@ -150,6 +233,10 @@ public final class TraceReplayer {
                 if (!actual.equals(manifest.eventsSha256())) {
                     throw failure(ErrorCode.INVALID_REQUEST,
                             "Trace event digest does not match the manifest", null);
+                }
+                if (malformed) {
+                    throw failure(ErrorCode.INVALID_REQUEST,
+                            "Trace contains a malformed event", null);
                 }
                 if (expectedSequence != manifest.eventCount()) {
                     throw failure(ErrorCode.INVALID_REQUEST,
@@ -287,12 +374,16 @@ public final class TraceReplayer {
     }
 
     /** Streams every bound artifact entry once, recomputing its SHA-256 and byte
-     *  count against the manifest binding, and rejects entries the manifest does
-     *  not declare. The events digest is verified in the single parse pass inside
-     *  readEvents, where the entry bytes are exactly Σ(line + '\n'). */
-    private void verifyBindings(ZipFile zip, TraceManifest manifest, ReplayBudget budget)
-            throws IOException {
-        Set<String> claimed = new HashSet<>();
+     *  count against the manifest binding, and requires the archive entry set to be
+     *  exactly the v2 allowlist (manifest.json, events.ndjson, and the declared
+     *  artifact entries), so arbitrary safe extras and directories cannot ride along.
+     *  The events digest is verified in the single parse pass inside readEvents,
+     *  where the entry bytes are exactly Σ(line + '\n'). */
+    private void verifyBindings(ZipFile zip, TraceManifest manifest, ReplayBudget budget,
+            Set<String> localNames) throws IOException {
+        Set<String> allowlist = new HashSet<>();
+        allowlist.add("manifest.json");
+        allowlist.add("events.ndjson");
         for (Map.Entry<String, TraceManifest.ArtifactBinding> binding
                 : manifest.artifacts().entrySet()) {
             if (!binding.getKey().equals(binding.getValue().sha256())) {
@@ -314,18 +405,14 @@ public final class TraceReplayer {
                 throw failure(ErrorCode.INVALID_REQUEST,
                         "Trace artifact size does not match the manifest", null);
             }
-            claimed.add(binding.getKey());
+            allowlist.add("artifacts/" + binding.getKey());
         }
-        var enumeration = zip.entries();
-        while (enumeration.hasMoreElements()) {
-            ZipEntry entry = enumeration.nextElement();
-            String name = entry.getName();
-            if (name.startsWith("artifacts/")) {
-                String id = name.substring("artifacts/".length());
-                if (!claimed.contains(id)) {
-                    throw failure(ErrorCode.INVALID_REQUEST,
-                            "Trace archive contains an undeclared artifact entry", null);
-                }
+        // local and central entry sets are equal (validateCentralEntries), so this
+        // single pass covers every local and central entry
+        for (String name : localNames) {
+            if (!allowlist.contains(name)) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive contains an undeclared entry", null);
             }
         }
         if (manifest.artifactCount() != manifest.artifacts().size()) {
@@ -552,20 +639,6 @@ public final class TraceReplayer {
     /** Immutable SHA-256 identity of one entry's inflated content, recorded by the
      *  local prepass and verified while the central-directory parse streams it. */
     private record EntryIdentity(byte[] sha256, long inflatedSize) {}
-
-    /** SHA-256 over the exact archive file bytes, computed after structural and
-     *  binding validation so only readable, bounded archives reach this pass. */
-    private static String digestFile(Path archive) throws IOException {
-        MessageDigest digest = sha256();
-        byte[] buffer = new byte[16 * 1024];
-        try (InputStream input = Files.newInputStream(archive)) {
-            int read;
-            while ((read = input.read(buffer)) != -1) {
-                digest.update(buffer, 0, read);
-            }
-        }
-        return HexFormat.of().formatHex(digest.digest());
-    }
 
     private static MessageDigest sha256() {
         try {

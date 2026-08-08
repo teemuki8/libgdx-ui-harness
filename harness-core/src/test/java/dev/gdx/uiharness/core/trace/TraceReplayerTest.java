@@ -16,18 +16,19 @@ import dev.gdx.uiharness.core.model.SemanticState;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.BufferedWriter;
+import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Clock;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -538,6 +539,113 @@ final class TraceReplayerTest {
         assertDoesNotThrow(() -> replayer.load(archive));
     }
 
+    @Test void v2ArchiveRejectsUndeclaredEntriesOutsideTheBindingAllowlist()
+            throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-allowlist", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-allowlist", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path archive = recorder.stop().archive();
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(rewrittenWithAddedEntry(
+                        archive, "payload.bin", "extra".getBytes(StandardCharsets.UTF_8))));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("undeclared"));
+    }
+
+    @Test void v2MalformedEventFailsClosedDespiteMatchingDigestAndCount() throws Exception {
+        byte[] valid = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] malformed = ("{\"sequence\":\"one\",\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":2,\"frame\":2,\"revision\":2,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] later = ("{\"sequence\":2,\"kind\":\"COMMAND_COMPLETED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":3,\"frame\":3,\"revision\":3,"
+                + "\"parentSequence\":0,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(valid, malformed, later);
+        // The manifest binds the exact full-stream digest and the count of the
+        // valid prefix, so only the malformed-event check can reject this archive.
+        Path archive = v2Archive(temporaryDirectory.resolve("malformed-v2.zip"), events,
+                2, sha256(events), events.length);
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(archive));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("malformed"));
+    }
+
+    @Test void sourceReplacementAfterSnapshotCannotAffectVerifiedReplay() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-snapshot", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-snapshot", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path archive = recorder.stop().archive();
+        String originalDigest = sha256(Files.readAllBytes(archive));
+
+        TraceReplayer replayer = new TraceReplayer(TraceReplayer.Limits.defaults(),
+                () -> replaceQuietly(archive, "replacement".getBytes(StandardCharsets.UTF_8)));
+
+        TraceReplay replay = replayer.load(archive);
+
+        assertEquals(TraceReplay.Integrity.VERIFIED, replay.integrity());
+        assertEquals(originalDigest, replay.archiveSha256());
+        assertEquals("session-snapshot", replay.manifest().sessionId());
+    }
+
+    @Test void oversizedSourceReplacementAfterSnapshotCannotAffectReplay() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-snapshot", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-snapshot", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path archive = recorder.stop().archive();
+        String originalDigest = sha256(Files.readAllBytes(archive));
+
+        TraceReplayer replayer = new TraceReplayer(
+                new TraceReplayer.Limits(200_000, 100, TraceEvent.MAX_ENCODED_BYTES,
+                        1_000_000, 100),
+                () -> replaceQuietly(archive, new byte[1_000_000]));
+
+        TraceReplay replay = replayer.load(archive);
+
+        assertEquals(originalDigest, replay.archiveSha256());
+        assertEquals(TraceReplay.Integrity.VERIFIED, replay.integrity());
+    }
+
+    @Test void releasedFiveArgConstructorReportsUnverifiedWithoutDigest() {
+        TraceManifest manifest = new TraceManifest(
+                temporaryDirectory.resolve("legacy.zip"), "session-a",
+                Instant.parse("2026-07-28T00:00:00Z"), Instant.parse("2026-07-28T00:00:01Z"),
+                true, "completed", 0, 0, 0);
+
+        TraceReplay replay = new TraceReplay(manifest, List.of(),
+                new TraceReplay.Causality(List.of()), false, List.of());
+
+        assertEquals(TraceReplay.Integrity.UNVERIFIED, replay.integrity());
+        assertEquals("", replay.archiveSha256());
+        assertEquals(manifest, replay.manifest());
+    }
+
+    @Test void verifiedIntegrityRequiresAnExactArchiveDigest() {
+        TraceManifest manifest = new TraceManifest(
+                temporaryDirectory.resolve("legacy.zip"), "session-a",
+                Instant.parse("2026-07-28T00:00:00Z"), Instant.parse("2026-07-28T00:00:01Z"),
+                true, "completed", 0, 0, 0);
+
+        assertThrows(IllegalArgumentException.class, () -> new TraceReplay(manifest, List.of(),
+                new TraceReplay.Causality(List.of()), false, List.of(),
+                "not-a-digest", TraceReplay.Integrity.VERIFIED));
+    }
+
     private static Path rewrittenWithReplacedEntry(Path source, String entryName,
             byte[] replacement) throws Exception {
         Path rewritten = source.resolveSibling(source.getFileName() + ".rewritten.zip");
@@ -697,6 +805,34 @@ final class TraceReplayerTest {
                 + "\"terminationReason\":\"completed\",\"eventCount\":" + eventCount + ","
                 + "\"artifactCount\":0,\"uncompressedBytes\":" + uncompressedBytes + "}")
                 .getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static Path v2Archive(Path archive, byte[] events, long eventCount,
+            String eventsSha256, long uncompressedBytes) throws Exception {
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive),
+                StandardCharsets.UTF_8)) {
+            zip.putNextEntry(new ZipEntry("events.ndjson"));
+            zip.write(events);
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry("manifest.json"));
+            zip.write(("{\"version\":\"trace-manifest/v2\",\"sessionId\":\"session-a\","
+                    + "\"startedAt\":\"2026-07-28T00:00:00Z\",\"endedAt\":"
+                    + "\"2026-07-28T00:00:01Z\",\"complete\":true,"
+                    + "\"terminationReason\":\"completed\",\"eventCount\":" + eventCount + ","
+                    + "\"artifactCount\":0,\"uncompressedBytes\":" + uncompressedBytes + ","
+                    + "\"eventsSha256\":\"" + eventsSha256 + "\",\"artifacts\":{}}")
+                    .getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+        return archive;
+    }
+
+    private static void replaceQuietly(Path target, byte[] content) {
+        try {
+            Files.write(target, content);
+        } catch (IOException exception) {
+            throw new RuntimeException(exception);
+        }
     }
 
     private static Path v1Archive(Path archive, byte[] events, long eventCount) throws Exception {
