@@ -266,6 +266,47 @@ final class Lwjgl3MatrixRunnerTest {
         }
     }
 
+    @Test void overLimitPrimaryAssertionFailureRetainsCleanupClassificationWithinTheBound() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.saveAbsent = true;
+            fixture.longResolutionFailure = true;
+            fixture.failCleanup = true;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            fixture.nowNanos[0] += Duration.ofSeconds(6).toNanos();
+            fixture.deadlines.expire();
+            for (int index = 0; index < 4 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            String evidence = result.evidence();
+            assertTrue(evidence.length() <= 512, "case evidence must stay bounded");
+            assertTrue(evidence.startsWith("primary assertion failure"),
+                    "the primary failure identity must stay first: " + evidence);
+            assertTrue(evidence.contains("CLEANUP_FAILED"),
+                    "cleanup classification must remain within the bound: " + evidence);
+        }
+    }
+
     private static final class Fixture implements AutoCloseable {
         final Duration step = Duration.ofMillis(16);
         final long[] nowNanos = {0};
@@ -285,6 +326,7 @@ final class Lwjgl3MatrixRunnerTest {
         boolean visible = true;
         boolean saveAbsent;
         boolean mismatchedSnapshots;
+        boolean longResolutionFailure;
         boolean failCleanup;
 
         Fixture() {
@@ -327,6 +369,9 @@ final class Lwjgl3MatrixRunnerTest {
                 }
 
                 @Override public SemanticSnapshot snapshotFor(FrameSignal.Frame frame) {
+                    if (longResolutionFailure) {
+                        throw new IllegalStateException("primary assertion failure ".repeat(40));
+                    }
                     if (mismatchedSnapshots) {
                         return snapshot(Fixture.this.revision[0] + 1_000,
                                 Fixture.this.frame[0] + 1_000);

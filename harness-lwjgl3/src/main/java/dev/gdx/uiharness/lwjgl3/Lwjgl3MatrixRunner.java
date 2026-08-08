@@ -250,11 +250,12 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
         MatrixCaseStatus status = succeeded ? MatrixCaseStatus.PASSED : MatrixCaseStatus.FAILED;
         String evidence = "";
         if (assertionFailure != null) {
-            // Preserve the original assertion failure as primary when release also fails.
+            // Preserve the original assertion failure as primary when release also fails. Reserve
+            // suffix space so the cleanup classification is never truncated away by the bound.
             evidence = bounded(rootMessage(assertionFailure));
             if (releaseFailure != null) {
-                evidence = bounded(evidence
-                        + " (lease release failed: " + rootMessage(releaseFailure) + ")");
+                evidence = composeWithSuffix(evidence,
+                        " (lease release failed: " + rootMessage(releaseFailure) + ")");
             }
         } else if (releaseFailure != null) {
             evidence = bounded("lease release failed: " + rootMessage(releaseFailure));
@@ -274,6 +275,8 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                 evidence);
     }
 
+    private static final int MAX_EVIDENCE_LENGTH = 512;
+
     private static String rootMessage(Throwable failure) {
         Throwable current = failure;
         while (current.getCause() != null) {
@@ -282,11 +285,27 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
         return bounded(current.getMessage());
     }
 
+    /**
+     * Appends {@code suffix} to {@code primary} within {@link #MAX_EVIDENCE_LENGTH}, truncating
+     * the primary first so the suffix (e.g. cleanup classification) is always retained.
+     */
+    private static String composeWithSuffix(String primary, String suffix) {
+        if (primary.length() + suffix.length() <= MAX_EVIDENCE_LENGTH) {
+            return primary + suffix;
+        }
+        int primaryBudget = MAX_EVIDENCE_LENGTH - suffix.length();
+        if (primaryBudget <= 0) {
+            return bounded(suffix);
+        }
+        return primary.substring(0, primaryBudget) + suffix;
+    }
+
     private static String bounded(String value) {
         if (value == null) {
             return "case failed";
         }
-        return value.length() <= 512 ? value : value.substring(0, 512);
+        return value.length() <= MAX_EVIDENCE_LENGTH
+                ? value : value.substring(0, MAX_EVIDENCE_LENGTH);
     }
 
     @Override public void close() {
