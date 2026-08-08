@@ -2,6 +2,7 @@ package dev.gdx.uiharness.scene2d;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -687,6 +688,44 @@ final class Scene2dScenarioRunnerTest {
             assertEquals(
                     ScenarioFailure.NONDETERMINISTIC_INITIAL_STATE,
                     changed.failure().orElseThrow());
+        }
+    }
+
+    @Test void failedDeadlineCleanupSubmissionStillReleasesTheActiveOwner() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            java.util.concurrent.atomic.AtomicInteger cleanups =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready") {
+                @Override public void cleanup(ScenarioRequest request) {
+                    cleanups.incrementAndGet();
+                }
+            });
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofMillis(10));
+            fixture.scheduler.drain();
+
+            fixture.clock.advance(Duration.ofMillis(10));
+            fixture.deadlines.expire();
+
+            ScenarioResult first = started.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.READINESS_DEADLINE, first.failure().orElseThrow());
+            assertFalse(first.cleanupCompleted());
+            assertEquals(0, cleanups.get());
+
+            // The render thread is torn down before the deferred cleanup drains: the cleanup
+            // submission is rejected, and the deadline-published run must still release its
+            // active owner slot instead of leaking it.
+            fixture.scheduler.close();
+            fixture.scheduler.drain();
+
+            CompletionStage<ScenarioResult> next = fixture.start(Duration.ofSeconds(1));
+            ScenarioResult nextResult = next.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertNotEquals(ScenarioFailure.SESSION_BUSY, nextResult.failure().orElseThrow(),
+                    "the released deadline owner must not block the next acquisition");
+            assertEquals(ScenarioFailure.DISPATCH_FAILED, nextResult.failure().orElseThrow(),
+                    "the next acquisition is admitted and only fails because the render "
+                            + "thread scheduler is closed");
+            assertEquals(0, cleanups.get(),
+                    "the rejected cleanup submission never runs the cleanup hook");
         }
     }
 

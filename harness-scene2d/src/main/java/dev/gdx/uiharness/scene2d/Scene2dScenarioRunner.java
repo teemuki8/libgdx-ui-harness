@@ -443,12 +443,13 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             synchronized (this) {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
                     // A deadline-published run still owns the active slot until its deferred
-                    // cleanup drains; a failed cleanup submission must still release it.
+                    // cleanup drains; a failed cleanup submission must still release it. Other
+                    // terminal/cleaning runs are released by their own terminal path.
                     release = deadlinePublished;
-                    return;
+                } else {
+                    phase = Phase.TERMINAL;
+                    publish = true;
                 }
-                phase = Phase.TERMINAL;
-                publish = true;
             }
             if (publish) {
                 completeTerminal(ScenarioFailure.DISPATCH_FAILED, false);
