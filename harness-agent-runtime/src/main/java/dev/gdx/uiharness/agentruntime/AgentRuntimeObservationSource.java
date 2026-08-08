@@ -62,13 +62,14 @@ public final class AgentRuntimeObservationSource implements RuntimeObservationSo
             return Optional.empty();
         }
         long provenFrame = harnessFrame.orElseThrow();
+        RuntimeValue runtimeValue = value.orElseThrow();
         return Optional.of(new RuntimeObservation(
                 binding.entityId(),
                 binding.propertyId(),
                 provenFrame,
                 provenFrame,
-                RuntimeValueRenderer.render(value.orElseThrow()),
-                binding.valueFormatId()));
+                RuntimeValueRenderer.render(runtimeValue),
+                RuntimeValueRenderer.formatId(runtimeValue)));
     }
 
     /**

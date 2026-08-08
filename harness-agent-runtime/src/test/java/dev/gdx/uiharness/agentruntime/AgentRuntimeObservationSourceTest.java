@@ -42,8 +42,23 @@ final class AgentRuntimeObservationSourceTest {
 
         assertTrue(observation.isPresent());
         assertEquals(
-                new RuntimeObservation("user", "name", 42, 42, "Ada", null),
+                new RuntimeObservation("user", "name", 42, 42, "Ada", "string"),
                 observation.orElseThrow());
+    }
+
+    @Test void observesRuntimeFormatIdentity() {
+        runtime.entities().register(
+                EntityId.of("score"), EntityType.of("score"),
+                () -> "Score",
+                inspector -> inspector.property("value", () -> RuntimeValues.integer(7)));
+        advanceFrame();
+        recordCorrelation(42, CORRELATION_TOKEN);
+
+        Optional<RuntimeObservation> observation = observe("score", "value", CORRELATION_TOKEN);
+
+        assertTrue(observation.isPresent());
+        assertEquals("integer", observation.orElseThrow().valueFormatId());
+        assertEquals("7", observation.orElseThrow().value());
     }
 
     @Test void unmatchedCorrelationTokenIsEmpty() {

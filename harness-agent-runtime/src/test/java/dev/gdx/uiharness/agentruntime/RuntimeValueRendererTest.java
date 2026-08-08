@@ -37,6 +37,21 @@ final class RuntimeValueRendererTest {
     }
 
     @Test
+    void exposesBoundedFormatIdentityPerVariant() {
+        assertEquals("null", RuntimeValueRenderer.formatId(RuntimeValues.nullValue()));
+        assertEquals("boolean", RuntimeValueRenderer.formatId(RuntimeValues.bool(true)));
+        assertEquals("integer", RuntimeValueRenderer.formatId(RuntimeValues.integer(1)));
+        assertEquals("decimal", RuntimeValueRenderer.formatId(RuntimeValues.decimal("1.5")));
+        assertEquals("string", RuntimeValueRenderer.formatId(RuntimeValues.string("Ada")));
+        assertEquals("enum", RuntimeValueRenderer.formatId(RuntimeValues.enumValue("LOGIN")));
+        assertEquals("vector2", RuntimeValueRenderer.formatId(RuntimeValues.vector2(1, 2)));
+        assertEquals("list", RuntimeValueRenderer.formatId(
+                RuntimeValues.list(RuntimeValues.string("a"))));
+        assertEquals("object", RuntimeValueRenderer.formatId(
+                RuntimeValues.object(RuntimeValues.field("a", RuntimeValues.string("b")))));
+    }
+
+    @Test
     void truncatesDeepNestingWithMarker() {
         // Six levels of four-item lists stay inside the depth (8) and item (32) bounds,
         // while the natural expansion far exceeds 253 characters; only the length cap

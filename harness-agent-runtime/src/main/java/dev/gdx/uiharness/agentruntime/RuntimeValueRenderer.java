@@ -28,6 +28,24 @@ public final class RuntimeValueRenderer {
         return renderer.result();
     }
 
+    /** Returns the bounded format identity of one runtime value. */
+    public static String formatId(RuntimeValue value) {
+        if (value == null) {
+            return "null";
+        }
+        return switch (value) {
+            case RuntimeValue.NullValue _ -> "null";
+            case RuntimeValue.BooleanValue _ -> "boolean";
+            case RuntimeValue.IntegerValue _ -> "integer";
+            case RuntimeValue.DecimalValue _ -> "decimal";
+            case RuntimeValue.StringValue _ -> "string";
+            case RuntimeValue.EnumValue _ -> "enum";
+            case RuntimeValue.Vector2Value _ -> "vector2";
+            case RuntimeValue.ListValue _ -> "list";
+            case RuntimeValue.ObjectValue _ -> "object";
+        };
+    }
+
     private static final class Renderer {
         /** Characters of real content before the truncation marker takes over. */
         private static final int CONTENT_LIMIT = MAX_LENGTH - TRUNCATION.length();
