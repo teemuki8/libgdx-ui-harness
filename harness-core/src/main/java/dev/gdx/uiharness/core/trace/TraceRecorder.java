@@ -934,7 +934,7 @@ public final class TraceRecorder implements AutoCloseable {
         if (view == null) {
             throw new IOException("acl view unavailable for owner-only enforcement: " + path);
         }
-        java.nio.file.attribute.UserPrincipal owner = view.getOwner();
+        UserPrincipal owner = view.getOwner();
         AclEntry ownerEntry = AclEntry.newBuilder()
                 .setType(AclEntryType.ALLOW)
                 .setPrincipal(owner)
