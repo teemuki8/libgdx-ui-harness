@@ -2096,8 +2096,9 @@ final class ReferenceCaseApplicatorTest {
 
     @Test
     void applyRestoresPartialWindowAndLocaleStateWhenApplicationFails() {
-        Locale original = Locale.forLanguageTag("de-DE");
-        Locale.setDefault(original);
+        Locale previousDefault = Locale.getDefault();
+        Locale hostLocale = Locale.forLanguageTag("de-DE");
+        Locale.setDefault(hostLocale);
         try {
             try (RenderThreadScheduler scheduler = new RenderThreadScheduler(16)) {
                 AtomicBoolean first = new AtomicBoolean(true);
@@ -2122,12 +2123,12 @@ final class ReferenceCaseApplicatorTest {
                 assertEquals(List.of(new MatrixWindow(1920, 1080), new MatrixWindow(1280, 720)),
                         appliedWindows,
                         "the original window must be restored after the failure");
-                assertEquals(original, Locale.getDefault(),
-                        "the original locale (distinct from the requested en-US) must be "
+                assertEquals(hostLocale, Locale.getDefault(),
+                        "the host locale (distinct from the requested en-US) must be "
                                 + "restored after the failure");
             }
         } finally {
-            Locale.setDefault(original);
+            Locale.setDefault(previousDefault);
         }
     }
 
