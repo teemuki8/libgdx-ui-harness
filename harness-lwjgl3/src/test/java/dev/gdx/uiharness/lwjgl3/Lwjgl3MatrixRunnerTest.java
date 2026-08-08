@@ -738,6 +738,16 @@ final class Lwjgl3MatrixRunnerTest {
         }
     }
 
+    @Test void applyResultSealedHierarchyPermitsExactlyAppliedAndUnsupported() {
+        Class<?>[] permitted = Lwjgl3MatrixRunner.ApplyResult.class.getPermittedSubclasses();
+        assertEquals(2, permitted.length,
+                "external exhaustive switches must see exactly two permitted outcomes");
+        assertTrue(java.util.Arrays.asList(permitted)
+                .contains(Lwjgl3MatrixRunner.ApplyResult.Applied.class));
+        assertTrue(java.util.Arrays.asList(permitted)
+                .contains(Lwjgl3MatrixRunner.ApplyResult.Unsupported.class));
+    }
+
     @Test void matrixProductLimitRejectsBeforeAnyCaseStarts() {
         try (Fixture fixture = new Fixture()) {
             MatrixDefinition definition = new MatrixDefinition(

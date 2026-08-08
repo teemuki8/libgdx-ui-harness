@@ -62,7 +62,7 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
 
     /** Closed outcome of one case application. */
     public sealed interface ApplyResult
-            permits ApplyResult.Applied, ApplyResult.Unsupported, LegacyApplied {
+            permits ApplyResult.Applied, ApplyResult.Unsupported {
         /**
          * The case was applied; {@code observed} holds the same-case observed settings. Complete
          * identity is required: an observation without locale, font set id, or restart profile
@@ -97,18 +97,6 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                             "unsupported reason must be 1..512 characters");
                 }
             }
-        }
-    }
-
-    /**
-     * Legacy released-observer outcome: only the {@link DisplayObserver} adapter produces it,
-     * and the runner verifies only the released display dimensions for it. The observed
-     * identity fields may be {@code null} because the released observer cannot report them.
-     */
-    record LegacyApplied(DisplayObservation observed) implements ApplyResult {
-        /** Validates the observed settings. */
-        LegacyApplied {
-            observed = Objects.requireNonNull(observed, "observed");
         }
     }
 
@@ -179,6 +167,7 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
     private final WaitEngine waits;
     private final MatrixCaseApplicator applicator;
     private final Scenario scenario;
+    private final boolean legacyObserverMode;
     private final MatrixPlanner planner = new MatrixPlanner();
     private final Object lifecycle = new Object();
     private final LinkedHashMap<String, MatrixReport> retained = new LinkedHashMap<>();
@@ -188,9 +177,11 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
     /**
      * Released constructor adapting a display observer into an applicator.
      *
-     * <p>The observer reports only the released display dimensions; the observed locale, font
-     * set id, and restart profile are {@code null} (legacy), and the runner skips identity
-     * verification for observations that cannot report them. Restore is a no-op because the
+     * <p>The observer reports only the released display dimensions. The adapter carries the
+     * requested identity values (locale, font set id, restart profile) so the observation passes
+     * the applicator contract, but the runner runs in legacy observer mode: it verifies only the
+     * released dimensions and publishes the new identity result fields as {@code null} rather
+     * than falsely claiming the requested values as observed. Restore is a no-op because the
      * released observer path never mutated display state through the runner, and the request
      * deadline is ignored by the observer adapter.
      *
@@ -207,12 +198,16 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
         this(scenarios, waits, new MatrixCaseApplicator() {
             @Override public ApplyResult apply(
                     MatrixCase matrixCase, String restartProfileId, Deadline deadline) {
-                return new LegacyApplied(display.observe(matrixCase));
+                DisplayObservation released = display.observe(matrixCase);
+                return new ApplyResult.Applied(new DisplayObservation(
+                        released.window(), released.uiScale(), released.devicePixelRatio(),
+                        released.hiDpiMode(), matrixCase.locale(), matrixCase.fontSetId(),
+                        restartProfileId));
             }
 
             @Override public void restore() {
             }
-        }, scenario);
+        }, scenario, true);
     }
 
     /**
@@ -228,10 +223,20 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
             WaitEngine waits,
             MatrixCaseApplicator applicator,
             Scenario scenario) {
+        this(scenarios, waits, applicator, scenario, false);
+    }
+
+    private Lwjgl3MatrixRunner(
+            Scene2dScenarioRunner scenarios,
+            WaitEngine waits,
+            MatrixCaseApplicator applicator,
+            Scenario scenario,
+            boolean legacyObserverMode) {
         this.scenarios = Objects.requireNonNull(scenarios, "scenarios");
         this.waits = Objects.requireNonNull(waits, "waits");
         this.applicator = Objects.requireNonNull(applicator, "applicator");
         this.scenario = Objects.requireNonNull(scenario, "scenario");
+        this.legacyObserverMode = legacyObserverMode;
     }
 
     /**
@@ -359,18 +364,20 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                     bounded("unsupported case: " + unsupported.reason())));
             return CompletableFuture.completedFuture(null);
         }
+        DisplayObservation appliedObservation = ((ApplyResult.Applied) applied).observed();
         final DisplayObservation observed;
-        final boolean legacyIdentity;
-        if (applied instanceof ApplyResult.Applied modern) {
-            observed = modern.observed();
-            legacyIdentity = false;
+        if (legacyObserverMode) {
+            // The released observer cannot report identity: never claim requested values as
+            // observed, and verify only the released dimensions for legacy observations.
+            observed = new DisplayObservation(
+                    appliedObservation.window(), appliedObservation.uiScale(),
+                    appliedObservation.devicePixelRatio(), appliedObservation.hiDpiMode(),
+                    null, null, null);
         } else {
-            LegacyApplied legacy = (LegacyApplied) applied;
-            observed = legacy.observed();
-            legacyIdentity = true;
+            observed = appliedObservation;
         }
         String mismatch = requestedMismatch(
-                matrixCase, observed, scenario.profileId(), legacyIdentity);
+                matrixCase, observed, scenario.profileId(), legacyObserverMode);
         if (mismatch != null) {
             // The case was applied but does not match the request: restore the original display
             // state so the next case starts clean, then record the distinct terminal status. A
@@ -500,9 +507,10 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
             return "hiDpiMode requested=" + matrixCase.hiDpiMode()
                     + " observed=" + observed.hiDpiMode();
         }
-        // Only the released DisplayObserver adapter produces legacy observations; modern Applied
-        // observations always carry complete identity (validated by the Applied constructor), so
-        // the new identity fields are always verified for them.
+        // Legacy observer mode (released DisplayObserver constructor) verifies only the released
+        // dimensions: the adapter cannot report identity, so the new identity fields are never
+        // compared for it. Modern applicators always pass complete identity (validated by the
+        // Applied constructor), so identity is always verified for them.
         if (skipIdentity) {
             return null;
         }
