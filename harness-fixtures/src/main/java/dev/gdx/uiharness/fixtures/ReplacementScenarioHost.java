@@ -12,6 +12,7 @@ import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
 import dev.gdx.uiharness.core.scenario.ScenarioLifecycle;
 import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
 import dev.gdx.uiharness.core.scenario.ScenarioRequest;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.scene2d.ControlledStageClock;
 import dev.gdx.uiharness.scene2d.RenderThreadScheduler;
 import dev.gdx.uiharness.scene2d.Scene2dScenarioRunner;
@@ -94,10 +95,11 @@ public final class ReplacementScenarioHost extends ApplicationAdapter {
                 List.of(request.profileId()), 1, maximum), lifecycle);
         deadlines = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofPlatform().name("replacement-scenario-deadline").factory());
-        runner = new Scene2dScenarioRunner(registry, scheduler, clock, (delay, signal) -> {
-            var scheduled = deadlines.schedule(signal, delay.toNanos(), TimeUnit.NANOSECONDS);
-            return () -> scheduled.cancel(false);
-        });
+        runner = new Scene2dScenarioRunner(registry, scheduler, clock,
+                (DeadlineScheduler) (delay, signal) -> {
+                    var scheduled = deadlines.schedule(signal, delay.toNanos(), TimeUnit.NANOSECONDS);
+                    return () -> scheduled.cancel(false);
+                });
         scenario = runner.start(request, APPLICATION_ID, processId, sessionId).toCompletableFuture();
         scenario.whenComplete((result, failure) -> Gdx.app.postRunnable(() -> {
             try {

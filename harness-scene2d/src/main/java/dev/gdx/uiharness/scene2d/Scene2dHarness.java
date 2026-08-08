@@ -876,6 +876,8 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
 
     /** Signals that a legacy harness's owned scheduler worker outlived the shutdown bound. */
     static final class OwnedSchedulerShutdownTimeout extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
         OwnedSchedulerShutdownTimeout(String message) {
             super(message);
         }

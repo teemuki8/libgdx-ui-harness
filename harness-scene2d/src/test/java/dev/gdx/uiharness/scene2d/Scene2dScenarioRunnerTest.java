@@ -147,6 +147,90 @@ final class Scene2dScenarioRunnerTest {
             assertTrue(result.cleanupCompleted());
         }
     }
+    @Test void rejectingDeadlineScheduleRollsBackAdmittedRunAndNeutralizesAcceptedBegin() {
+        java.util.concurrent.atomic.AtomicInteger schedules =
+                new java.util.concurrent.atomic.AtomicInteger();
+        DeadlineScheduler rejecting = (delay, signal) -> {
+            if (schedules.getAndIncrement() == 0) {
+                throw new IllegalStateException("deadline scheduler rejected");
+            }
+            return () -> {};
+        };
+        try (Fixture fixture = new Fixture(16, rejecting)) {
+            List<Thread> hookThreads = new ArrayList<>();
+            fixture.register(new RecordingLifecycle(hookThreads, true, "ready"));
+
+            assertThrows(IllegalStateException.class,
+                    () -> fixture.start(Duration.ofSeconds(1)),
+                    "the original scheduling failure must propagate synchronously");
+
+            // The begin submission was accepted before the deadline arm threw: draining must
+            // not execute the accepted begin for the failed launch.
+            fixture.scheduler.drain();
+            assertTrue(hookThreads.isEmpty(),
+                    "an accepted begin must never execute after the deadline schedule throws");
+
+            // The admitted run was rolled back terminally: the exclusive active slot is free
+            // and a successor acquisition is admitted and completes normally.
+            Scene2dScenarioRunner.Lease next = fixture.acquireReady(Duration.ofSeconds(1));
+            assertFalse(next.completion().toCompletableFuture().isDone(),
+                    "the successor acquisition owns the session");
+            next.release();
+            fixture.scheduler.drain();
+            assertTrue(next.completion().toCompletableFuture().join().cleanupCompleted());
+        }
+    }
+
+    @Test void legacyDeadlineSchedulerConstructorAdaptsWithoutSemanticDrift() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger cancellations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<Runnable> signal =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Scene2dScenarioDeadlineScheduler legacy = (delay, runnable) -> {
+            signal.set(runnable);
+            return cancellations::incrementAndGet;
+        };
+        try (Fixture fixture = new Fixture()) {
+            java.util.concurrent.atomic.AtomicInteger cleanups =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never") {
+                @Override public void cleanup(ScenarioRequest request) {
+                    cleanups.incrementAndGet();
+                }
+            });
+            Scene2dScenarioRunner legacyRunner = new Scene2dScenarioRunner(
+                    fixture.registry, fixture.scheduler, fixture.clock, legacy);
+            CompletionStage<ScenarioResult> started = legacyRunner.start(
+                    new ScenarioRequest(
+                            ScenarioDefinition.SCHEMA_VERSION,
+                            "login-ready",
+                            42L,
+                            Map.of("locale", "en", "account", "agent"),
+                            "desktop",
+                            Deadline.after(fixture.clock, Duration.ofMillis(10))),
+                    "test-app",
+                    "process-1",
+                    "session-1");
+            fixture.scheduler.drain();
+
+            // The adapter routed the deadline arm through the legacy scheduler: fire the
+            // captured signal exactly as the legacy scheduler would.
+            fixture.clock.advance(Duration.ofMillis(10));
+            signal.get().run();
+
+            ScenarioResult result = started.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.READINESS_DEADLINE, result.failure().orElseThrow());
+            assertFalse(result.cleanupCompleted(),
+                    "the deadline-published result cannot claim cleanup before the drain");
+            assertEquals(0, cleanups.get());
+            fixture.scheduler.drain();
+            assertEquals(1, cleanups.get(),
+                    "the adapted deadline path cleans exactly once on the render thread");
+            assertTrue(cancellations.get() >= 1,
+                    "the adapted cancellation must reach the legacy scheduler");
+        }
+    }
+
     @Test void rejectedInitialSubmissionTerminalizesWithoutCleanup() {
         try (Fixture fixture = new Fixture(1)) {
             AtomicReference<Thread> cleanupThread = new AtomicReference<>();

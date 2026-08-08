@@ -60,6 +60,18 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
     private final Map<InputIdentity, String> startStateIdentities = new LinkedHashMap<>();
     private boolean open = true;
 
+    /**
+     * Retained released constructor: adapts the legacy scene2d deadline scheduler to the core
+     * {@link DeadlineScheduler} contract without changing scheduling semantics.
+     */
+    public Scene2dScenarioRunner(
+            ScenarioRegistry registry,
+            RenderThreadScheduler scheduler,
+            MonotonicClock clock,
+            Scene2dScenarioDeadlineScheduler deadlineScheduler) {
+        this(registry, scheduler, clock, adapt(deadlineScheduler));
+    }
+
     public Scene2dScenarioRunner(
             ScenarioRegistry registry,
             RenderThreadScheduler scheduler,
@@ -69,6 +81,14 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.deadlineScheduler = Objects.requireNonNull(deadlineScheduler, "deadlineScheduler");
+    }
+
+    private static DeadlineScheduler adapt(Scene2dScenarioDeadlineScheduler legacy) {
+        Objects.requireNonNull(legacy, "deadlineScheduler");
+        return (delay, signal) -> {
+            Scene2dScenarioDeadlineScheduler.Cancellation cancellation = legacy.schedule(delay, signal);
+            return cancellation::cancel;
+        };
     }
 
     /** Starts one bounded scenario run and releases it as soon as READY is observed. */
@@ -125,11 +145,30 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             run.rejectBusy();
             return run;
         }
-        observeSubmission(run, scheduler.submit(() -> {
-            run.begin();
-            return null;
-        }, dispatchDeadline()));
-        run.armDeadline();
+        CompletionStage<?> submission;
+        try {
+            submission = scheduler.submit(() -> {
+                run.begin();
+                return null;
+            }, dispatchDeadline());
+        } catch (RuntimeException failure) {
+            // The render scheduler rejected the launch submission synchronously after the
+            // run was admitted: roll the active owner back terminally and propagate the
+            // original failure so no orphaned exclusive run can block later acquisitions.
+            run.schedulingFailed();
+            throw failure;
+        }
+        observeSubmission(run, submission);
+        try {
+            run.armDeadline();
+        } catch (RuntimeException failure) {
+            // The deadline scheduler rejected the arm after the begin submission was
+            // accepted: neutralize the accepted begin so it can never execute hooks, roll
+            // the active owner back terminally, and propagate the original failure.
+            run.schedulingFailed();
+            submission.toCompletableFuture().cancel(false);
+            throw failure;
+        }
         return run;
     }
 
@@ -451,6 +490,26 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     // A terminal or cleaning run is released only by its own terminal path or
                     // by its deferred cleanup submission; an unrelated rejected submission must
                     // never release the active owner while accepted cleanup is still queued.
+                    return;
+                }
+                phase = Phase.TERMINAL;
+                publish = true;
+            }
+            if (publish) {
+                completeTerminal(ScenarioFailure.DISPATCH_FAILED, false);
+            }
+        }
+
+        /**
+         * Terminally rolls back a run whose scheduling call threw synchronously after the run
+         * was admitted to {@code active}: the run never executes hooks, its active owner slot
+         * is released exactly once, and the result and acquisition futures close so nothing is
+         * left pending. The original failure still propagates to the synchronous launch caller.
+         */
+        void schedulingFailed() {
+            boolean publish;
+            synchronized (this) {
+                if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
                     return;
                 }
                 phase = Phase.TERMINAL;
