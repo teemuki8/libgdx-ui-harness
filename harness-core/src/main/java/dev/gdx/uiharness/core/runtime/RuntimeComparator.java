@@ -104,7 +104,7 @@ public final class RuntimeComparator {
                     snapshot.frame(), runtime.frame(), false, Map.of());
         }
         String runtimeFormat = runtime.valueFormatId();
-        if (binding.valueFormatId() != null && runtimeFormat != null
+        if (binding.valueFormatId() != null
                 && !binding.valueFormatId().equals(runtimeFormat)) {
             return new DisplayedRuntimeComparison(
                     DisplayedRuntimeComparison.Status.AMBIGUOUS,
@@ -113,7 +113,7 @@ public final class RuntimeComparator {
                     snapshot.frame(), runtime.frame(), false, Map.of(
                             "reason", "value-format-mismatch",
                             "declaredFormat", binding.valueFormatId(),
-                            "runtimeFormat", runtimeFormat));
+                            "runtimeFormat", runtimeFormat == null ? "" : runtimeFormat));
         }
         boolean equal = typedEqual(displayed, runtime.value(), binding);
         return new DisplayedRuntimeComparison(

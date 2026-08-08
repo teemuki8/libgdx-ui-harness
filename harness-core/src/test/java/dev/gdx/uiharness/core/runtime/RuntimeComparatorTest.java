@@ -39,6 +39,18 @@ final class RuntimeComparatorTest {
         assertEquals("integer", result.details().get("runtimeFormat"));
     }
 
+    @Test void declaredFormatWithMissingRuntimeFormatCannotReportEqual() {
+        RuntimeComparator comparator =
+                new RuntimeComparator(observation("100", null));
+        DisplayedRuntimeComparison result = comparator.compare(
+                snapshot("100", format("integer")), Locator.testId("health"), locators);
+
+        assertEquals(DisplayedRuntimeComparison.Status.AMBIGUOUS, result.status());
+        assertEquals("value-format-mismatch", result.details().get("reason"));
+        assertEquals("integer", result.details().get("declaredFormat"));
+        assertEquals("", result.details().get("runtimeFormat"));
+    }
+
     @Test void valueDesynchronizationReportsMismatchOnCorrelatedFrames() {
         RuntimeComparator comparator =
                 new RuntimeComparator(observation("50", "integer"));
