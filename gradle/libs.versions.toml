@@ -6,6 +6,7 @@ junit = "6.1.2"
 jackson = "2.22.1"
 mcp = "2.0.0"
 japicmp = "0.23.1"
+re2j = "1.8"
 
 [libraries]
 gdx = { module = "com.badlogicgames.gdx:gdx", version.ref = "gdx" }
@@ -16,6 +17,7 @@ japicmp = { module = "com.github.siom79.japicmp:japicmp", version.ref = "japicmp
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
 mcp = { module = "io.modelcontextprotocol.sdk:mcp", version.ref = "mcp" }
+re2j = { module = "com.google.re2j:re2j", version.ref = "re2j" }
 markup-core = { module = "io.github.teemuki8:libgdx-ui-markup", version.ref = "markup" }
 markup-harness = { module = "io.github.teemuki8:libgdx-ui-markup-harness", version.ref = "markup" }
 markup-runtime = { module = "io.github.teemuki8:libgdx-ui-markup-runtime", version.ref = "markup" }

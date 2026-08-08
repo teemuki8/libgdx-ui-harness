@@ -21,7 +21,9 @@ import dev.gdx.uiharness.core.model.Bounds;
 import dev.gdx.uiharness.core.model.SemanticNode;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.wait.FrameSignal;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -33,6 +35,10 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 
@@ -44,13 +50,45 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
     private final FrameSignal frames;
     private final LongSupplier revisions;
     private final LongSupplier frameNumbers;
+    private final DeadlineScheduler deadlines;
     private final LocatorEngine locators = new StrictResolution();
     private final Scene2dActionability actionability = new Scene2dActionability();
     private final Scene2dInputDispatcher input;
     private final Object lifecycle = new Object();
     private final Set<ActionRequest> requests =
             Collections.newSetFromMap(new IdentityHashMap<>());
+    private final OwnedDeadlineScheduler ownedScheduler;
     private boolean open = true;
+    private Thread closingThread;
+    private volatile Throwable closeFailure;
+
+    /**
+     * Attaches orchestration to explicit render-loop, frame, revision, and input dependencies.
+     * The harness owns a daemon deadline scheduler so no-frame action deadlines still fire.
+     */
+    public Scene2dHarness(
+            Stage stage,
+            InputProcessor input,
+            Scene2dSession session,
+            RenderThreadScheduler scheduler,
+            FrameSignal frames,
+            LongSupplier revisions,
+            LongSupplier frameNumbers) {
+        this(stage, input, session, scheduler, frames, revisions, frameNumbers,
+                new OwnedDeadlineScheduler());
+    }
+
+    private Scene2dHarness(
+            Stage stage,
+            InputProcessor input,
+            Scene2dSession session,
+            RenderThreadScheduler scheduler,
+            FrameSignal frames,
+            LongSupplier revisions,
+            LongSupplier frameNumbers,
+            OwnedDeadlineScheduler owned) {
+        this(stage, input, session, scheduler, frames, revisions, frameNumbers, owned, owned);
+    }
 
     /** Attaches orchestration to explicit render-loop, frame, revision, and input dependencies. */
     public Scene2dHarness(
@@ -60,13 +98,33 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
             RenderThreadScheduler scheduler,
             FrameSignal frames,
             LongSupplier revisions,
-            LongSupplier frameNumbers) {
+            LongSupplier frameNumbers,
+            DeadlineScheduler deadlines) {
+        this(stage, input, session, scheduler, frames, revisions, frameNumbers, deadlines, null);
+    }
+
+    /**
+     * Ownership-aware constructor: {@code ownedScheduler} is non-null only when this harness
+     * created the scheduler and must shut it down on close.
+     */
+    private Scene2dHarness(
+            Stage stage,
+            InputProcessor input,
+            Scene2dSession session,
+            RenderThreadScheduler scheduler,
+            FrameSignal frames,
+            LongSupplier revisions,
+            LongSupplier frameNumbers,
+            DeadlineScheduler deadlines,
+            OwnedDeadlineScheduler ownedScheduler) {
         this.stage = Objects.requireNonNull(stage, "stage");
         this.session = Objects.requireNonNull(session, "session");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.frames = Objects.requireNonNull(frames, "frames");
         this.revisions = Objects.requireNonNull(revisions, "revisions");
         this.frameNumbers = Objects.requireNonNull(frameNumbers, "frameNumbers");
+        this.deadlines = Objects.requireNonNull(deadlines, "deadlines");
+        this.ownedScheduler = ownedScheduler;
         this.input = new Scene2dInputDispatcher(stage, Objects.requireNonNull(input, "input"));
     }
 
@@ -101,20 +159,78 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
         return scheduler.submit(this::freshSnapshot, deadline);
     }
 
-    /** Fails pending actions without closing application-owned Stage, session, or scheduler. */
+    /**
+     * Terminally fails every in-flight action without closing application-owned Stage, session,
+     * or scheduler. Real input already dispatched remains applied, but no result can wait for
+     * post-close frames: the first caller performs the cleanup, concurrent closers wait for it to
+     * finish, and a reentrant close from the closing thread's own callbacks returns immediately.
+     * Every armed deadline signal is cancelled, and a legacy harness's owned scheduler is fully
+     * shut down even when an individual cleanup step fails. All callbacks and cancellations run
+     * outside the lifecycle monitor.
+     */
     @Override public void close() {
+        boolean cleanup;
+        boolean waited = false;
+        boolean interrupted = false;
+        synchronized (lifecycle) {
+            while (closingThread != null && closingThread != Thread.currentThread()) {
+                waited = true;
+                try {
+                    lifecycle.wait();
+                } catch (InterruptedException exception) {
+                    interrupted = true;
+                }
+            }
+            if (closingThread == Thread.currentThread() || !open) {
+                cleanup = false;
+            } else {
+                open = false;
+                closingThread = Thread.currentThread();
+                cleanup = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        if (!cleanup) {
+            if (waited && closeFailure != null) {
+                rethrowUnchecked(closeFailure);
+            }
+            return;
+        }
         ActionRequest[] pending;
         synchronized (lifecycle) {
-            if (!open) {
-                return;
-            }
-            open = false;
             pending = requests.toArray(ActionRequest[]::new);
             requests.clear();
         }
-        HarnessException failure = sessionClosed();
-        for (ActionRequest request : pending) {
-            request.failBeforeDispatch(failure);
+        Throwable failure = null;
+        try {
+            HarnessException closed = sessionClosed();
+            for (ActionRequest request : pending) {
+                try {
+                    request.fail(closed);
+                } catch (Throwable throwable) {
+                    failure = aggregate(failure, throwable);
+                }
+            }
+            // The owned scheduler is shut down unconditionally so a legacy harness never leaks
+            // its worker, even when an earlier cleanup step failed.
+            if (ownedScheduler != null) {
+                try {
+                    ownedScheduler.shutdownNowAndAwait();
+                } catch (Throwable throwable) {
+                    failure = aggregate(failure, throwable);
+                }
+            }
+        } finally {
+            synchronized (lifecycle) {
+                closingThread = null;
+                closeFailure = failure;
+                lifecycle.notifyAll();
+            }
+        }
+        if (failure != null) {
+            rethrowUnchecked(failure);
         }
     }
 
@@ -134,6 +250,7 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
         private final Action action;
         private final Deadline deadline;
         private FrameSignal.Subscription subscription;
+        private DeadlineScheduler.Cancellation deadlineCancellation;
         private SemanticSnapshot lastSnapshot;
         private ActionabilityCheck lastCheck;
         private Bounds lastBounds;
@@ -339,6 +456,66 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
                     phase = RequestPhase.AWAITING_FRAME;
                 }
             }
+            armDeadline();
+        }
+
+        /**
+         * Arms one deadline signal for the dispatched action. Post-dispatch the action can only
+         * complete through a rendered frame; the signal enforces the remaining deadline when no
+         * frame arrives. The scheduling call itself never runs under the request monitor: a
+         * zero-delay scheduler may invoke the signal inline, and the timeout claim completes the
+         * future (running caller continuations) only after the monitor has been released. The
+         * install-or-cancel reconcile under the monitor keeps a racing completion, cancellation,
+         * or close consistent with a single armed registration.
+         */
+        private void armDeadline() {
+            Duration delay;
+            synchronized (this) {
+                if (deadlineCancellation != null || phase != RequestPhase.AWAITING_FRAME) {
+                    return;
+                }
+                delay = deadline.remaining();
+            }
+            DeadlineScheduler.Cancellation scheduled;
+            try {
+                scheduled = deadlines.schedule(delay, this::deadlineReached);
+            } catch (RejectedExecutionException failure) {
+                if (ownedScheduler == null) {
+                    throw failure;
+                }
+                // The harness's own scheduler was shut down by a concurrent close after this
+                // action was dispatched. Fail the action as closed instead of surfacing an
+                // internal registration error from the render thread.
+                fail(sessionClosed());
+                return;
+            }
+            boolean cancelScheduled;
+            synchronized (this) {
+                if (phase != RequestPhase.TERMINAL && deadlineCancellation == null) {
+                    deadlineCancellation = scheduled;
+                    cancelScheduled = false;
+                } else {
+                    cancelScheduled = true;
+                }
+            }
+            if (cancelScheduled) {
+                scheduled.cancel();
+            }
+        }
+
+        /** Claims the timeout under the request monitor; a late signal observes terminal state. */
+        private void deadlineReached() {
+            HarnessException failure;
+            synchronized (this) {
+                if (phase != RequestPhase.AWAITING_FRAME) {
+                    return;
+                }
+                if (!deadline.isExpired()) {
+                    return;
+                }
+                failure = timeoutLocked();
+            }
+            fail(failure);
         }
 
         private boolean beginDispatch(SemanticSnapshot snapshot) {
@@ -530,20 +707,6 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
             cleanup();
         }
 
-        void failBeforeDispatch(Throwable failure) {
-            boolean claimed;
-            synchronized (this) {
-                claimed = phase == RequestPhase.PENDING;
-                if (claimed) {
-                    phase = RequestPhase.TERMINAL;
-                }
-            }
-            if (claimed) {
-                super.completeExceptionally(normalize(failure));
-                cleanup();
-            }
-        }
-
         void fail(Throwable failure) {
             boolean claimed;
             synchronized (this) {
@@ -561,7 +724,8 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
         @Override public boolean cancel(boolean mayInterruptIfRunning) {
             boolean claimed;
             synchronized (this) {
-                claimed = phase == RequestPhase.PENDING;
+                claimed = phase == RequestPhase.PENDING
+                        || phase == RequestPhase.AWAITING_FRAME;
                 if (claimed) {
                     phase = RequestPhase.TERMINAL;
                 }
@@ -586,11 +750,29 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
             return failure instanceof CompletionException ? unwrap(failure) : failure;
         }
 
+        /** Invalidates the armed deadline signal; a signal already dispatched stays a no-op. */
+        void cancelDeadline() {
+            DeadlineScheduler.Cancellation scheduled;
+            synchronized (this) {
+                scheduled = deadlineCancellation;
+                deadlineCancellation = null;
+            }
+            if (scheduled != null) {
+                scheduled.cancel();
+            }
+        }
+
         private void cleanup() {
+            DeadlineScheduler.Cancellation scheduled;
             FrameSignal.Subscription attached;
             synchronized (this) {
                 attached = subscription;
                 subscription = null;
+                scheduled = deadlineCancellation;
+                deadlineCancellation = null;
+            }
+            if (scheduled != null) {
+                scheduled.cancel();
             }
             if (attached != null) {
                 attached.close();
@@ -619,5 +801,89 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
                 ErrorCode.SESSION_CLOSED,
                 "Scene2D harness is closed",
                 ErrorEvidence.empty());
+    }
+
+    /** Rethrows a close cleanup failure without requiring a checked-exception declaration. */
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrowUnchecked(Throwable failure) throws T {
+        throw (T) failure;
+    }
+
+    /**
+     * Combines per-step cleanup failures, keeping the first as the primary failure and attaching
+     * later failures as suppressed so the caller observes one consistent close outcome. The same
+     * instance thrown again is retained once: {@link Throwable#addSuppressed} forbids
+     * self-suppression and would otherwise abort the remaining cleanup.
+     */
+    private static Throwable aggregate(Throwable first, Throwable next) {
+        if (first == null) {
+            return next;
+        }
+        if (first != next) {
+            first.addSuppressed(next);
+        }
+        return first;
+    }
+
+    /**
+     * Deadline scheduler owned by a harness created through the legacy {@code Scene2dHarness}
+     * constructor. A daemon worker executes deadline signals; {@link #shutdownNowAndAwait()}
+     * stops it when the harness closes so a legacy harness never leaks a scheduler thread.
+     * Cancelled signals are removed from the work queue so they neither run nor retain the
+     * harness after cancellation.
+     */
+    private static final class OwnedDeadlineScheduler implements DeadlineScheduler {
+        private static final Duration SHUTDOWN_BOUND = Duration.ofSeconds(1);
+
+        private final ScheduledThreadPoolExecutor executor;
+
+        OwnedDeadlineScheduler() {
+            executor = new ScheduledThreadPoolExecutor(1, runnable -> {
+                Thread thread = new Thread(runnable, "scene2d-harness-deadlines");
+                thread.setDaemon(true);
+                return thread;
+            });
+            executor.setRemoveOnCancelPolicy(true);
+        }
+
+        @Override public Cancellation schedule(Duration delay, Runnable signal) {
+            ScheduledFuture<?> scheduled =
+                    executor.schedule(signal, delay.toNanos(), TimeUnit.NANOSECONDS);
+            return () -> scheduled.cancel(false);
+        }
+
+        /**
+         * Stops the worker promptly. Deadline signals are short monitor checks, so the bounded
+         * wait only covers a signal already running when the harness closes. Throws a typed
+         * failure when the worker is still live after the bound so close never reports success
+         * with a leaked worker.
+         */
+        void shutdownNowAndAwait() {
+            executor.shutdownNow();
+            try {
+                if (!executor.awaitTermination(
+                        SHUTDOWN_BOUND.toMillis(), TimeUnit.MILLISECONDS)) {
+                    throw new OwnedSchedulerShutdownTimeout(
+                            "owned scheduler worker did not stop within " + SHUTDOWN_BOUND);
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new OwnedSchedulerShutdownTimeout(
+                        "interrupted while awaiting owned scheduler shutdown", exception);
+            }
+        }
+    }
+
+    /** Signals that a legacy harness's owned scheduler worker outlived the shutdown bound. */
+    static final class OwnedSchedulerShutdownTimeout extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        OwnedSchedulerShutdownTimeout(String message) {
+            super(message);
+        }
+
+        OwnedSchedulerShutdownTimeout(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 }

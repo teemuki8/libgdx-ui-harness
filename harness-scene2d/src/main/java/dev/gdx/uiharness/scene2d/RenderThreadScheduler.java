@@ -50,7 +50,7 @@ public final class RenderThreadScheduler implements AutoCloseable {
         ScheduledCommand<T> command = new ScheduledCommand<>(
                 Objects.requireNonNull(callable, "callable"),
                 Objects.requireNonNull(deadline, "deadline"));
-        HarnessException rejection = null;
+        HarnessException rejection;
         synchronized (lifecycle) {
             if (!open) {
                 rejection = sessionClosed();
@@ -60,10 +60,14 @@ public final class RenderThreadScheduler implements AutoCloseable {
                 rejection = queueFull(capacity);
             } else {
                 queue.addLast(command);
+                rejection = null;
+            }
+            if (rejection != null) {
+                command.markFailedIfQueued();
             }
         }
         if (rejection != null) {
-            command.failQueued(rejection);
+            command.completeQueuedFailure(rejection);
         }
         return command;
     }
@@ -189,21 +193,23 @@ public final class RenderThreadScheduler implements AutoCloseable {
             this.deadline = deadline;
         }
 
+        /** Claims QUEUED -> CANCELLED under {@link #lifecycle}; completes the future after leaving it. */
         @Override public boolean cancel(boolean mayInterruptIfRunning) {
-            synchronized (this) {
+            boolean cancelled;
+            synchronized (lifecycle) {
                 if (state != CommandState.QUEUED) {
                     return false;
                 }
                 state = CommandState.CANCELLED;
-            }
-            synchronized (lifecycle) {
                 queue.remove(this);
                 activeBatch.remove(this);
+                cancelled = true;
             }
-            return super.cancel(false);
+            return cancelled && super.cancel(false);
         }
 
-        synchronized Dispatch tryDispatch() {
+        /** Claims the next transition; caller must hold {@link #lifecycle}. */
+        Dispatch tryDispatch() {
             if (state != CommandState.QUEUED) {
                 return Dispatch.SKIP;
             }
@@ -219,13 +225,8 @@ public final class RenderThreadScheduler implements AutoCloseable {
             super.completeExceptionally(timeout(deadline));
         }
 
-        void failQueued(HarnessException failure) {
-            if (markFailedIfQueued()) {
-                completeQueuedFailure(failure);
-            }
-        }
-
-        synchronized boolean markFailedIfQueued() {
+        /** Claims QUEUED -> FINISHED; caller must hold {@link #lifecycle}. */
+        boolean markFailedIfQueued() {
             if (state != CommandState.QUEUED) {
                 return false;
             }
@@ -253,8 +254,9 @@ public final class RenderThreadScheduler implements AutoCloseable {
             }
         }
 
+        /** Claims DISPATCHED -> FINISHED under {@link #lifecycle}; completes the future after leaving it. */
         private void finish(T value, HarnessException failure) {
-            synchronized (this) {
+            synchronized (lifecycle) {
                 state = CommandState.FINISHED;
             }
             if (failure == null) {

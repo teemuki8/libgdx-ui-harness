@@ -2,6 +2,8 @@ package dev.gdx.uiharness.mcp;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -31,6 +33,12 @@ final class HarnessToolCatalogTest {
     @Test void exposesOnlyTheApprovedBoundedTools() {
         assertEquals(APPROVED, catalog.toolNames());
         assertEquals(23, catalog.tools().size());
+        for (String name : APPROVED) {
+            assertNotNull(catalog.accessMode(name));
+        }
+        assertEquals(HarnessToolCatalog.AccessMode.MUTATING, catalog.accessMode("ui_action"));
+        assertEquals(HarnessToolCatalog.AccessMode.READ_ONLY, catalog.accessMode("ui_query"));
+        assertThrows(IllegalArgumentException.class, () -> catalog.accessMode("ui_unknown"));
         for (McpSchema.Tool tool : catalog.tools()) {
             assertEquals("object", tool.inputSchema().get("type"));
             assertEquals(false, tool.inputSchema().get("additionalProperties"));
@@ -38,6 +46,37 @@ final class HarnessToolCatalogTest {
             assertFalse(McpJsonDefaults.getSchemaValidator()
                     .validate(tool.inputSchema(), Map.of("path", "/tmp/attack"))
                     .valid(), tool.name());
+        }
+    }
+
+    @Test void everyAllowlistedToolHasExactlyOneAccessMode() {
+        Map<String, HarnessToolCatalog.AccessMode> expected = Map.ofEntries(
+                Map.entry("ui_sessions", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_snapshot", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_query", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_action", HarnessToolCatalog.AccessMode.MUTATING),
+                Map.entry("ui_assert", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_wait", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_screenshot", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_inspect_compare", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_typography_diagnose", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_layout_diagnose", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_trace_start", HarnessToolCatalog.AccessMode.MUTATING),
+                Map.entry("ui_trace_stop", HarnessToolCatalog.AccessMode.MUTATING),
+                Map.entry("ui_scenarios", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_scenario_start", HarnessToolCatalog.AccessMode.MUTATING),
+                Map.entry("ui_navigation_inspect", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_navigation_validate", HarnessToolCatalog.AccessMode.MUTATING),
+                Map.entry("ui_validate_layout", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_matrix_run", HarnessToolCatalog.AccessMode.MUTATING),
+                Map.entry("ui_matrix_results", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_semantic_compare", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_trace_query", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_runtime_compare", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_capabilities", HarnessToolCatalog.AccessMode.READ_ONLY));
+        assertEquals(APPROVED, expected.keySet());
+        for (Map.Entry<String, HarnessToolCatalog.AccessMode> entry : expected.entrySet()) {
+            assertEquals(entry.getValue(), catalog.accessMode(entry.getKey()));
         }
     }
 

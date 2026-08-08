@@ -11,6 +11,7 @@ import dev.gdx.uiharness.core.matrix.MatrixPlanner;
 import dev.gdx.uiharness.core.matrix.MatrixReport;
 import dev.gdx.uiharness.core.matrix.MatrixWindow;
 import dev.gdx.uiharness.core.scenario.ScenarioRequest;
+import dev.gdx.uiharness.core.scenario.ScenarioResult;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.scene2d.Scene2dScenarioRunner;
@@ -208,23 +209,73 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                         return null;
                     }));
         }
-        return chain.thenCompose(ignored -> lease.release().handle((ignoredResult, failure) -> {
-            DisplayObservation observed = display.observe(matrixCase);
-            MatrixCaseStatus status = failed.isEmpty()
-                    ? MatrixCaseStatus.PASSED : MatrixCaseStatus.FAILED;
-            return new MatrixCaseResult(
-                    dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
-                    status,
-                    observed.window(),
-                    observed.uiScale(),
-                    observed.devicePixelRatio(),
-                    observed.hiDpiMode(),
-                    List.copyOf(passed),
-                    List.copyOf(failed),
-                    List.of(),
-                    failed.isEmpty() ? "" : "assertions failed: " + failed.size());
-        }));
+        // Release the lease on every terminal path, including an exceptionally completed
+        // assertion stage, before producing the case terminal result. A release that completes
+        // normally with an unclean terminal result (cleanup failure) is treated as a release
+        // failure so a passing case cannot hide it.
+        return chain.handle((ignored, assertionFailure) -> assertionFailure)
+                .thenCompose(assertionFailure -> {
+                    CompletionStage<ScenarioResult> released;
+                    try {
+                        released = lease.release();
+                    } catch (RuntimeException failure) {
+                        return CompletableFuture.completedFuture(
+                                terminalCase(matrixCase, passed, failed, assertionFailure, failure));
+                    }
+                    return released.handle((releasedResult, releaseFailure) ->
+                            terminalCase(matrixCase, passed, failed, assertionFailure,
+                                    releaseFailure(releasedResult, releaseFailure)));
+                });
     }
+
+    private static Throwable releaseFailure(ScenarioResult released, Throwable failure) {
+        if (failure != null) {
+            return failure;
+        }
+        if (released != null && released.failure().isPresent()) {
+            return new IllegalStateException(
+                    "scenario did not terminate cleanly: " + released.failure().orElseThrow());
+        }
+        return null;
+    }
+
+    private MatrixCaseResult terminalCase(
+            MatrixCase matrixCase,
+            List<Integer> passed,
+            List<Integer> failed,
+            Throwable assertionFailure,
+            Throwable releaseFailure) {
+        DisplayObservation observed = display.observe(matrixCase);
+        boolean succeeded = assertionFailure == null && releaseFailure == null && failed.isEmpty();
+        MatrixCaseStatus status = succeeded ? MatrixCaseStatus.PASSED : MatrixCaseStatus.FAILED;
+        String evidence = "";
+        if (assertionFailure != null) {
+            // Preserve the original assertion failure as primary when release also fails. Reserve
+            // suffix space so the cleanup classification is never truncated away by the bound.
+            evidence = bounded(rootMessage(assertionFailure));
+            if (releaseFailure != null) {
+                evidence = composeWithSuffix(evidence,
+                        " (lease release failed: " + rootMessage(releaseFailure) + ")");
+            }
+        } else if (releaseFailure != null) {
+            evidence = bounded("lease release failed: " + rootMessage(releaseFailure));
+        } else if (!failed.isEmpty()) {
+            evidence = "assertions failed: " + failed.size();
+        }
+        return new MatrixCaseResult(
+                dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
+                status,
+                observed.window(),
+                observed.uiScale(),
+                observed.devicePixelRatio(),
+                observed.hiDpiMode(),
+                List.copyOf(passed),
+                List.copyOf(failed),
+                List.of(),
+                evidence);
+    }
+
+    private static final int MAX_EVIDENCE_LENGTH = 512;
 
     private static String rootMessage(Throwable failure) {
         Throwable current = failure;
@@ -234,11 +285,27 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
         return bounded(current.getMessage());
     }
 
+    /**
+     * Appends {@code suffix} to {@code primary} within {@link #MAX_EVIDENCE_LENGTH}, truncating
+     * the primary first so the suffix (e.g. cleanup classification) is always retained.
+     */
+    private static String composeWithSuffix(String primary, String suffix) {
+        if (primary.length() + suffix.length() <= MAX_EVIDENCE_LENGTH) {
+            return primary + suffix;
+        }
+        int primaryBudget = MAX_EVIDENCE_LENGTH - suffix.length();
+        if (primaryBudget <= 0) {
+            return bounded(suffix);
+        }
+        return primary.substring(0, primaryBudget) + suffix;
+    }
+
     private static String bounded(String value) {
         if (value == null) {
             return "case failed";
         }
-        return value.length() <= 512 ? value : value.substring(0, 512);
+        return value.length() <= MAX_EVIDENCE_LENGTH
+                ? value : value.substring(0, MAX_EVIDENCE_LENGTH);
     }
 
     @Override public void close() {

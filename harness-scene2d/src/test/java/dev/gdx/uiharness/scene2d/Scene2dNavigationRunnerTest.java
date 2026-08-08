@@ -20,6 +20,7 @@ import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
 import dev.gdx.uiharness.core.scenario.ScenarioLifecycle;
 import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
 import dev.gdx.uiharness.core.scenario.ScenarioRequest;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -164,6 +165,36 @@ final class Scene2dNavigationRunnerTest {
         }
     }
 
+    @Test void rejectingDeadlineScheduleReleasesPendingSlotAndScenarioLease() {
+        try (Fixture f = new Fixture(1, new ThrowingManualDeadlines(1))) {
+            f.route(Keys.TAB, f.second);
+
+            // The scenario acquisition is submitted first; the navigation armDeadline then
+            // throws: the original scheduling failure must propagate synchronously.
+            assertThrows(IllegalStateException.class,
+                    () -> f.inspect(f.request(List.of(NavigationInput.TAB))));
+
+            // The pending scenario acquisition was cancelled terminally: draining cleans the
+            // scenario exactly once and never hands a lease to admitted traversal work.
+            f.scheduler.drain();
+            assertEquals(1, f.cleanups.get(),
+                    "the cancelled scenario run must clean exactly once");
+            assertEquals(0, f.dispatches.get(),
+                    "no traversal input may be dispatched for the failed run");
+
+            // The pending slot was released instead of retained: a new run is admitted,
+            // traverses, and cleans its own scenario lease exactly once.
+            CompletionStage<NavigationResult> run = f.inspect(f.request(List.of(NavigationInput.TAB)));
+            f.readyFrame();
+            f.nextFrame();
+            NavigationResult result = run.toCompletableFuture().join();
+            assertEquals("test-id:second", result.path().steps().get(0).afterIdentity());
+            assertEquals(1, f.dispatches.get());
+            assertEquals(2, f.cleanups.get(),
+                    "the second traversal cleans its scenario lease exactly once");
+        }
+    }
+
     @Test void scenarioUiIsLeasedThroughTraversalAndCleanedOnceOnEveryTerminal() {
         try (Fixture f = new Fixture()) {
             f.route(Keys.TAB, f.second);
@@ -233,7 +264,7 @@ final class Scene2dNavigationRunnerTest {
         final Stage stage = Scene2dTestSupport.stage();
         final ControlledStageClock clock = new ControlledStageClock(stage, step);
         final RenderThreadScheduler scheduler;
-        final ManualDeadlines deadlines = new ManualDeadlines();
+        final ManualDeadlines deadlines;
         final Scene2dSession session = new Scene2dSession(stage);
         final ScenarioRegistry registry = new ScenarioRegistry();
         final AtomicInteger dispatches = new AtomicInteger();
@@ -249,8 +280,10 @@ final class Scene2dNavigationRunnerTest {
         final Scene2dNavigationRunner runner;
 
         Fixture() { this(8); }
-        Fixture(int maxPending) {
+        Fixture(int maxPending) { this(maxPending, new ManualDeadlines()); }
+        Fixture(int maxPending, ManualDeadlines deadlines) {
             scheduler = new RenderThreadScheduler(64);
+            this.deadlines = deadlines;
             registry.register(new ScenarioDefinition(1, "navigation", "1", "app", List.of("desktop"),
                     1, Duration.ofMinutes(1)), new ScenarioLifecycle() {
                 @Override public void setup(ScenarioRequest request) {}
@@ -264,8 +297,8 @@ final class Scene2dNavigationRunnerTest {
                 }
                 @Override public void cleanup(ScenarioRequest request) { cleanups.incrementAndGet(); }
             });
-            scenarios = new Scene2dScenarioRunner(registry, scheduler, clock, deadlines);
-            runner = new Scene2dNavigationRunner(
+            scenarios = Scene2dScenarioRunner.withDeadlineScheduler(registry, scheduler, clock, deadlines);
+            runner = Scene2dNavigationRunner.withDeadlineScheduler(
                     scenarios, session, new Scene2dInputDispatcher(stage, input), scheduler, clock,
                     deadlines, clock::revision, clock::frame,
                     new Scene2dNavigationRunner.Scenario("navigation", 7, Map.of(), "desktop",
@@ -373,7 +406,7 @@ final class Scene2dNavigationRunnerTest {
         }
     }
 
-    private static final class ManualDeadlines implements Scene2dScenarioDeadlineScheduler {
+    private static class ManualDeadlines implements DeadlineScheduler {
         private final List<Entry> entries = new ArrayList<>();
         @Override public Cancellation schedule(Duration delay, Runnable signal) {
             Entry entry = new Entry(delay, signal);
@@ -395,6 +428,23 @@ final class Scene2dNavigationRunnerTest {
                 this.delay = delay;
                 this.signal = signal;
             }
+        }
+    }
+
+    /** Rejects one {@link #schedule} call with a synchronous failure, then behaves normally. */
+    private static final class ThrowingManualDeadlines extends ManualDeadlines {
+        private final int throwOnCall;
+        private int calls;
+
+        ThrowingManualDeadlines(int throwOnCall) {
+            this.throwOnCall = throwOnCall;
+        }
+
+        @Override public Cancellation schedule(Duration delay, Runnable signal) {
+            if (calls++ == throwOnCall) {
+                throw new IllegalStateException("deadline scheduler rejected");
+            }
+            return super.schedule(delay, signal);
         }
     }
 }

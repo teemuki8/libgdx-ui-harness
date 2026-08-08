@@ -9,6 +9,7 @@ import dev.gdx.uiharness.core.assertion.AssertionSnapshotSource;
 import dev.gdx.uiharness.core.assertion.UiAssertion;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.StrictResolution;
+import dev.gdx.uiharness.core.matrix.MatrixCaseResult;
 import dev.gdx.uiharness.core.matrix.MatrixCaseStatus;
 import dev.gdx.uiharness.core.matrix.MatrixDefinition;
 import dev.gdx.uiharness.core.matrix.MatrixHiDpi;
@@ -27,9 +28,9 @@ import dev.gdx.uiharness.core.scenario.ScenarioRequest;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.wait.FrameSignal;
 import dev.gdx.uiharness.core.wait.WaitEngine;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import dev.gdx.uiharness.scene2d.RenderThreadScheduler;
-import dev.gdx.uiharness.scene2d.Scene2dScenarioDeadlineScheduler;
 import dev.gdx.uiharness.scene2d.Scene2dScenarioRunner;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -161,6 +162,152 @@ final class Lwjgl3MatrixRunnerTest {
         }
     }
 
+    @Test void assertionStageFailureReleasesTheLeaseBeforeTheNextCaseBegins() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.saveAbsent = true;
+            fixture.mismatchedSnapshots = true;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720), new MatrixWindow(1920, 1080)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 24 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            assertEquals(2, report.results().size());
+            assertEquals(MatrixCaseStatus.FAILED, report.results().getFirst().status());
+            assertTrue(!report.results().getFirst().evidence().isEmpty());
+            assertEquals(MatrixCaseStatus.PASSED, report.results().get(1).status(),
+                    report.results().get(1).evidence());
+            assertEquals(2, fixture.acquisitions.get());
+            assertEquals(2, fixture.releases.get());
+            assertEquals(1, fixture.releasesAtNextAcquire.get(),
+                    "the first case must release its lease before the next case begins");
+        }
+    }
+
+    @Test void cleanupFailureOnReleaseFailsAnOtherwisePassingCaseWithCleanupEvidence() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.failCleanup = true;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            assertEquals(List.of(0), result.passedAssertions(),
+                    "the assertion itself passed");
+            assertTrue(result.evidence().contains("CLEANUP_FAILED"), result.evidence());
+            assertEquals(1, fixture.releases.get());
+            assertEquals(1, fixture.acquisitions.get());
+        }
+    }
+
+    @Test void cleanupFailureOnReleaseKeepsPrimaryAssertionFailureAndRetainsCleanupEvidence() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.saveAbsent = true;
+            fixture.mismatchedSnapshots = true;
+            fixture.failCleanup = true;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            String evidence = result.evidence();
+            assertTrue(evidence.contains("does not match delivered frame"),
+                    "the primary assertion failure must remain primary: " + evidence);
+            assertTrue(evidence.contains("CLEANUP_FAILED"),
+                    "the release cleanup failure must be retained: " + evidence);
+            assertEquals(1, fixture.releases.get());
+        }
+    }
+
+    @Test void overLimitPrimaryAssertionFailureRetainsCleanupClassificationWithinTheBound() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.saveAbsent = true;
+            fixture.longResolutionFailure = true;
+            fixture.failCleanup = true;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            fixture.nowNanos[0] += Duration.ofSeconds(6).toNanos();
+            fixture.deadlines.expire();
+            for (int index = 0; index < 4 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            String evidence = result.evidence();
+            assertTrue(evidence.length() <= 512, "case evidence must stay bounded");
+            assertTrue(evidence.startsWith("primary assertion failure"),
+                    "the primary failure identity must stay first: " + evidence);
+            assertTrue(evidence.contains("CLEANUP_FAILED"),
+                    "cleanup classification must remain within the bound: " + evidence);
+        }
+    }
+
     private static final class Fixture implements AutoCloseable {
         final Duration step = Duration.ofMillis(16);
         final long[] nowNanos = {0};
@@ -170,12 +317,18 @@ final class Lwjgl3MatrixRunnerTest {
         final RenderThreadScheduler scheduler = new RenderThreadScheduler(64);
         final ScenarioRegistry registry = new ScenarioRegistry();
         final AtomicInteger acquisitions = new AtomicInteger();
+        final AtomicInteger releases = new AtomicInteger();
+        final AtomicInteger releasesAtNextAcquire = new AtomicInteger();
         final AtomicInteger observed = new AtomicInteger();
         final ManualFrames frames = new ManualFrames();
         final ManualDeadlines deadlines = new ManualDeadlines();
         final Scene2dScenarioRunner scenarios;
         final Lwjgl3MatrixRunner runner;
         boolean visible = true;
+        boolean saveAbsent;
+        boolean mismatchedSnapshots;
+        boolean longResolutionFailure;
+        boolean failCleanup;
 
         Fixture() {
             registry.register(new ScenarioDefinition(
@@ -184,6 +337,7 @@ final class Lwjgl3MatrixRunnerTest {
                     new ScenarioLifecycle() {
                         @Override public void setup(ScenarioRequest request) {}
                         @Override public void reset(ScenarioRequest request) {
+                            releasesAtNextAcquire.set(releases.get());
                             acquisitions.incrementAndGet();
                         }
                         @Override public boolean ready(ScenarioRequest request) {
@@ -193,28 +347,36 @@ final class Lwjgl3MatrixRunnerTest {
                                 ScenarioRequest request, SemanticSnapshot snapshot) {
                             return "ready";
                         }
-                        @Override public void cleanup(ScenarioRequest request) {}
+                        @Override public void cleanup(ScenarioRequest request) {
+                            releases.incrementAndGet();
+                            if (failCleanup) {
+                                throw new IllegalStateException("cleanup rejected");
+                            }
+                        }
                     });
-            Scene2dScenarioDeadlineScheduler scenarioDeadlines =
-                    new Scene2dScenarioDeadlineScheduler() {
+            DeadlineScheduler scenarioDeadlines =
+                    new DeadlineScheduler() {
                         @Override public Cancellation schedule(
                                 Duration delay, Runnable signal) {
                             return () -> {};
                         }
                     };
-            scenarios = new Scene2dScenarioRunner(
+            scenarios = Scene2dScenarioRunner.withDeadlineScheduler(
                     registry, scheduler, clock, scenarioDeadlines);
             StrictResolution locators = new StrictResolution();
             AssertionSnapshotSource assertionSnapshots = new AssertionSnapshotSource() {
                 @Override public SemanticSnapshot currentSnapshot() {
-                    return snapshot();
+                    return Fixture.this.snapshot();
                 }
 
                 @Override public SemanticSnapshot snapshotFor(FrameSignal.Frame frame) {
-                    return snapshot();
-                }
-
-                private SemanticSnapshot snapshot() {
+                    if (longResolutionFailure) {
+                        throw new IllegalStateException("primary assertion failure ".repeat(40));
+                    }
+                    if (mismatchedSnapshots) {
+                        return snapshot(Fixture.this.revision[0] + 1_000,
+                                Fixture.this.frame[0] + 1_000);
+                    }
                     return Fixture.this.snapshot();
                 }
             };
@@ -223,6 +385,8 @@ final class Lwjgl3MatrixRunnerTest {
                     deadlines);
             runner = new Lwjgl3MatrixRunner(scenarios, waits, matrixCase -> {
                 observed.incrementAndGet();
+                saveAbsent = false;
+                mismatchedSnapshots = false;
                 return new Lwjgl3MatrixRunner.DisplayObservation(
                         matrixCase.window(), matrixCase.uiScale(),
                         matrixCase.devicePixelRatio(), matrixCase.hiDpiMode());
@@ -243,15 +407,22 @@ final class Lwjgl3MatrixRunnerTest {
             SemanticState state = new SemanticState(
                     visible, true, Optional.of(true), Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.empty(), false, true, 1.0, false, true, true);
-            SemanticNode button = new SemanticNode(
-                    "save", "root", List.of(), Role.BUTTON, "Save", "Save", null,
-                    "save", null, "TextButton", state, bounds, bounds, bounds, 0, Map.of());
-            SemanticNode root = new SemanticNode(
-                    "root", null, List.of("save"), Role.GROUP, "root", "", null, null,
-                    null, null, state, bounds, bounds, bounds, 0, Map.of());
             var byId = new LinkedHashMap<String, SemanticNode>();
-            byId.put("root", root);
-            byId.put("save", button);
+            if (saveAbsent) {
+                SemanticNode root = new SemanticNode(
+                        "root", null, List.of(), Role.GROUP, "root", "", null, null,
+                        null, null, state, bounds, bounds, bounds, 0, Map.of());
+                byId.put("root", root);
+            } else {
+                SemanticNode button = new SemanticNode(
+                        "save", "root", List.of(), Role.BUTTON, "Save", "Save", null,
+                        "save", null, "TextButton", state, bounds, bounds, bounds, 0, Map.of());
+                SemanticNode root = new SemanticNode(
+                        "root", null, List.of("save"), Role.GROUP, "root", "", null, null,
+                        null, null, state, bounds, bounds, bounds, 0, Map.of());
+                byId.put("root", root);
+                byId.put("save", button);
+            }
             return new SemanticSnapshot(revision, frame, "root", byId);
         }
 

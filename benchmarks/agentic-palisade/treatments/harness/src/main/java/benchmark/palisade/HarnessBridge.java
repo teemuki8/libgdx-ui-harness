@@ -8,6 +8,7 @@ import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.locator.StrictResolution;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import dev.gdx.uiharness.core.trace.TraceEvent;
 import dev.gdx.uiharness.core.trace.TraceManifest;
@@ -52,6 +53,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -73,6 +76,11 @@ public final class HarnessBridge implements AutoCloseable {
     private final MonotonicClock clock = System::nanoTime;
     private final AtomicLong revision = new AtomicLong();
     private final AtomicLong frame = new AtomicLong();
+    private final ScheduledThreadPoolExecutor deadlineExecutor = createDeadlineExecutor();
+    private final DeadlineScheduler deadlineScheduler = (delay, signal) -> {
+        var scheduled = deadlineExecutor.schedule(signal, delay.toNanos(), TimeUnit.NANOSECONDS);
+        return () -> scheduled.cancel(false);
+    };
     private final RenderThreadScheduler scheduler;
     private final Scene2dSession sceneSession;
     private final Scene2dHarness sceneHarness;
@@ -97,9 +105,9 @@ public final class HarnessBridge implements AutoCloseable {
 
         scheduler = new RenderThreadScheduler(SCHEDULER_CAPACITY);
         sceneSession = new Scene2dSession(stage);
-        fence = new Lwjgl3FrameFence(FENCE_CAPACITY);
+        fence = new Lwjgl3FrameFence(deadlineScheduler, FENCE_CAPACITY);
         sceneHarness = new Scene2dHarness(stage, stage, sceneSession, scheduler, fence,
-                revision::get, frame::get);
+                revision::get, frame::get, deadlineScheduler);
         capture = new Lwjgl3ScreenCapture(fence, sceneSession::snapshot);
         LocatorEngine locators = new StrictResolution();
         artifactStore = new FileArtifactStore(this.artifactRoot,
@@ -157,6 +165,13 @@ public final class HarnessBridge implements AutoCloseable {
         return new HarnessBridge(candidate, artifactRoot);
     }
 
+    private static ScheduledThreadPoolExecutor createDeadlineExecutor() {
+        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1,
+                Thread.ofPlatform().name("palisade-harness-deadlines").daemon().factory());
+        executor.setRemoveOnCancelPolicy(true);
+        return executor;
+    }
+
     /** Returns metadata tagging for actors in the attached application-owned Stage. */
     public Semantics semantics() {
         requireOpen();
@@ -211,6 +226,8 @@ public final class HarnessBridge implements AutoCloseable {
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) return;
         RuntimeException failure = null;
+        // Deadline consumers close and cancel their signals first so the deadline executor
+        // terminates immediately when it is closed last; its own close is bounded.
         failure = closeResource(tools, failure);
         failure = closeResource(waits, failure);
         failure = closeResource(capture, failure);
@@ -221,6 +238,7 @@ public final class HarnessBridge implements AutoCloseable {
         failure = closeResource(traces, failure);
         failure = closeResource(artifactStore, failure);
         failure = closeResource(protocolExecutor, failure);
+        failure = closeDeadlineExecutor(failure);
         try {
             deleteOwnedTree(traceRoot, 0);
             deleteOwnedTree(artifactRoot, 0);
@@ -349,6 +367,28 @@ public final class HarnessBridge implements AutoCloseable {
             }
         }
         Files.delete(path);
+    }
+
+    /**
+     * Shuts the deadline executor down immediately: queued signals are cancelled and drained and
+     * any running signal is interrupted, so close never waits out a delayed deadline. Termination
+     * is bounded and a timeout joins the aggregated close failure.
+     */
+    private RuntimeException closeDeadlineExecutor(RuntimeException accumulated) {
+        List<Runnable> abandoned = deadlineExecutor.shutdownNow();
+        try {
+            if (!deadlineExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                return append(accumulated, new IllegalStateException(
+                        "Harness deadline executor did not terminate within 5 seconds"
+                                + " (drained delayed tasks: " + abandoned.size() + ")"));
+            }
+            return accumulated;
+        } catch (InterruptedException interruption) {
+            Thread.currentThread().interrupt();
+            return append(accumulated, new IllegalStateException(
+                    "Interrupted while awaiting harness deadline executor termination",
+                    interruption));
+        }
     }
 
     private static RuntimeException closeResource(

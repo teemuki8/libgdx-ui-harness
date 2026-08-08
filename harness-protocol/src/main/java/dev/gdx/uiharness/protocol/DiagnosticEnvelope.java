@@ -166,6 +166,34 @@ public record DiagnosticEnvelope(
                 stateIdentity, progress, recovery, evidenceRefs);
     }
 
+    /**
+     * Constructs a complete envelope without locator suggestions.
+     *
+     * <p>This overload preserves the released protocol API; callers that provide structured
+     * suggestions use the overload accepting {@link LocatorSuggestionSpec} values.
+     */
+    public static DiagnosticEnvelope create(
+            String requestId,
+            long sequence,
+            String operation,
+            DiagnosticCode code,
+            String message,
+            List<FieldProblem> problems,
+            String locator,
+            List<Map<String, String>> candidates,
+            Map<String, String> details,
+            Long elapsedMillis,
+            String traceId,
+            StateIdentity stateIdentity,
+            Progress progress,
+            Recovery recovery,
+            List<String> evidenceRefs) {
+        return createInternal(
+                requestId, sequence, operation, code, message, problems, locator, candidates,
+                details, List.of(), false, elapsedMillis, traceId, stateIdentity, progress,
+                recovery, evidenceRefs);
+    }
+
     /** Constructs a complete envelope retaining bounded protocol failure evidence. */
     public static DiagnosticEnvelope create(
             String requestId,
@@ -178,6 +206,30 @@ public record DiagnosticEnvelope(
             List<Map<String, String>> candidates,
             Map<String, String> details,
             List<LocatorSuggestionSpec> suggestions,
+            Long elapsedMillis,
+            String traceId,
+            StateIdentity stateIdentity,
+            Progress progress,
+            Recovery recovery,
+            List<String> evidenceRefs) {
+        return createInternal(
+                requestId, sequence, operation, code, message, problems, locator, candidates,
+                details, suggestions, true, elapsedMillis, traceId, stateIdentity, progress,
+                recovery, evidenceRefs);
+    }
+
+    private static DiagnosticEnvelope createInternal(
+            String requestId,
+            long sequence,
+            String operation,
+            DiagnosticCode code,
+            String message,
+            List<FieldProblem> problems,
+            String locator,
+            List<Map<String, String>> candidates,
+            Map<String, String> details,
+            List<LocatorSuggestionSpec> suggestions,
+            boolean suggestionsAffectIdentity,
             Long elapsedMillis,
             String traceId,
             StateIdentity stateIdentity,
@@ -201,7 +253,9 @@ public record DiagnosticEnvelope(
             identity.put("locator", locator);
             identity.put("candidates", candidates);
             identity.put("details", details);
-            identity.put("suggestions", suggestions);
+            if (suggestionsAffectIdentity) {
+                identity.put("suggestions", suggestions);
+            }
             identity.put("elapsedMillis", elapsedMillis);
             identity.put("traceId", traceId);
             identity.put("stateIdentity", stateIdentity);

@@ -23,6 +23,14 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
     private FixtureScreen screen;
     private MarkupSigninScreen markupScreen;
     private FixtureControl control;
+    /**
+     * Readiness is a completed-frame barrier: {@code REFERENCE_UI_READY} is printed only after
+     * the first frame finishes drawing. Scene2D defers widget layout until the first draw, so
+     * declaring readiness from {@code create()} lets a client observe a stage that is still
+     * mid-layout (bounds change between two immediate observations). See
+     * {@link #render()} and {@link #readyPrinted}.
+     */
+    private boolean readyPrinted;
 
     private ReferenceUiApplication(
             Path processRoot, String benchmarkScenario, int benchmarkDelayMillis,
@@ -93,7 +101,6 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
         }
         Gdx.input.setInputProcessor(screen.stage());
         control.startMcp(System.in, System.out);
-        System.err.println("REFERENCE_UI_READY");
     }
 
     @Override public void render() {
@@ -102,6 +109,10 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
         screen.draw();
         control.afterDraw();
+        if (!readyPrinted) {
+            readyPrinted = true;
+            System.err.println("REFERENCE_UI_READY");
+        }
     }
 
     @Override public void resize(int width, int height) {

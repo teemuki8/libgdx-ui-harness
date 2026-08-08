@@ -12,6 +12,7 @@ import dev.gdx.uiharness.core.navigation.NavigationValidator;
 import dev.gdx.uiharness.core.scenario.ScenarioFailure;
 import dev.gdx.uiharness.core.scenario.ScenarioRequest;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -53,7 +54,7 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
     private final Scene2dInputDispatcher input;
     private final RenderThreadScheduler scheduler;
     private final MonotonicClock clock;
-    private final Scene2dScenarioDeadlineScheduler deadlines;
+    private final DeadlineScheduler deadlines;
     private final LongSupplier revision;
     private final LongSupplier frame;
     private final Scenario scenario;
@@ -62,6 +63,11 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
     private final ArrayList<Run> active = new ArrayList<>();
     private boolean open = true;
 
+    /**
+     * Retained released constructor: adapts the legacy scene2d deadline scheduler to the core
+     * {@link DeadlineScheduler} contract without changing scheduling semantics. This is the only
+     * constructor taking a functional scheduler, so released lambda call sites stay unambiguous.
+     */
     public Scene2dNavigationRunner(
             Scene2dScenarioRunner scenarios,
             Scene2dSession session,
@@ -69,6 +75,37 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
             RenderThreadScheduler scheduler,
             MonotonicClock clock,
             Scene2dScenarioDeadlineScheduler deadlines,
+            LongSupplier revision,
+            LongSupplier frame,
+            Scenario scenario,
+            int maxPending) {
+        this(scenarios, session, input, scheduler, clock, adapt(deadlines),
+                revision, frame, scenario, maxPending);
+    }
+
+    /** Creates a runner driven by the core deadline scheduler contract. */
+    public static Scene2dNavigationRunner withDeadlineScheduler(
+            Scene2dScenarioRunner scenarios,
+            Scene2dSession session,
+            Scene2dInputDispatcher input,
+            RenderThreadScheduler scheduler,
+            MonotonicClock clock,
+            DeadlineScheduler deadlines,
+            LongSupplier revision,
+            LongSupplier frame,
+            Scenario scenario,
+            int maxPending) {
+        return new Scene2dNavigationRunner(scenarios, session, input, scheduler, clock, deadlines,
+                revision, frame, scenario, maxPending);
+    }
+
+    private Scene2dNavigationRunner(
+            Scene2dScenarioRunner scenarios,
+            Scene2dSession session,
+            Scene2dInputDispatcher input,
+            RenderThreadScheduler scheduler,
+            MonotonicClock clock,
+            DeadlineScheduler deadlines,
             LongSupplier revision,
             LongSupplier frame,
             Scenario scenario,
@@ -110,8 +147,17 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
             }
             active.add(run);
         }
-        run.startScenario();
-        run.armDeadline();
+        try {
+            run.startScenario();
+            run.armDeadline();
+        } catch (RuntimeException failure) {
+            // A scheduling call threw after the run was admitted: roll the pending run back
+            // terminally (cancel the scenario acquisition so a subsequently READY lease is
+            // released instead of leaked, free the active slot, close the result) and
+            // propagate the original failure to the caller.
+            run.schedulingFailed(failure);
+            throw failure;
+        }
         return run.result;
     }
 
@@ -148,6 +194,14 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         return Deadline.after(clock, INTERNAL_DISPATCH_TIMEOUT);
     }
 
+    private static DeadlineScheduler adapt(Scene2dScenarioDeadlineScheduler legacy) {
+        Objects.requireNonNull(legacy, "deadlines");
+        return (delay, signal) -> {
+            Scene2dScenarioDeadlineScheduler.Cancellation cancellation = legacy.schedule(delay, signal);
+            return cancellation::cancel;
+        };
+    }
+
     private void observe(Run run, CompletionStage<?> submitted) {
         submitted.whenComplete((ignored, failure) -> {
             if (failure != null) {
@@ -168,7 +222,7 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         private final ArrayList<NavigationStep> steps = new ArrayList<>();
         private final ResultFuture result = new ResultFuture(this);
         private final Deadline deadline;
-        private Scene2dScenarioDeadlineScheduler.Cancellation deadlineCancellation;
+        private DeadlineScheduler.Cancellation deadlineCancellation;
         private CompletionStage<Scene2dScenarioRunner.Lease> scenarioStage;
         private Scene2dScenarioRunner.Lease scenarioLease;
         private Observation before;
@@ -224,7 +278,7 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         }
 
         void armDeadline() {
-            Scene2dScenarioDeadlineScheduler.Cancellation scheduled =
+            DeadlineScheduler.Cancellation scheduled =
                     deadlines.schedule(request.deadline(), this::deadlineReached);
             synchronized (this) {
                 if (terminal) {
@@ -385,6 +439,27 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
             finishAfterCleanup(null, failure, false);
         }
 
+        /**
+         * Terminally rolls back a run whose scheduling call threw after it was admitted: the
+         * pending scenario acquisition is cancelled so a subsequently READY lease is released
+         * instead of leaked or used by admitted work, the active slot is freed exactly once,
+         * and the result closes with the original failure.
+         */
+        void schedulingFailed(Throwable failure) {
+            CompletionStage<Scene2dScenarioRunner.Lease> pending;
+            synchronized (this) {
+                if (terminal) {
+                    return;
+                }
+                terminal = true;
+                pending = scenarioStage;
+            }
+            if (scenarioLease == null && pending != null) {
+                pending.toCompletableFuture().cancel(false);
+            }
+            finishAfterCleanup(null, failure, false);
+        }
+
         private void complete(NavigationResult value) {
             synchronized (this) {
                 if (terminal) {
@@ -419,7 +494,7 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         }
 
         private void cancelDeadline() {
-            Scene2dScenarioDeadlineScheduler.Cancellation cancellation;
+            DeadlineScheduler.Cancellation cancellation;
             synchronized (this) {
                 cancellation = deadlineCancellation;
                 deadlineCancellation = null;

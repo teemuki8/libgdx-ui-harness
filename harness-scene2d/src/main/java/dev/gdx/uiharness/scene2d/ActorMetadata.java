@@ -72,6 +72,23 @@ public record ActorMetadata(
                 control, currentValue, viewportId, typography, null, properties, null);
     }
 
+    /** Retains the released layout-complete constructor; the new binding defaults to {@code null}. */
+    public ActorMetadata(
+            Role role,
+            String accessibleName,
+            String text,
+            String label,
+            String testId,
+            ControlMetadata control,
+            ContractValue currentValue,
+            String viewportId,
+            TypographyMetadata typography,
+            LayoutMetadata layout,
+            Map<String, String> properties) {
+        this(role, accessibleName, text, label, testId,
+                control, currentValue, viewportId, typography, layout, properties, null);
+    }
+
     ActorMetadata withRole(Role value) {
         return copy(value, accessibleName, text, label, testId,
                 control, currentValue, viewportId, typography);

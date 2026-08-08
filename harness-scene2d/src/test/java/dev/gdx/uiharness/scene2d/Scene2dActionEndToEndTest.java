@@ -3,6 +3,8 @@ package dev.gdx.uiharness.scene2d;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -33,7 +35,9 @@ import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.StrictResolution;
+import dev.gdx.uiharness.core.model.Role;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
+import dev.gdx.uiharness.core.wait.FrameSignal;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.mcp.ArtifactReference;
 import dev.gdx.uiharness.mcp.HarnessToolHandler;
@@ -41,6 +45,9 @@ import dev.gdx.uiharness.protocol.CapabilitySet;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
 import io.modelcontextprotocol.spec.McpSchema;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
+import dev.gdx.uiharness.core.time.MonotonicClock;
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -50,7 +57,9 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -233,23 +242,104 @@ final class Scene2dActionEndToEndTest {
         }
     }
 
-    @Test void dispatchThatWinsCannotBeCancelledOrClosedRetroactively() {
+    @Test void dispatchedInputIsNotUndoneByCancellationOrClose() {
         try (Fixture fixture = new Fixture()) {
             TextButton button = fixture.button("dispatch-wins", "Dispatch", 100, 100);
             CompletionStage<ActionResult> click = fixture.harness.click(
                     Locator.testId("dispatch-wins"), fixture.deadline());
-            fixture.nextFrame();
-            fixture.nextFrame();
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch completes; the confirmation frame is pending
 
             assertTrue(button.isChecked());
             assertFalse(click.toCompletableFuture().isDone());
-            assertFalse(click.toCompletableFuture().cancel(false));
+            assertTrue(click.toCompletableFuture().cancel(false),
+                    "post-dispatch cancellation claims the pending confirmation");
+            assertTrue(click.toCompletableFuture().isCancelled());
+            assertTrue(button.isChecked(), "cancellation must not undo the dispatched input");
             fixture.harness.close();
-            assertFalse(click.toCompletableFuture().isDone());
-            fixture.nextFrame();
+            fixture.nextFrame(); // a late completed frame must not override the cancellation
+            assertTrue(click.toCompletableFuture().isCancelled());
+            assertTrue(button.isChecked());
+        }
+    }
 
-            ActionResult result = click.toCompletableFuture().join();
-            assertTrue(result.afterRevision() > result.beforeRevision());
+    @Test void postDispatchCancellationCancelsTokenAndLateSignalNoOps() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.button("cancel-awaiting", "Cancel", 100, 100);
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("cancel-awaiting"), fixture.deadline());
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch completes and the deadline signal is armed
+
+            assertFalse(fixture.deadlines.cancelled,
+                    "the armed signal is live before cancellation");
+            assertTrue(click.toCompletableFuture().cancel(false));
+            assertTrue(fixture.deadlines.cancelled,
+                    "post-dispatch cancellation must cancel the armed deadline signal");
+            fixture.deadlines.expire(); // a late signal observes the terminal state
+            assertTrue(click.toCompletableFuture().isCancelled());
+            fixture.nextFrame(); // a late completed frame observes the terminal state
+            assertTrue(click.toCompletableFuture().isCancelled());
+            assertTrue(click.toCompletableFuture().isDone());
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    click.toCompletableFuture()::join);
+        }
+    }
+
+    @Test void reconciliationCancellationNeverRunsWhileHoldingTheRequestMonitor() {
+        ManualClock manual = new ManualClock();
+        AtomicBoolean cancellationInvoked = new AtomicBoolean();
+        AtomicReference<Boolean> cancellationHeldMonitor = new AtomicReference<>();
+        CompletableFuture<?>[] request = new CompletableFuture<?>[1];
+        DeadlineScheduler inlineFiringScheduler = (delay, signal) -> {
+            manual.advance(delay); // simulate the delay elapsing before an inline zero-delay fire
+            signal.run(); // claims the timeout before the install-or-cancel reconcile runs
+            return () -> {
+                cancellationInvoked.set(true);
+                cancellationHeldMonitor.set(Thread.holdsLock(request[0]));
+            };
+        };
+        try (Fixture fixture = new Fixture(
+                Scene2dTestSupport.stage(), null, inlineFiringScheduler)) {
+            fixture.button("reconcile", "Reconcile", 100, 100);
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("reconcile"), Deadline.after(manual, Duration.ofSeconds(1)));
+            request[0] = click.toCompletableFuture();
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch arms; the inline signal claims; the reconcile cancels
+
+            assertTrue(cancellationInvoked.get(),
+                    "the in-flight schedule token must be cancelled by the reconcile");
+            assertTrue(click.toCompletableFuture().isCompletedExceptionally());
+            assertEquals(ErrorCode.TIMEOUT, failure(click).code());
+            assertFalse(cancellationHeldMonitor.get(),
+                    "reconciliation must cancel the token only after leaving the request monitor");
+        }
+    }
+
+    @Test void inlineDeadlineSignalNeverCompletesTheFutureWhileHoldingTheRequestMonitor() {
+        ManualClock manual = new ManualClock();
+        try (Fixture fixture = new Fixture(
+                Scene2dTestSupport.stage(), null, new InlineDeadlineScheduler(manual))) {
+            fixture.button("inline", "Inline", 100, 100);
+            AtomicBoolean continuationRan = new AtomicBoolean();
+            AtomicReference<Boolean> continuationHeldMonitor = new AtomicReference<>();
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("inline"), Deadline.after(manual, Duration.ofSeconds(1)));
+            click.whenComplete((ignored, failure) -> {
+                continuationRan.set(true);
+                continuationHeldMonitor.set(Thread.holdsLock(click.toCompletableFuture()));
+            });
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch arms the signal; the inline fake fires and claims
+
+            assertTrue(continuationRan.get(),
+                    "the inline zero-delay signal must complete the action");
+            assertTrue(click.toCompletableFuture().isCompletedExceptionally());
+            assertEquals(ErrorCode.TIMEOUT, failure(click).code());
+            assertFalse(continuationHeldMonitor.get(),
+                    "the completion continuation must never run while the request monitor "
+                            + "is retained");
         }
     }
 
@@ -492,11 +582,369 @@ final class Scene2dActionEndToEndTest {
         }
     }
 
+    @Test void awaitingFrameActionExpiresWithoutAnotherFrame() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.button("frozen", "Frozen", 100, 100);
+            ManualClock manual = new ManualClock();
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("frozen"), Deadline.after(manual, Duration.ofSeconds(1)));
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch completes and the deadline signal is armed
+
+            manual.advance(Duration.ofSeconds(1));
+            fixture.deadlines.expire();
+            assertTrue(click.toCompletableFuture().isDone(),
+                    "the deadline signal must fail the action without a completed frame");
+            HarnessException error = failure(click);
+            assertEquals(ErrorCode.TIMEOUT, error.code());
+            assertTrue(error.evidence().elapsed().toMillis() >= 1000,
+                    "the typed timeout must retain the elapsed monotonic time");
+            assertTrue(error.evidence().lastSnapshotRevision().isPresent(),
+                    "the typed timeout must retain the last observed revision");
+            assertTrue(error.evidence().details().containsKey("unmet"),
+                    "the typed timeout must retain the last actionability evidence");
+        }
+    }
+
+    @Test void deadlineSignalRacingACompletedFrameCompletesExactlyOnce() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.button("race", "Race", 100, 100);
+            ManualClock manual = new ManualClock();
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("race"), Deadline.after(manual, Duration.ofSeconds(1)));
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch completes and the deadline signal is armed
+
+            manual.advance(Duration.ofSeconds(1));
+            fixture.deadlines.expire();
+            assertTrue(click.toCompletableFuture().isDone(),
+                    "the signal must win the race before any completed frame");
+            fixture.nextFrame(); // a late completed frame must not override the timeout
+
+            assertTrue(click.toCompletableFuture().isCompletedExceptionally(),
+                    "the timeout must complete exactly once");
+            assertEquals(ErrorCode.TIMEOUT, failure(click).code());
+        }
+    }
+
+    @Test void completionImmediatelyBeforeTheSignalWins() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.button("wins", "Wins", 100, 100);
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("wins"), fixture.deadline());
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch completes and the deadline signal is armed
+            fixture.nextFrame(); // the completing frame wins and cancels the signal
+
+            ActionResult result = click.toCompletableFuture().join();
+            assertTrue(result.afterRevision() > result.beforeRevision());
+            fixture.deadlines.expire(); // a late signal must observe the terminal state
+            assertFalse(click.toCompletableFuture().isCompletedExceptionally());
+            assertEquals("true", click.toCompletableFuture().join().observedState());
+        }
+    }
+
+    @Test void closingHarnessCancelsArmedActionDeadlineSignals() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.button("closing", "Closing", 100, 100);
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("closing"), fixture.deadline());
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch completes and the deadline signal is armed
+
+            fixture.harness.close();
+            assertTrue(fixture.deadlines.cancelled,
+                    "closing the harness must cancel every armed deadline signal");
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(click).code(),
+                    "a dispatched action must not wait for post-close frames");
+            fixture.deadlines.expire(); // a late signal must not disturb the terminal outcome
+            fixture.nextFrame(); // a late completed frame must not override the terminal outcome
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(click).code());
+        }
+    }
+
+    @Test void releasedActorMetadataConstructorIsRetainedWithNullBinding() {
+        ActorMetadata metadata = new ActorMetadata(
+                Role.BUTTON, "Save", "Save", null, "save",
+                null, null, null, null, null,
+                Map.of("k", "v"));
+
+        assertEquals(Role.BUTTON, metadata.role());
+        assertEquals("Save", metadata.accessibleName());
+        assertEquals("save", metadata.testId());
+        assertEquals(Map.of("k", "v"), metadata.properties());
+        assertNull(metadata.binding(),
+                "the released constructor must default the new binding to null");
+    }
+
+    @Test void legacyConstructorHonorsNoFrameActionDeadlinesWithRealScheduler() {
+        try (Fixture fixture = Fixture.legacy()) {
+            fixture.button("frozen-legacy", "Frozen", 100, 100);
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("frozen-legacy"),
+                    Deadline.after(System::nanoTime, Duration.ofMillis(250)));
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch completes and the owned scheduler arms the signal
+
+            HarnessException error = failure(click); // no frame; the real signal must fire
+            assertEquals(ErrorCode.TIMEOUT, error.code());
+            assertTrue(error.evidence().elapsed().toMillis() >= 100,
+                    "the typed timeout must retain real elapsed monotonic time");
+        }
+    }
+
+    @Test void legacyConstructorShutsOwnedSchedulerOnCloseAndFailsInFlightActions() {
+        try (Fixture fixture = Fixture.legacy()) {
+            fixture.button("dispatched-legacy", "Dispatch", 100, 100);
+            fixture.button("blocked-legacy", "Blocked", 400, 100);
+            Actor cover = new Actor();
+            cover.setBounds(390, 90, 200, 80);
+            fixture.stage.addActor(cover);
+            CompletionStage<ActionResult> dispatched = fixture.harness.click(
+                    Locator.testId("dispatched-legacy"), fixture.deadline());
+            CompletionStage<ActionResult> blocked = fixture.harness.click(
+                    Locator.testId("blocked-legacy"), fixture.deadline());
+            fixture.nextFrame();
+            fixture.nextFrame(); // dispatched is AWAITING_FRAME with an armed signal
+            ScheduledThreadPoolExecutor owned = ownedScheduler(fixture.harness);
+            assertNotNull(owned);
+            assertFalse(owned.isShutdown());
+
+            long closeStarted = System.nanoTime();
+            fixture.harness.close();
+            long closeMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - closeStarted);
+
+            assertTrue(owned.isShutdown(),
+                    "closing a legacy harness must shut down its owned scheduler");
+            assertTrue(owned.isTerminated(),
+                    "the owned scheduler must terminate promptly");
+            assertTrue(closeMillis < 5_000,
+                    "closing with an armed deadline must stay bounded");
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(blocked).code());
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(dispatched).code(),
+                    "a dispatched action must not wait for post-close frames");
+            fixture.nextFrame(); // a late completed frame must not override the terminal outcome
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(dispatched).code());
+        }
+    }
+
+    @Test void injectedConstructorLeavesExternalSchedulerOwned() {
+        AtomicBoolean signalled = new AtomicBoolean();
+        DeadlineScheduler external = (delay, signal) -> {
+            signal.run();
+            return () -> {};
+        };
+        try (Fixture fixture = new Fixture(Scene2dTestSupport.stage(), null, external)) {
+            assertNull(ownedScheduler(fixture.harness),
+                    "an injected scheduler must not be wrapped in an owned scheduler");
+            fixture.harness.close();
+            external.schedule(Duration.ZERO, () -> signalled.set(true)).cancel();
+            assertTrue(signalled.get(),
+                    "closing the harness must leave the injected scheduler usable by its owner");
+        }
+    }
+
+    @Test void concurrentSecondHarnessCloseWaitsForTheFirstCleanup() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            fixture.button("wait-close", "Wait", 100, 100);
+            CompletionStage<ActionResult> pending = fixture.harness.click(
+                    Locator.testId("wait-close"), fixture.deadline());
+            CountDownLatch continuationEntered = new CountDownLatch(1);
+            CountDownLatch releaseContinuation = new CountDownLatch(1);
+            pending.whenComplete((ignored, failure) -> {
+                continuationEntered.countDown();
+                try {
+                    releaseContinuation.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("continuation interrupted", exception);
+                }
+            });
+            Thread firstCloser = new Thread(fixture.harness::close, "first-harness-closer");
+            firstCloser.start();
+            assertTrue(continuationEntered.await(1, TimeUnit.SECONDS),
+                    "the first close must reach the blocking continuation");
+            AtomicBoolean secondCloseReturned = new AtomicBoolean();
+            Thread secondCloser = new Thread(() -> {
+                fixture.harness.close();
+                secondCloseReturned.set(true);
+            }, "second-harness-closer");
+            secondCloser.start();
+            long waitDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (secondCloser.getState() != Thread.State.WAITING
+                    && System.nanoTime() < waitDeadline) {
+                Thread.yield();
+            }
+            assertEquals(Thread.State.WAITING, secondCloser.getState(),
+                    "a concurrent second close must block until the first cleanup finishes");
+            releaseContinuation.countDown();
+            firstCloser.join(1_000);
+            secondCloser.join(1_000);
+            assertFalse(firstCloser.isAlive());
+            assertFalse(secondCloser.isAlive());
+            assertTrue(secondCloseReturned.get(),
+                    "the second close must return once the first cleanup has finished");
+        }
+    }
+
+    @Test void reentrantHarnessCloseFromContinuationDoesNotDeadlock() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.button("reentrant-close", "Close", 100, 100);
+            CompletionStage<ActionResult> pending = fixture.harness.click(
+                    Locator.testId("reentrant-close"), fixture.deadline());
+            AtomicBoolean reentrantCloseReturned = new AtomicBoolean();
+            pending.whenComplete((ignored, failure) -> {
+                fixture.harness.close();
+                reentrantCloseReturned.set(true);
+            });
+            fixture.harness.close();
+
+            assertTrue(reentrantCloseReturned.get(),
+                    "a reentrant close from the closing thread's own continuation must return");
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(pending).code());
+        }
+    }
+
+    @Test void legacyHarnessCloseAggregatesCleanupFailuresAndShutsOwnedScheduler() {
+        FrameSignal throwingSubscriptions = new FrameSignal() {
+            @Override public FrameSignal.Subscription subscribe(FrameSignal.FrameListener listener) {
+                return () -> {
+                    throw new IllegalStateException("subscription-close");
+                };
+            }
+        };
+        Stage stage = Scene2dTestSupport.stage();
+        ControlledStageClock clock = new ControlledStageClock(stage, Duration.ofMillis(16));
+        RenderThreadScheduler scheduler = new RenderThreadScheduler(64);
+        Scene2dSession session = new Scene2dSession(stage);
+        Scene2dHarness legacy = new Scene2dHarness(
+                stage, stage, session, scheduler, throwingSubscriptions,
+                clock::revision, clock::frame);
+        try {
+            CompletionStage<ActionResult> first = legacy.click(
+                    Locator.testId("nope"), Deadline.after(clock, Duration.ofSeconds(5)));
+            CompletionStage<ActionResult> second = legacy.click(
+                    Locator.testId("nope"), Deadline.after(clock, Duration.ofSeconds(5)));
+            ScheduledThreadPoolExecutor owned = ownedScheduler(legacy);
+            assertNotNull(owned);
+
+            IllegalStateException closeFailure = assertThrows(
+                    IllegalStateException.class, legacy::close);
+
+            assertEquals("subscription-close", closeFailure.getMessage(),
+                    "the first cleanup failure must be the primary close failure");
+            assertTrue(owned.isShutdown(),
+                    "the owned scheduler must shut down even when a cleanup step fails");
+            assertTrue(owned.isTerminated());
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(first).code());
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(second).code());
+        } finally {
+            legacy.close();
+            session.close();
+            scheduler.close();
+            clock.close();
+            stage.dispose();
+        }
+    }
+
+    @Test void ownedSchedulerShutdownFailsBoundedWhenWorkerIsBlocked() throws Exception {
+        Object workerLock = new Object();
+        CountDownLatch workerBlocked = new CountDownLatch(1);
+        AtomicBoolean releaseWorker = new AtomicBoolean();
+        Stage stage = Scene2dTestSupport.stage();
+        ControlledStageClock clock = new ControlledStageClock(stage, Duration.ofMillis(16));
+        RenderThreadScheduler scheduler = new RenderThreadScheduler(64);
+        Scene2dSession session = new Scene2dSession(stage);
+        Scene2dHarness legacy = new Scene2dHarness(
+                stage, stage, session, scheduler, clock, clock::revision, clock::frame);
+        ScheduledThreadPoolExecutor owned = ownedScheduler(legacy);
+        assertNotNull(owned);
+        try {
+            TextButton button = new TextButton("Block", WidgetStyles.textButton());
+            button.setBounds(100, 100, 180, 50);
+            session.semantics().setTestId(button, "blocked-worker");
+            stage.addActor(button);
+            CompletionStage<ActionResult> click = legacy.click(
+                    Locator.testId("blocked-worker"),
+                    Deadline.after(System::nanoTime, Duration.ofMillis(100)));
+            click.whenComplete((ignored, failure) -> {
+                synchronized (workerLock) {
+                    workerBlocked.countDown();
+                    while (!releaseWorker.get()) {
+                        try {
+                            workerLock.wait();
+                        } catch (InterruptedException exception) {
+                            // shutdownNow interrupts the worker; stay blocked until released
+                        }
+                    }
+                }
+            });
+            clock.advance(Duration.ofMillis(16));
+            scheduler.drain();
+            clock.advance(Duration.ofMillis(16));
+            scheduler.drain();
+            assertTrue(workerBlocked.await(2, TimeUnit.SECONDS),
+                    "the deadline signal must block the owned scheduler worker");
+            synchronized (workerLock) {
+                long closeStarted = System.nanoTime();
+                Scene2dHarness.OwnedSchedulerShutdownTimeout shutdownFailure = assertThrows(
+                        Scene2dHarness.OwnedSchedulerShutdownTimeout.class, legacy::close);
+                long closeMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - closeStarted);
+                assertTrue(closeMillis >= 900,
+                        "close must wait the bounded shutdown window before failing");
+                assertTrue(closeMillis < 5_000,
+                        "close must stay bounded while the owned worker is blocked");
+                assertNotNull(shutdownFailure.getMessage());
+            }
+            assertEquals(ErrorCode.TIMEOUT, failure(click).code(),
+                    "the blocked worker was completing the deadline timeout");
+        } finally {
+            releaseWorker.set(true);
+            synchronized (workerLock) {
+                workerLock.notifyAll();
+            }
+            long terminationDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!owned.isTerminated() && System.nanoTime() < terminationDeadline) {
+                Thread.yield();
+            }
+            assertTrue(owned.isTerminated(),
+                    "releasing the worker must let the owned scheduler terminate");
+            legacy.close();
+            session.close();
+            scheduler.close();
+            clock.close();
+            stage.dispose();
+        }
+    }
+
     private static HarnessException failure(CompletionStage<?> stage) {
         CompletionException completion = assertThrows(
                 CompletionException.class, () -> stage.toCompletableFuture().join());
         assertTrue(completion.getCause() instanceof HarnessException);
         return (HarnessException) completion.getCause();
+    }
+
+    /**
+     * Returns the executor behind the scheduler a legacy-constructed harness owns, or {@code null}
+     * when the harness received an injected scheduler. Reflection is required because the owned
+     * scheduler is an implementation detail; the legacy constructor contract is that the harness
+     * creates and shuts down its own scheduler.
+     */
+    private static ScheduledThreadPoolExecutor ownedScheduler(Scene2dHarness harness) {
+        try {
+            Field field = Scene2dHarness.class.getDeclaredField("ownedScheduler");
+            field.setAccessible(true);
+            Object owned = field.get(harness);
+            if (owned == null) {
+                return null;
+            }
+            Field executor = owned.getClass().getDeclaredField("executor");
+            executor.setAccessible(true);
+            return (ScheduledThreadPoolExecutor) executor.get(owned);
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError(
+                    "the owned scheduler must be observable for lifecycle assertions", exception);
+        }
     }
 
     private static SliderStyle sliderStyle() {
@@ -506,6 +954,58 @@ final class Scene2dActionEndToEndTest {
         style.knob.setMinWidth(10);
         style.knob.setMinHeight(10);
         return style;
+    }
+
+    /** Deterministic monotonic time source advanced explicitly by the test. */
+    private static final class ManualClock implements MonotonicClock {
+        private long nowNanos;
+
+        void advance(Duration duration) {
+            nowNanos = Math.addExact(nowNanos, duration.toNanos());
+        }
+
+        @Override public long nanoTime() {
+            return nowNanos;
+        }
+    }
+
+    /**
+     * Fires the signal inline inside {@link #schedule(Duration, Runnable)} with the delay
+     * already elapsed, simulating the worst-case zero-delay scheduler that invokes the signal
+     * on the scheduling thread.
+     */
+    private static final class InlineDeadlineScheduler implements DeadlineScheduler {
+        private final ManualClock clock;
+
+        InlineDeadlineScheduler(ManualClock clock) {
+            this.clock = clock;
+        }
+
+        @Override public Cancellation schedule(Duration delay, Runnable signal) {
+            clock.advance(delay);
+            signal.run();
+            return () -> {};
+        }
+    }
+
+    /**
+     * Records one armed deadline signal. {@link #expire()} fires the signal even when a
+     * cancellation raced it, mirroring a real executor whose signal was already dispatched.
+     */
+    private static final class ManualDeadlineScheduler implements DeadlineScheduler {
+        private Runnable signal;
+        private boolean cancelled;
+
+        @Override public Cancellation schedule(Duration delay, Runnable signal) {
+            this.signal = signal;
+            return () -> cancelled = true;
+        }
+
+        void expire() {
+            if (signal != null) {
+                signal.run();
+            }
+        }
     }
 
     private static final class CountingInput implements InputProcessor {
@@ -609,6 +1109,7 @@ final class Scene2dActionEndToEndTest {
         final ControlledStageClock clock;
         final RenderThreadScheduler scheduler = new RenderThreadScheduler(64);
         final Scene2dSession session;
+        final ManualDeadlineScheduler deadlines = new ManualDeadlineScheduler();
         final Scene2dHarness harness;
 
         Fixture() {
@@ -616,12 +1117,34 @@ final class Scene2dActionEndToEndTest {
         }
 
         Fixture(Stage stage, InputProcessor input) {
+            this(stage, input, null);
+        }
+
+        Fixture(Stage stage, InputProcessor input, DeadlineScheduler harnessDeadlines) {
+            this(stage, input, harnessDeadlines, false);
+        }
+
+        static Fixture legacy() {
+            return new Fixture(Scene2dTestSupport.stage(), null, null, true);
+        }
+
+        private Fixture(
+                Stage stage,
+                InputProcessor input,
+                DeadlineScheduler harnessDeadlines,
+                boolean legacyHarness) {
             this.stage = stage;
             this.clock = new ControlledStageClock(stage, step);
             this.session = new Scene2dSession(stage);
-            harness = new Scene2dHarness(
-                    stage, input == null ? stage : input, session, scheduler, clock,
-                    clock::revision, clock::frame);
+            DeadlineScheduler injected = harnessDeadlines == null ? deadlines : harnessDeadlines;
+            harness = legacyHarness
+                    ? new Scene2dHarness(
+                            stage, input == null ? stage : input, session, scheduler, clock,
+                            clock::revision, clock::frame)
+                    : new Scene2dHarness(
+                            stage, input == null ? stage : input, session, scheduler, clock,
+                            clock::revision, clock::frame,
+                            injected);
         }
 
         Deadline deadline() {

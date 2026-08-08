@@ -23,18 +23,29 @@ public final class HarnessToolCatalog {
             "sha256", string(64, 64)),
             List.of("reference", "mediaType", "byteLength", "sha256"));
 
+    /** Access classification of one allowlisted tool by whether it mutates session or app state. */
+    public enum AccessMode {
+        READ_ONLY, MUTATING
+    }
+
+    /** One immutable allowlisted definition: the schema source and its single access mode. */
+    private record ToolDefinition(McpSchema.Tool tool, AccessMode mode) {}
+
     private final List<McpSchema.Tool> tools;
     private final Map<String, McpSchema.Tool> byName;
+    private final Map<String, AccessMode> accessModes;
     private final Map<String, List<Map<String, Object>>> examples;
 
     /** Builds the fixed V1 catalog. */
     public HarnessToolCatalog() {
-        List<McpSchema.Tool> definitions = List.of(
-                tool("ui_sessions", "List active harness sessions", sessionsInput(),
+        List<ToolDefinition> definitions = List.of(
+                tool(AccessMode.READ_ONLY, "ui_sessions", "List active harness sessions",
+                        sessionsInput(),
                         output("sessions-result", Map.of(
                                 "sessions", array(sessionSchema(), 65_536),
                                 "artifact", ARTIFACT_SCHEMA), List.of())),
-                tool("ui_snapshot", "Capture a compact semantic snapshot summary",
+                tool(AccessMode.READ_ONLY, "ui_snapshot",
+                        "Capture a compact semantic snapshot summary",
                         sessionInput(Map.of(), List.of()),
                         output("snapshot-summary", Map.of(
                                 "revision", integer(0, Long.MAX_VALUE),
@@ -48,13 +59,14 @@ public final class HarnessToolCatalog {
                                 "contract", Map.of("type", "object"),
                                 "artifact", ARTIFACT_SCHEMA),
                                 List.of("revision", "frame", "rootId", "nodeCount"))),
-                tool("ui_query", "Query a semantic locator", locatorInput(Map.of(), List.of()),
+                tool(AccessMode.READ_ONLY, "ui_query", "Query a semantic locator",
+                        locatorInput(Map.of(), List.of()),
                         output("query-result", Map.of(
                                 "matchCount", integer(0, Integer.MAX_VALUE),
                                 "matches", array(nodeSummarySchema(), 65_536),
                                 "evidence", array(evidenceSchema(), 65_536),
                                 "artifact", ARTIFACT_SCHEMA), List.of("matchCount"))),
-                tool("ui_action", "Perform one allowlisted UI action",
+                tool(AccessMode.MUTATING, "ui_action", "Perform one allowlisted UI action",
                         locatorInput(Map.of("action", actionSchema()), List.of("action")),
                         output("action-result", Map.of(
                                 "beforeRevision", integer(0, Long.MAX_VALUE),
@@ -63,9 +75,10 @@ public final class HarnessToolCatalog {
                                 "evidence", evidenceSchema(),
                                 "artifact", ARTIFACT_SCHEMA),
                                 List.of("beforeRevision", "afterRevision", "observedState"))),
-                tool("ui_assert", "Evaluate one bounded declarative UI assertion",
+                tool(AccessMode.READ_ONLY, "ui_assert",
+                        "Evaluate one bounded declarative UI assertion",
                         assertionInput(), assertionOutput()),
-                tool("ui_wait", "Wait for a bounded semantic condition",
+                tool(AccessMode.READ_ONLY, "ui_wait", "Wait for a bounded semantic condition",
                         locatorInput(Map.of("condition", enumString("present", "visible")),
                                 List.of("condition")),
                         output("wait-result", Map.of(
@@ -76,7 +89,8 @@ public final class HarnessToolCatalog {
                                 "evidence", array(evidenceSchema(), 65_536),
                                 "artifact", ARTIFACT_SCHEMA),
                                 List.of("revision", "frame", "matchCount"))),
-                tool("ui_screenshot", "Capture a bounded screenshot as an opaque artifact",
+                tool(AccessMode.READ_ONLY, "ui_screenshot",
+                        "Capture a bounded screenshot as an opaque artifact",
                         locatorInput(Map.of(
                                 "maxWidth", integer(1, 8_192),
                                 "maxHeight", integer(1, 8_192),
@@ -95,7 +109,7 @@ public final class HarnessToolCatalog {
                                 "scaleY", positiveNumber(Double.MAX_VALUE)),
                                 List.of("artifact", "frame", "revision", "width", "height",
                                         "scaleX", "scaleY"))),
-                tool("ui_inspect_compare",
+                tool(AccessMode.READ_ONLY, "ui_inspect_compare",
                         "Inspect, capture, and compare one current full frame. Minimal valid "
                                 + "arguments: {\"sessionId\":\"game\",\"referenceId\":\"main\","
                                 + "\"policyId\":\"pixel-exact\",\"policyVersion\":1,"
@@ -148,7 +162,7 @@ public final class HarnessToolCatalog {
                                         "status", "policy", "iterations",
                                         "elapsedMillis", "differences", "regions",
                                         "diagnostics"))),
-                tool("ui_typography_diagnose",
+                tool(AccessMode.READ_ONLY, "ui_typography_diagnose",
                         "Capture and diagnose actor-attributed typography against a named "
                                 + "reference",
                         sessionInput(Map.of(
@@ -187,7 +201,7 @@ public final class HarnessToolCatalog {
                                 List.of(
                                         "status", "reportCount", "reports",
                                         "diagnostics", "elapsedMillis"))),
-                tool("ui_layout_diagnose",
+                tool(AccessMode.READ_ONLY, "ui_layout_diagnose",
                         "Capture and diagnose actor-attributed layout, clipping, and viewport "
                                 + "geometry against a named reference",
                         sessionInput(Map.of(
@@ -228,14 +242,15 @@ public final class HarnessToolCatalog {
                                 List.of(
                                         "status", "reportCount", "reports",
                                         "diagnostics", "elapsedMillis"))),
-                tool("ui_trace_start", "Start bounded trace collection",
+                tool(AccessMode.MUTATING, "ui_trace_start", "Start bounded trace collection",
                         sessionInput(Map.of(
                                 "maxDurationMillis", integer(1, 3_600_000),
                                 "maxBytes", integer(1, 64L * 1_024 * 1_024)),
                                 List.of("maxDurationMillis", "maxBytes")),
                         output("trace-started", Map.of(
                                 "traceId", string(1, MAX_IDENTIFIER)), List.of("traceId"))),
-                tool("ui_trace_stop", "Stop trace collection and return its opaque reference",
+                tool(AccessMode.MUTATING, "ui_trace_stop",
+                        "Stop trace collection and return its opaque reference",
                         sessionInput(Map.of(), List.of()),
                         output("trace-stopped", Map.of(
                                 "traceId", string(1, MAX_IDENTIFIER),
@@ -243,13 +258,14 @@ public final class HarnessToolCatalog {
                                 "eventCount", integer(0, Long.MAX_VALUE),
                                 "bytes", integer(0, 64L * 1_024 * 1_024)),
                                 List.of("traceId", "traceReference", "eventCount", "bytes"))),
-                tool("ui_scenarios", "List application-registered bounded scenarios",
+                tool(AccessMode.READ_ONLY, "ui_scenarios",
+                        "List application-registered bounded scenarios",
                         sessionInput(Map.of(), List.of()),
                         output("scenarios-result", Map.of(
                                 "available", Map.of("type", "boolean"),
                                 "scenarios", array(scenarioDefinitionSchema(), 256)),
                                 List.of("available", "scenarios"))),
-                tool("ui_scenario_start",
+                tool(AccessMode.MUTATING, "ui_scenario_start",
                         "Start one registered scenario using only bounded deterministic inputs",
                         sessionInput(Map.of(
                                 "scenarioId", string(1, MAX_IDENTIFIER),
@@ -263,7 +279,7 @@ public final class HarnessToolCatalog {
                         output("scenario-start-result", Map.of(
                                 "outcome", scenarioStartOutcomeSchema()),
                                 List.of("outcome"))),
-                tool("ui_navigation_inspect",
+                tool(AccessMode.READ_ONLY, "ui_navigation_inspect",
                         "Inspect one declared keyboard/controller focus path from a registered "
                                 + "scenario using real configured input",
                         sessionInput(Map.of(
@@ -271,14 +287,14 @@ public final class HarnessToolCatalog {
                                 List.of("spec")),
                         output("navigation-result", navigationResultSchema(),
                                 List.of("result"))),
-                tool("ui_navigation_validate",
+                tool(AccessMode.MUTATING, "ui_navigation_validate",
                         "Validate one navigation path and reset through the registered scenario",
                         sessionInput(Map.of(
                                 "spec", navigationSpecSchema()),
                                 List.of("spec")),
                         output("navigation-result", navigationResultSchema(),
                                 List.of("result"))),
-                tool("ui_validate_layout",
+                tool(AccessMode.READ_ONLY, "ui_validate_layout",
                         "Validate whole-stage or strict subtree layout invariants from one "
                                 + "completed-frame observation",
                         layoutValidationInput(Map.of(
@@ -286,7 +302,7 @@ public final class HarnessToolCatalog {
                                 List.of("spec")),
                         output("layout-validation-result", layoutValidationResultSchema(),
                                 List.of("result"))),
-                tool("ui_matrix_run",
+                tool(AccessMode.MUTATING, "ui_matrix_run",
                         "Run one registered scenario and assertion set across a bounded "
                                 + "display/locale matrix",
                         sessionInput(Map.of(
@@ -295,14 +311,14 @@ public final class HarnessToolCatalog {
                         output("matrix-run-started", Map.of(
                                 "runId", string(1, MAX_IDENTIFIER)),
                                 List.of("runId"))),
-                tool("ui_matrix_results",
+                tool(AccessMode.READ_ONLY, "ui_matrix_results",
                         "Retrieve the compact report for one matrix run",
                         sessionInput(Map.of(
                                 "runId", string(1, MAX_IDENTIFIER)),
                                 List.of("runId")),
                         output("matrix-report", matrixReportSchema(),
                                 List.of("report"))),
-                tool("ui_runtime_compare",
+                tool(AccessMode.READ_ONLY, "ui_runtime_compare",
                         "Compare one bound node's displayed value against its runtime "
                                 + "observation with typed correlation",
                         locatorInput(Map.of(
@@ -321,7 +337,7 @@ public final class HarnessToolCatalog {
                                 "runtimeFrame", nullableInt()),
                                 List.of("status", "entityId", "propertyId",
                                         "displayedFrame"))),
-                tool("ui_trace_query",
+                tool(AccessMode.READ_ONLY, "ui_trace_query",
                         "Query compact state-transition summaries from one retained bounded "
                                 + "trace without downloading the archive",
                         sessionInput(Map.of(
@@ -336,7 +352,7 @@ public final class HarnessToolCatalog {
                                 Map.entry("unknownCauseCount", integer(0, 4_096))),
                                 List.of("traceId", "transitions", "truncated", "gapCount",
                                         "unknownCauseCount"))),
-                tool("ui_semantic_compare",
+                tool(AccessMode.READ_ONLY, "ui_semantic_compare",
                         "Compare a versioned registered semantic baseline against the current "
                                 + "snapshot without raster capture",
                         sessionInput(Map.of(
@@ -348,7 +364,8 @@ public final class HarnessToolCatalog {
                                 "comparedNodes", integer(0, 10_000),
                                 "truncated", Map.of("type", "boolean")),
                                 List.of("matched", "differences", "comparedNodes", "truncated"))),
-                tool("ui_capabilities", "Discover capabilities for one harness session",
+                tool(AccessMode.READ_ONLY, "ui_capabilities",
+                        "Discover capabilities for one harness session",
                         sessionInput(Map.of(), List.of()),
                         output("capabilities-result", Map.ofEntries(
                                 Map.entry("capabilities",
@@ -367,9 +384,14 @@ public final class HarnessToolCatalog {
                                 List.of("capabilities"))));
 
         LinkedHashMap<String, McpSchema.Tool> index = new LinkedHashMap<>();
-        definitions.forEach(tool -> index.put(tool.name(), tool));
-        tools = List.copyOf(definitions);
+        LinkedHashMap<String, AccessMode> modes = new LinkedHashMap<>();
+        for (ToolDefinition definition : definitions) {
+            index.put(definition.tool().name(), definition.tool());
+            modes.put(definition.tool().name(), definition.mode());
+        }
+        tools = List.copyOf(definitions.stream().map(ToolDefinition::tool).toList());
         byName = Map.copyOf(index);
+        accessModes = Map.copyOf(modes);
         examples = examples();
     }
 
@@ -793,6 +815,15 @@ public final class HarnessToolCatalog {
         return tool;
     }
 
+    /** Returns the single access classification for one approved tool or throws for an unknown name. */
+    public AccessMode accessMode(String name) {
+        AccessMode mode = accessModes.get(name);
+        if (mode == null) {
+            throw new IllegalArgumentException("Unknown tool: " + name);
+        }
+        return mode;
+    }
+
     /** Returns the versioned bounded operation, schema, output, and example catalog. */
     public List<Map<String, Object>> operationCatalog() {
         return tools.stream().map(tool -> Map.<String, Object>of(
@@ -1080,12 +1111,14 @@ public final class HarnessToolCatalog {
                 "assertion", assertion)).toList();
     }
 
-    private static McpSchema.Tool tool(String name, String description,
+    private static ToolDefinition tool(AccessMode mode, String name, String description,
             Map<String, Object> input, Map<String, Object> output) {
-        return McpSchema.Tool.builder(name, input)
-                .description(description)
-                .outputSchema(output)
-                .build();
+        return new ToolDefinition(
+                McpSchema.Tool.builder(name, input)
+                        .description(description)
+                        .outputSchema(output)
+                        .build(),
+                mode);
     }
 
     private static Map<String, Object> sessionsInput() {

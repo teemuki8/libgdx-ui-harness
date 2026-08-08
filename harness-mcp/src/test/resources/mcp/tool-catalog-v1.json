@@ -5435,7 +5435,7 @@
                   "type" : "integer"
                 },
                 "failure" : {
-                  "enum" : [ "unknown-scenario", "incompatible-scenario", "unsupported-profile", "setup-rejected", "reset-rejected", "readiness-rejected", "readiness-deadline", "process-replaced", "session-replaced", "stale-revision", "cleanup-failed", "nondeterministic-initial-state", "dispatch-failed", "cancelled" ],
+                  "enum" : [ "unknown-scenario", "incompatible-scenario", "unsupported-profile", "setup-rejected", "reset-rejected", "readiness-rejected", "readiness-deadline", "process-replaced", "session-replaced", "stale-revision", "cleanup-failed", "nondeterministic-initial-state", "dispatch-failed", "cancelled", "session-busy" ],
                   "type" : "string"
                 },
                 "processId" : {

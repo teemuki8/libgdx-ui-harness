@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -78,6 +79,33 @@ final class HarnessBridgeTest {
         assertEquals("desktop-1920x1080",
                 references.get("bottom-1920x1080").viewportId());
         assertEquals(1280, references.get("initial-1280x720").width());
+    }
+
+    @Test
+    void closeDoesNotAwaitAnOutstandingLongDelayedDeadline() throws Exception {
+        Path ownedArtifacts = temporary.resolve("close-ordering-artifacts");
+        CloseOrderingApplication application = new CloseOrderingApplication(ownedArtifacts);
+
+        Lwjgl3ApplicationConfiguration configuration = new Lwjgl3ApplicationConfiguration();
+        configuration.setTitle("Harness bridge close ordering");
+        configuration.setWindowedMode(1280, 720);
+        configuration.setInitialVisible(false);
+        configuration.setHdpiMode(HdpiMode.Pixels);
+        configuration.disableAudio(true);
+        configuration.useVsync(false);
+        configuration.setForegroundFPS(120);
+        configuration.setIdleFPS(120);
+        new Lwjgl3Application(application, configuration);
+
+        if (application.failure.get() != null) {
+            throw new AssertionError("close-ordering fixture failed", application.failure.get());
+        }
+        assertTrue(application.closeCompleted,
+                "close must complete despite an outstanding delayed deadline");
+        assertTrue(application.screenshotReleasedByClose,
+                "closing must release the pending capture");
+        assertTrue(application.noDeadlineThreadAfterClose,
+                "no live deadline worker thread may remain after close");
     }
 
     @Test void fixedJsonCliExercisesOneApplicationOwnedSessionAndArtifacts() throws Exception {
@@ -364,6 +392,231 @@ final class HarnessBridgeTest {
                 }
                 if (bridge != null) bridge.close();
                 assertFalse(candidateDisposed);
+            } catch (Throwable thrown) {
+                failure.compareAndSet(null, thrown);
+            } finally {
+                if (stage != null) stage.dispose();
+            }
+        }
+    }
+
+    /**
+     * Queues one real capture with a 120s deadline, stops completing frames, and closes the
+     * bridge through a bounded future while the deadline signal is still armed. Arming is
+     * observed purely through the public JVM lifecycle: the named
+     * {@code palisade-harness-deadlines} worker thread only exists once the real executor has
+     * started a scheduled signal, and the capture future must still be pending (no frame has
+     * claimed it, so the signal has neither fired nor been cancelled).
+     */
+    private static final class CloseOrderingApplication extends ApplicationAdapter {
+        private static final String DEADLINE_THREAD_NAME = "palisade-harness-deadlines";
+        private static final long ARM_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(2);
+        private static final long CLOSE_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(2);
+        private final Path artifactRoot;
+        private final AtomicReference<Throwable> failure = new AtomicReference<>();
+        private Stage stage;
+        private HarnessBridge bridge;
+        private CompletableFuture<?> screenshot;
+        private boolean warmupDone;
+        private int warmupFrames;
+        private long armedAtNanos;
+        private boolean closeStarted;
+        private Thread closeThread;
+        private CompletableFuture<Void> closeOutcome;
+        private boolean closeCompleted;
+        private boolean screenshotReleasedByClose;
+        private boolean noDeadlineThreadAfterClose;
+
+        CloseOrderingApplication(Path artifactRoot) {
+            this.artifactRoot = artifactRoot;
+        }
+
+        @Override public void create() {
+            try {
+                stage = new Stage(new ScreenViewport());
+                stage.getViewport().update(1280, 720, true);
+                CandidateUi candidate = new CandidateUi() {
+                    @Override public Stage stage() {
+                        return stage;
+                    }
+
+                    @Override public void showInitial() {
+                    }
+
+                    @Override public CandidateState snapshotState() {
+                        return new CandidateState(Map.of(
+                                "stateAction", Map.of(
+                                        "schemaVersion", "state-action/v1.0",
+                                        "stateId", "fixture-state",
+                                        "revision", 1L,
+                                        "frame", 1L,
+                                        "controls", List.of(),
+                                        "focusOrder", List.of(),
+                                        "conditions", List.of(),
+                                        "viewports", List.of())));
+                    }
+
+                    @Override public void dispose() {
+                    }
+                };
+                Gdx.input.setInputProcessor(stage);
+                bridge = HarnessBridge.open(candidate, artifactRoot);
+            } catch (Throwable thrown) {
+                failure.compareAndSet(null, thrown);
+                Gdx.app.exit();
+            }
+        }
+
+        @Override public void render() {
+            if (failure.get() != null || bridge == null) return;
+            try {
+                if (!warmupDone) {
+                    bridge.beforeRender();
+                    stage.act(1f / 60f);
+                    Gdx.gl.glClearColor(0.1f, 0.2f, 0.3f, 1f);
+                    Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
+                    stage.draw();
+                    bridge.afterRender();
+                    if (++warmupFrames >= 3) {
+                        warmupDone = true;
+                        armedAtNanos = System.nanoTime();
+                        screenshot = bridge.call("ui_screenshot", Map.of(
+                                "sessionId", HarnessBridge.SESSION_ID,
+                                "maxWidth", 1280,
+                                "maxHeight", 720,
+                                "maxPixels", 921600,
+                                "maxPngBytes", 1048576,
+                                "deadlineMillis", 120_000L)).toCompletableFuture();
+                    }
+                    return;
+                }
+                // No more frames complete: the queued capture stays pending and its 120s
+                // deadline signal stays armed until close releases it.
+                if (!closeCompleted && deadlineThreadAlive() && !screenshot.isDone()) {
+                    closeBridge();
+                    Gdx.app.exit();
+                    return;
+                }
+                if (screenshot.isDone()) {
+                    failure.compareAndSet(null, new AssertionError(
+                            "capture completed before close released it"));
+                    Gdx.app.exit();
+                    return;
+                }
+                if (System.nanoTime() - armedAtNanos > ARM_TIMEOUT_NANOS) {
+                    failure.compareAndSet(null, new AssertionError(
+                            "the real deadline worker thread never started within "
+                                    + ARM_TIMEOUT_NANOS / 1_000_000 + "ms for the pending capture"));
+                    Gdx.app.exit();
+                    return;
+                }
+            } catch (Throwable thrown) {
+                failure.compareAndSet(null, thrown);
+                Gdx.app.exit();
+            }
+        }
+
+        private void closeBridge() {
+            if (!awaitCloseBounded()) {
+                failure.compareAndSet(null, new AssertionError(
+                        "close must not await an outstanding delayed deadline",
+                        new TimeoutException("close exceeded its bounded await")));
+            }
+        }
+
+        /**
+         * Awaits the single fixture-owned close attempt for at most {@link #CLOSE_TIMEOUT_NANOS}.
+         * On timeout the same close thread is interrupted and boundedly joined, so a slow close
+         * can never linger and no second close is ever submitted.
+         */
+        private boolean awaitCloseBounded() {
+            startCloseOnce();
+            Thread closer = closeThread;
+            try {
+                closeOutcome.get(CLOSE_TIMEOUT_NANOS, TimeUnit.NANOSECONDS);
+                return true;
+            } catch (TimeoutException timedOut) {
+                closer.interrupt();
+                awaitCloseThreadTermination(closer);
+                return false;
+            } catch (InterruptedException interruption) {
+                Thread.currentThread().interrupt();
+                closer.interrupt();
+                awaitCloseThreadTermination(closer);
+                return false;
+            } catch (java.util.concurrent.ExecutionException closeFailure) {
+                failure.compareAndSet(null, closeFailure.getCause());
+                return true;
+            }
+        }
+
+        /** Starts the one and only close attempt on a fixture-owned daemon thread. */
+        private synchronized void startCloseOnce() {
+            if (closeStarted) {
+                return;
+            }
+            closeStarted = true;
+            closeOutcome = new CompletableFuture<>();
+            Thread thread = Thread.ofPlatform()
+                    .name("harness-bridge-close-fixture").daemon()
+                    .unstarted(this::runClose);
+            closeThread = thread;
+            thread.start();
+        }
+
+        /** Runs the single close attempt and publishes observations before the outcome. */
+        private void runClose() {
+            try {
+                bridge.close();
+                // Publish observations on this thread before completing the outcome so the
+                // awaiter's get() establishes a happens-before edge over them.
+                closeCompleted = true;
+                screenshotReleasedByClose = screenshot.isDone();
+                // close() only returns after its bounded awaitTermination, so the worker is
+                // gone; the loop absorbs any thread-map bookkeeping lag without sleeping.
+                for (int retries = 0; deadlineThreadAlive() && retries < 1_000; retries++) {
+                    // re-check the live-thread event
+                }
+                noDeadlineThreadAfterClose = !deadlineThreadAlive();
+                closeOutcome.complete(null);
+            } catch (Throwable thrown) {
+                closeOutcome.completeExceptionally(thrown);
+            }
+        }
+
+        /**
+         * Boundedly joins the close thread and explicitly verifies termination: a join timeout
+         * is never silently equated with the thread having stopped.
+         */
+        private void awaitCloseThreadTermination(Thread closer) {
+            try {
+                closer.join(CLOSE_TIMEOUT_NANOS / 1_000_000,
+                        (int) (CLOSE_TIMEOUT_NANOS % 1_000_000));
+            } catch (InterruptedException interruption) {
+                Thread.currentThread().interrupt();
+            }
+            if (closer.isAlive()) {
+                failure.compareAndSet(null, new AssertionError(
+                        "close thread stayed alive after interrupt and bounded join"));
+            }
+        }
+
+        private static boolean deadlineThreadAlive() {
+            for (Thread thread : Thread.getAllStackTraces().keySet()) {
+                if (DEADLINE_THREAD_NAME.equals(thread.getName()) && thread.isAlive()) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        @Override public void dispose() {
+            try {
+                if (bridge != null && !closeCompleted && !awaitCloseBounded()) {
+                    failure.compareAndSet(null, new AssertionError(
+                            "bridge cleanup must not hang after a fixture failure",
+                            new TimeoutException("close cleanup exceeded its bounded await")));
+                }
             } catch (Throwable thrown) {
                 failure.compareAndSet(null, thrown);
             } finally {

@@ -8,6 +8,7 @@ import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
 import dev.gdx.uiharness.core.scenario.ScenarioRequest;
 import dev.gdx.uiharness.core.scenario.ScenarioResult;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -37,6 +38,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
     }
 
     /** Reports a terminal scenario result when READY could not be acquired. */
+    @SuppressWarnings("serial")
     public static final class AcquisitionException extends RuntimeException {
         private final ScenarioResult result;
 
@@ -52,21 +54,51 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
     private final ScenarioRegistry registry;
     private final RenderThreadScheduler scheduler;
     private final MonotonicClock clock;
-    private final Scene2dScenarioDeadlineScheduler deadlineScheduler;
+    private final DeadlineScheduler deadlineScheduler;
     private final Object lifecycle = new Object();
     private final ArrayList<Run> active = new ArrayList<>();
     private final Map<InputIdentity, String> startStateIdentities = new LinkedHashMap<>();
     private boolean open = true;
 
+    /**
+     * Retained released constructor: adapts the legacy scene2d deadline scheduler to the core
+     * {@link DeadlineScheduler} contract without changing scheduling semantics. This is the only
+     * constructor taking a functional scheduler, so released lambda call sites stay unambiguous.
+     */
     public Scene2dScenarioRunner(
             ScenarioRegistry registry,
             RenderThreadScheduler scheduler,
             MonotonicClock clock,
             Scene2dScenarioDeadlineScheduler deadlineScheduler) {
+        this(registry, scheduler, clock, adapt(deadlineScheduler));
+    }
+
+    /** Creates a runner driven by the core deadline scheduler contract. */
+    public static Scene2dScenarioRunner withDeadlineScheduler(
+            ScenarioRegistry registry,
+            RenderThreadScheduler scheduler,
+            MonotonicClock clock,
+            DeadlineScheduler deadlineScheduler) {
+        return new Scene2dScenarioRunner(registry, scheduler, clock, deadlineScheduler);
+    }
+
+    private Scene2dScenarioRunner(
+            ScenarioRegistry registry,
+            RenderThreadScheduler scheduler,
+            MonotonicClock clock,
+            DeadlineScheduler deadlineScheduler) {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.deadlineScheduler = Objects.requireNonNull(deadlineScheduler, "deadlineScheduler");
+    }
+
+    private static DeadlineScheduler adapt(Scene2dScenarioDeadlineScheduler legacy) {
+        Objects.requireNonNull(legacy, "deadlineScheduler");
+        return (delay, signal) -> {
+            Scene2dScenarioDeadlineScheduler.Cancellation cancellation = legacy.schedule(delay, signal);
+            return cancellation::cancel;
+        };
     }
 
     /** Starts one bounded scenario run and releases it as soon as READY is observed. */
@@ -107,17 +139,47 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 Objects.requireNonNull(processId, "processId"),
                 Objects.requireNonNull(sessionId, "sessionId"),
                 releaseAtReady);
+        boolean rejected;
         synchronized (lifecycle) {
             if (!open) {
                 throw new IllegalStateException("scenario runner is closed");
             }
-            active.add(run);
+            rejected = !active.isEmpty();
+            if (!rejected) {
+                active.add(run);
+            }
         }
-        observeSubmission(run, scheduler.submit(() -> {
-            run.begin();
-            return null;
-        }, dispatchDeadline()));
-        run.armDeadline();
+        if (rejected) {
+            // A competing run owns the single active lease: reject with bounded evidence and
+            // never execute hooks for the loser.
+            run.rejectBusy();
+            return run;
+        }
+        // Arm the deadline before any begin submission: while the deadline scheduler blocks
+        // (or a concurrent render drain runs), no accepted begin can transition QUEUED ->
+        // STARTING, so a rejecting arm can never leave hook execution behind.
+        try {
+            run.armDeadline();
+        } catch (RuntimeException failure) {
+            // The deadline scheduler rejected the arm: terminalize before any begin
+            // submission exists and propagate the original failure.
+            run.schedulingFailed();
+            throw failure;
+        }
+        CompletionStage<?> submission;
+        try {
+            submission = scheduler.submit(() -> {
+                run.begin();
+                return null;
+            }, dispatchDeadline());
+        } catch (RuntimeException failure) {
+            // The render scheduler rejected the begin submission after the deadline was armed:
+            // terminalize (which cancels the armed deadline outside the run monitor) and
+            // propagate the original failure.
+            run.schedulingFailed();
+            throw failure;
+        }
+        observeSubmission(run, submission);
         return run;
     }
 
@@ -162,7 +224,12 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
     }
 
 
-    private void finished(Run run) {
+    /**
+     * Releases the single active lease only when the identical {@link Run} still owns it. A stale
+     * release from an already-terminal run cannot clear its successor, keeping {@code active}
+     * bounded to one owner.
+     */
+    private void releaseIfOwner(Run run) {
         synchronized (lifecycle) {
             active.remove(run);
         }
@@ -189,7 +256,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         private int setupAttempts;
         private String stateIdentity = "unavailable";
 
-        private Scene2dScenarioDeadlineScheduler.Cancellation deadlineCancellation;
+        private DeadlineScheduler.Cancellation deadlineCancellation;
         Run(
                 ScenarioRequest request,
                 ScenarioDefinition definition,
@@ -219,29 +286,83 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             if (maximumRemaining.compareTo(delay) < 0) {
                 delay = maximumRemaining;
             }
-            Scene2dScenarioDeadlineScheduler.Cancellation scheduled =
+            DeadlineScheduler.Cancellation scheduled =
                     deadlineScheduler.schedule(delay, this::deadlineReached);
+            boolean cancelNow;
             synchronized (this) {
-                if (phase == Phase.TERMINAL) {
-                    scheduled.cancel();
-                } else {
+                // A scheduler may invoke the signal inline during schedule (already-expired
+                // deadline): the run then leaves QUEUED before the token is stored, so the
+                // fresh token must be invalidated instead of retained.
+                cancelNow = phase != Phase.QUEUED;
+                if (!cancelNow) {
                     deadlineCancellation = scheduled;
                 }
+            }
+            if (cancelNow) {
+                // The run already reached a terminal state while the token was being armed:
+                // invalidate it only after leaving the run monitor, so a cancellation that
+                // synchronously reenters the runner never runs under monitor ownership.
+                scheduled.cancel();
             }
         }
 
         private void deadlineReached() {
+            boolean publish;
             synchronized (this) {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
                     return;
                 }
-            }
-            observeSubmission(this, scheduler.submit(() -> {
-                if (expired()) {
-                    terminate(ScenarioFailure.READINESS_DEADLINE);
+                if (!expired()) {
+                    return;
                 }
-                return null;
-            }, dispatchDeadline()));
+                // The deadline thread atomically publishes the terminal result so a paused or
+                // stopped render loop can never leave the call hanging; the run keeps owning
+                // the active slot and hook cleanup is deferred to the render thread.
+                phase = Phase.CLEANING;
+                publish = true;
+            }
+            if (publish) {
+                publishTerminal(ScenarioFailure.READINESS_DEADLINE, false);
+                // The deferred cleanup submission is the only failure path that may release
+                // the active owner: unrelated rejected submissions during the terminal window
+                // must not admit a successor before the accepted cleanup mutates the Stage.
+                CompletionStage<?> cleanup = scheduler.submit(() -> {
+                    deferredCleanup();
+                    return null;
+                }, dispatchDeadline());
+                cleanup.whenComplete((ignored, failure) -> {
+                    if (failure != null) {
+                        cleanupFailed();
+                    }
+                });
+            }
+        }
+
+        /**
+         * Runs the deferred cleanup hook exactly once on the render thread after the deadline
+         * thread published the terminal result, then releases the active owner slot so the next
+         * acquisition can proceed. The already-published result is never republished (no double
+         * result); a failing cleanup hook cannot change the immutable published outcome.
+         */
+        private void deferredCleanup() {
+            try {
+                hooks.cleanup(request);
+            } catch (RuntimeException cleanupFailure) {
+                // The terminal result was published when the deadline fired; cleanup failure
+                // cannot be republished, but the active slot must still be released.
+            }
+            releaseIfOwner(this);
+        }
+
+        /** Terminates a competing acquisition without scheduling any hook execution. */
+        void rejectBusy() {
+            synchronized (this) {
+                if (phase != Phase.QUEUED) {
+                    return;
+                }
+                phase = Phase.TERMINAL;
+            }
+            completeTerminal(ScenarioFailure.SESSION_BUSY, false);
         }
 
         void begin() {
@@ -377,13 +498,49 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     || elapsed().compareTo(definition.maxDuration()) >= 0;
         }
         private void dispatchFailed() {
+            boolean publish = false;
+            synchronized (this) {
+                if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
+                    // A terminal or cleaning run is released only by its own terminal path or
+                    // by its deferred cleanup submission; an unrelated rejected submission must
+                    // never release the active owner while accepted cleanup is still queued.
+                    return;
+                }
+                phase = Phase.TERMINAL;
+                publish = true;
+            }
+            if (publish) {
+                completeTerminal(ScenarioFailure.DISPATCH_FAILED, false);
+            }
+        }
+
+        /**
+         * Terminally rolls back a run whose scheduling call threw synchronously after the run
+         * was admitted to {@code active}: the run never executes hooks, its active owner slot
+         * is released exactly once, and the result and acquisition futures close so nothing is
+         * left pending. The original failure still propagates to the synchronous launch caller.
+         */
+        void schedulingFailed() {
+            boolean publish;
             synchronized (this) {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
                     return;
                 }
                 phase = Phase.TERMINAL;
+                publish = true;
             }
-            completeTerminal(ScenarioFailure.DISPATCH_FAILED, false);
+            if (publish) {
+                completeTerminal(ScenarioFailure.DISPATCH_FAILED, false);
+            }
+        }
+
+        /**
+         * Runs when the deferred cleanup submission itself is rejected: the cleanup hook will
+         * never run, so the active owner slot is released exactly once without republishing the
+         * already-published terminal result.
+         */
+        private void cleanupFailed() {
+            releaseIfOwner(this);
         }
 
 
@@ -407,8 +564,14 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             completeTerminal(failure, cleaned);
         }
 
-        private void completeTerminal(ScenarioFailure failure, boolean cleaned) {
-            Scene2dScenarioDeadlineScheduler.Cancellation scheduled;
+        /**
+         * Publishes the terminal result and acquisition outcome exactly once. Does not release
+         * the active owner slot: the normal render-thread paths call {@link #completeTerminal},
+         * while the deadline path publishes first and releases only after the deferred cleanup
+         * drains on the render thread.
+         */
+        private void publishTerminal(ScenarioFailure failure, boolean cleaned) {
+            DeadlineScheduler.Cancellation scheduled;
             synchronized (this) {
                 scheduled = deadlineCancellation;
                 deadlineCancellation = null;
@@ -439,7 +602,11 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             if (!acquisition.isDone()) {
                 acquisition.completeExceptionally(new AcquisitionException(value));
             }
-            finished(this);
+        }
+
+        private void completeTerminal(ScenarioFailure failure, boolean cleaned) {
+            releaseIfOwner(this);
+            publishTerminal(failure, cleaned);
         }
 
         private Duration elapsed() {

@@ -1,6 +1,6 @@
 # Agent tools and safe operation
 
-The MCP server exposes exactly twenty-three bounded tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms. Deadlines include adapter work and backend queue time.
+The MCP server exposes exactly twenty-three bounded tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms (1 through 600,000 ms for `ui_scenario_start`). Deadlines include adapter work and backend queue time. The server's outer request timeout is 630,000 ms (the scenario maximum plus a 30-second translation allowance), so a full scenario deadline is never aborted by the SDK transport timeout; the per-request deadline remains the authoritative bound.
 
 | Tool | Purpose | Tool-specific input | Result |
 |---|---|---|---|
@@ -17,7 +17,7 @@ The MCP server exposes exactly twenty-three bounded tools. `tools/list` is the a
 | `ui_trace_start` | Start bounded trace collection | required `maxDurationMillis` and `maxBytes` | trace ID |
 | `ui_trace_stop` | Stop and finalize the active trace | none | trace ID/reference, event count, bytes |
 | `ui_scenarios` | List registered bounded scenarios | none | bounded scenario list |
-| `ui_scenario_start` | Start one bounded scenario | `scenarioId`, `seed`, optional `configuration` and `profileId` | scenario start outcome |
+| `ui_scenario_start` | Start one bounded scenario; one active lease per session | `scenarioId`, `seed`, optional `configuration` and `profileId` | scenario start outcome |
 | `ui_navigation_inspect` | Run a bounded navigation path through real input dispatch | required `spec` navigation spec | bounded navigation path with observed focus steps |
 | `ui_navigation_validate` | Validate a navigation path without executing it | required `spec` navigation spec | validation result |
 | `ui_validate_layout` | Validate whole-stage or subtree layout invariants from one completed frame | required `spec` layout spec | status and bounded findings |
@@ -30,13 +30,15 @@ The MCP server exposes exactly twenty-three bounded tools. `tools/list` is the a
 
 ## Locator and action inputs
 
-Locator schemas are closed recursive unions. Supported locator kinds are role, text/label, test ID, actor name/type, relation, filter, and index. Text match modes are exact, case-insensitive exact, substring, and regex. Relations are child, descendant, parent, and sibling. Filters support accessible name, `has`, `hasText`, and semantic state. Indexes are zero-based and intentionally reported as structurally fragile. Prefer `role` plus an accessible-name filter; never treat snapshot-local node IDs as durable handles.
+Locator schemas are closed recursive unions. Supported locator kinds are role, text/label, test ID, actor name/type, relation, filter, and index. Text match modes are exact, case-insensitive exact, substring, and regex. Regex mode compiles with the linear-time RE2/J engine: supported syntax includes literals, character classes and escapes, Unicode classes, groups, alternation, anchors, and greedy/lazy quantifiers; backreferences, lookahead/lookbehind, and atomic or possessive groups are rejected at construction as `invalid-request` rather than evaluated with backtracking. Relations are child, descendant, parent, and sibling. Filters support accessible name, `has`, `hasText`, and semantic state. Indexes are zero-based and intentionally reported as structurally fragile. Prefer `role` plus an accessible-name filter; never treat snapshot-local node IDs as durable handles.
 
 `ui_action` accepts only click, hover, focus, fill, press, scroll, drag, and pointer. Pointer phases are down, move, and up. An action may request `force`, but force never bypasses strict locator resolution, render-thread confinement, request bounds, or input dispatch through the application's configured processor.
 
 ## Hard bounds
 
-The transport rejects a request above 1,048,576 bytes before parsing and a response above 16,777,216 encoded bytes. Ordinary strings are at most 16,384 UTF-16 code units, identifiers are at most 256 characters, JSON nesting is at most 64, and numeric tokens are at most 128 characters. Locator schemas limit recursive locator depth to 32 and decoded locator nodes to 4,096. Regular-expression syntax is compiled during decode, so a malformed pattern is an `invalid-request`, not an internal routing error.
+The transport reads newline-delimited frames with a strict UTF-8 decoder and rejects a request above 1,048,576 bytes before any JSON token is parsed. An oversized or malformed-UTF-8 frame that ends at a newline yields one JSON-RPC parse error (`-32700`, `id: null`) and the connection continues; rejected frame content is never echoed. An in-limit frame left unterminated at end of input yields one parse error, after which the server terminates normally. A response above 16,777,216 encoded bytes is rejected. Ordinary strings are at most 16,384 UTF-16 code units, identifiers are at most 256 characters, JSON nesting is at most 64, and numeric tokens are at most 128 characters, and the same constraints are enforced on every stdio message before dispatch. Locator schemas limit recursive locator depth to 32 and decoded locator nodes to 4,096. Regular-expression syntax is compiled during decode with the linear-time RE2/J engine, so a malformed or unsupported pattern (backreferences, lookahead/lookbehind, atomic or possessive groups) is an `invalid-request`, not an internal routing error.
+
+Admission is bounded before dispatch: at most 8 concurrent admitted requests globally and 4 per session (including queued mutations), with at most 16 queued mutations per session. Read-only requests start immediately and may overlap; per-session mutations run strictly in submission order and never overlap. Requests without a `sessionId` use a distinct admission scope that no client session name can share. Excess requests fail immediately with the `limit-exceeded` diagnostic and never reach the harness.
 
 Core semantic defaults are 10,000 nodes, depth 128, 1,000 matches, 16,384-character strings, 1,048,576 encoded snapshot bytes, and a 30-second operation deadline. A node has at most 256 custom properties. Screenshot maxima are 8,192 by 8,192 pixels, 33,554,432 total pixels, and 67,108,864 PNG bytes. MCP trace inputs permit at most 3,600,000 ms and 67,108,864 bytes; the core recorder's conservative defaults are 10 minutes, 64 MiB uncompressed evidence, and 100,000 events. Lower application limits may reject a request before these schema maxima.
 
@@ -100,12 +102,25 @@ registry contains `UNKNOWN_OPERATION`, `MISSING_ARGUMENT`,
 `UNKNOWN_ARGUMENT`, `INVALID_ARGUMENT_TYPE`, `OUT_OF_RANGE`,
 `INVALID_ENUM_VALUE`, `SCHEMA_CONFLICT`, `LOCATOR_NOT_FOUND`,
 `LOCATOR_AMBIGUOUS`, `STALE_REVISION`, `STATE_NOT_READY`, `BUILD_FAILED`,
-`LAUNCH_FAILED`, `DEADLINE_EXCEEDED`, `NO_PROGRESS`, `LOOP_DETECTED`,
-`RECOVERY_BUDGET_EXHAUSTED`, and `INTERNAL_ERROR`. Branch on `code`, not
+`LAUNCH_FAILED`, `DEADLINE_EXCEEDED`, `LIMIT_EXCEEDED`, `NO_PROGRESS`,
+`LOOP_DETECTED`, `RECOVERY_BUDGET_EXHAUSTED`, and `INTERNAL_ERROR`.
+Branch on `code`, not
 message text. A transient response supplies the correction or state change,
 consumed and remaining recovery budget, and a minimal valid example. A
 terminal response has `retryable=false` and names the terminating rule.
 Applying a correction does not erase the hard recovery total.
+
+Scenario start results are closed outcomes. A second `ui_scenario_start` while another
+scenario owns the session's lease terminates immediately with `session-busy` and executes
+no lifecycle hooks for the rejected start.
+
+A scenario that times out before completing any rendered frame publishes its terminal result
+on the deadline thread, so the result may report `cleanupCompleted=false`: the render-owned
+cleanup hook is deferred and has not run yet. The session's lease stays busy — further
+`ui_scenario_start` calls keep terminating with `session-busy` — until that deferred cleanup
+drains on the render thread exactly once, after which the next acquisition proceeds. The
+render loop itself keeps rendering and advancing frames while the cleanup is pending; only
+scenario completed-frame evaluation is skipped.
 
 Remote internal errors redact stack frames and filesystem paths; full local
 detail belongs only in restricted traces. Never respond to an exhausted bound

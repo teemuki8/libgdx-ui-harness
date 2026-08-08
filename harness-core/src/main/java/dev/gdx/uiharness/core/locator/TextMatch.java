@@ -1,7 +1,8 @@
 package dev.gdx.uiharness.core.locator;
 
+import com.google.re2j.Pattern;
 import java.util.Objects;
-import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /** Immutable text-matching rule applied to Unicode-whitespace-normalized node text. */
 public final class TextMatch {
@@ -28,7 +29,15 @@ public final class TextMatch {
         this.mode = Objects.requireNonNull(mode, "mode");
         this.source = requireBounded(source, "text pattern");
         normalizedSource = mode == Mode.REGEX ? source : normalize(source);
-        pattern = mode == Mode.REGEX ? Pattern.compile(source) : null;
+        pattern = mode == Mode.REGEX ? compileBounded(source) : null;
+    }
+
+    private static Pattern compileBounded(String expression) {
+        try {
+            return Pattern.compile(expression);
+        } catch (com.google.re2j.PatternSyntaxException e) {
+            throw new PatternSyntaxException("invalid text pattern", null, -1);
+        }
     }
 
     /** Creates an exact, case-sensitive matcher. */
