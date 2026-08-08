@@ -22,9 +22,15 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
     private static final MatrixWindow DEFAULT_WINDOW = new MatrixWindow(1280, 720);
     private static final Duration APPLY_DEADLINE = Duration.ofSeconds(15);
 
-    /** One host-owned window/locale application step; injectable for failure-path tests. */
+    /**
+     * One host-owned window/locale application seam; injectable for failure-path tests. The
+     * window and locale steps are independent so a failed window restore cannot prevent the
+     * locale restore (and vice versa): restoration aggregates both before reporting.
+     */
     interface CaseApplication {
-        void apply(MatrixWindow window, Locale locale, Deadline deadline);
+        void applyWindow(MatrixWindow window, Deadline deadline);
+
+        void applyLocale(Locale locale);
     }
 
     private final RenderThreadScheduler scheduler;
@@ -48,8 +54,7 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
         this.clock = Objects.requireNonNull(clock, "clock");
         this.restartProfileId = Objects.requireNonNull(restartProfileId, "restartProfileId");
         originalLocale = Locale.getDefault();
-        this.caseApplication =
-                caseApplication != null ? caseApplication : this::applyWindowAndLocale;
+        this.caseApplication = caseApplication != null ? caseApplication : new RealApplication();
     }
 
     @Override
@@ -60,26 +65,84 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
             return new Lwjgl3MatrixRunner.ApplyResult.Unsupported(unsupported);
         }
         try {
-            caseApplication.apply(matrixCase.window(),
-                    Locale.forLanguageTag(matrixCase.locale()),
+            caseApplication.applyWindow(matrixCase.window(),
                     Deadline.after(clock, APPLY_DEADLINE));
+            caseApplication.applyLocale(Locale.forLanguageTag(matrixCase.locale()));
             return new Lwjgl3MatrixRunner.ApplyResult.Applied(observe(matrixCase));
         } catch (RuntimeException failure) {
-            // Restore any partially applied window/locale state before propagating, so the
-            // next case always starts from the host-owned defaults.
-            restore();
+            // The runner contract requires the original display state to be restored before
+            // throwing; the runner never observes a partially applied case. If the restore also
+            // fails, the thrown failure must surface that risk (never silently claim restored)
+            // while preserving the primary failure: both are suppressed on a composite whose root
+            // message carries both texts for the runner's bounded evidence.
+            RuntimeException restoreFailure = restoreSafely();
+            if (restoreFailure != null) {
+                IllegalStateException composite = new IllegalStateException(
+                        rootMessage(failure)
+                                + "; display restore also failed: " + rootMessage(restoreFailure));
+                if (failure != restoreFailure) {
+                    composite.addSuppressed(failure);
+                }
+                composite.addSuppressed(restoreFailure);
+                throw composite;
+            }
             throw failure;
         }
     }
 
     @Override
     public void restore() {
+        // Restore as much as possible: the window and the locale are restored independently and
+        // both outcomes are aggregated before reporting. Each restore() call re-attempts the
+        // full restoration, so an incomplete restoration is retried on the next call rather than
+        // latched into a permanent no-op state.
+        Deadline deadline = Deadline.after(clock, APPLY_DEADLINE);
+        RuntimeException windowFailure = null;
         try {
-            caseApplication.apply(DEFAULT_WINDOW, originalLocale,
-                    Deadline.after(clock, APPLY_DEADLINE));
+            caseApplication.applyWindow(DEFAULT_WINDOW, deadline);
         } catch (RuntimeException failure) {
-            // Best-effort restore: the next case still starts from the host-owned defaults.
+            windowFailure = failure;
         }
+        RuntimeException localeFailure = null;
+        try {
+            caseApplication.applyLocale(originalLocale);
+        } catch (RuntimeException failure) {
+            localeFailure = failure;
+        }
+        if (windowFailure != null && localeFailure != null) {
+            IllegalStateException aggregate = new IllegalStateException(
+                    "window restore failed: " + rootMessage(windowFailure)
+                            + "; locale restore failed: " + rootMessage(localeFailure));
+            if (windowFailure != localeFailure) {
+                aggregate.addSuppressed(windowFailure);
+            }
+            aggregate.addSuppressed(localeFailure);
+            throw aggregate;
+        }
+        if (windowFailure != null) {
+            throw windowFailure;
+        }
+        if (localeFailure != null) {
+            throw localeFailure;
+        }
+    }
+
+    /** Attempts a full restore, returning the restore failure (or {@code null}) instead of throwing. */
+    private RuntimeException restoreSafely() {
+        try {
+            restore();
+            return null;
+        } catch (RuntimeException failure) {
+            return failure;
+        }
+    }
+
+    private static String rootMessage(Throwable failure) {
+        Throwable current = failure;
+        while (current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current.getMessage() == null ? "case failed" : current.getMessage();
     }
 
     private String unsupportedReason(MatrixCase matrixCase, String profileId) {
@@ -107,34 +170,42 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
         return null;
     }
 
-    private void applyWindowAndLocale(MatrixWindow window, Locale locale, Deadline deadline) {
-        if (scheduler.isOwnerThread()) {
-            // The matrix runner's final restore can complete on the render thread inside a
-            // scheduler drain (via a completed-frame observation); submitting and joining here
-            // would deadlock, since only the render thread can drain. Window state is owned by
-            // the render thread, so apply it directly.
-            Gdx.graphics.setWindowedMode(window.width(), window.height());
-        } else {
-            scheduler.submit(() -> {
-                        Gdx.graphics.setWindowedMode(window.width(), window.height());
-                        return null;
-                    },
-                    deadline)
-                    .toCompletableFuture().join();
+    /** Real LWJGL3 window/locale backend. */
+    private final class RealApplication implements CaseApplication {
+        @Override
+        public void applyWindow(MatrixWindow window, Deadline deadline) {
+            if (scheduler.isOwnerThread()) {
+                // The matrix runner's final restore can complete on the render thread inside a
+                // scheduler drain (via a completed-frame observation); submitting and joining here
+                // would deadlock, since only the render thread can drain. Window state is owned by
+                // the render thread, so apply it directly.
+                Gdx.graphics.setWindowedMode(window.width(), window.height());
+            } else {
+                scheduler.submit(() -> {
+                            Gdx.graphics.setWindowedMode(window.width(), window.height());
+                            return null;
+                        },
+                        deadline)
+                        .toCompletableFuture().join();
+            }
+            while (!deadline.isExpired()
+                    && (Gdx.graphics.getBackBufferWidth() != window.width()
+                            || Gdx.graphics.getBackBufferHeight() != window.height())) {
+                LockSupport.parkNanos(1_000_000L);
+            }
+            if (Gdx.graphics.getBackBufferWidth() != window.width()
+                    || Gdx.graphics.getBackBufferHeight() != window.height()) {
+                throw new IllegalStateException("window resize did not complete: requested="
+                        + window + " observed=" + new MatrixWindow(
+                                Gdx.graphics.getBackBufferWidth(),
+                                Gdx.graphics.getBackBufferHeight()));
+            }
         }
-        while (!deadline.isExpired()
-                && (Gdx.graphics.getBackBufferWidth() != window.width()
-                        || Gdx.graphics.getBackBufferHeight() != window.height())) {
-            LockSupport.parkNanos(1_000_000L);
+
+        @Override
+        public void applyLocale(Locale locale) {
+            Locale.setDefault(locale);
         }
-        if (Gdx.graphics.getBackBufferWidth() != window.width()
-                || Gdx.graphics.getBackBufferHeight() != window.height()) {
-            throw new IllegalStateException("window resize did not complete: requested="
-                    + window + " observed=" + new MatrixWindow(
-                            Gdx.graphics.getBackBufferWidth(),
-                            Gdx.graphics.getBackBufferHeight()));
-        }
-        Locale.setDefault(locale);
     }
 
     private Lwjgl3MatrixRunner.DisplayObservation observe(MatrixCase matrixCase) {

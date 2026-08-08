@@ -35,4 +35,9 @@ request; a request naming an unowned profile is rejected as `UNSUPPORTED`. Obser
 are captured for the same case and frame window as the assertions, the original display state
 is restored deterministically after every started case (including misapplied ones and
 application failures), and the Cartesian product remains preflight-bounded. `MatrixCaseResult`
-now carries observed locale, font-set, and restart-profile identities.
+now carries observed locale, font-set, and restart-profile identities. A restoration
+failure is never suppressed: it upgrades the case terminal to `FAILED` with restoration
+evidence (or is aggregated onto an application failure without losing the primary), and every
+restore call re-attempts the full host-owned window and locale state independently so an
+incomplete restoration is retried on the next case rather than latched into a permanent
+no-op.
