@@ -33,6 +33,12 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
      * {@link #render()} and {@link #readyPrinted}.
      */
     private boolean readyPrinted;
+    /**
+     * Guards the one-shot baseline dump: the pristine baseline is captured once after the
+     * first completed frame (so the layout matches what a client observes) and before
+     * {@code REFERENCE_UI_READY} is printed. A dump failure is terminal.
+     */
+    private boolean baselineDumped;
 
     private ReferenceUiApplication(
             Path processRoot, String benchmarkScenario, int benchmarkDelayMillis,
@@ -107,15 +113,6 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
         }
         Gdx.input.setInputProcessor(screen.stage());
         control.startMcp(System.in, System.out);
-        if (dumpBaseline) {
-            try {
-                ReferenceBaselineCodec.write(
-                        processRoot.resolve("reference-baseline.json"),
-                        control.pristineBaseline());
-            } catch (IOException failure) {
-                throw new IllegalStateException("Unable to dump reference baseline", failure);
-            }
-        }
     }
 
     @Override public void render() {
@@ -124,6 +121,16 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
         screen.draw();
         control.afterDraw();
+        if (dumpBaseline && !baselineDumped) {
+            baselineDumped = true;
+            try {
+                ReferenceBaselineCodec.write(
+                        processRoot.resolve("reference-baseline.json"),
+                        control.pristineBaseline());
+            } catch (IOException failure) {
+                throw new IllegalStateException("Unable to dump reference baseline", failure);
+            }
+        }
         if (!readyPrinted) {
             readyPrinted = true;
             System.err.println("REFERENCE_UI_READY");

@@ -9,6 +9,7 @@ import dev.gdx.uiharness.core.golden.BaselineNode;
 import dev.gdx.uiharness.core.golden.SemanticBaseline;
 import dev.gdx.uiharness.protocol.ProtocolJson;
 
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -98,8 +99,81 @@ final class ReferenceBaselineCodecTest {
                 "expected a byte-limit rejection, got: " + failure.getMessage());
     }
 
+    @Test
+    @Timeout(30)
+    void oversizedStreamIsRejectedAfterAtMostTheByteCeilingPlusOne() {
+        TrackingInputStream input = new TrackingInputStream(
+                new java.io.ByteArrayInputStream(
+                        new byte[ProtocolJson.MAX_REQUEST_BYTES + 10]));
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> ReferenceBaselineCodec.read(input));
+        assertTrue(failure.getMessage().contains("exceeds"),
+                "expected a byte-limit rejection, got: " + failure.getMessage());
+        assertEquals(ProtocolJson.MAX_REQUEST_BYTES + 1, input.bytesRead(),
+                "the codec must stop reading at the ceiling plus one byte");
+        assertEquals(0, input.closeCalls(),
+                "the codec must never close a caller-owned stream");
+    }
+
+    @Test
+    @Timeout(30)
+    void unboundedStreamIsRejectedWithoutGrowingWithoutBound() {
+        TrackingInputStream input = new TrackingInputStream(new InputStream() {
+            @Override public int read() {
+                return 0;
+            }
+        });
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> ReferenceBaselineCodec.read(input));
+        assertTrue(failure.getMessage().contains("exceeds"),
+                "expected a byte-limit rejection, got: " + failure.getMessage());
+        assertEquals(ProtocolJson.MAX_REQUEST_BYTES + 1, input.bytesRead(),
+                "an endless stream must not be consumed beyond the ceiling plus one byte");
+        assertEquals(0, input.closeCalls(),
+                "the codec must never close a caller-owned stream");
+    }
+
     private static String resourceText() throws Exception {
         return Files.readString(
                 Path.of("src/main/resources/reference-ui/reference-baseline.json"));
+    }
+
+    /** Counts consumed bytes and close calls without altering stream behavior. */
+    private static final class TrackingInputStream extends java.io.FilterInputStream {
+        private long bytesRead;
+        private int closeCalls;
+
+        TrackingInputStream(InputStream delegate) {
+            super(delegate);
+        }
+
+        @Override public int read() throws java.io.IOException {
+            int value = super.read();
+            if (value != -1) {
+                bytesRead++;
+            }
+            return value;
+        }
+
+        @Override public int read(byte[] buffer, int offset, int length) throws java.io.IOException {
+            int read = super.read(buffer, offset, length);
+            if (read > 0) {
+                bytesRead += read;
+            }
+            return read;
+        }
+
+        @Override public void close() throws java.io.IOException {
+            closeCalls++;
+            super.close();
+        }
+
+        long bytesRead() {
+            return bytesRead;
+        }
+
+        int closeCalls() {
+            return closeCalls;
+        }
     }
 }
