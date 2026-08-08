@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -17,12 +18,17 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * The agent-tools guide's "Tool-specific input" column is a stable machine-readable section:
  * each row is {@code none} or a comma-separated list of {@code required `field`} /
- * {@code optional `field`} tokens. The MCP tool catalog is the single schema authority; this
- * test fails when a required input is added to either side without the other.
+ * {@code optional `field`} tokens. Rows follow the catalog's {@code tools()} order and field
+ * tokens follow the catalog schema's own order (the {@code required} array minus the
+ * preamble-documented {@code sessionId} envelope field; optional tokens follow the schema
+ * {@code properties} order). The MCP tool catalog is the single schema authority; this test
+ * fails when a required input, a tool row, or an ordering is added to either side without the
+ * other.
  */
 final class DocsCatalogParityTest {
     private static final Pattern TOKEN = Pattern.compile(
@@ -32,10 +38,11 @@ final class DocsCatalogParityTest {
 
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
 
-    private record ToolInputs(Set<String> required, Set<String> optional) {}
+    private record ToolInputs(List<String> required, List<String> optional) {}
 
-    private record GuideTable(
-            Map<String, ToolInputs> rows, Map<String, String> parseErrors) {}
+    private record ToolRow(String name, ToolInputs inputs) {}
+
+    private record GuideTable(List<ToolRow> rows, Map<String, String> parseErrors) {}
 
     private static Path guideFile() {
         Path start = Path.of(System.getProperty("user.dir")).toAbsolutePath();
@@ -50,10 +57,19 @@ final class DocsCatalogParityTest {
     }
 
     private GuideTable parseGuide() throws IOException {
-        Map<String, ToolInputs> rows = new LinkedHashMap<>();
+        return parseGuide(guideFile());
+    }
+
+    private static GuideTable parseGuide(Path file) throws IOException {
+        List<ToolRow> rows = new ArrayList<>();
         Map<String, String> errors = new LinkedHashMap<>();
-        for (String line : Files.readAllLines(guideFile(), StandardCharsets.UTF_8)) {
+        for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
             if (!line.startsWith("|")) {
+                continue;
+            }
+            if (line.contains("\\|")) {
+                errors.put("row " + rows.size(),
+                        "escaped pipe \\| is outside the strict token grammar");
                 continue;
             }
             String[] cells = line.split("\\|", -1);
@@ -64,15 +80,15 @@ final class DocsCatalogParityTest {
             if (!name.startsWith("`ui_")) {
                 continue;
             }
-            name = name.replace("`", "");
+            String toolName = name.replace("`", "");
             String cell = cells[3].trim();
-            Set<String> required = new LinkedHashSet<>();
-            Set<String> optional = new LinkedHashSet<>();
+            List<String> required = new ArrayList<>();
+            List<String> optional = new ArrayList<>();
             if (!"none".equals(cell)) {
                 for (String rawToken : cell.split(",")) {
                     Matcher matcher = TOKEN.matcher(rawToken.trim());
                     if (!matcher.matches()) {
-                        errors.put(name, rawToken.trim());
+                        errors.put(toolName, rawToken.trim());
                     } else if ("required".equals(matcher.group(1))) {
                         required.add(matcher.group(2));
                     } else {
@@ -80,49 +96,77 @@ final class DocsCatalogParityTest {
                     }
                 }
             }
-            rows.put(name, new ToolInputs(required, optional));
+            if (rows.stream().anyMatch(row -> row.name().equals(toolName))) {
+                errors.put(toolName, "duplicate row");
+            }
+            List<String> allFields = new ArrayList<>(required);
+            allFields.addAll(optional);
+            for (String field : allFields) {
+                if (allFields.indexOf(field) != allFields.lastIndexOf(field)) {
+                    errors.put(toolName, "duplicate field " + field);
+                }
+            }
+            rows.add(new ToolRow(toolName, new ToolInputs(required, optional)));
         }
         return new GuideTable(rows, errors);
     }
 
-    private static Set<String> schemaRequired(McpSchema.Tool tool) {
-        @SuppressWarnings("unchecked")
-        List<String> required = (List<String>) tool.inputSchema().get("required");
-        return required == null ? Set.of() : new LinkedHashSet<>(required);
+    private static Path writeGuide(Path dir, String... lines) throws IOException {
+        Path file = dir.resolve("agent-tools.md");
+        Files.write(file, List.of(lines), StandardCharsets.UTF_8);
+        return file;
     }
 
-    @Test void guideTableIsParseableAndCoversEveryCatalogTool() throws Exception {
+    private static List<String> schemaRequired(McpSchema.Tool tool) {
+        @SuppressWarnings("unchecked")
+        List<String> required = (List<String>) tool.inputSchema().get("required");
+        return required == null ? new ArrayList<>() : new ArrayList<>(required);
+    }
+
+    private static ToolInputs documented(GuideTable table, String name) {
+        return table.rows().stream()
+                .filter(row -> row.name().equals(name))
+                .map(ToolRow::inputs)
+                .findFirst()
+                .orElse(null);
+    }
+
+    @Test void guideTableIsParseableAndCoversEveryCatalogToolInOrder() throws Exception {
         GuideTable table = parseGuide();
         assertTrue(table.parseErrors().isEmpty(),
                 "Non-grammar Tool-specific input tokens: " + table.parseErrors());
-        assertEquals(catalog.toolNames(), table.rows().keySet());
+        List<String> documentedNames =
+                table.rows().stream().map(ToolRow::name).toList();
+        List<String> catalogNames =
+                catalog.tools().stream().map(McpSchema.Tool::name).toList();
+        assertEquals(catalogNames, documentedNames, "tool row order");
     }
 
     @Test void documentedRequiredInputsMatchCatalogSchemasForEveryTool() throws Exception {
         GuideTable table = parseGuide();
         for (McpSchema.Tool tool : catalog.tools()) {
-            ToolInputs documented = table.rows().get(tool.name());
+            ToolInputs documented = documented(table, tool.name());
             if (documented == null) {
                 continue; // rows missing from the guide are reported by the coverage test
             }
-            Set<String> expected = new LinkedHashSet<>(schemaRequired(tool));
+            List<String> expected = schemaRequired(tool);
             expected.removeAll(ENVELOPE);
             assertEquals(expected, documented.required(),
-                    tool.name() + " documented required inputs");
+                    tool.name() + " documented required inputs (order follows the schema)");
         }
     }
 
     @Test void documentedOptionalInputsExistAndAreNotRequired() throws Exception {
         GuideTable table = parseGuide();
         for (McpSchema.Tool tool : catalog.tools()) {
-            ToolInputs documented = table.rows().get(tool.name());
+            ToolInputs documented = documented(table, tool.name());
             if (documented == null) {
                 continue;
             }
             @SuppressWarnings("unchecked")
             Map<String, Object> properties =
                     (Map<String, Object>) tool.inputSchema().get("properties");
-            Set<String> required = schemaRequired(tool);
+            Set<String> required = new LinkedHashSet<>(schemaRequired(tool));
             for (String field : documented.optional()) {
                 assertTrue(properties.containsKey(field),
                         tool.name() + " documents optional " + field
@@ -131,6 +175,11 @@ final class DocsCatalogParityTest {
                         tool.name() + " documents optional " + field
                                 + " but the schema requires it");
             }
+            List<String> expectedOptional = properties.keySet().stream()
+                    .filter(documented.optional()::contains)
+                    .toList();
+            assertEquals(expectedOptional, documented.optional(),
+                    tool.name() + " documented optional inputs (order follows the schema)");
         }
     }
 
@@ -142,5 +191,35 @@ final class DocsCatalogParityTest {
             }
         }
         assertEquals(Set.of("ui_sessions"), withoutSessionId);
+    }
+
+    @Test void escapedPipesInTableRowsAreRejected(@TempDir Path tempDir) throws Exception {
+        GuideTable table = parseGuide(writeGuide(tempDir,
+                "| Tool | Purpose | Tool-specific input | Result |",
+                "| `ui_query` | Evaluate a lazy locator | required `locator` | match count |",
+                "| `ui_wait` | Wait on semantics | required `locator` \\| required `condition` "
+                        + "| result |"));
+        assertTrue(table.parseErrors().values().stream()
+                        .anyMatch(error -> error.contains("escaped pipe")),
+                "escaped pipes must be rejected: " + table.parseErrors());
+        assertFalse(table.rows().stream()
+                        .anyMatch(row -> row.name().equals("ui_wait")),
+                "a row with an escaped pipe must not be parsed");
+    }
+
+    @Test void duplicateToolRowsAreReported(@TempDir Path tempDir) throws Exception {
+        GuideTable table = parseGuide(writeGuide(tempDir,
+                "| Tool | Purpose | Tool-specific input | Result |",
+                "| `ui_query` | Evaluate a lazy locator | required `locator` | match count |",
+                "| `ui_query` | Duplicate row | required `locator` | match count |"));
+        assertEquals("duplicate row", table.parseErrors().get("ui_query"));
+    }
+
+    @Test void duplicateFieldTokensAreReported(@TempDir Path tempDir) throws Exception {
+        GuideTable table = parseGuide(writeGuide(tempDir,
+                "| Tool | Purpose | Tool-specific input | Result |",
+                "| `ui_query` | Evaluate a lazy locator | required `locator`, "
+                        + "required `locator` | match count |"));
+        assertEquals("duplicate field locator", table.parseErrors().get("ui_query"));
     }
 }
