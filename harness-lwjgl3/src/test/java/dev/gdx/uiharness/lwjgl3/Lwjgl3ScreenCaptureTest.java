@@ -195,6 +195,83 @@ final class Lwjgl3ScreenCaptureTest {
                 "closing the fence must leave the injected scheduler usable by its owner");
     }
 
+    @Test void ownedSchedulerShutdownNeverSurfacesFromAfterNextFrame() {
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence();
+        ScheduledThreadPoolExecutor owned = ownedScheduler(localFence);
+        assertNotNull(owned);
+        owned.shutdownNow();
+
+        CompletionStage<String> pending = localFence.afterNextFrame(
+                frame -> "unreachable",
+                Deadline.after(Lwjgl3CaptureFixture.CLOCK, Duration.ofHours(1)));
+
+        HarnessException failure = assertThrows(HarnessException.class, () -> await(pending));
+        assertEquals(ErrorCode.SESSION_CLOSED, failure.code(),
+                "a legacy fence must report queued work as closed instead of throwing from "
+                        + "its own shut-down scheduler");
+        localFence.close();
+    }
+
+    @Test void concurrentSecondCloseWaitsForTheFirstCleanup() throws Exception {
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(noopDeadlines(), 1);
+        CountDownLatch listenerEntered = new CountDownLatch(1);
+        CountDownLatch releaseListener = new CountDownLatch(1);
+        localFence.subscribe(new FrameSignal.FrameListener() {
+            @Override public void onFrame(FrameSignal.Frame frame) { }
+
+            @Override public void onClosed() {
+                listenerEntered.countDown();
+                try {
+                    releaseListener.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("listener interrupted", exception);
+                }
+            }
+        });
+        Thread firstCloser = new Thread(localFence::close, "first-fence-closer");
+        firstCloser.start();
+        assertTrue(listenerEntered.await(1, TimeUnit.SECONDS),
+                "the first close must reach its blocking listener");
+        AtomicBoolean secondCloseReturned = new AtomicBoolean();
+        Thread secondCloser = new Thread(() -> {
+            localFence.close();
+            secondCloseReturned.set(true);
+        }, "second-fence-closer");
+        secondCloser.start();
+        Thread.sleep(200);
+        assertFalse(secondCloseReturned.get(),
+                "a concurrent second close must not return before the first cleanup finishes");
+        releaseListener.countDown();
+        firstCloser.join(1_000);
+        secondCloser.join(1_000);
+        assertFalse(firstCloser.isAlive(), "the first close must finish after its listener");
+        assertFalse(secondCloser.isAlive(), "the second close must return after the cleanup");
+        assertTrue(secondCloseReturned.get(),
+                "the second close must return once the first cleanup has finished");
+    }
+
+    @Test void reentrantCloseFromListenerDoesNotDeadlock() {
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(noopDeadlines(), 1);
+        AtomicBoolean reentrantCloseReturned = new AtomicBoolean();
+        localFence.subscribe(new FrameSignal.FrameListener() {
+            @Override public void onFrame(FrameSignal.Frame frame) { }
+
+            @Override public void onClosed() {
+                localFence.close();
+                reentrantCloseReturned.set(true);
+            }
+        });
+        localFence.close();
+
+        assertTrue(reentrantCloseReturned.get(),
+                "a reentrant close from the closing thread's own listener must return immediately");
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> await(localFence.afterNextFrame(
+                        frame -> "unreachable", fixture.deadline())));
+        assertEquals(ErrorCode.SESSION_CLOSED, failure.code());
+    }
+
     @Test void closingScreenCaptureImmediatelyFailsItsQueuedRequest() {
         Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(noopDeadlines(), 1);
         Lwjgl3ScreenCapture localCapture = new Lwjgl3ScreenCapture(

@@ -17,6 +17,7 @@ import java.util.OptionalLong;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -34,6 +35,8 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
     private final CopyOnWriteArrayList<FrameListener> listeners =
             new CopyOnWriteArrayList<>();
     private boolean open = true;
+    private Thread closingThread;
+    private volatile Throwable closeFailure;
 
     /** Creates a fence owned by the current graphics thread with the default bounded capacity. */
     public Lwjgl3FrameFence(DeadlineScheduler deadlines) {
@@ -149,15 +152,46 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
         return () -> listeners.remove(listener);
     }
 
-    /** Fails queued work and closes all frame subscriptions without touching the window. */
+    /**
+     * Fails queued work and closes all frame subscriptions without touching the window.
+     *
+     * <p>The first caller performs the cleanup; concurrent closers wait for it to finish and a
+     * reentrant close from the closing thread's own callbacks returns immediately. All callbacks
+     * and cancellations run outside the lifecycle monitor.
+     */
     @Override public void close() {
+        boolean cleanup;
+        boolean waited = false;
+        boolean interrupted = false;
+        synchronized (lifecycle) {
+            while (closingThread != null && closingThread != Thread.currentThread()) {
+                waited = true;
+                try {
+                    lifecycle.wait();
+                } catch (InterruptedException exception) {
+                    interrupted = true;
+                }
+            }
+            if (closingThread == Thread.currentThread() || !open) {
+                cleanup = false;
+            } else {
+                open = false;
+                closingThread = Thread.currentThread();
+                cleanup = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        if (!cleanup) {
+            if (waited && closeFailure != null) {
+                rethrowUnchecked(closeFailure);
+            }
+            return;
+        }
         List<Command<?>> pending;
         List<DeadlineScheduler.Cancellation> cancellations;
         synchronized (lifecycle) {
-            if (!open) {
-                return;
-            }
-            open = false;
             pending = new ArrayList<>(queued);
             cancellations = new ArrayList<>(pending.size());
             for (Command<?> command : pending) {
@@ -168,24 +202,44 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
             }
             queued.clear();
         }
-        cancelAll(cancellations);
-        if (ownedScheduler != null) {
-            ownedScheduler.shutdownNowAndAwait();
+        Throwable failure = null;
+        try {
+            cancelAll(cancellations);
+            if (ownedScheduler != null) {
+                ownedScheduler.shutdownNowAndAwait();
+            }
+            HarnessException closed = closedFailure();
+            for (Command<?> command : pending) {
+                command.completeExceptionally(closed);
+            }
+            for (FrameListener listener : listeners) {
+                listener.onClosed();
+            }
+            listeners.clear();
+        } catch (Throwable throwable) {
+            failure = throwable;
+        } finally {
+            synchronized (lifecycle) {
+                closingThread = null;
+                closeFailure = failure;
+                lifecycle.notifyAll();
+            }
         }
-        HarnessException failure = closedFailure();
-        for (Command<?> command : pending) {
-            command.completeExceptionally(failure);
+        if (failure != null) {
+            rethrowUnchecked(failure);
         }
-        for (FrameListener listener : listeners) {
-            listener.onClosed();
-        }
-        listeners.clear();
     }
 
     private static void cancelAll(List<DeadlineScheduler.Cancellation> cancellations) {
         for (DeadlineScheduler.Cancellation cancellation : cancellations) {
             cancellation.cancel();
         }
+    }
+
+    /** Rethrows a close cleanup failure without requiring a checked-exception declaration. */
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrowUnchecked(Throwable failure) throws T {
+        throw (T) failure;
     }
 
     /**
@@ -298,8 +352,19 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
          * synchronous cancellation never runs under the lifecycle lock.
          */
         void armDeadline() {
-            DeadlineScheduler.Cancellation scheduled =
-                    deadlines.schedule(deadline.remaining(), this::deadlineReached);
+            DeadlineScheduler.Cancellation scheduled;
+            try {
+                scheduled = deadlines.schedule(deadline.remaining(), this::deadlineReached);
+            } catch (RejectedExecutionException failure) {
+                if (ownedScheduler == null) {
+                    throw failure;
+                }
+                // The fence's own scheduler was shut down after this command was queued, either
+                // by a concurrent close or before the fence was used. Fail the command exactly
+                // as close() would instead of surfacing an internal registration error.
+                completeAsClosed();
+                return;
+            }
             boolean cancelScheduled;
             synchronized (lifecycle) {
                 if (state == CommandState.QUEUED && deadlineCancellation == null) {
@@ -311,6 +376,25 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
             }
             if (cancelScheduled) {
                 scheduled.cancel();
+            }
+        }
+
+        /**
+         * Fails a queued command with {@link #closedFailure()} when the fence's own scheduler can
+         * no longer arm its deadline. Claims under {@link #lifecycle} and completes outside it;
+         * a concurrent close that already claimed the command wins and completes it itself.
+         */
+        void completeAsClosed() {
+            boolean claimed;
+            synchronized (lifecycle) {
+                claimed = state == CommandState.QUEUED && queued.remove(this);
+                if (claimed) {
+                    state = CommandState.TERMINAL;
+                    deadlineCancellation = null;
+                }
+            }
+            if (claimed) {
+                completeExceptionally(closedFailure());
             }
         }
 
