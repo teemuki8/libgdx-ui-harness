@@ -1238,6 +1238,69 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test void publisherFailureSecretsNeverReachMcpOutput() {
+        String secret = "ghp_1234567890abcdef";
+        ArtifactReference.Publisher leaking = (mediaType, content) -> {
+            throw new ArtifactReference.ArtifactUnavailableException(
+                    "publisher token " + secret + " at /home/private/key.pem");
+        };
+        byte[] png = "fake-png".getBytes(StandardCharsets.UTF_8);
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.Screenshot(
+                                Base64.getEncoder().encodeToString(png),
+                                "0".repeat(64), 1, 1, 1, 1, 1.0, 1.0)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> response, leaking, executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_screenshot", Map.of(
+                            "sessionId", "game",
+                            "maxWidth", 10, "maxHeight", 10,
+                            "maxPixels", 100, "maxPngBytes", 1024)))
+                    .block(Duration.ofSeconds(10));
+            String text = result.content().stream()
+                    .filter(McpSchema.TextContent.class::isInstance)
+                    .map(McpSchema.TextContent.class::cast)
+                    .map(McpSchema.TextContent::text)
+                    .reduce("", (a, b) -> a + b);
+
+            assertTrue(result.isError());
+            assertFalse(text.contains(secret));
+            assertFalse(text.contains("/home/private"));
+            assertTrue(text.contains("artifact-unavailable"));
+            Map<String, Object> content = structured(result);
+            assertFalse(String.valueOf(content).contains(secret));
+            assertEquals("INTERNAL_ERROR", content.get("code"));
+            String traceId = (String) content.get("traceId");
+            assertNotNull(traceId);
+            assertTrue(traceId.matches("internal-[0-9a-f]{8}"));
+        }
+    }
+
+    @Test void invalidArtifactReferenceTextIsRedacted() {
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.TraceStopped(
+                                "trace-1", "/tmp/trace.zip", 1, 32)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> response, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_trace_stop", Map.of("sessionId", "game")))
+                    .block(Duration.ofSeconds(10));
+
+            assertTrue(result.isError());
+            String text = result.content().stream()
+                    .filter(McpSchema.TextContent.class::isInstance)
+                    .map(McpSchema.TextContent.class::cast)
+                    .map(McpSchema.TextContent::text)
+                    .reduce("", (a, b) -> a + b);
+            assertFalse(text.contains("/tmp/trace.zip"));
+            assertTrue(text.contains("invalid-artifact-reference"));
+        }
+    }
+
     @Test void deeplyNestedAndOversizedLocatorGraphsAreRejectedBeforeProtocolDispatch() {
         AtomicInteger calls = new AtomicInteger();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();

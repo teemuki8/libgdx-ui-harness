@@ -21,8 +21,12 @@ import dev.gdx.uiharness.core.typography.GlyphRunObservation;
 import dev.gdx.uiharness.core.typography.TypographyDiagnostic;
 import dev.gdx.uiharness.core.typography.TypographyReport;
 import io.modelcontextprotocol.spec.McpSchema;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -48,6 +52,8 @@ public final class HarnessToolHandler implements AutoCloseable {
     static final int MAX_LOCATOR_DEPTH = ProtocolJson.MAX_NESTING_DEPTH / 2;
     static final int MAX_LOCATOR_NODES = ProtocolJson.MAX_REQUEST_BYTES / 256;
     private static final ObjectMapper COMMAND_MAPPER = ProtocolJson.mapper();
+    private static final java.util.logging.Logger ARTIFACT_LOGGER =
+            java.util.logging.Logger.getLogger("dev.gdx.uiharness.mcp.ArtifactPublisher");
 
     /** Internal protocol source carrying raw capture attachments for direct publication. */
     @FunctionalInterface
@@ -365,13 +371,18 @@ public final class HarnessToolHandler implements AutoCloseable {
                     .isError(false)
                     .build();
         } catch (ArtifactReference.InvalidArtifactReferenceException failure) {
+            ARTIFACT_LOGGER.log(java.util.logging.Level.FINE,
+                    "invalid artifact reference", failure);
             return localError(
-                    operation, sequence, arguments,
-                    "invalid-artifact-reference", failure.getMessage());
+                    operation, sequence, arguments, "invalid-artifact-reference",
+                    "Artifact reference is not transport-safe", internalTraceId(sequence, failure));
         } catch (ArtifactReference.ArtifactUnavailableException failure) {
+            ARTIFACT_LOGGER.log(java.util.logging.Level.FINE,
+                    "artifact publisher unavailable or unverified", failure);
             return localError(
-                    operation, sequence, arguments,
-                    "artifact-unavailable", failure.getMessage());
+                    operation, sequence, arguments, "artifact-unavailable",
+                    "Artifact persistence is unavailable or rejected the payload",
+                    internalTraceId(sequence, failure));
         } catch (RuntimeException failure) {
             return localError(
                     operation, sequence, arguments,
@@ -1170,12 +1181,39 @@ public final class HarnessToolHandler implements AutoCloseable {
                         .toList();
     }
 
+    /**
+     * Derives an opaque, content-free correlation ID for a publisher failure so the
+     * restricted {@code dev.gdx.uiharness.mcp.ArtifactPublisher} logger record can be
+     * matched against the MCP boundary response without exposing the raw failure.
+     */
+    private static String internalTraceId(long sequence, Throwable failure) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(Long.toString(sequence).getBytes(StandardCharsets.UTF_8));
+            digest.update((byte) 0);
+            digest.update(failure.getClass().getName().getBytes(StandardCharsets.UTF_8));
+            return "internal-" + HexFormat.of().formatHex(digest.digest(), 0, 4);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError("SHA-256 is unavailable", impossible);
+        }
+    }
+
     private McpSchema.CallToolResult localError(
             String operation,
             long sequence,
             Map<String, Object> arguments,
             String code,
             String message) {
+        return localError(operation, sequence, arguments, code, message, null);
+    }
+
+    private McpSchema.CallToolResult localError(
+            String operation,
+            long sequence,
+            Map<String, Object> arguments,
+            String code,
+            String message,
+            String traceId) {
         return diagnostic(
                 "mcp-" + Long.toUnsignedString(sequence),
                 sequence,
@@ -1184,7 +1222,15 @@ public final class HarnessToolHandler implements AutoCloseable {
                 DiagnosticCode.INTERNAL_ERROR,
                 message + " (" + code + ")",
                 List.of(),
-                null);
+                null,
+                List.of(),
+                Map.of(),
+                List.of(),
+                null,
+                traceId,
+                new DiagnosticEnvelope.StateIdentity(
+                        null, sessionKey(arguments), null, null),
+                List.of());
     }
 
     private static McpSchema.CallToolResult errorResult(Map<String, Object> content) {
