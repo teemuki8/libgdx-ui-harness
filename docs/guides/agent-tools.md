@@ -9,9 +9,9 @@ The MCP server exposes exactly twenty-three bounded tools. `tools/list` is the a
 | `ui_sessions` | List active sessions | none | bounded session IDs and capability names |
 | `ui_snapshot` | Capture a compact semantic snapshot | none | revision, frame, root ID, node count, optional `state-action/v1` identity/contract and full-snapshot artifact |
 | `ui_query` | Evaluate a lazy locator | required `locator` | match count, bounded node summaries/evidence, optional artifact |
-| `ui_action` | Perform one allowlisted action | required `locator`, required `action` | before/after revisions, observed state, evidence, optional artifact |
+| `ui_action` | Perform one allowlisted action | required `action`, required `locator` | before/after revisions, observed state, evidence, optional artifact |
 | `ui_assert` | Assert a semantic condition on a resolved locator with typed outcome | required `schemaVersion`, required `locator`, required `assertion`, required `deadlineMillis` | assertion outcome and evidence |
-| `ui_wait` | Wait on semantics | required `locator`, required `condition` | final revision/frame, matches/evidence, optional artifact |
+| `ui_wait` | Wait on semantics | required `condition`, required `locator` | final revision/frame, matches/evidence, optional artifact |
 | `ui_screenshot` | Capture completed-frame PNG evidence | optional `locator`, required `maxWidth`, required `maxHeight`, required `maxPixels`, required `maxPngBytes` | opaque artifact receipt plus frame/revision/dimensions/scales |
 | `ui_inspect_compare` | Inspect, capture, and compare one current full frame | required `referenceId`, required `policyId`, required `policyVersion`, required `viewportId`, required `maxIterations`, required `maxDurationMillis`, required `maxWidth`, required `maxHeight`, required `maxPixels`, required `maxPngBytes` | explicit convergence status, bounded semantic/spatial differences, current PNG and heatmap artifacts, and full immutable evidence artifact |
 | `ui_typography_diagnose` | Capture and diagnose visible registered text controls | required `referenceId`, required `viewportId`, required `maxDurationMillis`, required `maxResults`, required `maxWidth`, required `maxHeight`, required `maxPixels`, required `maxPngBytes` | actor-attributed typography status and reports, current PNG artifact, and immutable diagnostic evidence artifact |
@@ -25,7 +25,7 @@ The MCP server exposes exactly twenty-three bounded tools. `tools/list` is the a
 | `ui_validate_layout` | Validate whole-stage or subtree layout invariants from one completed frame | required `spec` | status and bounded findings |
 | `ui_matrix_run` | Run one scenario/assertion set across a bounded display matrix | required `spec` | run ID |
 | `ui_matrix_results` | Retrieve one retained matrix run report | required `runId` | bounded report |
-| `ui_runtime_compare` | Compare a bound node's displayed value against its runtime observation | required `locator`, required `maxDurationMillis` | typed comparison with correlation |
+| `ui_runtime_compare` | Compare a bound node's displayed value against its runtime observation | required `maxDurationMillis`, required `locator` | typed comparison with correlation |
 | `ui_trace_query` | Query compact state transitions from a retained trace | required `spec` | bounded transitions |
 | `ui_semantic_compare` | Compare a registered semantic baseline against the current snapshot | required `spec` | matched status and bounded differences |
 | `ui_capabilities` | Discover one session's supported operations | none | bounded capability names, exact operation schemas/examples, diagnostic registry, and recovery policy |
