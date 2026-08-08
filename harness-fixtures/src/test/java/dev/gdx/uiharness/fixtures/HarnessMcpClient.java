@@ -527,6 +527,27 @@ final class HarnessMcpClient implements Closeable {
         return content;
     }
 
+    JsonNode semanticCompareFailure(String sessionId, String baselineId, long deadlineMillis)
+            throws Exception {
+        Map<String, Object> spec = Map.of(
+                "baselineId", baselineId,
+                "strictNodes", false,
+                "tolerances", List.of(),
+                "excludedProperties", List.of(),
+                "maxDifferences", 4096,
+                "maxDurationMillis", 5000);
+        JsonNode result = request("tools/call", Map.of(
+                "name", "ui_semantic_compare",
+                "arguments", Map.of(
+                        "sessionId", sessionId, "spec", spec, "deadlineMillis", deadlineMillis)));
+        if (!result.path("isError").asBoolean()) {
+            throw new IllegalStateException("Expected MCP semantic-compare failure: " + result);
+        }
+        JsonNode content = result.path("structuredContent");
+        requireKind(content, "error");
+        return content;
+    }
+
     String runMatrix(String sessionId, long deadlineMillis) throws Exception {
         return runMatrix(sessionId, new MatrixSpec(
                 List.of(Map.of("width", 1280, "height", 720)),
