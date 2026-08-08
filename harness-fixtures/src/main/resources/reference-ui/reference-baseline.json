@@ -212,9 +212,9 @@
           "focusable" : false,
           "stageBounds" : {
             "x" : 856.0,
-            "y" : 519.0,
-            "width" : 1.0,
-            "height" : 1.0
+            "y" : 520.0,
+            "width" : 0.0,
+            "height" : 0.0
           },
           "properties" : { },
           "children" : [ ]
@@ -225,7 +225,7 @@
           "focused" : false,
           "focusable" : false,
           "stageBounds" : {
-            "x" : 857.0,
+            "x" : 856.0,
             "y" : 510.0,
             "width" : 147.0,
             "height" : 19.0
@@ -606,5 +606,5 @@
     } ]
   },
   "strictNodes" : false,
-  "digest" : "cc0644251abf1b8855bcd270cba77bd56e100de0728676cb30baaa3c40bb55e7"
+  "digest" : "aac632129f8dcee98609422d25fbe7bec729ca4979d4e8c79ab1e6b0c2523e8d"
 }
