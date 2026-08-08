@@ -531,8 +531,8 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         }
 
         private void completeTerminal(ScenarioFailure failure, boolean cleaned) {
-            publishTerminal(failure, cleaned);
             releaseIfOwner(this);
+            publishTerminal(failure, cleaned);
         }
 
         private Duration elapsed() {

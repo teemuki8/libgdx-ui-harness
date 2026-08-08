@@ -189,7 +189,8 @@ final class Lwjgl3MatrixRunnerTest {
             assertEquals(2, report.results().size());
             assertEquals(MatrixCaseStatus.FAILED, report.results().getFirst().status());
             assertTrue(!report.results().getFirst().evidence().isEmpty());
-            assertEquals(MatrixCaseStatus.PASSED, report.results().get(1).status());
+            assertEquals(MatrixCaseStatus.PASSED, report.results().get(1).status(),
+                    report.results().get(1).evidence());
             assertEquals(2, fixture.acquisitions.get());
             assertEquals(2, fixture.releases.get());
             assertEquals(1, fixture.releasesAtNextAcquire.get(),
