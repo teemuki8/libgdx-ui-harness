@@ -556,40 +556,48 @@ final class HarnessBridgeTest {
                 return;
             }
             closeStarted = true;
-            CompletableFuture<Void> outcome = new CompletableFuture<>();
-            closeOutcome = outcome;
+            closeOutcome = new CompletableFuture<>();
             Thread thread = Thread.ofPlatform()
                     .name("harness-bridge-close-fixture").daemon()
-                    .unstarted(() -> {
-                        try {
-                            bridge.close();
-                            outcome.complete(null);
-                        } catch (Throwable thrown) {
-                            outcome.completeExceptionally(thrown);
-                        }
-                    });
+                    .unstarted(this::runClose);
             closeThread = thread;
             thread.start();
-            outcome.whenComplete((ignored, thrown) -> {
-                if (thrown == null) {
-                    closeCompleted = true;
-                    screenshotReleasedByClose = screenshot.isDone();
-                    // close() only returns after its bounded awaitTermination, so the worker is
-                    // gone; the loop absorbs any thread-map bookkeeping lag without sleeping.
-                    for (int retries = 0; deadlineThreadAlive() && retries < 1_000; retries++) {
-                        // re-check the live-thread event
-                    }
-                    noDeadlineThreadAfterClose = !deadlineThreadAlive();
-                }
-            });
         }
 
-        private static void awaitCloseThreadTermination(Thread closer) {
+        /** Runs the single close attempt and publishes observations before the outcome. */
+        private void runClose() {
+            try {
+                bridge.close();
+                // Publish observations on this thread before completing the outcome so the
+                // awaiter's get() establishes a happens-before edge over them.
+                closeCompleted = true;
+                screenshotReleasedByClose = screenshot.isDone();
+                // close() only returns after its bounded awaitTermination, so the worker is
+                // gone; the loop absorbs any thread-map bookkeeping lag without sleeping.
+                for (int retries = 0; deadlineThreadAlive() && retries < 1_000; retries++) {
+                    // re-check the live-thread event
+                }
+                noDeadlineThreadAfterClose = !deadlineThreadAlive();
+                closeOutcome.complete(null);
+            } catch (Throwable thrown) {
+                closeOutcome.completeExceptionally(thrown);
+            }
+        }
+
+        /**
+         * Boundedly joins the close thread and explicitly verifies termination: a join timeout
+         * is never silently equated with the thread having stopped.
+         */
+        private void awaitCloseThreadTermination(Thread closer) {
             try {
                 closer.join(CLOSE_TIMEOUT_NANOS / 1_000_000,
                         (int) (CLOSE_TIMEOUT_NANOS % 1_000_000));
             } catch (InterruptedException interruption) {
                 Thread.currentThread().interrupt();
+            }
+            if (closer.isAlive()) {
+                failure.compareAndSet(null, new AssertionError(
+                        "close thread stayed alive after interrupt and bounded join"));
             }
         }
 
