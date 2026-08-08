@@ -1,5 +1,6 @@
 package dev.gdx.uiharness.core.capture;
 
+import java.nio.ByteBuffer;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.regex.Pattern;
@@ -44,6 +45,11 @@ public record CapturedImage(
     /** Returns a defensive copy of the encoded PNG bytes. */
     @Override public byte[] pngBytes() {
         return pngBytes.clone();
+    }
+
+    /** Returns a fresh read-only view of the owned PNG bytes; the backing array never escapes. */
+    public ByteBuffer pngView() {
+        return ByteBuffer.wrap(pngBytes).asReadOnlyBuffer();
     }
 
     /** Framebuffer pixels per logical window unit on each axis. */

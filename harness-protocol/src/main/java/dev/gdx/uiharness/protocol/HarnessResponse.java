@@ -34,6 +34,8 @@ import dev.gdx.uiharness.core.layout.LayoutDiagnosticResult;
 import dev.gdx.uiharness.core.layout.LayoutQuiescenceResult;
 import dev.gdx.uiharness.core.layout.LayoutReport;
 import dev.gdx.uiharness.core.layout.LayoutStabilitySample;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -403,18 +405,24 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             }
 
             static Screenshot fromCore(CapturedImage image) {
-                byte[] pngBytes = image.pngBytes();
-                if (pngBytes.length > MAX_PNG_BYTES) {
+                return fromCore(image, image.pngView());
+            }
+
+            /** Internal: encodes the wire String from the read-only view (no input copy). */
+            static Screenshot fromCore(CapturedImage image, ByteBuffer raw) {
+                if (raw.remaining() > MAX_PNG_BYTES) {
                     throw new HarnessException(ErrorCode.LIMIT_EXCEEDED,
                             "Captured PNG exceeds protocol response byte limit",
                             ErrorEvidence.ofDetails(Map.of(
                                     "limit", "response-byte-limit",
                                     "maximumBytes", Integer.toString(MAX_PNG_BYTES),
-                                    "actualBytes", Integer.toString(pngBytes.length))));
+                                    "actualBytes", Integer.toString(raw.remaining()))));
                 }
-                return new Screenshot(Base64.getEncoder().encodeToString(pngBytes),
-                        image.sha256(), image.frame(), image.revision(), image.width(),
-                        image.height(), image.scale().x(), image.scale().y());
+                String pngBase64 = StandardCharsets.US_ASCII.decode(
+                        Base64.getEncoder().encode(raw.duplicate())).toString();
+                return new Screenshot(pngBase64, image.sha256(), image.frame(),
+                        image.revision(), image.width(), image.height(),
+                        image.scale().x(), image.scale().y());
             }
         }
 
