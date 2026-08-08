@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
@@ -36,6 +37,7 @@ import java.util.zip.ZipInputStream;
  *  the archive bytes, so a load reports {@link TraceReplay.Integrity#VERIFIED} only
  *  when every binding matched. */
 public final class TraceReplayer {
+    private static final Pattern SHA256_PATTERN = Pattern.compile("[0-9a-f]{64}");
     private final Limits limits;
     private final Runnable afterSnapshotHook;
 
@@ -61,7 +63,29 @@ public final class TraceReplayer {
      *  before any parsing, so a concurrent source replacement cannot change the
      *  bytes that are validated or the digest that is reported. */
     public TraceReplay load(Path suppliedArchive) {
+        return load(suppliedArchive, null, -1);
+    }
+
+    /** Loads and validates one trace exactly like {@link #load(Path)}, additionally
+     *  requiring the captured archive bytes to match a caller-supplied receipt.
+     *  Either receipt field may be omitted with {@code null} (digest) or {@code -1}
+     *  (size); a provided digest must be lowercase hex SHA-256 and a provided size
+     *  non-negative, else {@link IllegalArgumentException}. Any mismatch between the
+     *  captured archive digest or size and the receipt rejects the load with
+     *  {@link ErrorCode#INVALID_REQUEST} immediately after capture, before the
+     *  archive bytes are parsed. */
+    public TraceReplay load(Path suppliedArchive, String expectedArchiveSha256,
+            long expectedArchiveSize) {
         Objects.requireNonNull(suppliedArchive, "archive");
+        if (expectedArchiveSha256 != null
+                && !SHA256_PATTERN.matcher(expectedArchiveSha256).matches()) {
+            throw new IllegalArgumentException(
+                    "expected archive digest must be a SHA-256 or null");
+        }
+        if (expectedArchiveSize < -1) {
+            throw new IllegalArgumentException(
+                    "expected archive size must be -1 or non-negative");
+        }
         Path archive = suppliedArchive.toAbsolutePath().normalize();
         validateArchiveFile(archive);
         Path snapshot = null;
@@ -71,7 +95,16 @@ public final class TraceReplayer {
                         "Trace archive exceeds replay byte limit", null);
             }
             snapshot = createPrivateSnapshot();
-            String archiveDigest = captureSnapshot(archive, snapshot);
+            Capture captured = captureSnapshot(archive, snapshot);
+            if (expectedArchiveSha256 != null
+                    && !captured.sha256().equals(expectedArchiveSha256)) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive digest does not match the receipt", null);
+            }
+            if (expectedArchiveSize != -1 && captured.size() != expectedArchiveSize) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive size does not match the receipt", null);
+            }
             if (afterSnapshotHook != null) {
                 afterSnapshotHook.run();
             }
@@ -87,7 +120,7 @@ public final class TraceReplayer {
                     verifyBindings(zip, manifest, budget, identities.keySet());
                 }
                 TraceReplay replay = readEvents(zip, manifest, budget, identities,
-                        archiveDigest,
+                        captured.sha256(),
                         verifiedFormat
                                 ? TraceReplay.Integrity.VERIFIED
                                 : TraceReplay.Integrity.UNVERIFIED);
@@ -111,7 +144,7 @@ public final class TraceReplayer {
      *  the exact captured bytes while enforcing the archive byte ceiling, so every
      *  later parse operates on immutable bytes that cannot be swapped out from under
      *  the replayer. */
-    private String captureSnapshot(Path source, Path snapshot) throws IOException {
+    private Capture captureSnapshot(Path source, Path snapshot) throws IOException {
         MessageDigest digest = sha256();
         byte[] buffer = new byte[16 * 1024];
         long total = 0;
@@ -128,8 +161,11 @@ public final class TraceReplayer {
                 output.write(buffer, 0, read);
             }
         }
-        return HexFormat.of().formatHex(digest.digest());
+        return new Capture(HexFormat.of().formatHex(digest.digest()), total);
     }
+
+    /** Exact SHA-256 and byte size of the captured archive bytes. */
+    private record Capture(String sha256, long size) {}
 
     /** Creates a private owner-only temporary snapshot file in the system temp
      *  directory; non-POSIX filesystems fall back to the default temp permissions. */

@@ -646,6 +646,89 @@ final class TraceReplayerTest {
                 "not-a-digest", TraceReplay.Integrity.VERIFIED));
     }
 
+    @Test void receiptBoundLoadSucceedsWithExactArchiveIdentity() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-receipt", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-receipt", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path archive = recorder.stop().archive();
+        String digest = sha256(Files.readAllBytes(archive));
+        long size = Files.size(archive);
+
+        TraceReplay replay = new TraceReplayer().load(archive, digest, size);
+
+        assertEquals(TraceReplay.Integrity.VERIFIED, replay.integrity());
+        assertEquals(digest, replay.archiveSha256());
+    }
+
+    @Test void receiptBoundLoadRejectsDigestMismatch() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-receipt", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-receipt", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path archive = recorder.stop().archive();
+        String wrongDigest = "00".repeat(32);
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(
+                        archive, wrongDigest, Files.size(archive)));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("receipt"));
+    }
+
+    @Test void receiptBoundLoadRejectsSizeMismatch() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-receipt", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-receipt", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path archive = recorder.stop().archive();
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(
+                        archive, sha256(Files.readAllBytes(archive)),
+                        Files.size(archive) + 1));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("receipt"));
+    }
+
+    @Test void receiptBoundLoadRejectsTamperedArchiveBeforeParsing() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-receipt", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-receipt", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path archive = recorder.stop().archive();
+        String originalDigest = sha256(Files.readAllBytes(archive));
+        long originalSize = Files.size(archive);
+        byte[] tampered = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-receipt\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":999,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(
+                        rewrittenWithReplacedEntry(archive, "events.ndjson", tampered),
+                        originalDigest, originalSize));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("receipt"));
+    }
+
+    @Test void receiptArgumentsAreValidated() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-receipt", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-receipt", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path archive = recorder.stop().archive();
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new TraceReplayer().load(archive, "not-a-digest", -1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new TraceReplayer().load(archive, null, -2));
+    }
+
     private static Path rewrittenWithReplacedEntry(Path source, String entryName,
             byte[] replacement) throws Exception {
         Path rewritten = source.resolveSibling(source.getFileName() + ".rewritten.zip");
