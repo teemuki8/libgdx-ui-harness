@@ -1051,6 +1051,36 @@ final class HarnessMcpServerContractTest {
 
     @Test
     @Timeout(10)
+    void parseErrorWriteFailureWinsOverEofClose() throws Exception {
+        RecordingHarness harness = new RecordingHarness();
+        BlockingFailingOutputStream output = new BlockingFailingOutputStream();
+        ExecutorService waiter = Executors.newVirtualThreadPerTaskExecutor();
+        try (PipedInputStream serverInput = new PipedInputStream();
+                PipedOutputStream clientOutput = new PipedOutputStream(serverInput);
+                HarnessMcpServer server = HarnessMcpServer.open(
+                        service(harness), new RecordingArtifacts(),
+                        serverInput, output)) {
+            writeRaw(clientOutput, new byte[] {(byte) 0xc3, 0x28});
+            assertTrue(output.writeStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            // Race EOF against the in-flight parse-error write. The output failure must
+            // win and terminate the transport exceptionally; it must not be swallowed by
+            // the read loop's natural EOF close (which would complete termination
+            // normally). The bounded sleep lets the read loop reach EOF before the write
+            // is released, mirroring the existing bounded sleep-loop coordination.
+            closeStdin(clientOutput);
+            Thread.sleep(200);
+            output.release();
+            CompletableFuture<Void> termination = CompletableFuture.runAsync(
+                    server::awaitTermination, waiter);
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> termination.get(5, java.util.concurrent.TimeUnit.SECONDS));
+        } finally {
+            waiter.shutdownNow();
+        }
+    }
+
+    @Test
+    @Timeout(10)
     void oversizedOrMalformedFrameDoesNotTerminateServer() throws Exception {
         RecordingHarness harness = new RecordingHarness();
         try (PipedInputStream serverInput = new PipedInputStream();
@@ -1327,6 +1357,38 @@ final class HarnessMcpServerContractTest {
                 "Save", null, "save", "button", "Button", state, bounds, bounds, bounds,
                 0, Map.of());
         return new SemanticSnapshot(1, 1, "root", Map.of("root", root));
+    }
+
+    private static final class BlockingFailingOutputStream extends java.io.OutputStream {
+        private final java.util.concurrent.CountDownLatch writeStarted =
+                new java.util.concurrent.CountDownLatch(1);
+        private final java.util.concurrent.CountDownLatch release =
+                new java.util.concurrent.CountDownLatch(1);
+
+        @Override public void write(int value) throws java.io.IOException {
+            awaitRelease();
+        }
+
+        @Override public void write(byte[] bytes, int offset, int length)
+                throws java.io.IOException {
+            awaitRelease();
+        }
+
+        private void awaitRelease() throws java.io.IOException {
+            writeStarted.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new java.io.IOException(
+                        "interrupted waiting for write release", interrupted);
+            }
+            throw new java.io.IOException("simulated stdout failure");
+        }
+
+        void release() {
+            release.countDown();
+        }
     }
 
     private static final class FailingOutputStream extends java.io.OutputStream {

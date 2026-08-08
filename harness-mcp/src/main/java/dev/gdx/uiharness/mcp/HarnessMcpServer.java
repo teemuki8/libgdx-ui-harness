@@ -180,24 +180,14 @@ public final class HarnessMcpServer implements AutoCloseable {
             }
         }
 
-        /** Writes one bounded JSON-RPC parse error; rejected frames are never echoed. */
-        private void writeParseError() {
-            CompletableFuture.runAsync(() -> {
-                if (closing.get()) {
-                    return;
-                }
-                try {
-                    writeLine(mapper.writeValueAsString(parseErrorBody()));
-                } catch (IOException failure) {
-                    // A failed output write means the client is gone; terminate the
-                    // transport exactly like a failed read instead of hanging forever
-                    // on an unobserved future.
-                    if (!closing.get()) {
-                        terminated.completeExceptionally(failure);
-                        close();
-                    }
-                }
-            }, outputExecutor);
+        /**
+         * Writes one bounded JSON-RPC parse error synchronously on the read-loop thread;
+         * rejected frames are never echoed. A failed write propagates to the read loop's
+         * failure path, so an output failure deterministically terminates the transport
+         * instead of being lost in a detached task or swallowed by a racing EOF close.
+         */
+        private void writeParseError() throws IOException {
+            writeLine(mapper.writeValueAsString(parseErrorBody()));
         }
 
         private static Map<String, Object> parseErrorBody() {
@@ -210,9 +200,14 @@ public final class HarnessMcpServer implements AutoCloseable {
         }
 
         private void writeLine(String json) throws IOException {
-            output.write(json.getBytes(StandardCharsets.UTF_8));
-            output.write('\n');
-            output.flush();
+            // The read loop writes parse errors synchronously while response writes run
+            // on outputExecutor; the output monitor serializes both, matching the MCP
+            // SDK's own stdio transport.
+            synchronized (output) {
+                output.write(json.getBytes(StandardCharsets.UTF_8));
+                output.write('\n');
+                output.flush();
+            }
         }
 
         private void dispatch(McpSchema.JSONRPCMessage message) {
