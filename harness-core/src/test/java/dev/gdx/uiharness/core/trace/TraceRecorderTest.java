@@ -405,6 +405,209 @@ final class TraceRecorderTest {
         }
     }
 
+    @Test void permissiveTraceRootIsRejected() throws Exception {
+        if (!FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "posix permissions unavailable");
+        }
+        Path root = temporaryDirectory.resolve("permissive-root");
+        Files.createDirectories(root);
+        Files.setPosixFilePermissions(root, Set.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE, PosixFilePermission.GROUP_READ,
+                PosixFilePermission.GROUP_WRITE, PosixFilePermission.GROUP_EXECUTE,
+                PosixFilePermission.OTHERS_READ, PosixFilePermission.OTHERS_WRITE,
+                PosixFilePermission.OTHERS_EXECUTE));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new TraceRecorder(root, Clock.systemUTC()));
+    }
+
+    @Test void traceStorageWithoutSecurePermissionViewFailsClosed() throws Exception {
+        Path zipPath = temporaryDirectory.resolve("zipfs.zip");
+        try (java.nio.file.FileSystem zipFs = java.nio.file.FileSystems.newFileSystem(
+                java.net.URI.create("jar:" + zipPath.toUri()), Map.of("create", "true"))) {
+            Path root = zipFs.getPath("/traces");
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> new TraceRecorder(root, Clock.systemUTC()));
+        }
+    }
+
+    @Test void samePathStagingReplacementIsRejectedWithoutDeletingThroughIt()
+            throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-replace", TraceRecorder.Limits.defaults());
+        Path staging;
+        try (var entries = Files.list(temporaryDirectory)) {
+            staging = entries.filter(path -> Files.isDirectory(path,
+                            java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                    .filter(path -> path.getFileName().toString().endsWith(".tmp"))
+                    .findFirst()
+                    .orElseThrow();
+        }
+        Path replaced = temporaryDirectory.resolve("renamed-staging");
+        Files.move(staging, replaced);
+        Files.createDirectory(staging); // same pathname, different filesystem object
+
+        try {
+            HarnessException failure = assertThrows(HarnessException.class,
+                    () -> recorder.record(TraceEvent.commandStarted(
+                            "session-replace", "request-1", 1, snapshot(1, 1), Map.of())));
+            assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+            assertTrue(Files.isDirectory(staging,
+                    java.nio.file.LinkOption.NOFOLLOW_LINKS),
+                    "replacement directory must never be deleted through");
+            assertTrue(Files.isDirectory(replaced),
+                    "renamed-away staging must not be deleted through either");
+        } finally {
+            try (var walk = Files.walk(replaced)) {
+                for (Path path : walk.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                    Files.deleteIfExists(path);
+                }
+            }
+            Files.deleteIfExists(staging);
+        }
+    }
+
+    @Test void temporaryArchiveReplacedWithHardlinkBeforePublicationIsRejected()
+            throws Exception {
+        Path victim = temporaryDirectory.resolveSibling(
+                temporaryDirectory.getFileName() + "-archive-victim");
+        Files.writeString(victim, "attacker-chosen-archive-content", StandardCharsets.UTF_8);
+        try {
+            TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                    path -> {
+                        if (path.getFileName().toString().endsWith(".zip.tmp")) {
+                            Files.deleteIfExists(path);
+                            Files.createLink(path, victim);
+                        }
+                        return TraceRecorder.openNoFollow(path);
+                    });
+            recorder.start("session-archive-swap", TraceRecorder.Limits.defaults());
+            recorder.record(TraceEvent.commandStarted(
+                    "session-archive-swap", "request-1", 1, snapshot(1, 1), Map.of()));
+
+            HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+            assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+            assertEquals("attacker-chosen-archive-content",
+                    Files.readString(victim, StandardCharsets.UTF_8),
+                    "victim file must be untouched");
+            assertTrue(noTemporaryFiles(temporaryDirectory));
+            assertNull(publishedArchives(temporaryDirectory),
+                    "no archive may be published from a substituted temporary archive");
+        } finally {
+            Files.deleteIfExists(victim);
+        }
+    }
+
+    @Test void publishedArchiveReplacedBeforeFinalVerificationIsRejected() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                path -> {
+                    if (path.getFileName().toString().endsWith(".zip")
+                            && !path.getFileName().toString().endsWith(".zip.tmp")) {
+                        Files.deleteIfExists(path);
+                        Files.writeString(path, "tampered-archive", StandardCharsets.UTF_8);
+                    }
+                    return TraceRecorder.openNoFollow(path);
+                });
+        recorder.start("session-post-move", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-post-move", "request-1", 1, snapshot(1, 1), Map.of()));
+
+        HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(noTemporaryFiles(temporaryDirectory));
+        assertNull(publishedArchives(temporaryDirectory),
+                "a replaced archive must not survive final verification");
+    }
+
+    @Test void cleanupFailureAfterSuccessfulFinalizeIsTerminal() throws Exception {
+        if (!FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "posix permissions unavailable");
+        }
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-cleanup-fail", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-cleanup-fail", "request-1", 1, snapshot(1, 1), Map.of()));
+        recorder.addArtifact("image/png",
+                new ByteArrayInputStream("png".getBytes(StandardCharsets.UTF_8)));
+        Path artifactDirectory = artifactDirectory(temporaryDirectory);
+        Files.setPosixFilePermissions(artifactDirectory, Set.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_EXECUTE));
+        try {
+            HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+            assertEquals(ErrorCode.INTERNAL_ERROR, failure.code());
+            assertTrue(failure.getSuppressed().length > 0,
+                    "cleanup failures must be attached to the terminal failure");
+            assertTrue(recorder.lastManifest().isPresent(),
+                    "the archive is published before the terminal cleanup failure");
+        } finally {
+            Files.setPosixFilePermissions(artifactDirectory, Set.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE));
+        }
+    }
+
+    @Test void cleanupFailureIsSuppressedOntoPrimaryFinalizationFailure() throws Exception {
+        if (!FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "posix permissions unavailable");
+        }
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                path -> {
+                    if (path.getFileName().toString().equals("events.ndjson")) {
+                        Files.writeString(path, "tampered-event", StandardCharsets.UTF_8);
+                    }
+                    return TraceRecorder.openNoFollow(path);
+                });
+        recorder.start("session-primary", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-primary", "request-1", 1, snapshot(1, 1), Map.of()));
+        recorder.addArtifact("image/png",
+                new ByteArrayInputStream("png".getBytes(StandardCharsets.UTF_8)));
+        Path artifactDirectory = artifactDirectory(temporaryDirectory);
+        Files.setPosixFilePermissions(artifactDirectory, Set.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_EXECUTE));
+        try {
+            HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+            assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+            assertTrue(failure.getSuppressed().length > 0,
+                    "cleanup failures must be suppressed onto the primary failure");
+        } finally {
+            Files.setPosixFilePermissions(artifactDirectory, Set.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE));
+        }
+    }
+
+    @Test void aclOwnerOnlyEnforcedWhereAclIsTheSecureView() throws Exception {
+        java.util.Set<String> views = FileSystems.getDefault().supportedFileAttributeViews();
+        if (views.contains("posix") || !views.contains("acl")) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "acl-only provider required");
+        }
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-acl", TraceRecorder.Limits.defaults());
+        try (var paths = Files.walk(temporaryDirectory)) {
+            for (Path path : paths.toList()) {
+                java.nio.file.attribute.AclFileAttributeView view = Files.getFileAttributeView(
+                        path, java.nio.file.attribute.AclFileAttributeView.class);
+                if (view == null) {
+                    continue;
+                }
+                java.nio.file.attribute.UserPrincipal owner = view.getOwner();
+                for (java.nio.file.attribute.AclEntry entry : view.getAcl()) {
+                    assertTrue(
+                            entry.type() == java.nio.file.attribute.AclEntryType.ALLOW
+                                    && entry.principal().equals(owner),
+                            "ACL must grant only the owner: " + path);
+                }
+            }
+        }
+    }
+
     @Test void coreTraceRuntimeRemainsJdkOnly() {
         String[] classPath = System.getProperty("java.class.path")
                 .split(java.util.regex.Pattern.quote(java.io.File.pathSeparator));
@@ -496,6 +699,16 @@ final class TraceRecorderTest {
             try (var input = zip.getInputStream(entry)) {
                 return new String(input.readAllBytes(), StandardCharsets.UTF_8);
             }
+        }
+    }
+
+    private static Path artifactDirectory(Path root) throws Exception {
+        try (var paths = Files.walk(root)) {
+            return paths
+                    .filter(path -> path.getParent() != null
+                            && path.getParent().getFileName().toString().endsWith(".tmp"))
+                    .filter(path -> path.getFileName().toString().equals("artifacts"))
+                    .findFirst().orElseThrow();
         }
     }
 
