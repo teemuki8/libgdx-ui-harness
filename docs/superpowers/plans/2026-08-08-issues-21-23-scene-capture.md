@@ -20,7 +20,7 @@
 - `ProtocolError.Code.fromCore` maps by `ErrorCode.name()`: a new core `ErrorCode` REQUIRES a matching `ProtocolError.Code` constant or runtime `IllegalArgumentException`.
 - **Public Java API is preserved verbatim (binary and source compatible) for v1.2.0:** `Result.Screenshot`, `InspectCompare`, `TypographyDiagnostic`, and `LayoutDiagnostic` keep their exact String record components, constructors (including the `InspectCompare` 10-argument compatibility constructor), accessors (`pngBase64()` / `currentPngBase64()` / `heatmapPngBase64()`), generated equality/hashCode/toString, and binary descriptors. No record component changes, no byte-typed constructors or accessors are added to the public records, and no `@JsonProperty` changes are made.
 - **PNG byte publication architecture (no internal round trip, no public mutable bytes):** the MCP publication path routes from an internal, documented-not-supported `HarnessProtocolService.Execution` envelope that carries the public `HarnessResponse` plus a bounded `Map<String, BinaryAttachment>` of raw capture attachments (keys `SCREENSHOT_CAPTURE`, `COMPARE_CURRENT_CAPTURE`, `COMPARE_HEATMAP_CAPTURE`, `TYPOGRAPHY_CURRENT_CAPTURE`, `LAYOUT_CURRENT_CAPTURE`). `BinaryAttachment` is an immutable value object backed by a read-only `ByteBuffer`, with no `byte[]` accessor, a fresh read-only view per read, a stream `writeTo` bridge, and `length()`/`sha256()` accessors with content-based `equals`/`hashCode`. The public protocol records never expose bytes.
-- **BinaryAttachment factories and bounds:** both factories enforce `1 <= length <= MAX_PNG_BYTES` BEFORE copying or retaining, rejecting empty and over-limit payloads with `IllegalArgumentException`. `BinaryAttachment.of(byte[])` clones the caller array into a locally owned copy FIRST and digests only that owned clone (structurally immune to caller mutation races). The package-private trusted factory `BinaryAttachment.takeView(ByteBuffer)` accepts ONLY a read-only view produced by the new `CapturedImage.pngView()` (a fresh read-only `ByteBuffer` over the record's private constructor-cloned bytes, with `hasArray() == false`) and retains a `duplicate()` read-only slice — no full copy, no mutable array escape. `Execution`'s constructor defensively owns its attachments (`Map.copyOf` over immutable values) and enforces `Execution.MAX_ATTACHMENTS` (4) with a typed `IllegalArgumentException`; per-attachment size is guaranteed by the factories.
+- **BinaryAttachment factories and bounds:** both factory families enforce `1 <= length <= MAX_PNG_BYTES` BEFORE copying or retaining, rejecting empty and over-limit payloads with `IllegalArgumentException`. `BinaryAttachment.of(byte[])` clones the caller array into a locally owned copy FIRST and digests only that owned clone (structurally immune to caller mutation races). The package-private trusted factory `BinaryAttachment.takeCaptured(CapturedImage)` (with a `VisualHeatmap` overload for compare heatmaps) accepts NO caller-supplied buffer: it obtains the read-only internal view itself via the immutable owner's `pngView()` (a fresh read-only `ByteBuffer` over the record's private constructor-cloned bytes, `hasArray() == false`) and retains a `duplicate()` read-only slice — a caller cannot supply a read-only alias over mutable storage, there is no full copy and no mutable array escape, and the digest is tied to the immutable `CapturedImage`/`VisualHeatmap`. `Execution`'s constructor defensively owns its attachments (`Map.copyOf` over immutable values) and enforces `Execution.MAX_ATTACHMENTS` (4) with a typed `IllegalArgumentException`; per-attachment size is guaranteed by the factories.
 - **PNG ownership contract (exactly two documented boundary snapshots, zero internal copies, no `pngBytes()` accessor clone):** (1) `CapturedImage` (harness-core) performs the single defensive snapshot at the capture trust boundary in its constructor; (2) the MCP publish boundary performs exactly one bounded copy — the default `ArtifactReference.Publisher.publish(String, ByteBuffer)` overload wraps the read-only buffer into the existing byte[] overload, and publishers MAY override the ByteBuffer overload for zero-copy streaming. Between construction and publication the captured bytes are referenced through read-only views, never copied and never exposed as a mutable array: the service reads `CapturedImage.pngView()` once per execution to build both the public base64 String and the attachment, and the handler streams the attachment without cloning or decoding. The only base64 conversion in the system is the public String encode in `fromCore` (the wire representation); it is never decoded internally. The legacy `CapturedImage.pngBytes()` accessor remains for existing callers but is not on the publication path.
 - New public API is additive only: `CapturedImage.pngView()`, the internal `Execution` envelope, `BinaryAttachment`, the default `Publisher.publish(String, ByteBuffer)` overload, and `executeWithAttachments` on `HarnessProtocolService`, the `completedFrame(Supplier<SemanticSnapshot>, long, long)` overloads on both runners, and the `ErrorCode.RENDER_THREAD_VIOLATION` wire code.
 - Every task ends with a commit that leaves the tree compiling and its focused tests green. Do not run formatters, linters, or the full suite mid-task; Task 9 runs the repository gate.
@@ -47,7 +47,7 @@
       public Execution { ... defensively owns (Map.copyOf), enforces the count bound ... }
   }
   ```
-  with the public internal key constants `SCREENSHOT_CAPTURE = "screenshot-capture"`, `COMPARE_CURRENT_CAPTURE = "compare-current-capture"`, `COMPARE_HEATMAP_CAPTURE = "compare-heatmap-capture"`, `TYPOGRAPHY_CURRENT_CAPTURE = "typography-current-capture"`, `LAYOUT_CURRENT_CAPTURE = "layout-current-capture"`; `HarnessProtocolService.executeWithAttachments(HarnessRequest)` → `CompletionStage<Execution>`; internal `static Screenshot fromCore(CapturedImage image, ByteBuffer raw)` in `HarnessResponse.Result.Screenshot` that encodes the wire String from the read-only view (no input copy). `BinaryAttachment` provides `public static BinaryAttachment of(byte[])` (bounds-checked, clones-then-hashes), package-private `static BinaryAttachment takeView(ByteBuffer readOnly)` (bounds-checked, retains a duplicate read-only slice with no copy), `int length()`, `String sha256()`, `ByteBuffer asByteBuffer()` (fresh read-only view), `void writeTo(OutputStream)` (copy-free, bounded chunks), and content-based `equals`/`hashCode`. Consumed by Tasks 2 and 3.
+  with the public internal key constants `SCREENSHOT_CAPTURE = "screenshot-capture"`, `COMPARE_CURRENT_CAPTURE = "compare-current-capture"`, `COMPARE_HEATMAP_CAPTURE = "compare-heatmap-capture"`, `TYPOGRAPHY_CURRENT_CAPTURE = "typography-current-capture"`, `LAYOUT_CURRENT_CAPTURE = "layout-current-capture"`; `HarnessProtocolService.executeWithAttachments(HarnessRequest)` → `CompletionStage<Execution>`; internal `static Screenshot fromCore(CapturedImage image, ByteBuffer raw)` in `HarnessResponse.Result.Screenshot` that encodes the wire String from the read-only view (no input copy). `BinaryAttachment` provides `public static BinaryAttachment of(byte[])` (bounds-checked, clones-then-hashes), package-private `static BinaryAttachment takeCaptured(CapturedImage)` and `takeCaptured(VisualHeatmap)` (bounds-checked; reads the owner-provided `pngView()` itself and retains a duplicate read-only slice — no caller-supplied buffer, no copy), `int length()`, `String sha256()`, `ByteBuffer asByteBuffer()` (fresh read-only view), `void writeTo(OutputStream)` (copy-free, bounded chunks), and content-based `equals`/`hashCode`. Consumed by Tasks 2 and 3.
 
 - [ ] **Step 1: Write the failing attachment and immutability tests**
 
@@ -117,16 +117,27 @@ final class BinaryAttachmentTest {
         assertNotEquals(first, other);
     }
 
-    @Test void takeViewRetainsAReadOnlySliceWithoutCopying() {
+    @Test void takeCapturedRetainsAReadOnlySliceWithoutCopying() {
         byte[] payload = {9, 8, 7};
-        ByteBuffer view = ByteBuffer.wrap(payload).asReadOnlyBuffer();
-        BinaryAttachment attachment = BinaryAttachment.takeView(view);
+        CapturedImage image = new CapturedImage(payload, sha256(payload), 1, 1, 3, 1,
+                new CapturedImage.Scale(1, 1));
+        BinaryAttachment attachment = BinaryAttachment.takeCaptured(image);
         assertEquals(3, attachment.length());
         assertEquals(sha256(payload), attachment.sha256());
         assertArrayEquals(payload, readAll(attachment));
         assertTrue(attachment.asByteBuffer().isReadOnly());
-        // The retained slice shares the read-only backing; mutating the original array cannot
-        // happen through any accessor (the source array here is test-owned and left unchanged).
+    }
+
+    @Test void takeCapturedDigestIsTiedToTheImmutableCapturedImage() {
+        byte[] payload = {1, 2, 3};
+        String expected = sha256(payload);
+        CapturedImage image = new CapturedImage(payload, expected, 1, 1, 3, 1,
+                new CapturedImage.Scale(1, 1));
+        BinaryAttachment attachment = BinaryAttachment.takeCaptured(image);
+        payload[0] = 99; // mutating the source array after construction cannot affect the owner
+        assertEquals(expected, attachment.sha256(),
+                "the digest must be tied to the immutable captured bytes, not the caller array");
+        assertArrayEquals(new byte[] {1, 2, 3}, readAll(attachment));
     }
 
     private static byte[] readAll(BinaryAttachment attachment) {
@@ -147,7 +158,7 @@ final class BinaryAttachmentTest {
 }
 ```
 
-Note: `takeView` is package-private, so `BinaryAttachmentTest` (same package) can call it; the `view::array` method reference resolves to `ByteBuffer.array()` which throws `ReadOnlyBufferException` on a read-only heap buffer. Add the imports `assertFalse` and `HarnessResponse` to the test file.
+Note: `takeCaptured` is package-private, so `BinaryAttachmentTest` (same package) can call it; add the imports `assertFalse`, `HarnessResponse`, and `dev.gdx.uiharness.core.capture.CapturedImage` to the test file. The `view::array` method reference in the read-only test resolves to `ByteBuffer.array()`, which throws `ReadOnlyBufferException` on a read-only heap buffer.
 
 Add to `HarnessProtocolServiceTest.java` (reuse the existing `service(RecordingHarness, RecordingCapture, TraceController)` helper and `RecordingCapture`):
 
@@ -212,7 +223,7 @@ Add to `HarnessProtocolServiceTest.java` (reuse the existing `service(RecordingH
                             new HarnessResponse.Result.Screenshot("AQID", "0".repeat(64),
                                     1, 1, 3, 1, 1, 1)),
                     tooMany));
-    // Per-attachment size is enforced by BinaryAttachment.of/takeView (1..MAX_PNG_BYTES),
+    // Per-attachment size is enforced by BinaryAttachment.of/takeCaptured (1..MAX_PNG_BYTES),
     // covered in BinaryAttachmentTest.ofRejectsEmptyAndOverLimitPayloadsAtTheFactory.
 }
 ```
@@ -271,6 +282,8 @@ Create `harness-protocol/src/main/java/dev/gdx/uiharness/protocol/BinaryAttachme
 ```java
 package dev.gdx.uiharness.protocol;
 
+import dev.gdx.uiharness.core.capture.CapturedImage;
+import dev.gdx.uiharness.core.visual.VisualHeatmap;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
@@ -311,15 +324,23 @@ public final class BinaryAttachment {
     }
 
     /**
-     * Trusted internal transfer from the capture pipeline. Accepts only a read-only view (the
-     * {@code CapturedImage.pngView()} contract) and retains a duplicate slice without copying;
-     * the backing array never escapes and can never be mutated through this value.
+     * Trusted internal transfer from an immutable capture owner. Accepts NO caller-supplied
+     * buffer: the factory reads the owner's read-only {@code pngView()} itself, so a caller can
+     * never supply a read-only alias over mutable storage. Retains a duplicate slice without
+     * copying; the backing array never escapes and can never be mutated through this value.
      */
-    static BinaryAttachment takeView(ByteBuffer readOnly) {
-        Objects.requireNonNull(readOnly, "readOnly");
-        if (!readOnly.isReadOnly()) {
-            throw new IllegalArgumentException("attachment source must be a read-only view");
-        }
+    static BinaryAttachment takeCaptured(CapturedImage image) {
+        Objects.requireNonNull(image, "image");
+        return takeView(image.pngView());
+    }
+
+    /** Trusted internal transfer from an immutable heatmap owner (same provenance contract). */
+    static BinaryAttachment takeCaptured(VisualHeatmap heatmap) {
+        Objects.requireNonNull(heatmap, "heatmap");
+        return takeView(heatmap.pngView());
+    }
+
+    private static BinaryAttachment takeView(ByteBuffer readOnly) {
         requireBounded(readOnly.remaining());
         ByteBuffer retained = readOnly.duplicate();
         return new BinaryAttachment(retained.asReadOnlyBuffer(), sha256(retained));
@@ -392,7 +413,7 @@ public final class BinaryAttachment {
 }
 ```
 
-The `takeView` factory enforces the read-only-view contract (rejecting writable buffers), so no writable array can ever back an attachment; `of` owns its private clone. Both factories enforce the `1..MAX_PNG_BYTES` bound before copying or retaining.
+`takeCaptured` is the only trusted zero-copy entry point and it takes the provenance-bearing immutable owner, not a buffer; `takeView` is private and reachable only from `takeCaptured`. `of` owns its private clone. All factories enforce the `1..MAX_PNG_BYTES` bound before copying or retaining, and `CapturedImage`/`VisualHeatmap` are immutable records whose `pngView()` returns `hasArray() == false` views over private constructor-cloned bytes.
 
 In `HarnessProtocolService.java`:
 
@@ -462,10 +483,9 @@ In `HarnessProtocolService.java`:
   if (command instanceof Command.Screenshot screenshot) {
       return RoutedOperation.map(session.capture().capture(screenshot.toCore(), deadline),
               image -> {
-                  ByteBuffer view = image.pngView();   // read-only, zero copy over the captured bytes
                   return new RoutedValue(
-                          HarnessResponse.Result.Screenshot.fromCore(image, view),
-                          Map.of(SCREENSHOT_CAPTURE, BinaryAttachment.takeView(view)));
+                          HarnessResponse.Result.Screenshot.fromCore(image, image.pngView()),
+                          Map.of(SCREENSHOT_CAPTURE, BinaryAttachment.takeCaptured(image)));
               });
   }
   ```
@@ -675,14 +695,15 @@ git commit -m "feat(mcp): publish screenshot artifacts from the internal capture
 ### Task 3 (#23): Compare, typography, and layout attachments with preserved public records
 
 **Files:**
-- Modify: `harness-protocol/src/main/java/dev/gdx/uiharness/protocol/HarnessResponse.java:534-703` — internal `fromCore` overloads taking raw arrays for `InspectCompare`, `TypographyDiagnostic`, `LayoutDiagnostic` (existing public records unchanged)
-- Modify: `harness-protocol/src/main/java/dev/gdx/uiharness/protocol/HarnessProtocolService.java` — routing for the three commands attaches the single-snapshot raw arrays
+- Modify: `harness-core/src/main/java/dev/gdx/uiharness/core/visual/VisualHeatmap.java` — add `pngView()` (fresh read-only `ByteBuffer` over the private constructor-cloned bytes, same pattern as `CapturedImage.pngView()`)
+- Modify: `harness-protocol/src/main/java/dev/gdx/uiharness/protocol/HarnessResponse.java:534-703` — internal `fromCore` overloads taking `ByteBuffer` views for `InspectCompare`, `TypographyDiagnostic`, `LayoutDiagnostic` (existing public records unchanged)
+- Modify: `harness-protocol/src/main/java/dev/gdx/uiharness/protocol/HarnessProtocolService.java` — routing for the three commands attaches via `BinaryAttachment.takeCaptured(owner)`
 - Modify: `harness-mcp/src/main/java/dev/gdx/uiharness/mcp/HarnessToolHandler.java:379-515` — the three branches publish from `captures`
 - Modify: `harness-protocol/src/test/java/dev/gdx/uiharness/protocol/HarnessProtocolServiceTest.java` — attachment consistency tests
 
 **Interfaces:**
-- Consumes: Task 1 keys `COMPARE_CURRENT_CAPTURE`, `COMPARE_HEATMAP_CAPTURE`, `TYPOGRAPHY_CURRENT_CAPTURE`, `LAYOUT_CURRENT_CAPTURE`, the `Execution` envelope, and `CapturedImage.pngView()`.
-- Produces: internal `InspectCompare.fromCore(VisualComparisonResult, ByteBuffer currentRaw, ByteBuffer heatmapRaw)`, `TypographyDiagnostic.fromCore(..., ByteBuffer currentRaw)`, `LayoutDiagnostic.fromCore(..., ByteBuffer currentRaw)`; service routing attaches the exact read-only views used for the public String encodes (via `BinaryAttachment.takeView`); the MCP branches stream those views.
+- Consumes: Task 1 keys `COMPARE_CURRENT_CAPTURE`, `COMPARE_HEATMAP_CAPTURE`, `TYPOGRAPHY_CURRENT_CAPTURE`, `LAYOUT_CURRENT_CAPTURE`, the `Execution` envelope, `CapturedImage.pngView()`, and the new `VisualHeatmap.pngView()`.
+- Produces: internal `InspectCompare.fromCore(VisualComparisonResult, ByteBuffer currentRaw, ByteBuffer heatmapRaw)`, `TypographyDiagnostic.fromCore(..., ByteBuffer currentRaw)`, `LayoutDiagnostic.fromCore(..., ByteBuffer currentRaw)`; service routing attaches the immutable owners (`BinaryAttachment.takeCaptured(result.current().image())` / `takeCaptured(result.heatmap())` / `takeCaptured(result.current())`); the MCP branches stream those attachments.
 
 - [ ] **Step 1: Write the failing attachment tests**
 
@@ -737,31 +758,31 @@ In `HarnessResponse.java`, for each of `InspectCompare`, `TypographyDiagnostic`,
   if (command instanceof Command.InspectCompare compare) {
       ...
       return RoutedOperation.map(comparison.execute(compare.toCore(), deadline), result -> {
-          ByteBuffer current = result.current() == null ? null
-                  : result.current().image().pngView();
-          ByteBuffer heatmap = result.heatmap() == null ? null
-                  : result.heatmap().pngView();
           return new RoutedValue(
-                  HarnessResponse.Result.InspectCompare.fromCore(result, current, heatmap),
-                  captures(COMPARE_CURRENT_CAPTURE, current, COMPARE_HEATMAP_CAPTURE, heatmap));
+                  HarnessResponse.Result.InspectCompare.fromCore(result,
+                          result.current() == null ? null : result.current().image().pngView(),
+                          result.heatmap() == null ? null : result.heatmap().pngView()),
+                  captures(COMPARE_CURRENT_CAPTURE,
+                          result.current() == null ? null : result.current().image(),
+                          COMPARE_HEATMAP_CAPTURE, result.heatmap()));
       });
   }
   ```
   with a private helper:
   ```java
   private static Map<String, BinaryAttachment> captures(
-          String firstKey, ByteBuffer first, String secondKey, ByteBuffer second) {
+          String firstKey, CapturedImage first, String secondKey, VisualHeatmap second) {
       java.util.LinkedHashMap<String, BinaryAttachment> captures = new java.util.LinkedHashMap<>();
       if (first != null) {
-          captures.put(firstKey, BinaryAttachment.takeView(first));
+          captures.put(firstKey, BinaryAttachment.takeCaptured(first));
       }
       if (second != null) {
-          captures.put(secondKey, BinaryAttachment.takeView(second));
+          captures.put(secondKey, BinaryAttachment.takeCaptured(second));
       }
       return captures;
   }
   ```
-  Typography and layout route with `TYPOGRAPHY_CURRENT_CAPTURE`/`LAYOUT_CURRENT_CAPTURE` and their `fromCore(result, current)` overloads. Both `TypographyDiagnosticResult` and `LayoutDiagnosticResult` carry `CapturedImage current` (verified in harness-core), so the routing reads `result.current() == null ? null : result.current().pngView()` and the fromCore overloads take that `ByteBuffer` view.
+  Typography and layout route with `TYPOGRAPHY_CURRENT_CAPTURE`/`LAYOUT_CURRENT_CAPTURE` and their `fromCore(result, current)` overloads. Both `TypographyDiagnosticResult` and `LayoutDiagnosticResult` carry `CapturedImage current` (verified in harness-core), so the routing reads `result.current() == null ? null : result.current().pngView()` for the encode and attaches `BinaryAttachment.takeCaptured(result.current())`.
 - In `HarnessToolHandler.java`, replace the three decode+clone branches with read-only-buffer publication (keep the content fields and the sha256 receipt verification exactly as today):
   ```java
   if (comparison.current() != null) {
@@ -1351,11 +1372,16 @@ final class Scene2dSnapshotGatingTest {
                 lease.completion().whenComplete((value, failure) ->
                         terminalResult.complete(value));
             });
-            assertTrue(attemptingClose.await(5, TimeUnit.SECONDS),
-                    "the closer must signal before calling close()");
-            closeDone.get(5, TimeUnit.SECONDS); // the terminate command is now queued
-            fixture.scheduler.drain(); // terminal executes; active empties DURING the reservation
-            releaseSupplier.countDown();
+            // releaseSupplier MUST be released on every path so the reserver can never hang
+            // the executor on a failed assertion or timed-out wait.
+            try {
+                assertTrue(attemptingClose.await(5, TimeUnit.SECONDS),
+                        "the closer must signal before calling close()");
+                closeDone.get(5, TimeUnit.SECONDS); // the terminate command is now queued
+                fixture.scheduler.drain(); // terminal executes; active empties DURING the reservation
+            } finally {
+                releaseSupplier.countDown();
+            }
             assertTrue(reservation.get(5, TimeUnit.SECONDS),
                     "the reserved frame must be delivered even though the terminal removed the"
                             + " consumer before the enqueue");
@@ -1855,10 +1881,10 @@ Include in the PR: root causes, the exact verification commands from Steps 1-2 w
 **1. Spec coverage (approved design, cluster 4, plus canonical issue bodies):**
 
 - #21: off-thread Stage/session access fails immediately with a typed actionable error → Task 5 (`RENDER_THREAD_VIOLATION` + operation/thread evidence); correct scheduler-routed calls remain supported → Task 5 test 3 and unchanged `Scene2dHarness`/`Lwjgl3ScreenCapture` wiring; a render-thread fixture covers the boundary → `Scene2dSessionTest`; threading ADR documenting the new public error code → Task 4 ADR `N`; allocation-light success path → single reference comparison in `requireOwnerThread`.
-- #22: idle sessions do not build runner snapshots → Task 6 counting test (the atomic gate returns false; the supplier never runs); starting a runner enables the stream → Task 6 test 2 + first-start barrier; stopping the last runner removes per-frame work → Task 6 tests 3-4 (the reservation-wins concurrency test: the supplier blocks without holding the lock, the terminal completes and empties `active` mid-reservation, and the reserved delivery still completes; plus sequential post-terminal gating with the supplier never invoked); frame correlation/fences remain correct → Task 6 test 5 + Task 7 real-LWJGL3 smoke; the gate is a reservation token — the recipient snapshot and a reservation counter are taken under the lifecycle lock, the supplier runs outside it, and delivery consumes the reservation even if a terminal occurs → `completedFrame(Supplier<SemanticSnapshot>, long, long)` on both runners; proof counts snapshot construction across idle/active/navigation/cancellation/return-to-idle → `CountingStage.getRoot()` counts.
+- #22: idle sessions do not build runner snapshots → Task 6 counting test (the atomic gate returns false; the supplier never runs); starting a runner enables the stream → Task 6 test 2 + first-start barrier; stopping the last runner removes per-frame work → Task 6 tests 3-4 (the reservation-wins concurrency test: the supplier blocks without holding the lock, the terminal completes and empties `active` mid-reservation, and the reserved delivery still completes; plus sequential post-terminal gating with the supplier never invoked); frame correlation/fences remain correct → Task 6 test 5 + Task 7 real-LWJGL3 smoke; the gate is a reservation token — the recipient snapshot and a reservation counter are taken under the lifecycle lock, the supplier runs outside it, and delivery consumes the reservation even if a terminal occurs → `completedFrame(Supplier<SemanticSnapshot>, long, long)` on both runners (the barrier test releases the blocked supplier in a `finally`, so a failed assertion or timed-out wait can never hang the worker executor); proof counts snapshot construction across idle/active/navigation/cancellation/return-to-idle → `CountingStage.getRoot()` counts.
 - #23: artifact publication performs no intermediate base64 round trip → Tasks 1-3 (the MCP handler streams the internal `Execution` capture attachment via a read-only `ByteBuffer`; no `Base64` decode remains in `HarnessToolHandler`); the observable proof is the invalid-public-String test — a public `pngBase64` that cannot be decoded still publishes the attachment bytes (Task 2); digest/length receipts remain identical → Task 2 max-size receipt assertions against the exact captured bytes; unchanged wire JSON and public records → golden `results.json` round trip plus `executeKeepsItsExactPublicContractWithEmptyCaptures` (Task 1); public records keep their String components, accessors, generated equality/hashCode, and binary descriptors (no record changes anywhere in the cluster); bounded immutability → `BinaryAttachment` (no byte[] accessor, read-only view, stream bridge, content equality) with mutation/oversize tests plus `Execution` attachment count/size bounds (Task 1); exactly two documented boundary snapshots per payload (CapturedImage construction + the publish-boundary default `Publisher.publish(String, ByteBuffer)` copy, overridable for zero-copy) → Global Constraints ownership contract; "MCP artifact paths do not serialize an unused full inline result before offloading" → Task 2 lazy `encodeResult` (the screenshot branch never serializes).
 - Error/compatibility policy: typed `render-thread-violation` code with operation identity and bounded details; existing valid requests, JSON shapes, artifact references, String-typed Java API, and non-scenario `Scene2dSession` use remain supported; the design's "internal byte ownership may change while serialized screenshot JSON stays compatible" clause is satisfied by the internal envelope, with no public API change.
 
 **2. Placeholder scan:** no TBD/TODO/“appropriate error handling”/“similar to Task N” patterns; every code step contains verbatim code; every acceptance criterion names an exact command and expected result. The ADR number is a computed value (`N` = next free number after the rebase) with an exact rule and consistent use, not a hardcoded stale constant.
 
-**3. Type consistency:** the public protocol records keep their exact String components and accessors (no byte accessors exist anywhere); `BinaryAttachment` is the single byte-carrying value across Tasks 1-3 (factories `of`/`take`, read APIs `length`/`sha256`/`asByteBuffer`/`writeTo`, content equality); the internal keys `SCREENSHOT_CAPTURE`/`COMPARE_CURRENT_CAPTURE`/`COMPARE_HEATMAP_CAPTURE`/`TYPOGRAPHY_CURRENT_CAPTURE`/`LAYOUT_CURRENT_CAPTURE` are identical across Tasks 1-3; `Execution.MAX_ATTACHMENTS`/`MAX_ATTACHMENT_BYTES` are the attachment bounds and `MAX_PNG_BYTES` remains the single wire bound; `RENDER_THREAD_VIOLATION` is spelled identically in `ErrorCode`, `ProtocolError.Code`, the golden wire name `render-thread-violation`, and the tests; `completedFrame(Supplier<SemanticSnapshot>, long, long)` has the same signature on both runners and is consumed only by `Scene2dSession.completedFrame`; the ADR number rule in Global Constraints, Task 4, Task 9, and this review use the same computed `N`; the handler's `ExecutionSource` is the one Execution-typed protocol seam (distinct functional interface, no erasure clash); the new `Publisher.publish(String, ByteBuffer)` default keeps the functional-interface contract.
+**3. Type consistency:** the public protocol records keep their exact String components and accessors (no byte accessors exist anywhere); `BinaryAttachment` is the single byte-carrying value across Tasks 1-3 (public factory `of`, package-private trusted factories `takeCaptured(CapturedImage)`/`takeCaptured(VisualHeatmap)`, read APIs `length`/`sha256`/`asByteBuffer`/`writeTo`, content equality); the internal keys `SCREENSHOT_CAPTURE`/`COMPARE_CURRENT_CAPTURE`/`COMPARE_HEATMAP_CAPTURE`/`TYPOGRAPHY_CURRENT_CAPTURE`/`LAYOUT_CURRENT_CAPTURE` are identical across Tasks 1-3; `Execution.MAX_ATTACHMENTS` bounds the attachment count, the factories bound per-attachment size, and `MAX_PNG_BYTES` remains the single wire bound; `RENDER_THREAD_VIOLATION` is spelled identically in `ErrorCode`, `ProtocolError.Code`, the golden wire name `render-thread-violation`, and the tests; `completedFrame(Supplier<SemanticSnapshot>, long, long)` has the same signature on both runners and is consumed only by `Scene2dSession.completedFrame`; the ADR number rule in Global Constraints, Task 4, Task 9, and this review use the same computed `N`; the handler's `ExecutionSource` is the one Execution-typed protocol seam (distinct functional interface, no erasure clash); the new `Publisher.publish(String, ByteBuffer)` default keeps the functional-interface contract.
