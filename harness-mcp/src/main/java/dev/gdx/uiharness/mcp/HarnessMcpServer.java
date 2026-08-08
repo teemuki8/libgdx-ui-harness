@@ -189,8 +189,13 @@ public final class HarnessMcpServer implements AutoCloseable {
                 try {
                     writeLine(mapper.writeValueAsString(parseErrorBody()));
                 } catch (IOException failure) {
-                    throw new IllegalStateException(
-                            "Failed to write stdio MCP parse error", failure);
+                    // A failed output write means the client is gone; terminate the
+                    // transport exactly like a failed read instead of hanging forever
+                    // on an unobserved future.
+                    if (!closing.get()) {
+                        terminated.completeExceptionally(failure);
+                        close();
+                    }
                 }
             }, outputExecutor);
         }

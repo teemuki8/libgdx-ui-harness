@@ -1027,6 +1027,30 @@ final class HarnessMcpServerContractTest {
 
     @Test
     @Timeout(10)
+    void parseErrorWriteFailureTerminatesTransport() throws Exception {
+        RecordingHarness harness = new RecordingHarness();
+        ExecutorService waiter = Executors.newVirtualThreadPerTaskExecutor();
+        try (PipedInputStream serverInput = new PipedInputStream();
+                PipedOutputStream clientOutput = new PipedOutputStream(serverInput);
+                HarnessMcpServer server = HarnessMcpServer.open(
+                        service(harness), new RecordingArtifacts(),
+                        serverInput, new FailingOutputStream())) {
+            // A rejected frame must trigger a parse-error write; when that write fails
+            // (e.g. stdout closed by the client) the transport must terminate instead
+            // of hanging forever on an unobserved future. The bounded get() turns a
+            // hang into a fast TimeoutException failure.
+            writeRaw(clientOutput, new byte[] {(byte) 0xc3, 0x28});
+            CompletableFuture<Void> termination = CompletableFuture.runAsync(
+                    server::awaitTermination, waiter);
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> termination.get(5, java.util.concurrent.TimeUnit.SECONDS));
+        } finally {
+            waiter.shutdownNow();
+        }
+    }
+
+    @Test
+    @Timeout(10)
     void oversizedOrMalformedFrameDoesNotTerminateServer() throws Exception {
         RecordingHarness harness = new RecordingHarness();
         try (PipedInputStream serverInput = new PipedInputStream();
@@ -1303,6 +1327,17 @@ final class HarnessMcpServerContractTest {
                 "Save", null, "save", "button", "Button", state, bounds, bounds, bounds,
                 0, Map.of());
         return new SemanticSnapshot(1, 1, "root", Map.of("root", root));
+    }
+
+    private static final class FailingOutputStream extends java.io.OutputStream {
+        @Override public void write(int value) throws java.io.IOException {
+            throw new java.io.IOException("simulated stdout failure");
+        }
+
+        @Override public void write(byte[] bytes, int offset, int length)
+                throws java.io.IOException {
+            throw new java.io.IOException("simulated stdout failure");
+        }
     }
 
     private static final class RecordingHarness implements Harness {
