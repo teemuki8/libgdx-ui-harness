@@ -184,6 +184,7 @@ public final class FixtureControl implements AutoCloseable {
     private final dev.gdx.uiharness.scene2d.Scene2dLayoutValidator layoutValidator;
     private final Lwjgl3MatrixRunner matrixRunner;
     private final io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime agentRuntime;
+    private final ReferenceUiModel uiModel = new ReferenceUiModel("Ada", "");
     private HarnessMcpServer server;
     private Future<?> terminationTask;
     private final java.util.Set<String> typographyControlIds;
@@ -228,7 +229,7 @@ public final class FixtureControl implements AutoCloseable {
                 clock::revision, clock::frame, deadlineScheduler);
         scenarios = new ScenarioRegistry();
         ReferenceScenarioLifecycle lifecycle =
-                new ReferenceScenarioLifecycle(stage, withholdScenarioFrames);
+                new ReferenceScenarioLifecycle(stage, uiModel, withholdScenarioFrames);
         scenarios.register(scenario("reference-reset", APPLICATION_ID), lifecycle);
         scenarios.register(scenario(
                 "never-ready", APPLICATION_ID, Duration.ofMillis(100)), lifecycle);
@@ -307,17 +308,26 @@ public final class FixtureControl implements AutoCloseable {
                 io.github.teemuki8.libgdx.agent.runtime.core.EntityId.of("reference-ui-user"),
                 io.github.teemuki8.libgdx.agent.runtime.core.EntityType.of("user"),
                 () -> "Reference UI user",
-                inspector -> inspector.property("value", () -> {
-                    var field = stage.getRoot().findActor("username");
-                    return io.github.teemuki8.libgdx.agent.runtime.core.RuntimeValues.string(
-                            field instanceof com.badlogic.gdx.scenes.scene2d.ui.TextField usernameField
-                                    ? usernameField.getText() : "");
-                }));
+                inspector -> inspector.property("value", () ->
+                        io.github.teemuki8.libgdx.agent.runtime.core.RuntimeValues.string(
+                                uiModel.username())));
+        wireModelToUsernameField();
     }
 
     /** Returns semantic metadata for actor tagging after session construction. */
     public dev.gdx.uiharness.scene2d.Semantics semantics() {
         return sceneSession.semantics();
+    }
+
+    private void wireModelToUsernameField() {
+        var usernameField = stage.getRoot().findActor("username");
+        if (usernameField instanceof com.badlogic.gdx.scenes.scene2d.ui.TextField textField) {
+            textField.addListener(new com.badlogic.gdx.scenes.scene2d.utils.ChangeListener() {
+                @Override public void changed(ChangeEvent event, com.badlogic.gdx.scenes.scene2d.Actor actor) {
+                    uiModel.setUsername(textField.getText());
+                }
+            });
+        }
     }
 
     /** Returns the agent runtime shared with the active screen for value registration. */
@@ -697,11 +707,14 @@ public final class FixtureControl implements AutoCloseable {
 
     private static final class ReferenceScenarioLifecycle implements ScenarioLifecycle {
         private final Stage stage;
+        private final ReferenceUiModel uiModel;
         private final AtomicBoolean withholdScenarioFrames;
         private final IdentityHashMap<ScenarioRequest, Integer> readiness = new IdentityHashMap<>();
 
-        ReferenceScenarioLifecycle(Stage stage, AtomicBoolean withholdScenarioFrames) {
+        ReferenceScenarioLifecycle(Stage stage, ReferenceUiModel uiModel,
+                AtomicBoolean withholdScenarioFrames) {
             this.stage = stage;
+            this.uiModel = uiModel;
             this.withholdScenarioFrames = withholdScenarioFrames;
         }
 
@@ -713,6 +726,7 @@ public final class FixtureControl implements AutoCloseable {
 
         @Override public void reset(ScenarioRequest request) {
             textField("username").setText("");
+            uiModel.setUsername("");
             textField("password").setText("");
             stage.unfocusAll();
             if ("navigation".equals(request.scenarioId())) {
