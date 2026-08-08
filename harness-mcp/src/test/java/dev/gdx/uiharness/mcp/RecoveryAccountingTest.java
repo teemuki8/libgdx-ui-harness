@@ -4,7 +4,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.time.Duration;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 
@@ -82,5 +81,37 @@ final class RecoveryAccountingTest {
         accounting.recordTransient("game");
         accounting.clear();
         assertEquals(0, accounting.snapshot("game").consumed());
+    }
+
+    @Test void removeIfOwnedRemovesOnlyTheMatchingGeneration() {
+        RecoveryAccounting.Snapshot first = accounting.recordTransient("game");
+        assertTrue(first.tracked());
+        assertTrue(first.token() != RecoveryAccounting.NO_TOKEN);
+        assertTrue(accounting.removeIfOwned("game", first.token()));
+        assertEquals(0, accounting.snapshot("game").consumed());
+
+        accounting.recordTransient("game");
+        assertFalse(accounting.removeIfOwned("game", first.token()),
+                "a stale token must never remove a newer reservation");
+        assertTrue(accounting.snapshot("game").tracked());
+    }
+
+    @Test void tokenChangesAcrossGenerations() {
+        long first = accounting.recordTransient("game").token();
+        accounting.remove("game");
+        long second = accounting.recordTransient("game").token();
+        assertTrue(second != first, "a new reservation must receive a fresh generation token");
+        assertFalse(accounting.removeIfOwned("game", first));
+        assertTrue(accounting.snapshot("game").tracked());
+    }
+
+    @Test void clearReleasesCapacityForNewKeys() {
+        RecoveryAccounting small = new RecoveryAccounting(nanos::get, 2, RecoveryAccounting.TTL);
+        small.recordTransient("a");
+        small.recordTransient("b");
+        assertFalse(small.recordTransient("c").tracked());
+        small.clear();
+        assertTrue(small.recordTransient("c").tracked(),
+                "clear must release capacity so a later workflow starts fresh");
     }
 }

@@ -1067,6 +1067,147 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test void fingerprintStoreCapacityTerminallyRejectsNewFingerprints() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        request -> CompletableFuture.failedFuture(new AssertionError()),
+                        new RecordingArtifacts(), executor, 1024, nanos::get, 3)) {
+            for (int index = 0; index < 3; index++) {
+                Map<String, Object> diagnostic = structured(handler.handle(call(
+                        "ui_snapshot", Map.of("sessionId", "game", "bogus-" + index, index)))
+                        .block(Duration.ofSeconds(10)));
+                assertEquals("UNKNOWN_ARGUMENT", diagnostic.get("code"));
+            }
+            Map<String, Object> rejected = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game", "bogus-3", 3)))
+                    .block(Duration.ofSeconds(10)));
+            assertEquals("RECOVERY_BUDGET_EXHAUSTED", rejected.get("code"),
+                    "fingerprint churn must not bypass the accounting bound");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery = (Map<String, Object>) rejected.get("recovery");
+            assertEquals("accounting-capacity/v1", recovery.get("terminatingRule"));
+            assertEquals(3, ((Number) recovery.get("consumed")).intValue());
+            assertEquals(0, ((Number) recovery.get("remaining")).intValue());
+        }
+    }
+
+    @Test void successClearsFingerprintsSoSameMalformedRequestStartsFresh() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        AtomicInteger calls = new AtomicInteger();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    calls.incrementAndGet();
+                    return CompletableFuture.completedFuture(new HarnessResponse.Success(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            new HarnessResponse.Result.Sessions(List.of())));
+                }, new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            Map<String, Object> malformed = Map.of("sessionId", "game", "bogus", 1);
+            Map<String, Object> first = structured(handler.handle(call(
+                    "ui_snapshot", malformed)).block(Duration.ofSeconds(10)));
+            assertEquals("UNKNOWN_ARGUMENT", first.get("code"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> firstRecovery = (Map<String, Object>) first.get("recovery");
+            assertEquals(1, ((Number) firstRecovery.get("consumed")).intValue());
+
+            Map<String, Object> success = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> successRecovery = (Map<String, Object>) success.get("recovery");
+            assertEquals(1, ((Number) successRecovery.get("consumed")).intValue());
+
+            Map<String, Object> again = structured(handler.handle(call(
+                    "ui_snapshot", malformed)).block(Duration.ofSeconds(10)));
+            assertEquals("UNKNOWN_ARGUMENT", again.get("code"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> againRecovery = (Map<String, Object>) again.get("recovery");
+            assertEquals(1, ((Number) againRecovery.get("consumed")).intValue(),
+                    "success must clear the workflow's fingerprints so the same malformed "
+                            + "request starts a fresh budget at one");
+        }
+    }
+
+    @Test void staleCompletionDoesNotClearNewerWorkflowState() throws Exception {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch staleAdmitted = new CountDownLatch(1);
+        CompletableFuture<HarnessResponse> staleGate = new CompletableFuture<>();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    if (calls.incrementAndGet() == 1) {
+                        staleAdmitted.countDown();
+                        return staleGate;
+                    }
+                    return CompletableFuture.completedFuture(new HarnessResponse.Success(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            new HarnessResponse.Result.Sessions(List.of())));
+                }, new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            Map<String, Object> malformed = Map.of("sessionId", "game", "bogus", 1);
+
+            // First transient failure creates workflow generation 1.
+            structured(handler.handle(call(
+                    "ui_snapshot", malformed)).block(Duration.ofSeconds(10)));
+
+            // The stale success starts while generation 1 is current and is held on a gate.
+            CompletableFuture<McpSchema.CallToolResult> stale = handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).toFuture();
+            assertTrue(staleAdmitted.await(10, TimeUnit.SECONDS));
+
+            // A success ends generation 1, clearing the session and its fingerprints.
+            Map<String, Object> success = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> successRecovery = (Map<String, Object>) success.get("recovery");
+            assertEquals(1, ((Number) successRecovery.get("consumed")).intValue());
+
+            // A new transient failure starts generation 2 with a fresh budget.
+            Map<String, Object> fresh = structured(handler.handle(call(
+                    "ui_snapshot", malformed)).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> freshRecovery = (Map<String, Object>) fresh.get("recovery");
+            assertEquals(1, ((Number) freshRecovery.get("consumed")).intValue());
+
+            // Releasing the stale completion must not clear generation 2's state.
+            staleGate.complete(new HarnessResponse.Success(
+                    ProtocolVersion.V1, "mcp-2", "game",
+                    new HarnessResponse.Result.Sessions(List.of())));
+            Map<String, Object> staleResult = structured(stale.get(10, TimeUnit.SECONDS));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> staleRecovery = (Map<String, Object>) staleResult.get("recovery");
+            assertEquals(1, ((Number) staleRecovery.get("consumed")).intValue());
+
+            // The same malformed request now reports two: generation 2 was not cleared.
+            Map<String, Object> continued = structured(handler.handle(call(
+                    "ui_snapshot", malformed)).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> continuedRecovery =
+                    (Map<String, Object>) continued.get("recovery");
+            assertEquals(2, ((Number) continuedRecovery.get("consumed")).intValue(),
+                    "a stale completion must never clear a newer workflow's state");
+        }
+    }
+
+    @Test void handlerCloseClearsRecoveryStateAndRemainsIdempotent() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+        HarnessToolHandler handler = new HarnessToolHandler(
+                request -> CompletableFuture.failedFuture(new AssertionError()),
+                new RecordingArtifacts(), executor, 1024, nanos::get, 2);
+        try {
+            // Populate the session store, the fingerprint store, and the workflow index.
+            structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game", "bogus-a", 1)))
+                    .block(Duration.ofSeconds(10)));
+            structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game", "bogus-b", 2)))
+                    .block(Duration.ofSeconds(10)));
+        } finally {
+            handler.close();
+            handler.close(); // idempotent
+        }
+        assertTrue(executor.isShutdown());
+    }
+
     @Test void diagnosticOverflowFailsClosedWithoutSilentFieldTruncation() {
         LinkedHashMap<String, Object> arguments = new LinkedHashMap<>();
         arguments.put("sessionId", "game");

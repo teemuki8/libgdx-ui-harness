@@ -27,8 +27,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.HexFormat;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -72,6 +75,16 @@ public final class HarnessToolHandler implements AutoCloseable {
     private final AtomicLong requestSequence = new AtomicLong();
     private final RecoveryAccounting diagnosticAccounting;
     private final RecoveryAccounting sessionAccounting;
+    /**
+     * Bounded per-workflow fingerprint index: session workflow generation token
+     * to the distinct fingerprint keys it recorded. Total registered keys are
+     * capped by {@link RecoveryAccounting#MAX_ENTRIES} and idle workflows
+     * expire against the same TTL clock as the accounting stores, so a stale
+     * completion can only ever release the fingerprints it recorded.
+     * Guarded by {@code workflows}.
+     */
+    private final Map<Long, WorkflowFingerprints> workflows = new HashMap<>();
+    private int registeredFingerprints;
 
     /** Creates a handler that owns a Java 25 virtual-thread executor and default admission. */
     public HarnessToolHandler(
@@ -187,6 +200,10 @@ public final class HarnessToolHandler implements AutoCloseable {
             long sequence = requestSequence.incrementAndGet();
             String requestId = "mcp-" + Long.toUnsignedString(sequence);
             Map<String, Object> arguments = call.arguments() == null ? Map.of() : call.arguments();
+            // The workflow generation is captured at request start so a stale completion
+            // can only ever release the workflow it actually participated in.
+            long[] workflowToken = {
+                    sessionAccounting.tokenOf(sessionKey(arguments)) };
             McpSchema.Tool tool;
             try {
                 tool = catalog.tool(call.name());
@@ -205,14 +222,14 @@ public final class HarnessToolHandler implements AutoCloseable {
                                         null, null, null, null, null, false),
                                 catalog.toolNames().stream().sorted().toList(),
                                 Map.of())),
-                        null));
+                        null, workflowToken));
             }
             if (!locatorShapeWithinLimits(arguments)) {
                 return Mono.just(diagnostic(
                         requestId, sequence, call.name(), arguments,
                         DiagnosticCode.SCHEMA_CONFLICT,
                         "Locator exceeds adapter complexity limits",
-                        List.of(), null));
+                        List.of(), null, workflowToken));
             }
             List<DiagnosticEnvelope.FieldProblem> problems = SchemaDiagnostics.validate(
                     tool.inputSchema(), arguments,
@@ -222,7 +239,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                         requestId, sequence, call.name(), arguments,
                         problems.getFirst().code(),
                         "One or more arguments do not match the operation schema",
-                        problems, null));
+                        problems, null, workflowToken));
             }
 
             HarnessRequest request;
@@ -233,7 +250,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                         requestId, sequence, call.name(), arguments,
                         DiagnosticCode.SCHEMA_CONFLICT,
                         "Arguments could not be decoded",
-                        List.of(), null));
+                        List.of(), null, workflowToken));
             }
 
             // Bound admission before protocol dispatch: excess work is rejected immediately
@@ -241,11 +258,12 @@ public final class HarnessToolHandler implements AutoCloseable {
             HarnessToolCatalog.AccessMode mode = catalog.accessMode(call.name());
             CompletionStage<McpSchema.CallToolResult> admitted = admission.submit(
                     admissionKey(arguments), mode,
-                    () -> execute(request, call.name(), sequence, arguments));
+                    () -> execute(request, call.name(), sequence, arguments, workflowToken));
             return Mono.fromFuture(admitted.toCompletableFuture())
                     .onErrorResume(RequestAdmission.LimitExceededException.class,
                             failure -> Mono.just(limitExceeded(
-                                    request, sequence, call.name(), arguments, failure)));
+                                    request, sequence, call.name(), arguments, failure,
+                                    workflowToken)));
         }).subscribeOn(scheduler);
     }
 
@@ -258,7 +276,8 @@ public final class HarnessToolHandler implements AutoCloseable {
             HarnessRequest request,
             String operation,
             long sequence,
-            Map<String, Object> arguments) {
+            Map<String, Object> arguments,
+            long[] workflowToken) {
         CompletionStage<HarnessProtocolService.Execution> stage;
         try {
             stage = Objects.requireNonNull(protocol.apply(request), "protocol stage");
@@ -266,17 +285,18 @@ public final class HarnessToolHandler implements AutoCloseable {
             return CompletableFuture.completedFuture(diagnostic(
                     request.requestId(), sequence, operation, arguments,
                     DiagnosticCode.INTERNAL_ERROR,
-                    "Protocol invocation failed", List.of(), null));
+                    "Protocol invocation failed", List.of(), null, workflowToken));
         }
         return Mono.fromFuture(stage.toCompletableFuture())
                 .map(execution -> toMcpResult(
                         execution.response(), execution.captures(),
-                        operation, sequence, arguments))
+                        operation, sequence, arguments, workflowToken))
                 .onErrorResume(failure -> Mono.just(
                         diagnostic(
                                 request.requestId(), sequence, operation, arguments,
                                 DiagnosticCode.INTERNAL_ERROR,
-                                "Protocol invocation failed", List.of(), null)))
+                                "Protocol invocation failed", List.of(), null,
+                                workflowToken)))
                 .toFuture();
     }
 
@@ -285,11 +305,12 @@ public final class HarnessToolHandler implements AutoCloseable {
             long sequence,
             String operation,
             Map<String, Object> arguments,
-            RequestAdmission.LimitExceededException failure) {
+            RequestAdmission.LimitExceededException failure,
+            long[] workflowToken) {
         return diagnostic(
                 request.requestId(), sequence, operation, arguments,
                 DiagnosticCode.LIMIT_EXCEEDED,
-                failure.getMessage(), List.of(), null);
+                failure.getMessage(), List.of(), null, workflowToken);
     }
 
     private HarnessRequest toProtocolRequest(
@@ -340,12 +361,13 @@ public final class HarnessToolHandler implements AutoCloseable {
             Map<String, BinaryAttachment> captures,
             String operation,
             long sequence,
-            Map<String, Object> arguments) {
+            Map<String, Object> arguments,
+            long[] workflowToken) {
         if (response instanceof HarnessResponse.Failure failure) {
             McpSchema.CallToolResult result = protocolError(
-                    failure.error(), operation, sequence, arguments);
+                    failure.error(), operation, sequence, arguments, workflowToken);
             if (failure.error().code() == ProtocolError.Code.SESSION_CLOSED) {
-                sessionAccounting.remove(sessionKey(arguments));
+                endWorkflow(sessionKey(arguments), workflowToken[0]);
             }
             return result;
         }
@@ -364,7 +386,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                     session.workflowElapsedMillis(),
                     HarnessToolCatalog.recoveryPolicy().maxWallTimeMillis(),
                     "success/v1")));
-            sessionAccounting.remove(sessionKey(arguments));
+            endWorkflow(sessionKey(arguments), workflowToken[0]);
             return McpSchema.CallToolResult.builder()
                     .structuredContent(Map.copyOf(content))
                     .addTextContent(compactText(content))
@@ -375,18 +397,19 @@ public final class HarnessToolHandler implements AutoCloseable {
                     "invalid artifact reference", failure);
             return localError(
                     operation, sequence, arguments, "invalid-artifact-reference",
-                    "Artifact reference is not transport-safe", internalTraceId(sequence, failure));
+                    "Artifact reference is not transport-safe",
+                    internalTraceId(sequence, failure), workflowToken);
         } catch (ArtifactReference.ArtifactUnavailableException failure) {
             ARTIFACT_LOGGER.log(java.util.logging.Level.FINE,
                     "artifact publisher unavailable or unverified", failure);
             return localError(
                     operation, sequence, arguments, "artifact-unavailable",
                     "Artifact persistence is unavailable or rejected the payload",
-                    internalTraceId(sequence, failure));
+                    internalTraceId(sequence, failure), workflowToken);
         } catch (RuntimeException failure) {
             return localError(
                     operation, sequence, arguments,
-                    "internal-error", "Result translation failed");
+                    "internal-error", "Result translation failed", workflowToken);
         }
     }
 
@@ -1033,7 +1056,8 @@ public final class HarnessToolHandler implements AutoCloseable {
             ProtocolError error,
             String operation,
             long sequence,
-            Map<String, Object> arguments) {
+            Map<String, Object> arguments,
+            long[] workflowToken) {
         DiagnosticCode code = switch (error.code()) {
             case NOT_FOUND -> DiagnosticCode.LOCATOR_NOT_FOUND;
             case STRICTNESS_VIOLATION -> DiagnosticCode.LOCATOR_AMBIGUOUS;
@@ -1055,7 +1079,8 @@ public final class HarnessToolHandler implements AutoCloseable {
                 new DiagnosticEnvelope.StateIdentity(
                         null, error.sessionId(), error.lastSnapshotRevision(), null),
                 error.traceReference() == null
-                        ? List.of() : List.of(error.traceReference()));
+                        ? List.of() : List.of(error.traceReference()),
+                workflowToken);
     }
 
     private McpSchema.CallToolResult diagnostic(
@@ -1066,11 +1091,12 @@ public final class HarnessToolHandler implements AutoCloseable {
             DiagnosticCode requestedCode,
             String message,
             List<DiagnosticEnvelope.FieldProblem> problems,
-            DiagnosticEnvelope.StateIdentity stateIdentity) {
+            DiagnosticEnvelope.StateIdentity stateIdentity,
+            long[] workflowToken) {
         return diagnostic(
                 requestId, sequence, operation, arguments, requestedCode,
                 message, problems, null, List.of(), Map.of(), List.of(), null, null,
-                stateIdentity, List.of());
+                stateIdentity, List.of(), workflowToken);
     }
 
     private McpSchema.CallToolResult diagnostic(
@@ -1088,22 +1114,29 @@ public final class HarnessToolHandler implements AutoCloseable {
             Long operationElapsedMillis,
             String traceId,
             DiagnosticEnvelope.StateIdentity stateIdentity,
-            List<String> evidenceRefs) {
+            List<String> evidenceRefs,
+            long[] workflowToken) {
         String fingerprint = diagnosticFingerprint(
                 operation, arguments, requestedCode, problems);
         boolean transientDiagnostic = requestedCode.defaultDisposition()
                 == DiagnosticEnvelope.Disposition.TRANSIENT;
-        int equivalentConsumed = transientDiagnostic
-                ? diagnosticAccounting.recordTransient(fingerprint).consumed()
-                : 0;
         RecoveryAccounting.Snapshot session = transientDiagnostic
                 ? sessionAccounting.recordTransient(sessionKey(arguments))
                 : sessionAccounting.snapshot(sessionKey(arguments));
+        workflowToken[0] = session.token();
+        RecoveryAccounting.Snapshot fingerprintSnapshot =
+                transientDiagnostic && session.tracked()
+                        ? diagnosticAccounting.recordTransient(fingerprint)
+                        : new RecoveryAccounting.Snapshot(
+                                0, 0, false, RecoveryAccounting.NO_TOKEN);
+        int equivalentConsumed = fingerprintSnapshot.consumed();
         int limit = HarnessToolCatalog.recoveryPolicy().maxSchemaRecoveries();
         DiagnosticCode code = requestedCode;
         String terminatingRule = recoveryRule(requestedCode);
         int consumed = session.consumed();
-        if (transientDiagnostic && !session.tracked()) {
+        if (transientDiagnostic
+                && (!session.tracked() || !fingerprintSnapshot.tracked())) {
+            // Either store at capacity: fingerprint churn cannot bypass the bound.
             code = DiagnosticCode.RECOVERY_BUDGET_EXHAUSTED;
             terminatingRule = "accounting-capacity/v1";
             consumed = limit; // terminal appearance: consumed == limit, remaining == 0
@@ -1116,6 +1149,9 @@ public final class HarnessToolHandler implements AutoCloseable {
         } else if (requestedCode.defaultDisposition()
                 == DiagnosticEnvelope.Disposition.TERMINAL) {
             terminatingRule = "terminal-code/v1";
+        }
+        if (transientDiagnostic && session.tracked() && fingerprintSnapshot.tracked()) {
+            registerFingerprint(workflowToken[0], fingerprint);
         }
         long elapsedMillis = session.workflowElapsedMillis();
         DiagnosticEnvelope envelope = DiagnosticEnvelope.create(
@@ -1133,9 +1169,99 @@ public final class HarnessToolHandler implements AutoCloseable {
         LinkedHashMap<String, Object> content = new LinkedHashMap<>(encoded);
         content.put("kind", "error");
         if (code.defaultDisposition() == DiagnosticEnvelope.Disposition.TERMINAL) {
-            sessionAccounting.remove(sessionKey(arguments));
+            endWorkflow(sessionKey(arguments), workflowToken[0]);
         }
         return errorResult(content);
+    }
+
+    /**
+     * Registers one accepted fingerprint under the session's current workflow
+     * generation so it can be released when that workflow ends. The reverse
+     * index is bounded by the same cardinality cap as the accounting stores;
+     * at cap a registration is skipped and the fingerprint is simply
+     * TTL-expired by its store instead.
+     */
+    private void registerFingerprint(long token, String fingerprint) {
+        synchronized (workflows) {
+            pruneExpiredWorkflows();
+            if (registeredFingerprints >= RecoveryAccounting.MAX_ENTRIES) {
+                return;
+            }
+            WorkflowFingerprints workflow = workflows.computeIfAbsent(token,
+                    ignored -> new WorkflowFingerprints(nanoClock.getAsLong()));
+            if (workflow.keys.add(fingerprint)) {
+                registeredFingerprints++;
+            }
+        }
+    }
+
+    /**
+     * Ends the workflow for the given session generation: releases the
+     * fingerprint keys it recorded (only those not also owned by another live
+     * workflow) and removes the session reservation, but only when that
+     * reservation still belongs to this generation. A stale completion with an
+     * old token therefore never clears a newer workflow's state.
+     */
+    private void endWorkflow(String sessionKey, long token) {
+        LinkedHashSet<String> owned;
+        synchronized (workflows) {
+            pruneExpiredWorkflows();
+            WorkflowFingerprints workflow = workflows.remove(token);
+            owned = workflow == null ? null : workflow.keys;
+            if (owned != null) {
+                registeredFingerprints -= owned.size();
+            }
+        }
+        if (owned != null) {
+            for (String fingerprint : owned) {
+                if (!ownedByAnotherWorkflow(fingerprint)) {
+                    diagnosticAccounting.remove(fingerprint);
+                }
+            }
+        }
+        sessionAccounting.removeIfOwned(sessionKey, token);
+    }
+
+    /** Returns whether another live workflow generation still owns the fingerprint. */
+    private boolean ownedByAnotherWorkflow(String fingerprint) {
+        synchronized (workflows) {
+            for (WorkflowFingerprints workflow : workflows.values()) {
+                if (workflow.keys.contains(fingerprint)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Drops workflows idle past the accounting TTL and releases their fingerprints. */
+    private void pruneExpiredWorkflows() {
+        long now = nanoClock.getAsLong();
+        long ttlNanos = RecoveryAccounting.TTL.toNanos();
+        Iterator<Map.Entry<Long, WorkflowFingerprints>> iterator =
+                workflows.entrySet().iterator();
+        while (iterator.hasNext()) {
+            WorkflowFingerprints workflow = iterator.next().getValue();
+            if (now - workflow.startedNanos > ttlNanos) {
+                registeredFingerprints -= workflow.keys.size();
+                for (String fingerprint : workflow.keys) {
+                    if (!ownedByAnotherWorkflow(fingerprint)) {
+                        diagnosticAccounting.remove(fingerprint);
+                    }
+                }
+                iterator.remove();
+            }
+        }
+    }
+
+    /** One workflow generation's registered fingerprint keys and its TTL start. */
+    private static final class WorkflowFingerprints {
+        final long startedNanos;
+        final LinkedHashSet<String> keys = new LinkedHashSet<>();
+
+        WorkflowFingerprints(long startedNanos) {
+            this.startedNanos = startedNanos;
+        }
     }
 
     private static String sessionKey(Map<String, Object> arguments) {
@@ -1203,8 +1329,9 @@ public final class HarnessToolHandler implements AutoCloseable {
             long sequence,
             Map<String, Object> arguments,
             String code,
-            String message) {
-        return localError(operation, sequence, arguments, code, message, null);
+            String message,
+            long[] workflowToken) {
+        return localError(operation, sequence, arguments, code, message, null, workflowToken);
     }
 
     private McpSchema.CallToolResult localError(
@@ -1213,7 +1340,8 @@ public final class HarnessToolHandler implements AutoCloseable {
             Map<String, Object> arguments,
             String code,
             String message,
-            String traceId) {
+            String traceId,
+            long[] workflowToken) {
         return diagnostic(
                 "mcp-" + Long.toUnsignedString(sequence),
                 sequence,
@@ -1230,7 +1358,8 @@ public final class HarnessToolHandler implements AutoCloseable {
                 traceId,
                 new DiagnosticEnvelope.StateIdentity(
                         null, sessionKey(arguments), null, null),
-                List.of());
+                List.of(),
+                workflowToken);
     }
 
     private static McpSchema.CallToolResult errorResult(Map<String, Object> content) {
@@ -1245,6 +1374,10 @@ public final class HarnessToolHandler implements AutoCloseable {
     @Override public void close() {
         sessionAccounting.clear();
         diagnosticAccounting.clear();
+        synchronized (workflows) {
+            workflows.clear();
+            registeredFingerprints = 0;
+        }
         admission.close();
         scheduler.dispose();
         executor.close();
