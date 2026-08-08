@@ -6,6 +6,7 @@ import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.wait.FrameSignal;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -16,6 +17,9 @@ import java.util.OptionalLong;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /** Graphics-thread fence that dispatches work only after an explicitly completed rendered frame. */
 public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
@@ -24,6 +28,7 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
     private final Thread ownerThread = Thread.currentThread();
     private final int capacity;
     private final DeadlineScheduler deadlines;
+    private final OwnedDeadlineScheduler ownedScheduler;
     private final Object lifecycle = new Object();
     private final ArrayDeque<Command<?>> queued = new ArrayDeque<>();
     private final CopyOnWriteArrayList<FrameListener> listeners =
@@ -37,11 +42,35 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
 
     /** Creates a fence owned by the current graphics thread. */
     public Lwjgl3FrameFence(DeadlineScheduler deadlines, int capacity) {
+        this(deadlines, capacity, null);
+    }
+
+    /** Creates a fence with the default bounded pending-work capacity. */
+    public Lwjgl3FrameFence() {
+        this(DEFAULT_CAPACITY);
+    }
+
+    /** Creates a fence owned by the current graphics thread with an owned deadline scheduler. */
+    public Lwjgl3FrameFence(int capacity) {
+        this(new OwnedDeadlineScheduler(), capacity);
+    }
+
+    private Lwjgl3FrameFence(OwnedDeadlineScheduler owned, int capacity) {
+        this(owned, capacity, owned);
+    }
+
+    /**
+     * Ownership-aware constructor: {@code ownedScheduler} is non-null only when this fence created
+     * the scheduler and must shut it down on close.
+     */
+    private Lwjgl3FrameFence(
+            DeadlineScheduler deadlines, int capacity, OwnedDeadlineScheduler ownedScheduler) {
         if (capacity <= 0) {
             throw new IllegalArgumentException("capacity must be positive");
         }
         this.deadlines = Objects.requireNonNull(deadlines, "deadlines");
         this.capacity = capacity;
+        this.ownedScheduler = ownedScheduler;
     }
 
     /** Queues work for the next frame completed by {@link #completedFrame(long, long)}. */
@@ -140,6 +169,9 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
             queued.clear();
         }
         cancelAll(cancellations);
+        if (ownedScheduler != null) {
+            ownedScheduler.shutdownNowAndAwait();
+        }
         HarnessException failure = closedFailure();
         for (Command<?> command : pending) {
             command.completeExceptionally(failure);
@@ -153,6 +185,47 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
     private static void cancelAll(List<DeadlineScheduler.Cancellation> cancellations) {
         for (DeadlineScheduler.Cancellation cancellation : cancellations) {
             cancellation.cancel();
+        }
+    }
+
+    /**
+     * Deadline scheduler owned by a fence created through the legacy {@code Lwjgl3FrameFence()} and
+     * {@code Lwjgl3FrameFence(int)} constructors. A daemon worker executes deadline signals;
+     * {@link #shutdownNowAndAwait()} stops it when the fence closes so a legacy fence never leaks
+     * a scheduler thread. Cancelled signals are removed from the work queue so they neither run
+     * nor retain the fence after cancellation.
+     */
+    private static final class OwnedDeadlineScheduler implements DeadlineScheduler {
+        private static final Duration SHUTDOWN_BOUND = Duration.ofSeconds(1);
+
+        private final ScheduledThreadPoolExecutor executor;
+
+        OwnedDeadlineScheduler() {
+            executor = new ScheduledThreadPoolExecutor(1, runnable -> {
+                Thread thread = new Thread(runnable, "lwjgl3-frame-fence-deadlines");
+                thread.setDaemon(true);
+                return thread;
+            });
+            executor.setRemoveOnCancelPolicy(true);
+        }
+
+        @Override public Cancellation schedule(Duration delay, Runnable signal) {
+            ScheduledFuture<?> scheduled =
+                    executor.schedule(signal, delay.toNanos(), TimeUnit.NANOSECONDS);
+            return () -> scheduled.cancel(false);
+        }
+
+        /**
+         * Stops the worker promptly. Deadline signals are short monitor checks, so the bounded
+         * wait only covers a signal already running when the fence closes.
+         */
+        void shutdownNowAndAwait() {
+            executor.shutdownNow();
+            try {
+                executor.awaitTermination(SHUTDOWN_BOUND.toMillis(), TimeUnit.MILLISECONDS);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 

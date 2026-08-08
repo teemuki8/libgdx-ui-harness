@@ -11,6 +11,8 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -25,6 +27,7 @@ import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import dev.gdx.uiharness.core.wait.FrameSignal;
 import java.awt.image.BufferedImage;
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -33,6 +36,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -130,6 +134,65 @@ final class Lwjgl3ScreenCaptureTest {
                 () -> await(pending));
 
         assertEquals(ErrorCode.SESSION_CLOSED, failure.code());
+    }
+
+    @Test void legacyConstructorsOwnTheirDeadlineSchedulerAndCloseBounded() {
+        Lwjgl3FrameFence defaultFence = new Lwjgl3FrameFence();
+        CompletionStage<String> pending = defaultFence.afterNextFrame(
+                frame -> "unreachable",
+                Deadline.after(Lwjgl3CaptureFixture.CLOCK, Duration.ofHours(1)));
+        ScheduledThreadPoolExecutor defaultOwned = ownedScheduler(defaultFence);
+        assertNotNull(defaultOwned);
+        assertFalse(defaultOwned.isShutdown());
+
+        Lwjgl3FrameFence capacityFence = new Lwjgl3FrameFence(1);
+        CompletionStage<String> first = capacityFence.afterNextFrame(
+                frame -> "first",
+                Deadline.after(Lwjgl3CaptureFixture.CLOCK, Duration.ofHours(1)));
+        CompletionStage<String> overflow = capacityFence.afterNextFrame(
+                frame -> "overflow",
+                Deadline.after(Lwjgl3CaptureFixture.CLOCK, Duration.ofHours(1)));
+        HarnessException overflowFailure = assertThrows(HarnessException.class,
+                () -> await(overflow));
+        assertEquals(ErrorCode.LIMIT_EXCEEDED, overflowFailure.code());
+        ScheduledThreadPoolExecutor capacityOwned = ownedScheduler(capacityFence);
+        assertNotNull(capacityOwned);
+        assertFalse(capacityOwned.isShutdown());
+
+        long closeStarted = System.nanoTime();
+        defaultFence.close();
+        capacityFence.close();
+        long closeMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - closeStarted);
+
+        assertTrue(defaultOwned.isShutdown(),
+                "closing a legacy fence must shut down its owned scheduler");
+        assertTrue(defaultOwned.isTerminated(),
+                "the owned scheduler must terminate promptly");
+        assertTrue(capacityOwned.isShutdown(),
+                "closing a capacity-constructed legacy fence must shut its owned scheduler");
+        assertTrue(capacityOwned.isTerminated());
+        assertTrue(closeMillis < 5_000,
+                "closing legacy fences with pending long deadlines must stay bounded");
+        HarnessException failure = assertThrows(HarnessException.class, () -> await(pending));
+        assertEquals(ErrorCode.SESSION_CLOSED, failure.code());
+        HarnessException firstFailure = assertThrows(HarnessException.class, () -> await(first));
+        assertEquals(ErrorCode.SESSION_CLOSED, firstFailure.code());
+    }
+
+    @Test void injectedDeadlineSchedulerRemainsExternallyOwnedAfterClose() {
+        AtomicBoolean signalled = new AtomicBoolean();
+        DeadlineScheduler external = (delay, signal) -> {
+            signal.run();
+            return () -> {};
+        };
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(external, 1);
+        localFence.close();
+
+        assertNull(ownedScheduler(localFence),
+                "an injected scheduler must not be wrapped in an owned scheduler");
+        external.schedule(Duration.ZERO, () -> signalled.set(true)).cancel();
+        assertTrue(signalled.get(),
+                "closing the fence must leave the injected scheduler usable by its owner");
     }
 
     @Test void closingScreenCaptureImmediatelyFailsItsQueuedRequest() {
@@ -393,6 +456,29 @@ final class Lwjgl3ScreenCaptureTest {
 
     private static DeadlineScheduler noopDeadlines() {
         return (delay, signal) -> () -> {};
+    }
+
+    /**
+     * Returns the executor behind the scheduler a legacy-constructed fence owns, or {@code null}
+     * when the fence received an injected scheduler. Reflection is required because the owned
+     * scheduler is an implementation detail; the legacy constructor contract is that the fence
+     * creates and shuts down its own scheduler.
+     */
+    private static ScheduledThreadPoolExecutor ownedScheduler(Lwjgl3FrameFence fence) {
+        try {
+            Field field = Lwjgl3FrameFence.class.getDeclaredField("ownedScheduler");
+            field.setAccessible(true);
+            Object owned = field.get(fence);
+            if (owned == null) {
+                return null;
+            }
+            Field executor = owned.getClass().getDeclaredField("executor");
+            executor.setAccessible(true);
+            return (ScheduledThreadPoolExecutor) executor.get(owned);
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError(
+                    "the owned scheduler must be observable for lifecycle assertions", exception);
+        }
     }
 
     /**
