@@ -3,6 +3,8 @@ package dev.gdx.uiharness.scene2d;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -33,7 +35,9 @@ import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.StrictResolution;
+import dev.gdx.uiharness.core.model.Role;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
+import dev.gdx.uiharness.core.wait.FrameSignal;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.mcp.ArtifactReference;
 import dev.gdx.uiharness.mcp.HarnessToolHandler;
@@ -43,6 +47,7 @@ import io.modelcontextprotocol.spec.McpSchema;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.time.MonotonicClock;
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +57,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -657,11 +663,217 @@ final class Scene2dActionEndToEndTest {
         }
     }
 
+    @Test void releasedActorMetadataConstructorIsRetainedWithNullBinding() {
+        ActorMetadata metadata = new ActorMetadata(
+                Role.BUTTON, "Save", "Save", null, "save",
+                null, null, null, null, null,
+                Map.of("k", "v"));
+
+        assertEquals(Role.BUTTON, metadata.role());
+        assertEquals("Save", metadata.accessibleName());
+        assertEquals("save", metadata.testId());
+        assertEquals(Map.of("k", "v"), metadata.properties());
+        assertNull(metadata.binding(),
+                "the released constructor must default the new binding to null");
+    }
+
+    @Test void legacyConstructorHonorsNoFrameActionDeadlinesWithRealScheduler() {
+        try (Fixture fixture = Fixture.legacy()) {
+            fixture.button("frozen-legacy", "Frozen", 100, 100);
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("frozen-legacy"),
+                    Deadline.after(System::nanoTime, Duration.ofMillis(250)));
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch completes and the owned scheduler arms the signal
+
+            HarnessException error = failure(click); // no frame; the real signal must fire
+            assertEquals(ErrorCode.TIMEOUT, error.code());
+            assertTrue(error.evidence().elapsed().toMillis() >= 100,
+                    "the typed timeout must retain real elapsed monotonic time");
+        }
+    }
+
+    @Test void legacyConstructorShutsOwnedSchedulerOnCloseAndFailsPendingAction() {
+        try (Fixture fixture = Fixture.legacy()) {
+            fixture.button("dispatched-legacy", "Dispatch", 100, 100);
+            fixture.button("blocked-legacy", "Blocked", 400, 100);
+            Actor cover = new Actor();
+            cover.setBounds(390, 90, 200, 80);
+            fixture.stage.addActor(cover);
+            CompletionStage<ActionResult> dispatched = fixture.harness.click(
+                    Locator.testId("dispatched-legacy"), fixture.deadline());
+            CompletionStage<ActionResult> blocked = fixture.harness.click(
+                    Locator.testId("blocked-legacy"), fixture.deadline());
+            fixture.nextFrame();
+            fixture.nextFrame(); // dispatched is AWAITING_FRAME with an armed signal
+            ScheduledThreadPoolExecutor owned = ownedScheduler(fixture.harness);
+            assertNotNull(owned);
+            assertFalse(owned.isShutdown());
+
+            long closeStarted = System.nanoTime();
+            fixture.harness.close();
+            long closeMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - closeStarted);
+
+            assertTrue(owned.isShutdown(),
+                    "closing a legacy harness must shut down its owned scheduler");
+            assertTrue(owned.isTerminated(),
+                    "the owned scheduler must terminate promptly");
+            assertTrue(closeMillis < 5_000,
+                    "closing with an armed deadline must stay bounded");
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(blocked).code());
+            fixture.nextFrame(); // a post-close frame completes the dispatched action
+            assertTrue(dispatched.toCompletableFuture().join().afterRevision() > 0,
+                    "a dispatched action still completes through the post-action frame");
+        }
+    }
+
+    @Test void injectedConstructorLeavesExternalSchedulerOwned() {
+        AtomicBoolean signalled = new AtomicBoolean();
+        DeadlineScheduler external = (delay, signal) -> {
+            signal.run();
+            return () -> {};
+        };
+        try (Fixture fixture = new Fixture(Scene2dTestSupport.stage(), null, external)) {
+            assertNull(ownedScheduler(fixture.harness),
+                    "an injected scheduler must not be wrapped in an owned scheduler");
+            fixture.harness.close();
+            external.schedule(Duration.ZERO, () -> signalled.set(true)).cancel();
+            assertTrue(signalled.get(),
+                    "closing the harness must leave the injected scheduler usable by its owner");
+        }
+    }
+
+    @Test void concurrentSecondHarnessCloseWaitsForTheFirstCleanup() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            fixture.button("wait-close", "Wait", 100, 100);
+            CompletionStage<ActionResult> pending = fixture.harness.click(
+                    Locator.testId("wait-close"), fixture.deadline());
+            CountDownLatch continuationEntered = new CountDownLatch(1);
+            CountDownLatch releaseContinuation = new CountDownLatch(1);
+            pending.whenComplete((ignored, failure) -> {
+                continuationEntered.countDown();
+                try {
+                    releaseContinuation.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("continuation interrupted", exception);
+                }
+            });
+            Thread firstCloser = new Thread(fixture.harness::close, "first-harness-closer");
+            firstCloser.start();
+            assertTrue(continuationEntered.await(1, TimeUnit.SECONDS),
+                    "the first close must reach the blocking continuation");
+            AtomicBoolean secondCloseReturned = new AtomicBoolean();
+            Thread secondCloser = new Thread(() -> {
+                fixture.harness.close();
+                secondCloseReturned.set(true);
+            }, "second-harness-closer");
+            secondCloser.start();
+            long waitDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (secondCloser.getState() != Thread.State.WAITING
+                    && System.nanoTime() < waitDeadline) {
+                Thread.yield();
+            }
+            assertEquals(Thread.State.WAITING, secondCloser.getState(),
+                    "a concurrent second close must block until the first cleanup finishes");
+            releaseContinuation.countDown();
+            firstCloser.join(1_000);
+            secondCloser.join(1_000);
+            assertFalse(firstCloser.isAlive());
+            assertFalse(secondCloser.isAlive());
+            assertTrue(secondCloseReturned.get(),
+                    "the second close must return once the first cleanup has finished");
+        }
+    }
+
+    @Test void reentrantHarnessCloseFromContinuationDoesNotDeadlock() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.button("reentrant-close", "Close", 100, 100);
+            CompletionStage<ActionResult> pending = fixture.harness.click(
+                    Locator.testId("reentrant-close"), fixture.deadline());
+            AtomicBoolean reentrantCloseReturned = new AtomicBoolean();
+            pending.whenComplete((ignored, failure) -> {
+                fixture.harness.close();
+                reentrantCloseReturned.set(true);
+            });
+            fixture.harness.close();
+
+            assertTrue(reentrantCloseReturned.get(),
+                    "a reentrant close from the closing thread's own continuation must return");
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(pending).code());
+        }
+    }
+
+    @Test void legacyHarnessCloseAggregatesCleanupFailuresAndShutsOwnedScheduler() {
+        FrameSignal throwingSubscriptions = new FrameSignal() {
+            @Override public FrameSignal.Subscription subscribe(FrameSignal.FrameListener listener) {
+                return () -> {
+                    throw new IllegalStateException("subscription-close");
+                };
+            }
+        };
+        Stage stage = Scene2dTestSupport.stage();
+        ControlledStageClock clock = new ControlledStageClock(stage, Duration.ofMillis(16));
+        RenderThreadScheduler scheduler = new RenderThreadScheduler(64);
+        Scene2dSession session = new Scene2dSession(stage);
+        Scene2dHarness legacy = new Scene2dHarness(
+                stage, stage, session, scheduler, throwingSubscriptions,
+                clock::revision, clock::frame);
+        try {
+            CompletionStage<ActionResult> first = legacy.click(
+                    Locator.testId("nope"), Deadline.after(clock, Duration.ofSeconds(5)));
+            CompletionStage<ActionResult> second = legacy.click(
+                    Locator.testId("nope"), Deadline.after(clock, Duration.ofSeconds(5)));
+            ScheduledThreadPoolExecutor owned = ownedScheduler(legacy);
+            assertNotNull(owned);
+
+            IllegalStateException closeFailure = assertThrows(
+                    IllegalStateException.class, legacy::close);
+
+            assertEquals("subscription-close", closeFailure.getMessage(),
+                    "the first cleanup failure must be the primary close failure");
+            assertTrue(owned.isShutdown(),
+                    "the owned scheduler must shut down even when a cleanup step fails");
+            assertTrue(owned.isTerminated());
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(first).code());
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(second).code());
+        } finally {
+            legacy.close();
+            session.close();
+            scheduler.close();
+            clock.close();
+            stage.dispose();
+        }
+    }
+
     private static HarnessException failure(CompletionStage<?> stage) {
         CompletionException completion = assertThrows(
                 CompletionException.class, () -> stage.toCompletableFuture().join());
         assertTrue(completion.getCause() instanceof HarnessException);
         return (HarnessException) completion.getCause();
+    }
+
+    /**
+     * Returns the executor behind the scheduler a legacy-constructed harness owns, or {@code null}
+     * when the harness received an injected scheduler. Reflection is required because the owned
+     * scheduler is an implementation detail; the legacy constructor contract is that the harness
+     * creates and shuts down its own scheduler.
+     */
+    private static ScheduledThreadPoolExecutor ownedScheduler(Scene2dHarness harness) {
+        try {
+            Field field = Scene2dHarness.class.getDeclaredField("ownedScheduler");
+            field.setAccessible(true);
+            Object owned = field.get(harness);
+            if (owned == null) {
+                return null;
+            }
+            Field executor = owned.getClass().getDeclaredField("executor");
+            executor.setAccessible(true);
+            return (ScheduledThreadPoolExecutor) executor.get(owned);
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError(
+                    "the owned scheduler must be observable for lifecycle assertions", exception);
+        }
     }
 
     private static SliderStyle sliderStyle() {
@@ -838,13 +1050,30 @@ final class Scene2dActionEndToEndTest {
         }
 
         Fixture(Stage stage, InputProcessor input, DeadlineScheduler harnessDeadlines) {
+            this(stage, input, harnessDeadlines, false);
+        }
+
+        static Fixture legacy() {
+            return new Fixture(Scene2dTestSupport.stage(), null, null, true);
+        }
+
+        private Fixture(
+                Stage stage,
+                InputProcessor input,
+                DeadlineScheduler harnessDeadlines,
+                boolean legacyHarness) {
             this.stage = stage;
             this.clock = new ControlledStageClock(stage, step);
             this.session = new Scene2dSession(stage);
-            harness = new Scene2dHarness(
-                    stage, input == null ? stage : input, session, scheduler, clock,
-                    clock::revision, clock::frame,
-                    harnessDeadlines == null ? deadlines : harnessDeadlines);
+            DeadlineScheduler injected = harnessDeadlines == null ? deadlines : harnessDeadlines;
+            harness = legacyHarness
+                    ? new Scene2dHarness(
+                            stage, input == null ? stage : input, session, scheduler, clock,
+                            clock::revision, clock::frame)
+                    : new Scene2dHarness(
+                            stage, input == null ? stage : input, session, scheduler, clock,
+                            clock::revision, clock::frame,
+                            injected);
         }
 
         Deadline deadline() {
