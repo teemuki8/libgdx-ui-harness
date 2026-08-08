@@ -93,7 +93,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
+@org.junit.jupiter.api.parallel.Isolated
 final class HarnessMcpServerContractTest {
     private static final MonotonicClock CLOCK = System::nanoTime;
     private static final SemanticSnapshot SNAPSHOT = snapshot();
@@ -1700,14 +1702,16 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @ResourceLock("java.util.logging")
     @Test void artifactFailureLogsAreSafeAndCorrelated() {
         String secret = "log_ghp_1234567890abcdef";
         java.util.logging.Logger artifactLogger = java.util.logging.Logger.getLogger(
                 "dev.gdx.uiharness.mcp.ArtifactPublisher");
-        java.util.logging.Logger rootLogger = java.util.logging.Logger.getLogger("");
-        java.util.logging.Level previousLoggerLevel = artifactLogger.getLevel();
-        java.util.logging.Level previousRootLevel = rootLogger.getLevel();
-        List<String> records = new ArrayList<>();
+        java.util.logging.Level previousLevel = artifactLogger.getLevel();
+        boolean previousUseParentHandlers = artifactLogger.getUseParentHandlers();
+        java.util.logging.Filter previousFilter = artifactLogger.getFilter();
+        java.util.logging.Handler[] previousHandlers = artifactLogger.getHandlers();
+        List<String> records = new java.util.concurrent.CopyOnWriteArrayList<>();
         java.util.logging.Handler capture = new java.util.logging.Handler() {
             @Override public void publish(java.util.logging.LogRecord record) {
                 StringBuilder formatted = new StringBuilder(record.getMessage());
@@ -1722,11 +1726,17 @@ final class HarnessMcpServerContractTest {
 
             @Override public void close() {}
         };
+        // Isolate the artifact logger: never mutate the root logger, do not propagate
+        // records to parent handlers, and detach any pre-existing handlers so the
+        // capture list sees only this logger's records (CopyOnWriteArrayList is
+        // thread-safe for concurrent JUL delivery).
         capture.setLevel(java.util.logging.Level.ALL);
         artifactLogger.setLevel(java.util.logging.Level.ALL);
-        rootLogger.setLevel(java.util.logging.Level.ALL);
+        artifactLogger.setUseParentHandlers(false);
+        for (java.util.logging.Handler handler : previousHandlers) {
+            artifactLogger.removeHandler(handler);
+        }
         artifactLogger.addHandler(capture);
-        rootLogger.addHandler(capture);
         try {
             ArtifactReference.Publisher leaking = (mediaType, content) -> {
                 throw new ArtifactReference.ArtifactUnavailableException(
@@ -1767,9 +1777,12 @@ final class HarnessMcpServerContractTest {
             }
         } finally {
             artifactLogger.removeHandler(capture);
-            rootLogger.removeHandler(capture);
-            artifactLogger.setLevel(previousLoggerLevel);
-            rootLogger.setLevel(previousRootLevel);
+            for (java.util.logging.Handler handler : previousHandlers) {
+                artifactLogger.addHandler(handler);
+            }
+            artifactLogger.setLevel(previousLevel);
+            artifactLogger.setUseParentHandlers(previousUseParentHandlers);
+            artifactLogger.setFilter(previousFilter);
         }
     }
 
