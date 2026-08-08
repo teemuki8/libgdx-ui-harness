@@ -1,6 +1,7 @@
 package dev.gdx.uiharness.fixtures;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -11,10 +12,12 @@ import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3MatrixRunner;
 import dev.gdx.uiharness.scene2d.RenderThreadScheduler;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 
 final class ReferenceCaseApplicatorTest {
@@ -50,7 +53,8 @@ final class ReferenceCaseApplicatorTest {
                         "en-US", "", 16.0 / 9.0, List.of());
 
                 assertThrows(IllegalStateException.class,
-                        () -> applicator.apply(matrixCase, "desktop-restart-1280x720"));
+                        () -> applicator.apply(matrixCase, "desktop-restart-1280x720",
+                                Deadline.after(clock, Duration.ofSeconds(30))));
                 assertEquals(List.of(new MatrixWindow(1920, 1080), new MatrixWindow(1280, 720)),
                         appliedWindows,
                         "the original window must be restored after the failure");
@@ -82,7 +86,8 @@ final class ReferenceCaseApplicatorTest {
                     "en-US", "", 16.0 / 9.0, List.of());
 
             Lwjgl3MatrixRunner.ApplyResult unknown =
-                    applicator.apply(matrixCase, "other-profile");
+                    applicator.apply(matrixCase, "other-profile",
+                            Deadline.after(clock, Duration.ofSeconds(30)));
 
             assertEquals("unknown restart profile: other-profile",
                     ((Lwjgl3MatrixRunner.ApplyResult.Unsupported) unknown).reason());
@@ -139,7 +144,8 @@ final class ReferenceCaseApplicatorTest {
                         "en-US", "", 16.0 / 9.0, List.of());
 
                 IllegalStateException failure = assertThrows(IllegalStateException.class,
-                        () -> applicator.apply(matrixCase, "desktop-restart-1280x720"));
+                        () -> applicator.apply(matrixCase, "desktop-restart-1280x720",
+                                Deadline.after(clock, Duration.ofSeconds(30))));
                 assertTrue(failure.getMessage().contains("window resize timed out"),
                         "the primary failure must be preserved: " + failure.getMessage());
                 assertTrue(failure.getMessage().contains("restore"),
@@ -214,6 +220,121 @@ final class ReferenceCaseApplicatorTest {
                     "locale failure aggregated: " + failure.getMessage());
             assertTrue(failure.getSuppressed().length >= 1,
                     "original failures preserved as suppressed");
+        }
+    }
+
+    @Test
+    void applyDoesNotMutateWhenRunDeadlineAlreadyExpired() {
+        AtomicLong now = new AtomicLong(0L);
+        MonotonicClock manual = now::get;
+        try (RenderThreadScheduler scheduler = new RenderThreadScheduler(16)) {
+            List<MatrixWindow> appliedWindows = new ArrayList<>();
+            List<Locale> appliedLocales = new ArrayList<>();
+            ReferenceCaseApplicator.CaseApplication recording =
+                    new ReferenceCaseApplicator.CaseApplication() {
+                        @Override public void applyWindow(
+                                MatrixWindow window, Deadline deadline) {
+                            appliedWindows.add(window);
+                        }
+
+                        @Override public void applyLocale(Locale locale) {
+                            appliedLocales.add(locale);
+                        }
+                    };
+            ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
+                    scheduler, manual, "host-owned-profile", recording);
+            Deadline run = Deadline.after(manual, Duration.ofSeconds(1));
+            now.addAndGet(2_000_000_000L);
+            MatrixCase matrixCase = new MatrixCase(
+                    0, new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
+                    "en-US", "", 16.0 / 9.0, List.of());
+
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> applicator.apply(matrixCase, "host-owned-profile", run));
+            assertTrue(failure.getMessage().contains("deadline expired"),
+                    "the expired run deadline must abort application: " + failure.getMessage());
+            assertEquals(List.of(new MatrixWindow(1280, 720)), appliedWindows,
+                    "only the mandatory restore may mutate the window after expiry");
+            assertEquals(List.of(Locale.getDefault()), appliedLocales,
+                    "only the mandatory restore may set the locale after expiry");
+        }
+    }
+
+    @Test
+    void applyStopsBeforeLocaleMutationWhenRunDeadlineExpiresMidApply() {
+        AtomicLong now = new AtomicLong(0L);
+        MonotonicClock manual = now::get;
+        try (RenderThreadScheduler scheduler = new RenderThreadScheduler(16)) {
+            List<MatrixWindow> appliedWindows = new ArrayList<>();
+            List<Locale> appliedLocales = new ArrayList<>();
+            ReferenceCaseApplicator.CaseApplication expiring =
+                    new ReferenceCaseApplicator.CaseApplication() {
+                        @Override public void applyWindow(
+                                MatrixWindow window, Deadline deadline) {
+                            appliedWindows.add(window);
+                            now.addAndGet(31_000_000_000L);
+                        }
+
+                        @Override public void applyLocale(Locale locale) {
+                            appliedLocales.add(locale);
+                        }
+                    };
+            ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
+                    scheduler, manual, "host-owned-profile", expiring);
+            Deadline run = Deadline.after(manual, Duration.ofSeconds(30));
+            MatrixCase matrixCase = new MatrixCase(
+                    0, new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
+                    "en-US", "", 16.0 / 9.0, List.of());
+
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> applicator.apply(matrixCase, "host-owned-profile", run));
+            assertTrue(failure.getMessage().contains("deadline expired"),
+                    "expiry between mutations must abort before the locale mutation: "
+                            + failure.getMessage());
+            assertEquals(List.of(new MatrixWindow(1920, 1080), new MatrixWindow(1280, 720)),
+                    appliedWindows,
+                    "the window apply and the mandatory restore both run");
+            assertEquals(List.of(Locale.getDefault()), appliedLocales,
+                    "the requested en-US locale must not be applied after the deadline expired");
+        }
+    }
+
+    @Test
+    void restoreUsesSeparateBoundedCleanupDeadlineAfterRunExpiry() {
+        AtomicLong now = new AtomicLong(0L);
+        MonotonicClock manual = now::get;
+        try (RenderThreadScheduler scheduler = new RenderThreadScheduler(16)) {
+            List<Deadline> windowDeadlines = new ArrayList<>();
+            List<MatrixWindow> restoredWindows = new ArrayList<>();
+            List<Locale> restoredLocales = new ArrayList<>();
+            ReferenceCaseApplicator.CaseApplication recording =
+                    new ReferenceCaseApplicator.CaseApplication() {
+                        @Override public void applyWindow(
+                                MatrixWindow window, Deadline deadline) {
+                            windowDeadlines.add(deadline);
+                            restoredWindows.add(window);
+                        }
+
+                        @Override public void applyLocale(Locale locale) {
+                            restoredLocales.add(locale);
+                        }
+                    };
+            ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
+                    scheduler, manual, "host-owned-profile", recording);
+            Deadline run = Deadline.after(manual, Duration.ofSeconds(5));
+            now.addAndGet(6_000_000_000L);
+
+            applicator.restore();
+
+            assertEquals(List.of(new MatrixWindow(1280, 720)), restoredWindows,
+                    "restoration runs with the host-owned default window");
+            assertEquals(List.of(Locale.getDefault()), restoredLocales,
+                    "restoration runs with the host-owned original locale");
+            assertEquals(1, windowDeadlines.size());
+            assertFalse(windowDeadlines.get(0).isExpired(),
+                    "the cleanup deadline must not reuse the expired run deadline");
+            assertEquals(Duration.ofSeconds(15), windowDeadlines.get(0).timeout(),
+                    "the cleanup deadline is separately bounded");
         }
     }
 }

@@ -20,7 +20,12 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
             new MatrixWindow(1280, 720), new MatrixWindow(1920, 1080));
     private static final Set<String> ALLOWED_LOCALES = Set.of("en-US", "fi-FI");
     private static final MatrixWindow DEFAULT_WINDOW = new MatrixWindow(1280, 720);
-    private static final Duration APPLY_DEADLINE = Duration.ofSeconds(15);
+    /**
+     * Bounded cleanup deadline for restoration. Restoration is mandatory even when the run
+     * deadline expired, so it runs under this separately bounded deadline and never reuses the
+     * possibly-expired request deadline.
+     */
+    private static final Duration CLEANUP_DEADLINE = Duration.ofSeconds(15);
 
     /**
      * One host-owned window/locale application seam; injectable for failure-path tests. The
@@ -58,23 +63,34 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
     }
 
     @Override
-    public Lwjgl3MatrixRunner.ApplyResult apply(MatrixCase matrixCase, String profileId) {
+    public Lwjgl3MatrixRunner.ApplyResult apply(
+            MatrixCase matrixCase, String profileId, Deadline deadline) {
         Objects.requireNonNull(matrixCase, "matrixCase");
+        Objects.requireNonNull(deadline, "deadline");
         String unsupported = unsupportedReason(matrixCase, profileId);
         if (unsupported != null) {
             return new Lwjgl3MatrixRunner.ApplyResult.Unsupported(unsupported);
         }
         try {
-            caseApplication.applyWindow(matrixCase.window(),
-                    Deadline.after(clock, APPLY_DEADLINE));
+            // Application must never continue beyond the request bound: every mutation is
+            // gated on the run deadline and every window wait is bounded by its remaining time.
+            if (deadline.isExpired()) {
+                throw new IllegalStateException("case application deadline expired");
+            }
+            caseApplication.applyWindow(matrixCase.window(), deadline);
+            if (deadline.isExpired()) {
+                throw new IllegalStateException(
+                        "case application deadline expired after window apply");
+            }
             caseApplication.applyLocale(Locale.forLanguageTag(matrixCase.locale()));
             return new Lwjgl3MatrixRunner.ApplyResult.Applied(observe(matrixCase));
         } catch (RuntimeException failure) {
             // The runner contract requires the original display state to be restored before
-            // throwing; the runner never observes a partially applied case. If the restore also
-            // fails, the thrown failure must surface that risk (never silently claim restored)
-            // while preserving the primary failure: both are suppressed on a composite whose root
-            // message carries both texts for the runner's bounded evidence.
+            // throwing; the runner never observes a partially applied case. Restoration runs
+            // under its own bounded cleanup deadline (never the expired run deadline) and, if it
+            // also fails, the thrown failure must surface that risk (never silently claim
+            // restored) while preserving the primary failure: both are suppressed on a composite
+            // whose root message carries both texts for the runner's bounded evidence.
             RuntimeException restoreFailure = restoreSafely();
             if (restoreFailure != null) {
                 IllegalStateException composite = new IllegalStateException(
@@ -93,10 +109,12 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
     @Override
     public void restore() {
         // Restore as much as possible: the window and the locale are restored independently and
-        // both outcomes are aggregated before reporting. Each restore() call re-attempts the
-        // full restoration, so an incomplete restoration is retried on the next call rather than
+        // both outcomes are aggregated before reporting. Restoration remains mandatory even when
+        // the run deadline expired, so it runs under the separately bounded cleanup deadline and
+        // never reuses the expired request deadline. Each restore() call re-attempts the full
+        // restoration, so an incomplete restoration is retried on the next call rather than
         // latched into a permanent no-op state.
-        Deadline deadline = Deadline.after(clock, APPLY_DEADLINE);
+        Deadline deadline = Deadline.after(clock, CLEANUP_DEADLINE);
         RuntimeException windowFailure = null;
         try {
             caseApplication.applyWindow(DEFAULT_WINDOW, deadline);

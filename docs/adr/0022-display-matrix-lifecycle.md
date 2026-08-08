@@ -40,4 +40,7 @@ failure is never suppressed: it upgrades the case terminal to `FAILED` with rest
 evidence (or is aggregated onto an application failure without losing the primary), and every
 restore call re-attempts the full host-owned window and locale state independently so an
 incomplete restoration is retried on the next case rather than latched into a permanent
-no-op.
+no-op. Every case application is bounded by the request's run deadline: the applicator
+refuses to start once it is expired and bounds every window wait to the remaining time, so no
+application continues beyond the request bound; restoration remains mandatory after expiry
+under a separately bounded cleanup deadline and never reuses the expired request deadline.
