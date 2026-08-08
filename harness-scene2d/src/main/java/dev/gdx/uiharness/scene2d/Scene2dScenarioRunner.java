@@ -198,7 +198,6 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         private final ResultFuture result = new ResultFuture(this);
         private final AcquisitionFuture acquisition = new AcquisitionFuture(this);
         private Phase phase = Phase.QUEUED;
-        private boolean deadlinePublished;
         private long startFrame;
         private long startRevision;
         private long readyFrame;
@@ -266,15 +265,22 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 // stopped render loop can never leave the call hanging; the run keeps owning
                 // the active slot and hook cleanup is deferred to the render thread.
                 phase = Phase.CLEANING;
-                deadlinePublished = true;
                 publish = true;
             }
             if (publish) {
                 publishTerminal(ScenarioFailure.READINESS_DEADLINE, false);
-                observeSubmission(this, scheduler.submit(() -> {
+                // The deferred cleanup submission is the only failure path that may release
+                // the active owner: unrelated rejected submissions during the terminal window
+                // must not admit a successor before the accepted cleanup mutates the Stage.
+                CompletionStage<?> cleanup = scheduler.submit(() -> {
                     deferredCleanup();
                     return null;
-                }, dispatchDeadline()));
+                }, dispatchDeadline());
+                cleanup.whenComplete((ignored, failure) -> {
+                    if (failure != null) {
+                        cleanupFailed();
+                    }
+                });
             }
         }
 
@@ -439,23 +445,28 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         }
         private void dispatchFailed() {
             boolean publish = false;
-            boolean release = false;
             synchronized (this) {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
-                    // A deadline-published run still owns the active slot until its deferred
-                    // cleanup drains; a failed cleanup submission must still release it. Other
-                    // terminal/cleaning runs are released by their own terminal path.
-                    release = deadlinePublished;
-                } else {
-                    phase = Phase.TERMINAL;
-                    publish = true;
+                    // A terminal or cleaning run is released only by its own terminal path or
+                    // by its deferred cleanup submission; an unrelated rejected submission must
+                    // never release the active owner while accepted cleanup is still queued.
+                    return;
                 }
+                phase = Phase.TERMINAL;
+                publish = true;
             }
             if (publish) {
                 completeTerminal(ScenarioFailure.DISPATCH_FAILED, false);
-            } else if (release) {
-                releaseIfOwner(this);
             }
+        }
+
+        /**
+         * Runs when the deferred cleanup submission itself is rejected: the cleanup hook will
+         * never run, so the active owner slot is released exactly once without republishing the
+         * already-published terminal result.
+         */
+        private void cleanupFailed() {
+            releaseIfOwner(this);
         }
 
 

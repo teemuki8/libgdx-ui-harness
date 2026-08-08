@@ -729,6 +729,53 @@ final class Scene2dScenarioRunnerTest {
         }
     }
 
+    @Test void unrelatedRejectedSubmissionCannotReleaseOwnerBeforeDeferredCleanupDrains()
+            throws Exception {
+        try (Fixture fixture = new Fixture(1)) {
+            java.util.concurrent.atomic.AtomicInteger cleanups =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready") {
+                @Override public void cleanup(ScenarioRequest request) {
+                    cleanups.incrementAndGet();
+                }
+            });
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofMillis(10));
+            fixture.scheduler.drain();
+
+            fixture.clock.advance(Duration.ofMillis(10));
+            fixture.deadlines.expire();
+
+            ScenarioResult first = started.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.READINESS_DEADLINE, first.failure().orElseThrow());
+            assertFalse(first.cleanupCompleted());
+            assertEquals(0, cleanups.get());
+
+            // The deferred cleanup fills the capacity-one scheduler queue; an unrelated
+            // completed-frame submission is therefore rejected. That unrelated rejection must
+            // not release the deadline-published owner while the accepted cleanup is queued.
+            fixture.session.completedFrame(fixture.runner, 1, 1);
+
+            CompletionStage<ScenarioResult> competing = fixture.start(Duration.ofSeconds(1));
+            ScenarioResult busy = competing.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.SESSION_BUSY, busy.failure().orElseThrow(),
+                    "the owner must stay held until the deferred cleanup drains");
+            assertEquals(0, cleanups.get(),
+                    "the deferred cleanup has not run yet");
+
+            // After the deferred cleanup drains, the owner is released and a new acquisition
+            // is admitted and succeeds.
+            fixture.scheduler.drain();
+            assertEquals(1, cleanups.get(),
+                    "the deferred cleanup runs exactly once on the render thread");
+            CompletionStage<ScenarioResult> next = fixture.start(Duration.ofSeconds(1));
+            fixture.scheduler.drain();
+            fixture.completedFrame();
+            ScenarioResult nextResult = next.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertTrue(nextResult.failure().isEmpty(),
+                    "a new acquisition succeeds after the owner cleanup drains");
+        }
+    }
+
     private static class RecordingLifecycle implements ScenarioLifecycle {
         private final List<Thread> hookThreads;
         private final boolean ready;
