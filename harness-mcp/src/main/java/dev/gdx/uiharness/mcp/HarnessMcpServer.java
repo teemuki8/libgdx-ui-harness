@@ -1,6 +1,5 @@
 package dev.gdx.uiharness.mcp;
 
-import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.json.TypeRef;
 import io.modelcontextprotocol.server.McpAsyncServer;
@@ -9,15 +8,19 @@ import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpServerSession;
 import io.modelcontextprotocol.spec.McpServerTransport;
 import io.modelcontextprotocol.spec.McpServerTransportProvider;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.StreamReadConstraints;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
 import dev.gdx.uiharness.protocol.HarnessRequest;
-import java.io.BufferedReader;
+import dev.gdx.uiharness.protocol.ProtocolJson;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -80,7 +83,7 @@ public final class HarnessMcpServer implements AutoCloseable {
     /** Minimal SDK transport whose single stdio connection runs on a Java virtual thread. */
     private static final class VirtualStdioProvider implements McpServerTransportProvider {
         private static final String CANCELLED_NOTIFICATION = "notifications/cancelled";
-        private final McpJsonMapper mapper = McpJsonDefaults.getMapper();
+        private final McpJsonMapper mapper = hardenedMapper();
         private final InputStream input;
         private final OutputStream output;
         private final ExecutorService connectionExecutor =
@@ -141,19 +144,32 @@ public final class HarnessMcpServer implements AutoCloseable {
 
         private void readLoop() {
             try {
-                BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(input, StandardCharsets.UTF_8));
-                String line;
-                while (!closing.get() && (line = reader.readLine()) != null) {
-                    McpSchema.JSONRPCMessage message =
-                            McpSchema.deserializeJsonRpcMessage(mapper, line);
+                BoundedJsonRpcFramer framer = new BoundedJsonRpcFramer(
+                        input, ProtocolJson.MAX_REQUEST_BYTES);
+                while (!closing.get()) {
+                    BoundedJsonRpcFramer.Frame frame = framer.read();
+                    if (frame instanceof BoundedJsonRpcFramer.Frame.EndOfInput) {
+                        break;
+                    }
+                    if (frame instanceof BoundedJsonRpcFramer.Frame.Rejected) {
+                        writeParseError();
+                        continue;
+                    }
+                    McpSchema.JSONRPCMessage message;
+                    try {
+                        message = McpSchema.deserializeJsonRpcMessage(
+                                mapper, ((BoundedJsonRpcFramer.Frame.Message) frame).json());
+                    } catch (IOException | IllegalArgumentException failure) {
+                        writeParseError();
+                        continue;
+                    }
                     if (!cancelRequest(message)) {
                         dispatch(message);
                     }
                 }
                 drainInFlight();
                 finishNaturally();
-            } catch (IOException | RuntimeException failure) {
+            } catch (IOException failure) {
                 if (!closing.get()) {
                     terminated.completeExceptionally(failure);
                     close();
@@ -162,6 +178,36 @@ public final class HarnessMcpServer implements AutoCloseable {
                 Thread.currentThread().interrupt();
                 close();
             }
+        }
+
+        /** Writes one bounded JSON-RPC parse error; rejected frames are never echoed. */
+        private void writeParseError() {
+            CompletableFuture.runAsync(() -> {
+                if (closing.get()) {
+                    return;
+                }
+                try {
+                    writeLine(mapper.writeValueAsString(parseErrorBody()));
+                } catch (IOException failure) {
+                    throw new IllegalStateException(
+                            "Failed to write stdio MCP parse error", failure);
+                }
+            }, outputExecutor);
+        }
+
+        private static Map<String, Object> parseErrorBody() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("jsonrpc", McpSchema.JSONRPC_VERSION);
+            body.put("id", null);
+            body.put("error", new McpSchema.JSONRPCResponse.JSONRPCError(
+                    McpSchema.ErrorCodes.PARSE_ERROR, "Parse error"));
+            return body;
+        }
+
+        private void writeLine(String json) throws IOException {
+            output.write(json.getBytes(StandardCharsets.UTF_8));
+            output.write('\n');
+            output.flush();
         }
 
         private void dispatch(McpSchema.JSONRPCMessage message) {
@@ -267,9 +313,7 @@ public final class HarnessMcpServer implements AutoCloseable {
                                 .replace("\r\n", "\\n")
                                 .replace("\n", "\\n")
                                 .replace("\r", "\\n");
-                        output.write(json.getBytes(StandardCharsets.UTF_8));
-                        output.write('\n');
-                        output.flush();
+                        writeLine(json);
                     } catch (IOException failure) {
                         throw new IllegalStateException(
                                 "Failed to write stdio MCP message", failure);
@@ -288,6 +332,68 @@ public final class HarnessMcpServer implements AutoCloseable {
             @Override public void close() {
                 VirtualStdioProvider.this.close();
             }
+        }
+    }
+
+    /**
+     * Builds the hardened MCP mapper used for every stdio message: the Jackson factory
+     * enforces the same request constraints as {@link ProtocolJson} (nesting depth,
+     * string length, and number length), while the frame byte cap is enforced earlier by
+     * {@link BoundedJsonRpcFramer}.
+     */
+    private static McpJsonMapper hardenedMapper() {
+        StreamReadConstraints constraints = StreamReadConstraints.builder()
+                .maxNestingDepth(ProtocolJson.MAX_NESTING_DEPTH)
+                .maxStringLength(ProtocolJson.MAX_STRING_LENGTH)
+                .maxNumberLength(ProtocolJson.MAX_NUMBER_LENGTH)
+                .build();
+        JsonFactory factory = JsonFactory.builder()
+                .streamReadConstraints(constraints)
+                .build();
+        return new HardenedMcpJsonMapper(JsonMapper.builder(factory).build());
+    }
+
+    /** {@link McpJsonMapper} adapter over the hardened Jackson 2 mapper. */
+    private static final class HardenedMcpJsonMapper implements McpJsonMapper {
+        private final ObjectMapper mapper;
+
+        private HardenedMcpJsonMapper(ObjectMapper mapper) {
+            this.mapper = mapper;
+        }
+
+        @Override public <T> T readValue(String json, Class<T> type) throws IOException {
+            return mapper.readValue(json, type);
+        }
+
+        @Override public <T> T readValue(byte[] json, Class<T> type) throws IOException {
+            return mapper.readValue(json, type);
+        }
+
+        @Override public <T> T readValue(String json, TypeRef<T> typeRef) throws IOException {
+            return mapper.readValue(json, mapper.getTypeFactory().constructType(
+                    typeRef.getType()));
+        }
+
+        @Override public <T> T readValue(byte[] json, TypeRef<T> typeRef) throws IOException {
+            return mapper.readValue(json, mapper.getTypeFactory().constructType(
+                    typeRef.getType()));
+        }
+
+        @Override public <T> T convertValue(Object from, Class<T> type) {
+            return mapper.convertValue(from, type);
+        }
+
+        @Override public <T> T convertValue(Object from, TypeRef<T> typeRef) {
+            return mapper.convertValue(from, mapper.getTypeFactory().constructType(
+                    typeRef.getType()));
+        }
+
+        @Override public String writeValueAsString(Object value) throws IOException {
+            return mapper.writeValueAsString(value);
+        }
+
+        @Override public byte[] writeValueAsBytes(Object value) throws IOException {
+            return mapper.writeValueAsBytes(value);
         }
     }
 }

@@ -61,6 +61,7 @@ import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -1024,6 +1025,53 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test
+    @Timeout(10)
+    void oversizedOrMalformedFrameDoesNotTerminateServer() throws Exception {
+        RecordingHarness harness = new RecordingHarness();
+        try (PipedInputStream serverInput = new PipedInputStream();
+                PipedOutputStream clientOutput = new PipedOutputStream(serverInput);
+                PipedInputStream clientInput = new PipedInputStream();
+                PipedOutputStream serverOutput = new PipedOutputStream(clientInput);
+                HarnessMcpServer server = HarnessMcpServer.open(
+                        service(harness), new RecordingArtifacts(), serverInput, serverOutput);
+                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+                        clientOutput, StandardCharsets.UTF_8));
+                BufferedReader reader = new BufferedReader(new InputStreamReader(
+                        clientInput, StandardCharsets.UTF_8))) {
+            assertNotNull(server);
+
+            byte[] oversized = new byte[ProtocolJson.MAX_REQUEST_BYTES + 1];
+            Arrays.fill(oversized, (byte) 'x');
+            writeRaw(clientOutput, oversized);
+            assertParseError(reader);
+
+            writeRaw(clientOutput, new byte[] {(byte) 0xc3, 0x28});
+            assertParseError(reader);
+
+            send(writer, "[".repeat(ProtocolJson.MAX_NESTING_DEPTH + 1)
+                    + "]".repeat(ProtocolJson.MAX_NESTING_DEPTH + 1));
+            assertParseError(reader);
+
+            send(writer, "{\"value\":\""
+                    + "a".repeat(ProtocolJson.MAX_STRING_LENGTH + 1) + "\"}");
+            assertParseError(reader);
+
+            send(writer, "{\"value\":"
+                    + "9".repeat(ProtocolJson.MAX_NUMBER_LENGTH + 1) + "}");
+            assertParseError(reader);
+
+            send(writer, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\","
+                    + "\"params\":{\"protocolVersion\":\"2225-11-25\",\"capabilities\":{},"
+                    + "\"clientInfo\":{\"name\":\"contract\",\"version\":\"1.0\"}}}");
+            JsonNode initialize = read(reader);
+            assertEquals(1, initialize.path("id").asInt());
+            assertEquals("libgdx-ui-harness",
+                    initialize.at("/result/serverInfo/name").asText());
+            assertEquals(0, harness.actionCalls.get());
+        }
+    }
+
     private static void assertInvalidLocator(
             HarnessToolHandler handler, Map<String, Object> locator) {
         McpSchema.CallToolResult result = handler.handle(call(
@@ -1110,6 +1158,19 @@ final class HarnessMcpServerContractTest {
 
     private static void closeStdin(PipedOutputStream clientOutput) throws Exception {
         clientOutput.close();
+    }
+
+    private static void writeRaw(PipedOutputStream output, byte[] frame) throws Exception {
+        output.write(frame);
+        output.write('\n');
+        output.flush();
+    }
+
+    private static void assertParseError(BufferedReader reader) throws Exception {
+        JsonNode error = read(reader);
+        assertEquals(-32700, error.at("/error/code").asInt());
+        assertEquals("Parse error", error.at("/error/message").asText());
+        assertTrue(error.at("/id").isNull());
     }
 
     private static JsonNode read(BufferedReader reader) throws Exception {
