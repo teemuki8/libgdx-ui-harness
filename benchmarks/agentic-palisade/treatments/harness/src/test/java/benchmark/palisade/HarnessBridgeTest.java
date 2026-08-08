@@ -411,6 +411,7 @@ final class HarnessBridgeTest {
     private static final class CloseOrderingApplication extends ApplicationAdapter {
         private static final String DEADLINE_THREAD_NAME = "palisade-harness-deadlines";
         private static final long ARM_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(2);
+        private static final long CLOSE_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(2);
         private final Path artifactRoot;
         private final AtomicReference<Throwable> failure = new AtomicReference<>();
         private Stage stage;
@@ -419,6 +420,9 @@ final class HarnessBridgeTest {
         private boolean warmupDone;
         private int warmupFrames;
         private long armedAtNanos;
+        private boolean closeStarted;
+        private Thread closeThread;
+        private CompletableFuture<Void> closeOutcome;
         private boolean closeCompleted;
         private boolean screenshotReleasedByClose;
         private boolean noDeadlineThreadAfterClose;
@@ -513,22 +517,79 @@ final class HarnessBridgeTest {
         }
 
         private void closeBridge() {
-            try {
-                CompletableFuture<Void> closing = CompletableFuture.runAsync(bridge::close);
-                closing.get(2, TimeUnit.SECONDS);
-                closeCompleted = true;
-                screenshotReleasedByClose = screenshot.isDone();
-                // close() only returns after its bounded awaitTermination, so the worker is
-                // gone; the loop absorbs any thread-map bookkeeping lag without sleeping.
-                for (int retries = 0; deadlineThreadAlive() && retries < 1_000; retries++) {
-                    // re-check the live-thread event
-                }
-                noDeadlineThreadAfterClose = !deadlineThreadAlive();
-            } catch (TimeoutException timedOut) {
+            if (!awaitCloseBounded()) {
                 failure.compareAndSet(null, new AssertionError(
-                        "close must not await an outstanding delayed deadline", timedOut));
-            } catch (Throwable thrown) {
-                failure.compareAndSet(null, thrown);
+                        "close must not await an outstanding delayed deadline",
+                        new TimeoutException("close exceeded its bounded await")));
+            }
+        }
+
+        /**
+         * Awaits the single fixture-owned close attempt for at most {@link #CLOSE_TIMEOUT_NANOS}.
+         * On timeout the same close thread is interrupted and boundedly joined, so a slow close
+         * can never linger and no second close is ever submitted.
+         */
+        private boolean awaitCloseBounded() {
+            startCloseOnce();
+            Thread closer = closeThread;
+            try {
+                closeOutcome.get(CLOSE_TIMEOUT_NANOS, TimeUnit.NANOSECONDS);
+                return true;
+            } catch (TimeoutException timedOut) {
+                closer.interrupt();
+                awaitCloseThreadTermination(closer);
+                return false;
+            } catch (InterruptedException interruption) {
+                Thread.currentThread().interrupt();
+                closer.interrupt();
+                awaitCloseThreadTermination(closer);
+                return false;
+            } catch (java.util.concurrent.ExecutionException closeFailure) {
+                failure.compareAndSet(null, closeFailure.getCause());
+                return true;
+            }
+        }
+
+        /** Starts the one and only close attempt on a fixture-owned daemon thread. */
+        private synchronized void startCloseOnce() {
+            if (closeStarted) {
+                return;
+            }
+            closeStarted = true;
+            CompletableFuture<Void> outcome = new CompletableFuture<>();
+            closeOutcome = outcome;
+            Thread thread = Thread.ofPlatform()
+                    .name("harness-bridge-close-fixture").daemon()
+                    .unstarted(() -> {
+                        try {
+                            bridge.close();
+                            outcome.complete(null);
+                        } catch (Throwable thrown) {
+                            outcome.completeExceptionally(thrown);
+                        }
+                    });
+            closeThread = thread;
+            thread.start();
+            outcome.whenComplete((ignored, thrown) -> {
+                if (thrown == null) {
+                    closeCompleted = true;
+                    screenshotReleasedByClose = screenshot.isDone();
+                    // close() only returns after its bounded awaitTermination, so the worker is
+                    // gone; the loop absorbs any thread-map bookkeeping lag without sleeping.
+                    for (int retries = 0; deadlineThreadAlive() && retries < 1_000; retries++) {
+                        // re-check the live-thread event
+                    }
+                    noDeadlineThreadAfterClose = !deadlineThreadAlive();
+                }
+            });
+        }
+
+        private static void awaitCloseThreadTermination(Thread closer) {
+            try {
+                closer.join(CLOSE_TIMEOUT_NANOS / 1_000_000,
+                        (int) (CLOSE_TIMEOUT_NANOS % 1_000_000));
+            } catch (InterruptedException interruption) {
+                Thread.currentThread().interrupt();
             }
         }
 
@@ -543,13 +604,11 @@ final class HarnessBridgeTest {
 
         @Override public void dispose() {
             try {
-                if (bridge != null && !closeCompleted) {
-                    CompletableFuture<Void> closing = CompletableFuture.runAsync(bridge::close);
-                    closing.get(2, TimeUnit.SECONDS);
+                if (bridge != null && !closeCompleted && !awaitCloseBounded()) {
+                    failure.compareAndSet(null, new AssertionError(
+                            "bridge cleanup must not hang after a fixture failure",
+                            new TimeoutException("close cleanup exceeded its bounded await")));
                 }
-            } catch (TimeoutException timedOut) {
-                failure.compareAndSet(null, new AssertionError(
-                        "bridge cleanup must not hang after a fixture failure", timedOut));
             } catch (Throwable thrown) {
                 failure.compareAndSet(null, thrown);
             } finally {
