@@ -150,10 +150,12 @@ cleanupCompleted false). `start()` delivers the rejection as a normal terminal r
 `AcquisitionException`. Cancellation still routes through the render-thread terminate path,
 so cleanup is never bypassed.
 
-Every terminal path funnels through `completeTerminal`, which calls the identity-based
-`releaseIfOwner(run)` — removing the identical `Run` from `active` — before publishing the
-terminal result, so a dependent acquisition (for example the matrix runner's next case)
-observes the freed lease. A stale release of an earlier lease cannot clear its successor.
+Every render-thread terminal path funnels through `completeTerminal`, which calls the
+identity-based `releaseIfOwner(run)` — removing the identical `Run` from `active` — before
+publishing the terminal result, so a dependent acquisition (for example the matrix runner's
+next case) observes the freed lease. The no-frame deadline path is the one exception: it
+publishes first and releases the owner only after its deferred render-thread cleanup drains
+(see section 6). A stale release of an earlier lease cannot clear its successor.
 `Lwjgl3MatrixRunner` releases each case's lease on every terminal path, including
 exceptionally completed assertion stages, via a `handle` on the assertion chain; a cleanup
 failure on release fails the case with `CLEANUP_FAILED` evidence, the primary assertion
@@ -173,6 +175,17 @@ registration is canceled on completion, cancellation, and close, and a late sign
 terminal state and no-ops. Arming decisions are captured under the monitor but scheduling and
 the returned `Cancellation` are invoked outside it, so zero-delay signal inline firing and
 cancel-under-monitor callbacks can never run continuations while holding a monitor.
+
+When a scenario deadline fires, the signal thread publishes the terminal `READINESS_DEADLINE`
+result atomically — a paused or stopped render loop can never leave the call hanging — and the
+result reports `cleanupCompleted=false` because it is published before the render-owned
+cleanup hook has run. The run retains the session's single active-owner slot, so competing
+acquisitions keep terminating with `session-busy` until the deferred cleanup drains on the
+render thread. That cleanup hook executes exactly once; if its submission is rejected, the
+owner slot is still released without republishing the already-immutable result. No-frame
+publication does not stop the render loop: the loop keeps rendering and advancing frames, and
+snapshot/query operations stay served while the deferred cleanup is pending; only scenario
+completed-frame evaluation is bypassed.
 
 The MCP server's SDK outer request timeout becomes `OUTER_REQUEST_TIMEOUT =
 MAX_SCENARIO_DEADLINE_MILLIS (600,000 ms) + 30 s` translation allowance = **630,000 ms**, with
@@ -228,10 +241,12 @@ backstop, not the primary limiter, and it is not disabled.
   bounded `invalid-request` failure type instead of being evaluated with backtracking. The
   repository's existing locator call sites were audited and use only RE2-supported syntax.
 - **Behavior.** Concurrent scenario starts now terminate with `session-busy` instead of
-  overlapping; concurrent MCP calls beyond the admission bounds fail immediately with
-  `limit-exceeded`; malformed or oversized stdio frames produce one JSON-RPC parse error and
-  the connection continues; sessionless calls never share admission state with any client
-  session.
+  overlapping; a scenario deadline that fires without completed frames publishes its terminal
+  result with `cleanupCompleted=false` and keeps the session's lease busy (`session-busy`)
+  until the deferred render-thread cleanup drains exactly once; concurrent MCP calls beyond
+  the admission bounds fail immediately with `limit-exceeded`; malformed or oversized stdio
+  frames produce one JSON-RPC parse error and the connection continues; sessionless calls
+  never share admission state with any client session.
 - **API.** `DeadlineScheduler` is a new public core contract, and deadline-scheduling
   ownership is explicit (no unowned global executor). Scheduler, admission, and framing
   internals remain package-private; the wire surface is unchanged apart from the added
@@ -241,4 +256,11 @@ backstop, not the primary limiter, and it is not disabled.
 
 ```bash
 ./gradlew :harness-core:test --tests '*StrictResolutionTest*' --tests '*LocatorEngineTest*' :harness-scene2d:test --tests '*RenderThreadSchedulerTest*' --tests '*Scene2dScenarioRunnerTest*' --tests '*Scene2dActionEndToEndTest*' :harness-lwjgl3:test --tests '*Lwjgl3MatrixRunnerTest*' --tests '*Lwjgl3ScreenCaptureTest*' :harness-mcp:test --tests '*BoundedJsonRpcFramerTest*' --tests '*RequestAdmissionTest*' --tests '*HarnessMcpServerContractTest*' --tests '*HarnessToolCatalogTest*' --no-daemon --console=plain --warning-mode=fail
+```
+
+The production end-to-end fixture asserts the publication-before-cleanup contract through a
+real registered scenario start:
+
+```bash
+xvfb-run -a ./gradlew :harness-fixtures:test --tests '*ScenarioLifecycleFixtureTest*' --no-daemon --console=plain --warning-mode=fail
 ```

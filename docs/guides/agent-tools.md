@@ -114,6 +114,14 @@ Scenario start results are closed outcomes. A second `ui_scenario_start` while a
 scenario owns the session's lease terminates immediately with `session-busy` and executes
 no lifecycle hooks for the rejected start.
 
+A scenario that times out before completing any rendered frame publishes its terminal result
+on the deadline thread, so the result may report `cleanupCompleted=false`: the render-owned
+cleanup hook is deferred and has not run yet. The session's lease stays busy — further
+`ui_scenario_start` calls keep terminating with `session-busy` — until that deferred cleanup
+drains on the render thread exactly once, after which the next acquisition proceeds. The
+render loop itself keeps rendering and advancing frames while the cleanup is pending; only
+scenario completed-frame evaluation is skipped.
+
 Remote internal errors redact stack frames and filesystem paths; full local
 detail belongs only in restricted traces. Never respond to an exhausted bound
 by disabling limits or to `LOCATOR_AMBIGUOUS` by silently choosing the first

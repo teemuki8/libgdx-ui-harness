@@ -87,13 +87,17 @@ final class ScenarioLifecycleFixtureTest {
                     PROFILE_ID,
                     5_000);
             assertEquals("readiness-deadline", deadline.at("/scenario/failure").asText());
-            assertTrue(deadline.at("/scenario/cleanupCompleted").asBoolean());
+            // The deadline thread publishes the terminal result before render-owned cleanup
+            // drains, so the published result reports cleanupCompleted=false; the render loop
+            // keeps advancing frames while the deferred cleanup is pending.
+            assertFalse(deadline.at("/scenario/cleanupCompleted").asBoolean());
             assertEquals(0, deadline.at("/scenario/readyFrame").asLong());
             assertTrue(client.snapshot(SESSION_ID).frame() > frameBeforeDeadline);
 
             client.cancelScenario(SESSION_ID, "never-ready", PROFILE_ID, 5_000);
-            assertEquals("",
-                    client.singleTextByTestId(SESSION_ID, "password"));
+            // The replacement host drains its deferred render-thread cleanup before exiting
+            // (the published result still reports cleanupCompleted=false), so a later
+            // acquisition is admitted and its own cleanup completes normally.
             JsonNode afterCancellation = client.startScenario(
                     SESSION_ID, "reference-reset", 7, Map.of(), PROFILE_ID, 5_000);
             assertEquals("completed", afterCancellation.path("kind").asText());

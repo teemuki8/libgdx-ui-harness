@@ -45,6 +45,7 @@ public final class ReplacementScenarioHost extends ApplicationAdapter {
     private Scene2dScenarioRunner runner;
     private ScheduledExecutorService deadlines;
     private CompletableFuture<?> scenario;
+    private Lifecycle lifecycle;
 
     private ReplacementScenarioHost(ScenarioRequest request, BufferedReader input, BufferedWriter output) {
         this.request = request;
@@ -87,9 +88,10 @@ public final class ReplacementScenarioHost extends ApplicationAdapter {
         ScenarioRegistry registry = new ScenarioRegistry();
         Duration maximum = "never-ready".equals(request.scenarioId())
                 ? Duration.ofMillis(100) : Duration.ofSeconds(5);
+        lifecycle = new Lifecycle();
         registry.register(new ScenarioDefinition(
                 ScenarioDefinition.SCHEMA_VERSION, request.scenarioId(), "1", APPLICATION_ID,
-                List.of(request.profileId()), 1, maximum), new Lifecycle());
+                List.of(request.profileId()), 1, maximum), lifecycle);
         deadlines = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofPlatform().name("replacement-scenario-deadline").factory());
         runner = new Scene2dScenarioRunner(registry, scheduler, clock, (delay, signal) -> {
@@ -102,8 +104,20 @@ public final class ReplacementScenarioHost extends ApplicationAdapter {
                 if (failure != null) {
                     throw new IllegalStateException("replacement scenario failed", failure);
                 }
-                output.write(ReplacementWire.result(
-                        (dev.gdx.uiharness.core.scenario.ScenarioResult) result,
+                dev.gdx.uiharness.core.scenario.ScenarioResult terminal =
+                        (dev.gdx.uiharness.core.scenario.ScenarioResult) result;
+                if (!terminal.cleanupCompleted()) {
+                    // The deadline thread published the result before render-owned cleanup
+                    // drained: run the render scheduler now so the deferred cleanup hook
+                    // executes exactly once before this host exits. If the drain did not run
+                    // it, fail the handoff instead of exiting without the cleanup.
+                    scheduler.drain();
+                    if (!lifecycle.cleanupRan()) {
+                        throw new IllegalStateException(
+                                "replacement scenario cleanup did not run before host exit");
+                    }
+                }
+                output.write(ReplacementWire.result(terminal,
                         "replacement-reconnect-" + ProcessHandle.current().pid()));
                 output.newLine();
                 output.flush();
@@ -160,6 +174,14 @@ public final class ReplacementScenarioHost extends ApplicationAdapter {
 
     private static final class Lifecycle implements ScenarioLifecycle {
         private final IdentityHashMap<ScenarioRequest, Integer> readiness = new IdentityHashMap<>();
+        private final java.util.concurrent.atomic.AtomicBoolean cleanupRan =
+                new java.util.concurrent.atomic.AtomicBoolean();
+
+        /** Reports whether the cleanup hook executed; checked before the host writes its result. */
+        boolean cleanupRan() {
+            return cleanupRan.get();
+        }
+
         @Override public void setup(ScenarioRequest request) { readiness.put(request, 0); }
         @Override public void reset(ScenarioRequest request) {}
         @Override public boolean ready(ScenarioRequest request) {
@@ -170,6 +192,9 @@ public final class ReplacementScenarioHost extends ApplicationAdapter {
             return request.scenarioId() + ":" + request.seed() + ":"
                     + request.configuration().getOrDefault("mode", "default");
         }
-        @Override public void cleanup(ScenarioRequest request) { readiness.remove(request); }
+        @Override public void cleanup(ScenarioRequest request) {
+            readiness.remove(request);
+            cleanupRan.set(true);
+        }
     }
 }
