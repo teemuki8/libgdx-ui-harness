@@ -581,6 +581,49 @@ final class Lwjgl3MatrixRunnerTest {
         }
     }
 
+    @Test void cancelledRunStillRestoresAndAdmissionOpensOnlyAfterTerminal() {
+        try (Fixture fixture = new Fixture()) {
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> first = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            assertEquals(1, fixture.applied.get());
+            assertTrue(first.toCompletableFuture().cancel(true),
+                    "the caller may cancel the returned run stage");
+
+            for (int index = 0; index < 16 && fixture.restored.get() == 0; index++) {
+                fixture.nextFrame();
+            }
+            assertTrue(first.toCompletableFuture().isCancelled());
+            assertEquals(1, fixture.applied.get(),
+                    "cancellation must not abort the upstream run");
+            assertEquals(1, fixture.restored.get(),
+                    "the upstream run must still restore after cancellation");
+
+            CompletionStage<String> next = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !next.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String nextRunId = next.toCompletableFuture().join();
+            assertEquals(MatrixCaseStatus.PASSED,
+                    fixture.runner.results(nextRunId).orElseThrow().results().getFirst().status(),
+                    "admission must open only after the cancelled run reached its terminal");
+            assertEquals(2, fixture.applied.get());
+            assertEquals(2, fixture.restored.get());
+        }
+    }
+
     @Test void matrixProductLimitRejectsBeforeAnyCaseStarts() {
         try (Fixture fixture = new Fixture()) {
             MatrixDefinition definition = new MatrixDefinition(

@@ -23,7 +23,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 
 /**
@@ -202,26 +201,36 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
         for (MatrixCase matrixCase : cases) {
             chain = chain.thenCompose(ignored -> executeCase(matrixCase, deadline, results));
         }
-        return chain.handle((ignored, failure) -> {
-            releaseRun();
-            if (failure != null) {
-                throw new CompletionException(failure);
-            }
-            return ignored;
-        }).thenApply(ignored -> {
-            MatrixReport report = new MatrixReport(runId, definition.scenarioId(),
-                    List.copyOf(results), false);
-            synchronized (lifecycle) {
-                if (!open) {
-                    throw new IllegalStateException("matrix runner is closed");
+        CompletableFuture<String> published = new CompletableFuture<>();
+        // One terminal callback attached to the internal chain: construct and retain the report,
+        // then release admission. Because the callback is not exposed to callers, cancelling the
+        // returned stage never suppresses report retention, never cancels the upstream chain, and
+        // admission opens only after the report is stored (or the chain failed).
+        chain.whenComplete((ignored, failure) -> {
+            try {
+                if (failure != null) {
+                    published.completeExceptionally(failure);
+                    return;
                 }
-                retained.put(runId, report);
-                while (retained.size() > MAX_RETAINED_RUNS) {
-                    retained.remove(retained.keySet().iterator().next());
+                MatrixReport report = new MatrixReport(runId, definition.scenarioId(),
+                        List.copyOf(results), false);
+                synchronized (lifecycle) {
+                    if (!open) {
+                        throw new IllegalStateException("matrix runner is closed");
+                    }
+                    retained.put(runId, report);
+                    while (retained.size() > MAX_RETAINED_RUNS) {
+                        retained.remove(retained.keySet().iterator().next());
+                    }
                 }
+                published.complete(runId);
+            } catch (Throwable terminalFailure) {
+                published.completeExceptionally(terminalFailure);
+            } finally {
+                releaseRun();
             }
-            return runId;
         });
+        return published;
     }
 
     private void releaseRun() {
