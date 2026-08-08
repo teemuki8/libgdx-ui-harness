@@ -2096,34 +2096,38 @@ final class ReferenceCaseApplicatorTest {
 
     @Test
     void applyRestoresPartialWindowAndLocaleStateWhenApplicationFails() {
-        Locale before = Locale.getDefault();
-        try (RenderThreadScheduler scheduler = new RenderThreadScheduler(16)) {
-            AtomicBoolean first = new AtomicBoolean(true);
-            List<MatrixWindow> appliedWindows = new ArrayList<>();
-            ReferenceCaseApplicator.CaseApplication failing = (window, locale, deadline) -> {
-                appliedWindows.add(window);
-                if (first.getAndSet(false)) {
+        Locale original = Locale.forLanguageTag("de-DE");
+        Locale.setDefault(original);
+        try {
+            try (RenderThreadScheduler scheduler = new RenderThreadScheduler(16)) {
+                AtomicBoolean first = new AtomicBoolean(true);
+                List<MatrixWindow> appliedWindows = new ArrayList<>();
+                ReferenceCaseApplicator.CaseApplication failing = (window, locale, deadline) -> {
+                    appliedWindows.add(window);
+                    // Faithfully apply the locale argument on every invocation so the restore
+                    // call is observable; only the first invocation fails.
                     Locale.setDefault(locale);
-                    throw new IllegalStateException("window resize timed out");
-                }
-            };
-            ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
-                    scheduler, clock, "desktop-restart-1280x720", failing);
-            MatrixCase matrixCase = new MatrixCase(
-                    0, new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
-                    "en-US", "", 16.0 / 9.0, List.of());
+                    if (first.getAndSet(false)) {
+                        throw new IllegalStateException("window resize timed out");
+                    }
+                };
+                ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
+                        scheduler, clock, "desktop-restart-1280x720", failing);
+                MatrixCase matrixCase = new MatrixCase(
+                        0, new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
+                        "en-US", "", 16.0 / 9.0, List.of());
 
-            try {
                 assertThrows(IllegalStateException.class,
                         () -> applicator.apply(matrixCase, "desktop-restart-1280x720"));
                 assertEquals(List.of(new MatrixWindow(1920, 1080), new MatrixWindow(1280, 720)),
                         appliedWindows,
                         "the original window must be restored after the failure");
-                assertEquals(before, Locale.getDefault(),
-                        "the original locale must be restored after the failure");
-            } finally {
-                Locale.setDefault(before);
+                assertEquals(original, Locale.getDefault(),
+                        "the original locale (distinct from the requested en-US) must be "
+                                + "restored after the failure");
             }
+        } finally {
+            Locale.setDefault(original);
         }
     }
 
