@@ -422,6 +422,7 @@ final class ReferenceCaseApplicatorTest {
         AtomicReference<RenderThreadScheduler> schedulerRef = new AtomicReference<>();
         AtomicReference<Throwable> ownerFailure = new AtomicReference<>();
         AtomicBoolean firstSubmit = new AtomicBoolean(true);
+        AtomicBoolean actualMutationRunnableEntered = new AtomicBoolean();
 
         Thread owner = Thread.ofPlatform().name("fixture-scheduler-owner").start(() -> {
             try {
@@ -450,6 +451,10 @@ final class ReferenceCaseApplicatorTest {
                     (window, command, deadline) -> {
                         CompletionStage<Void> executed = schedulerRef.get().submit(
                                 () -> {
+                                    // Hook around the ACTUAL production command invocation —
+                                    // not a reimplementation of its guard: it records whether
+                                    // the mutation runnable was ever entered.
+                                    actualMutationRunnableEntered.set(true);
                                     command.run();
                                     return null;
                                 }, deadline);
@@ -493,13 +498,36 @@ final class ReferenceCaseApplicatorTest {
             assertTrue(ownerDone.await(10, TimeUnit.SECONDS), "scheduler owner must finish");
 
             Throwable failure = assertThrows(CompletionException.class, applied::join);
-            Throwable root = failure;
-            while (root.getCause() != null) {
-                root = root.getCause();
+            Throwable composite = failure;
+            while (composite.getCause() != null) {
+                composite = composite.getCause();
             }
-            assertTrue(root.getMessage().contains("exceeded its deadline"),
-                    "the real scheduler must reject the expired queued command: "
-                            + root.getMessage());
+            String message = composite.getMessage();
+            int separator = message.indexOf("; display restore also failed");
+            assertTrue(separator > 0,
+                    "composite must carry the primary and the restore suffix: " + message);
+            String primary = message.substring(0, separator);
+            assertTrue(primary.contains("Render-thread work exceeded its deadline in the queue"),
+                    "the primary must be the queue-deadline rejection, not a late mutation: "
+                            + message);
+            assertFalse(primary.contains("NullPointerException") || primary.contains("Gdx"),
+                    "the primary must not be an NPE/Gdx failure: " + message);
+            assertTrue(message.substring(separator).contains("exceeded its deadline"),
+                    "the bounded cleanup suffix may surface its own rejection: " + message);
+            assertFalse(actualMutationRunnableEntered.get(),
+                    "the mutation runnable must never be entered: the scheduler rejected the "
+                            + "expired command before executing it");
+            // The composite preserves the primary as its first suppressed failure, with the
+            // scheduler's queue-deadline rejection at the deepest cause.
+            assertTrue(composite.getSuppressed().length >= 1,
+                    "primary failure preserved as suppressed");
+            Throwable primaryCause = composite.getSuppressed()[0];
+            while (primaryCause.getCause() != null) {
+                primaryCause = primaryCause.getCause();
+            }
+            assertTrue(primaryCause.getMessage().contains("exceeded its deadline"),
+                    "the first suppressed failure is the queue-deadline rejection: "
+                            + primaryCause.getMessage());
             assertNull(ownerFailure.get(), "scheduler owner must not fail: " + ownerFailure.get());
         } finally {
             drainRun.countDown();
