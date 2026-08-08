@@ -38,6 +38,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
     }
 
     /** Reports a terminal scenario result when READY could not be acquired. */
+    @SuppressWarnings("serial")
     public static final class AcquisitionException extends RuntimeException {
         private final ScenarioResult result;
 
