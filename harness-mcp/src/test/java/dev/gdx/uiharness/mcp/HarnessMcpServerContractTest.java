@@ -1506,7 +1506,7 @@ final class HarnessMcpServerContractTest {
             assertEquals("INTERNAL_ERROR", content.get("code"));
             String traceId = (String) content.get("traceId");
             assertNotNull(traceId);
-            assertTrue(traceId.matches("internal-[0-9a-f]{8}"));
+            assertTrue(traceId.matches("internal-[0-9a-f]{32}"));
         }
     }
 
@@ -1530,6 +1530,214 @@ final class HarnessMcpServerContractTest {
                     .reduce("", (a, b) -> a + b);
             assertFalse(text.contains("/tmp/trace.zip"));
             assertTrue(text.contains("invalid-artifact-reference"));
+        }
+    }
+
+    @Test void publisherRuntimeFailuresAreRedactedToArtifactUnavailable() {
+        String secret = "runtime_ghp_1234567890abcdef";
+        ArtifactReference.Publisher throwing = (mediaType, content) -> {
+            throw new IllegalStateException(
+                    "runtime token " + secret + " at /opt/private/key.pem");
+        };
+        byte[] png = "fake-png".getBytes(StandardCharsets.UTF_8);
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.Screenshot(
+                                Base64.getEncoder().encodeToString(png),
+                                "0".repeat(64), 1, 1, 1, 1, 1.0, 1.0)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> response, throwing, executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_screenshot", Map.of(
+                            "sessionId", "game",
+                            "maxWidth", 10, "maxHeight", 10,
+                            "maxPixels", 100, "maxPngBytes", 1024)))
+                    .block(Duration.ofSeconds(10));
+            String text = text(result);
+            assertTrue(result.isError());
+            assertFalse(text.contains(secret));
+            assertFalse(text.contains("/opt/private"));
+            assertTrue(text.contains("artifact-unavailable"));
+            Map<String, Object> content = structured(result);
+            assertEquals("INTERNAL_ERROR", content.get("code"));
+            assertFalse(String.valueOf(content).contains(secret));
+            assertInternalTraceId(content);
+        }
+    }
+
+    @Test void publisherAssertionErrorsAreRedactedToArtifactUnavailable() {
+        String secret = "assert_ghp_1234567890abcdef";
+        ArtifactReference.Publisher throwing = (mediaType, content) -> {
+            throw new AssertionError(
+                    "assert token " + secret + " at /etc/private/key.pem");
+        };
+        byte[] png = "fake-png".getBytes(StandardCharsets.UTF_8);
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.Screenshot(
+                                Base64.getEncoder().encodeToString(png),
+                                "0".repeat(64), 1, 1, 1, 1, 1.0, 1.0)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> response, throwing, executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_screenshot", Map.of(
+                            "sessionId", "game",
+                            "maxWidth", 10, "maxHeight", 10,
+                            "maxPixels", 100, "maxPngBytes", 1024)))
+                    .block(Duration.ofSeconds(10));
+            String text = text(result);
+            assertTrue(result.isError());
+            assertFalse(text.contains(secret));
+            assertFalse(text.contains("/etc/private"));
+            assertTrue(text.contains("artifact-unavailable"));
+            Map<String, Object> content = structured(result);
+            assertEquals("INTERNAL_ERROR", content.get("code"));
+            assertInternalTraceId(content);
+        }
+    }
+
+    @Test void publisherNullReceiptsAreRedactedToArtifactUnavailable() {
+        ArtifactReference.Publisher nullReceipt = (mediaType, content) -> null;
+        byte[] png = "fake-png".getBytes(StandardCharsets.UTF_8);
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.Screenshot(
+                                Base64.getEncoder().encodeToString(png),
+                                "0".repeat(64), 1, 1, 1, 1, 1.0, 1.0)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> response, nullReceipt, executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_screenshot", Map.of(
+                            "sessionId", "game",
+                            "maxWidth", 10, "maxHeight", 10,
+                            "maxPixels", 100, "maxPngBytes", 1024)))
+                    .block(Duration.ofSeconds(10));
+            String text = text(result);
+            assertTrue(result.isError());
+            assertTrue(text.contains("artifact-unavailable"));
+            Map<String, Object> content = structured(result);
+            assertEquals("INTERNAL_ERROR", content.get("code"));
+            assertInternalTraceId(content);
+        }
+    }
+
+    @Test void asyncPublisherFailuresAreUnwrappedAndRedacted() {
+        String secret = "async_ghp_1234567890abcdef";
+        CompletableFuture<HarnessResponse> unavailable = CompletableFuture.failedFuture(
+                new java.util.concurrent.CompletionException(
+                        new ArtifactReference.ArtifactUnavailableException(
+                                "async token " + secret + " at /tmp/async.pem")));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> unavailable, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_screenshot", Map.of(
+                            "sessionId", "game",
+                            "maxWidth", 10, "maxHeight", 10,
+                            "maxPixels", 100, "maxPngBytes", 1024)))
+                    .block(Duration.ofSeconds(10));
+            String text = text(result);
+            assertTrue(result.isError());
+            assertFalse(text.contains(secret));
+            assertFalse(text.contains("/tmp/async.pem"));
+            assertTrue(text.contains("artifact-unavailable"));
+            Map<String, Object> content = structured(result);
+            assertEquals("INTERNAL_ERROR", content.get("code"));
+            assertFalse(String.valueOf(content).contains(secret));
+            assertInternalTraceId(content);
+        }
+
+        CompletableFuture<HarnessResponse> invalid = CompletableFuture.failedFuture(
+                new java.util.concurrent.CompletionException(
+                        new ArtifactReference.InvalidArtifactReferenceException(
+                                "reference /etc/passwd")));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> invalid, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_trace_stop", Map.of("sessionId", "game")))
+                    .block(Duration.ofSeconds(10));
+            assertTrue(result.isError());
+            String text = text(result);
+            assertFalse(text.contains("/etc/passwd"));
+            assertTrue(text.contains("invalid-artifact-reference"));
+            assertInternalTraceId(structured(result));
+        }
+    }
+
+    @Test void artifactFailureLogsAreSafeAndCorrelated() {
+        String secret = "log_ghp_1234567890abcdef";
+        java.util.logging.Logger artifactLogger = java.util.logging.Logger.getLogger(
+                "dev.gdx.uiharness.mcp.ArtifactPublisher");
+        java.util.logging.Logger rootLogger = java.util.logging.Logger.getLogger("");
+        java.util.logging.Level previousLoggerLevel = artifactLogger.getLevel();
+        java.util.logging.Level previousRootLevel = rootLogger.getLevel();
+        List<String> records = new ArrayList<>();
+        java.util.logging.Handler capture = new java.util.logging.Handler() {
+            @Override public void publish(java.util.logging.LogRecord record) {
+                StringBuilder formatted = new StringBuilder(record.getMessage());
+                if (record.getThrown() != null) {
+                    formatted.append(" thrown=")
+                            .append(record.getThrown().getClass().getName());
+                }
+                records.add(formatted.toString());
+            }
+
+            @Override public void flush() {}
+
+            @Override public void close() {}
+        };
+        capture.setLevel(java.util.logging.Level.ALL);
+        artifactLogger.setLevel(java.util.logging.Level.ALL);
+        rootLogger.setLevel(java.util.logging.Level.ALL);
+        artifactLogger.addHandler(capture);
+        rootLogger.addHandler(capture);
+        try {
+            ArtifactReference.Publisher leaking = (mediaType, content) -> {
+                throw new ArtifactReference.ArtifactUnavailableException(
+                        "publisher token " + secret + " at /home/private/key.pem");
+            };
+            byte[] png = "fake-png".getBytes(StandardCharsets.UTF_8);
+            CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                    new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                            new HarnessResponse.Result.Screenshot(
+                                    Base64.getEncoder().encodeToString(png),
+                                    "0".repeat(64), 1, 1, 1, 1, 1.0, 1.0)));
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                    HarnessToolHandler handler = new HarnessToolHandler(
+                            ignored -> response, leaking, executor, 1024)) {
+                McpSchema.CallToolResult result = handler.handle(call(
+                        "ui_screenshot", Map.of(
+                                "sessionId", "game",
+                                "maxWidth", 10, "maxHeight", 10,
+                                "maxPixels", 100, "maxPngBytes", 1024)))
+                        .block(Duration.ofSeconds(10));
+                Map<String, Object> content = structured(result);
+                String traceId = (String) content.get("traceId");
+                assertNotNull(traceId);
+                assertTrue(traceId.matches("internal-[0-9a-f]{32}"));
+
+                List<String> boundaryRecords = records.stream()
+                        .filter(record -> record.contains("internal-"))
+                        .toList();
+                assertFalse(boundaryRecords.isEmpty());
+                assertTrue(boundaryRecords.stream()
+                        .anyMatch(record -> record.contains(traceId)));
+                for (String record : boundaryRecords) {
+                    assertFalse(record.contains(secret));
+                    assertFalse(record.contains("/home/private"));
+                    assertFalse(record.contains("ArtifactUnavailableException"));
+                    assertFalse(record.contains("thrown="));
+                }
+            }
+        } finally {
+            artifactLogger.removeHandler(capture);
+            rootLogger.removeHandler(capture);
+            artifactLogger.setLevel(previousLoggerLevel);
+            rootLogger.setLevel(previousRootLevel);
         }
     }
 
@@ -2306,6 +2514,20 @@ final class HarnessMcpServerContractTest {
     private static Map<String, Object> structured(McpSchema.CallToolResult result) {
         assertNotNull(result);
         return (Map<String, Object>) result.structuredContent();
+    }
+
+    private static String text(McpSchema.CallToolResult result) {
+        return result.content().stream()
+                .filter(McpSchema.TextContent.class::isInstance)
+                .map(McpSchema.TextContent.class::cast)
+                .map(McpSchema.TextContent::text)
+                .reduce("", (a, b) -> a + b);
+    }
+
+    private static void assertInternalTraceId(Map<String, Object> content) {
+        String traceId = (String) content.get("traceId");
+        assertNotNull(traceId);
+        assertTrue(traceId.matches("internal-[0-9a-f]{32}"));
     }
 
     @SuppressWarnings("unchecked")

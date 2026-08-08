@@ -21,9 +21,7 @@ import dev.gdx.uiharness.core.typography.GlyphRunObservation;
 import dev.gdx.uiharness.core.typography.TypographyDiagnostic;
 import dev.gdx.uiharness.core.typography.TypographyReport;
 import io.modelcontextprotocol.spec.McpSchema;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.HexFormat;
@@ -281,22 +279,18 @@ public final class HarnessToolHandler implements AutoCloseable {
         CompletionStage<HarnessProtocolService.Execution> stage;
         try {
             stage = Objects.requireNonNull(protocol.apply(request), "protocol stage");
-        } catch (RuntimeException failure) {
-            return CompletableFuture.completedFuture(diagnostic(
-                    request.requestId(), sequence, operation, arguments,
-                    DiagnosticCode.INTERNAL_ERROR,
-                    "Protocol invocation failed", List.of(), null, workflowToken));
+        } catch (RuntimeException | Error failure) {
+            return CompletableFuture.completedFuture(classifyBoundaryFailure(
+                    failure, operation, sequence, arguments,
+                    "Protocol invocation failed", workflowToken));
         }
         return Mono.fromFuture(stage.toCompletableFuture())
                 .map(execution -> toMcpResult(
                         execution.response(), execution.captures(),
                         operation, sequence, arguments, workflowToken))
-                .onErrorResume(failure -> Mono.just(
-                        diagnostic(
-                                request.requestId(), sequence, operation, arguments,
-                                DiagnosticCode.INTERNAL_ERROR,
-                                "Protocol invocation failed", List.of(), null,
-                                workflowToken)))
+                .onErrorResume(failure -> Mono.just(classifyBoundaryFailure(
+                        failure, operation, sequence, arguments,
+                        "Protocol invocation failed", workflowToken)))
                 .toFuture();
     }
 
@@ -392,24 +386,10 @@ public final class HarnessToolHandler implements AutoCloseable {
                     .addTextContent(compactText(content))
                     .isError(false)
                     .build();
-        } catch (ArtifactReference.InvalidArtifactReferenceException failure) {
-            ARTIFACT_LOGGER.log(java.util.logging.Level.FINE,
-                    "invalid artifact reference", failure);
-            return localError(
-                    operation, sequence, arguments, "invalid-artifact-reference",
-                    "Artifact reference is not transport-safe",
-                    internalTraceId(sequence, failure), workflowToken);
-        } catch (ArtifactReference.ArtifactUnavailableException failure) {
-            ARTIFACT_LOGGER.log(java.util.logging.Level.FINE,
-                    "artifact publisher unavailable or unverified", failure);
-            return localError(
-                    operation, sequence, arguments, "artifact-unavailable",
-                    "Artifact persistence is unavailable or rejected the payload",
-                    internalTraceId(sequence, failure), workflowToken);
-        } catch (RuntimeException failure) {
-            return localError(
-                    operation, sequence, arguments,
-                    "internal-error", "Result translation failed", workflowToken);
+        } catch (RuntimeException | Error failure) {
+            return classifyBoundaryFailure(
+                    failure, operation, sequence, arguments,
+                    "Result translation failed", workflowToken);
         }
     }
 
@@ -1307,31 +1287,86 @@ public final class HarnessToolHandler implements AutoCloseable {
                         .toList();
     }
 
+    private static final SecureRandom TRACE_ID_SOURCE = new SecureRandom();
+
     /**
-     * Derives an opaque, content-free correlation ID for a publisher failure so the
-     * restricted {@code dev.gdx.uiharness.mcp.ArtifactPublisher} logger record can be
-     * matched against the MCP boundary response without exposing the raw failure.
+     * Derives an opaque, random correlation ID for one boundary failure. The ID is
+     * 128 bits of {@link SecureRandom} entropy formatted as {@code internal-} plus 32
+     * lowercase hex digits, so it carries no exception class, sequence, or payload
+     * information and cannot be predicted or correlated across handler instances.
+     * The same ID is emitted in the MCP response and in the safe log record so an
+     * operator can match the restricted {@code dev.gdx.uiharness.mcp.ArtifactPublisher}
+     * log line to the boundary response without exposing the raw failure.
      */
-    private static String internalTraceId(long sequence, Throwable failure) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update(Long.toString(sequence).getBytes(StandardCharsets.UTF_8));
-            digest.update((byte) 0);
-            digest.update(failure.getClass().getName().getBytes(StandardCharsets.UTF_8));
-            return "internal-" + HexFormat.of().formatHex(digest.digest(), 0, 4);
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new AssertionError("SHA-256 is unavailable", impossible);
-        }
+    private static String internalTraceId() {
+        byte[] random = new byte[16];
+        TRACE_ID_SOURCE.nextBytes(random);
+        return "internal-" + HexFormat.of().formatHex(random);
     }
 
-    private McpSchema.CallToolResult localError(
+    /**
+     * Unwraps transport and reactive wrappers so a publisher failure that surfaced
+     * asynchronously (e.g. {@link java.util.concurrent.CompletionException} from a
+     * failed future or a reactor wrapper) is classified by its real cause.
+     */
+    private static Throwable unwrapBoundaryFailure(Throwable failure) {
+        Throwable current = failure;
+        while (current instanceof java.util.concurrent.CompletionException
+                || current instanceof java.util.concurrent.ExecutionException) {
+            Throwable cause = current.getCause();
+            if (cause == null) {
+                return current;
+            }
+            current = cause;
+        }
+        return reactor.core.Exceptions.unwrap(current);
+    }
+
+    /**
+     * Classifies a failure that crossed the publisher boundary into a stable,
+     * secret-free diagnostic. {@link ArtifactReference.InvalidArtifactReferenceException}
+     * keeps its distinct {@code invalid-artifact-reference} sub-code; every other
+     * publisher-boundary outcome maps to {@code artifact-unavailable} with an opaque
+     * trace ID. Fatal JVM errors ({@link VirtualMachineError}, {@link ThreadDeath})
+     * are rethrown — they are never converted into a public diagnostic. The raw
+     * failure is deliberately NOT passed to the logger: the {@code ARTIFACT_LOGGER}
+     * record carries only a fixed message and the trace ID, so a custom exception
+     * message, path, or secret can never reach any JUL handler. The raw failure
+     * remains reachable in-process (it is the exception currently being handled) for
+     * debugger inspection.
+     */
+    private McpSchema.CallToolResult classifyBoundaryFailure(
+            Throwable failure,
             String operation,
             long sequence,
             Map<String, Object> arguments,
-            String code,
-            String message,
+            String genericMessage,
             long[] workflowToken) {
-        return localError(operation, sequence, arguments, code, message, null, workflowToken);
+        Throwable root = unwrapBoundaryFailure(failure);
+        if (root instanceof ArtifactReference.InvalidArtifactReferenceException) {
+            String traceId = internalTraceId();
+            ARTIFACT_LOGGER.log(java.util.logging.Level.FINE,
+                    "invalid artifact reference " + traceId, (Throwable) null);
+            return localError(operation, sequence, arguments, "invalid-artifact-reference",
+                    "Artifact reference is not transport-safe", traceId, workflowToken);
+        }
+        if (root instanceof ArtifactReference.ArtifactUnavailableException) {
+            String traceId = internalTraceId();
+            ARTIFACT_LOGGER.log(java.util.logging.Level.FINE,
+                    "artifact publisher unavailable or unverified " + traceId,
+                    (Throwable) null);
+            return localError(operation, sequence, arguments, "artifact-unavailable",
+                    "Artifact persistence is unavailable or rejected the payload",
+                    traceId, workflowToken);
+        }
+        if (root instanceof VirtualMachineError || root instanceof ThreadDeath) {
+            throw (Error) root;
+        }
+        String traceId = internalTraceId();
+        ARTIFACT_LOGGER.log(java.util.logging.Level.FINE,
+                "boundary failure " + traceId, (Throwable) null);
+        return localError(operation, sequence, arguments, "internal-error",
+                genericMessage, traceId, workflowToken);
     }
 
     private McpSchema.CallToolResult localError(
