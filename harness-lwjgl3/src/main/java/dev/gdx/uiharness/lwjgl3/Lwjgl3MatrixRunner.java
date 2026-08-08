@@ -34,15 +34,48 @@ import java.util.concurrent.CompletionStage;
 public final class Lwjgl3MatrixRunner implements AutoCloseable {
     private static final int MAX_RETAINED_RUNS = 8;
 
-    /** Application-owned display parameter observer for one case. */
-    public interface DisplayObserver {
-        /** Returns the observed window, scale, DPR, and HiDPI mode for one case. */
-        DisplayObservation observe(MatrixCase matrixCase);
+    /** Host-owned display-case applicator for one case. */
+    public interface MatrixCaseApplicator {
+        /**
+         * Applies the case to the real application/window state before scenario acquisition.
+         *
+         * <p>On failure to apply (including an expired apply deadline), the implementation must
+         * restore the original display state before throwing; the runner never observes a
+         * partially applied case.
+         */
+        ApplyResult apply(MatrixCase matrixCase, String restartProfileId);
+
+        /** Restores the pre-case display state after the case reaches a terminal state. */
+        void restore();
+    }
+
+    /** Closed outcome of one case application. */
+    public sealed interface ApplyResult permits ApplyResult.Applied, ApplyResult.Unsupported {
+        /** The case was applied; {@code observed} holds the same-case observed settings. */
+        record Applied(DisplayObservation observed) implements ApplyResult {
+            /** Validates the observed settings. */
+            public Applied {
+                observed = Objects.requireNonNull(observed, "observed");
+            }
+        }
+
+        /** The case was rejected before application with a bounded reason. */
+        record Unsupported(String reason) implements ApplyResult {
+            /** Validates the bounded reason. */
+            public Unsupported {
+                reason = Objects.requireNonNull(reason, "reason");
+                if (reason.isBlank() || reason.length() > 512) {
+                    throw new IllegalArgumentException(
+                            "unsupported reason must be 1..512 characters");
+                }
+            }
+        }
     }
 
     /** Observed display parameters, distinct from requested parameters. */
     public record DisplayObservation(
-            MatrixWindow window, double uiScale, double devicePixelRatio, MatrixHiDpi hiDpiMode) {
+            MatrixWindow window, double uiScale, double devicePixelRatio, MatrixHiDpi hiDpiMode,
+            String locale, String fontSetId, String restartProfileId) {
         /** Validates observed parameters. */
         public DisplayObservation {
             Objects.requireNonNull(window, "window");
@@ -53,6 +86,21 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                 throw new IllegalArgumentException("observed devicePixelRatio must be positive");
             }
             Objects.requireNonNull(hiDpiMode, "hiDpiMode");
+            Objects.requireNonNull(locale, "locale");
+            if (locale.isBlank() || locale.length() > 256) {
+                throw new IllegalArgumentException(
+                        "observed locale must be 1..256 characters");
+            }
+            Objects.requireNonNull(fontSetId, "fontSetId");
+            if (fontSetId.length() > 256) {
+                throw new IllegalArgumentException(
+                        "observed fontSetId must be at most 256 characters");
+            }
+            Objects.requireNonNull(restartProfileId, "restartProfileId");
+            if (restartProfileId.isBlank() || restartProfileId.length() > 256) {
+                throw new IllegalArgumentException(
+                        "observed restartProfileId must be 1..256 characters");
+            }
         }
     }
 
@@ -78,7 +126,7 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
 
     private final Scene2dScenarioRunner scenarios;
     private final WaitEngine waits;
-    private final DisplayObserver display;
+    private final MatrixCaseApplicator applicator;
     private final Scenario scenario;
     private final MatrixPlanner planner = new MatrixPlanner();
     private final Object lifecycle = new Object();
@@ -90,17 +138,17 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
      *
      * @param scenarios scenario lifecycle runner supplying per-case known state
      * @param waits shared wait engine evaluating carried assertions
-     * @param display application-owned display parameter observer
+     * @param applicator host-owned display-case applicator
      * @param scenario registered scenario binding
      */
     public Lwjgl3MatrixRunner(
             Scene2dScenarioRunner scenarios,
             WaitEngine waits,
-            DisplayObserver display,
+            MatrixCaseApplicator applicator,
             Scenario scenario) {
         this.scenarios = Objects.requireNonNull(scenarios, "scenarios");
         this.waits = Objects.requireNonNull(waits, "waits");
-        this.display = Objects.requireNonNull(display, "display");
+        this.applicator = Objects.requireNonNull(applicator, "applicator");
         this.scenario = Objects.requireNonNull(scenario, "scenario");
     }
 
@@ -165,6 +213,43 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                     List.of(), List.of(), List.of(), ""));
             return CompletableFuture.completedFuture(null);
         }
+        ApplyResult applied;
+        try {
+            applied = applicator.apply(matrixCase, scenario.profileId());
+        } catch (RuntimeException failure) {
+            results.add(new MatrixCaseResult(
+                    dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
+                    MatrixCaseStatus.FAILED,
+                    null, null, null, null, null, null, null,
+                    List.of(), List.of(), List.of(),
+                    bounded("case application failed: " + rootMessage(failure))));
+            return CompletableFuture.completedFuture(null);
+        }
+        if (applied instanceof ApplyResult.Unsupported unsupported) {
+            results.add(new MatrixCaseResult(
+                    dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
+                    MatrixCaseStatus.UNSUPPORTED,
+                    null, null, null, null, null, null, null,
+                    List.of(), List.of(), List.of(),
+                    bounded("unsupported case: " + unsupported.reason())));
+            return CompletableFuture.completedFuture(null);
+        }
+        DisplayObservation observed = ((ApplyResult.Applied) applied).observed();
+        String mismatch = requestedMismatch(matrixCase, observed, scenario.profileId());
+        if (mismatch != null) {
+            // The case was applied but does not match the request: restore the original display
+            // state so the next case starts clean, then record the distinct terminal status.
+            applicator.restore();
+            results.add(new MatrixCaseResult(
+                    dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
+                    MatrixCaseStatus.MISAPPLIED,
+                    observed.window(), observed.uiScale(), observed.devicePixelRatio(),
+                    observed.hiDpiMode(), observed.locale(), observed.fontSetId(),
+                    observed.restartProfileId(),
+                    List.of(), List.of(), List.of(),
+                    bounded("requested state not applied: " + mismatch)));
+            return CompletableFuture.completedFuture(null);
+        }
         ScenarioRequest request = new ScenarioRequest(
                 dev.gdx.uiharness.core.scenario.ScenarioDefinition.SCHEMA_VERSION,
                 scenario.scenarioId(),
@@ -174,8 +259,9 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                 deadline);
         return scenarios.acquire(request, scenario.applicationId(),
                 scenario.processId(), scenario.sessionId())
-                .thenCompose(lease -> runAssertions(matrixCase, lease, deadline))
+                .thenCompose(lease -> runAssertions(matrixCase, lease, deadline, observed))
                 .handle((result, failure) -> {
+                    applicator.restore();
                     if (failure != null) {
                         results.add(new MatrixCaseResult(
                                 dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
@@ -190,8 +276,46 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                 });
     }
 
+    private static String requestedMismatch(
+            MatrixCase matrixCase, DisplayObservation observed, String requestedRestartProfile) {
+        if (!observed.window().equals(matrixCase.window())) {
+            return "window requested=" + matrixCase.window()
+                    + " observed=" + observed.window();
+        }
+        if (!nearlyEqual(observed.uiScale(), matrixCase.uiScale())) {
+            return "uiScale requested=" + matrixCase.uiScale()
+                    + " observed=" + observed.uiScale();
+        }
+        if (!nearlyEqual(observed.devicePixelRatio(), matrixCase.devicePixelRatio())) {
+            return "devicePixelRatio requested=" + matrixCase.devicePixelRatio()
+                    + " observed=" + observed.devicePixelRatio();
+        }
+        if (observed.hiDpiMode() != matrixCase.hiDpiMode()) {
+            return "hiDpiMode requested=" + matrixCase.hiDpiMode()
+                    + " observed=" + observed.hiDpiMode();
+        }
+        if (!observed.locale().equals(matrixCase.locale())) {
+            return "locale requested=" + matrixCase.locale()
+                    + " observed=" + observed.locale();
+        }
+        if (!observed.fontSetId().equals(matrixCase.fontSetId())) {
+            return "fontSetId requested=" + matrixCase.fontSetId()
+                    + " observed=" + observed.fontSetId();
+        }
+        if (!observed.restartProfileId().equals(requestedRestartProfile)) {
+            return "restartProfile requested=" + requestedRestartProfile
+                    + " observed=" + observed.restartProfileId();
+        }
+        return null;
+    }
+
+    private static boolean nearlyEqual(double first, double second) {
+        return Math.abs(first - second) <= 1e-9;
+    }
+
     private CompletionStage<MatrixCaseResult> runAssertions(
-            MatrixCase matrixCase, Scene2dScenarioRunner.Lease lease, Deadline deadline) {
+            MatrixCase matrixCase, Scene2dScenarioRunner.Lease lease, Deadline deadline,
+            DisplayObservation observed) {
         var passed = new ArrayList<Integer>();
         var failed = new ArrayList<Integer>();
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
@@ -220,11 +344,12 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                         released = lease.release();
                     } catch (RuntimeException failure) {
                         return CompletableFuture.completedFuture(
-                                terminalCase(matrixCase, passed, failed, assertionFailure, failure));
+                                terminalCase(matrixCase, passed, failed,
+                                        assertionFailure, failure, observed));
                     }
                     return released.handle((releasedResult, releaseFailure) ->
                             terminalCase(matrixCase, passed, failed, assertionFailure,
-                                    releaseFailure(releasedResult, releaseFailure)));
+                                    releaseFailure(releasedResult, releaseFailure), observed));
                 });
     }
 
@@ -244,8 +369,8 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
             List<Integer> passed,
             List<Integer> failed,
             Throwable assertionFailure,
-            Throwable releaseFailure) {
-        DisplayObservation observed = display.observe(matrixCase);
+            Throwable releaseFailure,
+            DisplayObservation observed) {
         boolean succeeded = assertionFailure == null && releaseFailure == null && failed.isEmpty();
         MatrixCaseStatus status = succeeded ? MatrixCaseStatus.PASSED : MatrixCaseStatus.FAILED;
         String evidence = "";
@@ -269,7 +394,9 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                 observed.uiScale(),
                 observed.devicePixelRatio(),
                 observed.hiDpiMode(),
-                null, null, null,
+                observed.locale(),
+                observed.fontSetId(),
+                observed.restartProfileId(),
                 List.copyOf(passed),
                 List.copyOf(failed),
                 List.of(),

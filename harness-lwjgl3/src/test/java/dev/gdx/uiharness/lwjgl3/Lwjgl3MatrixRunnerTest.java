@@ -72,10 +72,132 @@ final class Lwjgl3MatrixRunnerTest {
                         result.observedWindow());
                 assertEquals(1.0, result.observedUiScale());
                 assertEquals(MatrixHiDpi.LOGICAL, result.observedHiDpiMode());
+                assertEquals("en", result.observedLocale());
+                assertEquals("desktop", result.observedRestartProfileId());
                 assertEquals(List.of(0), result.passedAssertions());
             }
             assertEquals(2, fixture.acquisitions.get());
-            assertEquals(2, fixture.observed.get());
+            assertEquals(2, fixture.applied.get());
+            assertEquals(2, fixture.restored.get());
+        }
+    }
+
+    @Test void unsupportedCaseIsTypedSkipWithoutScenarioAcquisition() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.unsupportedReason = "unsupported devicePixelRatio: 2.0";
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            String runId = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline())
+                    .toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            var result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.UNSUPPORTED, result.status());
+            assertEquals(0, result.passedAssertions().size());
+            assertEquals(0, result.failedAssertions().size());
+            assertEquals(0, fixture.acquisitions.get());
+            assertEquals(1, fixture.applied.get());
+            assertEquals(0, fixture.restored.get());
+            assertTrue(result.evidence().contains("devicePixelRatio"));
+        }
+    }
+
+    @Test void requestedObservedMismatchIsDistinctTerminalWithoutAssertions() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.observedUiScaleOverride = 2.0;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            String runId = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline())
+                    .toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            var result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.MISAPPLIED, result.status());
+            assertEquals(0, result.passedAssertions().size());
+            assertEquals(0, fixture.acquisitions.get());
+            assertEquals(1, fixture.restored.get(),
+                    "a misapplied case must restore the original display state");
+            assertTrue(result.evidence().contains("uiScale requested=1.0 observed=2.0"));
+        }
+    }
+
+    @Test void hostRestartProfileMismatchIsDistinctTerminalWithoutAssertions() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.observedRestartProfileOverride = "other-profile";
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            String runId = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline())
+                    .toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            var result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.MISAPPLIED, result.status());
+            assertEquals(0, result.passedAssertions().size());
+            assertEquals(0, fixture.acquisitions.get());
+            assertEquals(1, fixture.restored.get());
+            assertTrue(result.evidence().contains(
+                    "restartProfile requested=desktop observed=other-profile"));
+        }
+    }
+
+    @Test void expiredDeadlineMarksCasesUnstartedWithoutApplying() {
+        try (Fixture fixture = new Fixture()) {
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720), new MatrixWindow(1920, 1080)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of());
+            Deadline expired = Deadline.after(fixture.clock, Duration.ZERO);
+
+            String runId = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), expired)
+                    .toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            assertEquals(2, report.results().size());
+            for (var result : report.results()) {
+                assertEquals(MatrixCaseStatus.UNSTARTED, result.status());
+            }
+            assertEquals(0, fixture.applied.get());
+            assertEquals(0, fixture.restored.get());
         }
     }
 
@@ -319,7 +441,45 @@ final class Lwjgl3MatrixRunnerTest {
         final AtomicInteger acquisitions = new AtomicInteger();
         final AtomicInteger releases = new AtomicInteger();
         final AtomicInteger releasesAtNextAcquire = new AtomicInteger();
-        final AtomicInteger observed = new AtomicInteger();
+        final AtomicInteger applied = new AtomicInteger();
+        final AtomicInteger restored = new AtomicInteger();
+        String unsupportedReason;
+        Double observedUiScaleOverride;
+        String observedRestartProfileOverride;
+        /** Host-owned active restart profile, never derived from the runner's request. */
+        final String hostRestartProfile = "desktop";
+        final Lwjgl3MatrixRunner.MatrixCaseApplicator applicator =
+                new Lwjgl3MatrixRunner.MatrixCaseApplicator() {
+                    @Override public Lwjgl3MatrixRunner.ApplyResult apply(
+                            dev.gdx.uiharness.core.matrix.MatrixCase matrixCase,
+                            String restartProfileId) {
+                        applied.incrementAndGet();
+                        if (unsupportedReason != null) {
+                            return new Lwjgl3MatrixRunner.ApplyResult.Unsupported(
+                                    unsupportedReason);
+                        }
+                        return new Lwjgl3MatrixRunner.ApplyResult.Applied(
+                                new Lwjgl3MatrixRunner.DisplayObservation(
+                                        matrixCase.window(),
+                                        observedUiScaleOverride != null
+                                                ? observedUiScaleOverride : matrixCase.uiScale(),
+                                        matrixCase.devicePixelRatio(),
+                                        matrixCase.hiDpiMode(),
+                                        matrixCase.locale(),
+                                        matrixCase.fontSetId(),
+                                        observedRestartProfileOverride != null
+                                                ? observedRestartProfileOverride
+                                                : hostRestartProfile));
+                    }
+
+                    @Override public void restore() {
+                        restored.incrementAndGet();
+                        // Each case ends with a fresh host state, mirroring the previous
+                        // per-case observer reset so ordering tests stay deterministic.
+                        saveAbsent = false;
+                        mismatchedSnapshots = false;
+                    }
+                };
         final ManualFrames frames = new ManualFrames();
         final ManualDeadlines deadlines = new ManualDeadlines();
         final Scene2dScenarioRunner scenarios;
@@ -383,15 +543,9 @@ final class Lwjgl3MatrixRunnerTest {
             WaitEngine waits = new WaitEngine(
                     this::snapshot, assertionSnapshots, locators, clock, frames,
                     deadlines);
-            runner = new Lwjgl3MatrixRunner(scenarios, waits, matrixCase -> {
-                observed.incrementAndGet();
-                saveAbsent = false;
-                mismatchedSnapshots = false;
-                return new Lwjgl3MatrixRunner.DisplayObservation(
-                        matrixCase.window(), matrixCase.uiScale(),
-                        matrixCase.devicePixelRatio(), matrixCase.hiDpiMode());
-            }, new Lwjgl3MatrixRunner.Scenario(
-                    "matrix", 7, Map.of(), "desktop", "app", "process", "session"));
+            runner = new Lwjgl3MatrixRunner(scenarios, waits, applicator,
+                    new Lwjgl3MatrixRunner.Scenario(
+                            "matrix", 7, Map.of(), "desktop", "app", "process", "session"));
         }
 
         Deadline deadline() {
