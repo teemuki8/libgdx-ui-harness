@@ -368,14 +368,17 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
             }
             DeadlineScheduler.Cancellation scheduled =
                     deadlines.schedule(delay, this::deadlineReached);
+            boolean cancelScheduled;
             synchronized (this) {
-                if (phase == RequestPhase.TERMINAL) {
-                    scheduled.cancel();
-                } else if (deadlineCancellation == null) {
+                if (phase != RequestPhase.TERMINAL && deadlineCancellation == null) {
                     deadlineCancellation = scheduled;
+                    cancelScheduled = false;
                 } else {
-                    scheduled.cancel();
+                    cancelScheduled = true;
                 }
+            }
+            if (cancelScheduled) {
+                scheduled.cancel();
             }
         }
 

@@ -280,6 +280,37 @@ final class Scene2dActionEndToEndTest {
         }
     }
 
+    @Test void reconciliationCancellationNeverRunsWhileHoldingTheRequestMonitor() {
+        ManualClock manual = new ManualClock();
+        AtomicBoolean cancellationInvoked = new AtomicBoolean();
+        AtomicReference<Boolean> cancellationHeldMonitor = new AtomicReference<>();
+        CompletableFuture<?>[] request = new CompletableFuture<?>[1];
+        DeadlineScheduler inlineFiringScheduler = (delay, signal) -> {
+            manual.advance(delay); // simulate the delay elapsing before an inline zero-delay fire
+            signal.run(); // claims the timeout before the install-or-cancel reconcile runs
+            return () -> {
+                cancellationInvoked.set(true);
+                cancellationHeldMonitor.set(Thread.holdsLock(request[0]));
+            };
+        };
+        try (Fixture fixture = new Fixture(
+                Scene2dTestSupport.stage(), null, inlineFiringScheduler)) {
+            fixture.button("reconcile", "Reconcile", 100, 100);
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("reconcile"), Deadline.after(manual, Duration.ofSeconds(1)));
+            request[0] = click.toCompletableFuture();
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch arms; the inline signal claims; the reconcile cancels
+
+            assertTrue(cancellationInvoked.get(),
+                    "the in-flight schedule token must be cancelled by the reconcile");
+            assertTrue(click.toCompletableFuture().isCompletedExceptionally());
+            assertEquals(ErrorCode.TIMEOUT, failure(click).code());
+            assertFalse(cancellationHeldMonitor.get(),
+                    "reconciliation must cancel the token only after leaving the request monitor");
+        }
+    }
+
     @Test void inlineDeadlineSignalNeverCompletesTheFutureWhileHoldingTheRequestMonitor() {
         ManualClock manual = new ManualClock();
         try (Fixture fixture = new Fixture(

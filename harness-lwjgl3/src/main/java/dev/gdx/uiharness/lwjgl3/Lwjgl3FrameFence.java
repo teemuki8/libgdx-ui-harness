@@ -203,16 +203,23 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
         /**
          * Arms one deadline signal for the queued command. A frame may claim the command before
          * the registration lands; the claim under {@link #lifecycle} then cancels it immediately.
+         * The token's {@link Cancellation} is invoked only after leaving the monitor so a
+         * synchronous cancellation never runs under the lifecycle lock.
          */
         void armDeadline() {
             DeadlineScheduler.Cancellation scheduled =
                     deadlines.schedule(deadline.remaining(), this::deadlineReached);
+            boolean cancelScheduled;
             synchronized (lifecycle) {
-                if (state != CommandState.QUEUED) {
-                    scheduled.cancel();
-                } else {
+                if (state == CommandState.QUEUED && deadlineCancellation == null) {
                     deadlineCancellation = scheduled;
+                    cancelScheduled = false;
+                } else {
+                    cancelScheduled = true;
                 }
+            }
+            if (cancelScheduled) {
+                scheduled.cancel();
             }
         }
 
