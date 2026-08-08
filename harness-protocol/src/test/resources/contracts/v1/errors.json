@@ -8,6 +8,7 @@
   {"name":"not-actionable","value":{"code":"not-actionable","message":"not actionable","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{},"suggestions":[]}},
   {"name":"timeout","value":{"code":"timeout","message":"timeout","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{},"suggestions":[]}},
   {"name":"render-thread-failure","value":{"code":"render-thread-failure","message":"render thread failure","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{},"suggestions":[]}},
+  {"name":"render-thread-violation","value":{"code":"render-thread-violation","message":"Scene2D session access requires the owning render thread","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{"operation":"snapshot"},"suggestions":[]}},
   {"name":"capture-failure","value":{"code":"capture-failure","message":"capture failure","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{},"suggestions":[]}},
   {"name":"limit-exceeded","value":{"code":"limit-exceeded","message":"limit exceeded","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{},"suggestions":[]}},
   {"name":"protocol-version-mismatch","value":{"code":"protocol-version-mismatch","message":"protocol version mismatch","requestId":"req-error","sessionId":"game","elapsedMillis":0,"candidates":[],"details":{},"suggestions":[]}},
