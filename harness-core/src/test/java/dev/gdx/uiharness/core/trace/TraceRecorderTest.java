@@ -1,5 +1,6 @@
 package dev.gdx.uiharness.core.trace;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -699,6 +700,107 @@ final class TraceRecorderTest {
                 }
             }
         }
+    }
+
+    @Test void recorderManifestCarriesVerifiedArchiveIdentity() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-receipt", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-receipt", "request-1", 1, snapshot(1, 1), Map.of()));
+
+        TraceManifest manifest = recorder.stop();
+
+        assertEquals(sha256(Files.readAllBytes(manifest.archive())),
+                manifest.archiveSha256());
+        assertEquals(Files.size(manifest.archive()), manifest.archiveSize());
+    }
+
+    @Test void mutableUserNameDoesNotAffectEffectivePrincipal() throws Exception {
+        String original = System.getProperty("user.name");
+        try {
+            System.setProperty("user.name", "attacker-chosen-name");
+            TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+            recorder.start("session-user", TraceRecorder.Limits.defaults());
+            recorder.record(TraceEvent.commandStarted(
+                    "session-user", "request-1", 1, snapshot(1, 1), Map.of()));
+
+            TraceManifest manifest = recorder.stop();
+
+            assertTrue(manifest.complete());
+        } finally {
+            System.setProperty("user.name", original);
+        }
+    }
+
+    @Test void finalPathReplacedWithDifferentValidTraceIsRejectedByReceiptConsumer()
+            throws Exception {
+        TraceRecorder original = new TraceRecorder(
+                temporaryDirectory.resolve("original"), Clock.systemUTC());
+        original.start("session-original", TraceRecorder.Limits.defaults());
+        original.record(TraceEvent.commandStarted(
+                "session-original", "request-1", 1, snapshot(1, 1), Map.of()));
+        TraceManifest receipt = original.stop();
+
+        TraceRecorder other = new TraceRecorder(
+                temporaryDirectory.resolve("other"), Clock.systemUTC());
+        other.start("session-other", TraceRecorder.Limits.defaults());
+        other.record(TraceEvent.commandStarted(
+                "session-other", "request-2", 2, snapshot(2, 2), Map.of()));
+        Path otherArchive = other.stop().archive();
+
+        Files.delete(receipt.archive());
+        Files.copy(otherArchive, receipt.archive()); // a different VALID trace at the receipt path
+
+        assertDoesNotThrow(() -> new TraceReplayer().load(receipt.archive()));
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(receipt.archive(),
+                        receipt.archiveSha256(), receipt.archiveSize()));
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("receipt"));
+    }
+
+    @Test void twoIndependentCleanupFailuresAreBothRetained() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                (step, path) -> {
+                    if (step == TraceRecorder.FinalizationInterceptor.Step.AFTER_FINALIZE
+                            && path.getFileName().toString().endsWith(".zip")
+                            && !path.getFileName().toString().endsWith(".zip.tmp")) {
+                        try (var paths = Files.walk(temporaryDirectory)) {
+                            for (Path child : paths.toList()) {
+                                if (child.getFileName().toString().equals("events.ndjson")) {
+                                    Files.delete(child);
+                                    Files.writeString(child, "substituted-events",
+                                            StandardCharsets.UTF_8);
+                                } else if (child.getParent() != null
+                                        && child.getParent().getFileName().toString()
+                                                .equals("artifacts")
+                                        && Files.isRegularFile(child,
+                                                java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                                    Files.delete(child);
+                                    Files.writeString(child, "substituted-artifact",
+                                            StandardCharsets.UTF_8);
+                                }
+                            }
+                        }
+                    }
+                });
+        recorder.start("session-two-fail", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-two-fail", "request-1", 1, snapshot(1, 1), Map.of()));
+        recorder.addArtifact("image/png",
+                new ByteArrayInputStream("png".getBytes(StandardCharsets.UTF_8)));
+
+        HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+        assertEquals(ErrorCode.INTERNAL_ERROR, failure.code());
+        List<String> messages = java.util.Arrays.stream(failure.getSuppressed())
+                .map(Throwable::getMessage).toList();
+        assertTrue(messages.size() >= 2,
+                "both independent cleanup failures must be retained: " + messages);
+        assertTrue(messages.stream().anyMatch(message -> message.contains("events.ndjson")),
+                "events cleanup failure must be retained: " + messages);
+        assertTrue(messages.stream().anyMatch(message -> !message.contains("events.ndjson")),
+                "artifact cleanup failure must be retained: " + messages);
     }
 
     @Test void coreTraceRuntimeRemainsJdkOnly() {

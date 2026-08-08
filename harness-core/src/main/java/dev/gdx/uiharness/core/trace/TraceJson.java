@@ -22,6 +22,11 @@ final class TraceJson {
             "sessionId", "startedAt", "endedAt", "complete", "terminationReason",
             "eventCount", "artifactCount", "uncompressedBytes", "version",
             "eventsSha256", "artifacts");
+    /** v2 fields plus the optional archive identity receipt fields (absent => unverified legacy). */
+    private static final Set<String> MANIFEST_FIELDS_V2_OPTIONAL = Set.of(
+            "sessionId", "startedAt", "endedAt", "complete", "terminationReason",
+            "eventCount", "artifactCount", "uncompressedBytes", "version",
+            "eventsSha256", "artifacts", "archiveSha256", "archiveSize");
     private static final int MAX_EVENT_NESTING = 1;
     private static final int MAX_MANIFEST_NESTING = 2;
 
@@ -128,6 +133,13 @@ final class TraceJson {
             }
             json.append('}');
         }
+        if (manifest.schemaVersion().equals(TraceManifest.V2)
+                && manifest.archiveSha256() != null) {
+            comma(json);
+            string(json, "archiveSha256", manifest.archiveSha256());
+            comma(json);
+            number(json, "archiveSize", manifest.archiveSize());
+        }
         json.append('}');
         return json.toString().getBytes(StandardCharsets.UTF_8);
     }
@@ -136,8 +148,16 @@ final class TraceJson {
             throws IOException {
         Map<String, Object> object = parse(bytes, MAX_MANIFEST_NESTING);
         boolean v2 = object.containsKey("version");
-        requireExactFields(object,
-                v2 ? MANIFEST_FIELDS_V2 : MANIFEST_FIELDS_V1, "manifest");
+        if (v2) {
+            // The archive identity fields are optional-in-JSON: absent means the
+            // archive predates receipt binding (unverified legacy).
+            if (!object.keySet().containsAll(MANIFEST_FIELDS_V2)
+                    || !MANIFEST_FIELDS_V2_OPTIONAL.containsAll(object.keySet())) {
+                throw new IOException("manifest fields do not match the trace schema");
+            }
+        } else {
+            requireExactFields(object, MANIFEST_FIELDS_V1, "manifest");
+        }
         try {
             String version = v2 ? requiredString(object, "version") : TraceManifest.V1;
             if (v2 && !version.equals(TraceManifest.V2)) {
@@ -146,6 +166,9 @@ final class TraceJson {
             String eventsSha256 = v2 ? requiredString(object, "eventsSha256") : null;
             Map<String, TraceManifest.ArtifactBinding> artifacts =
                     v2 ? artifactBindings(object) : Map.of();
+            String archiveSha256 = v2 ? nullableString(object, "archiveSha256") : null;
+            long archiveSize = v2 && object.containsKey("archiveSize")
+                    ? requiredLong(object, "archiveSize") : -1;
             return new TraceManifest(
                     archive,
                     requiredString(object, "sessionId"),
@@ -158,7 +181,9 @@ final class TraceJson {
                     requiredLong(object, "uncompressedBytes"),
                     version,
                     eventsSha256,
-                    artifacts);
+                    artifacts,
+                    archiveSha256,
+                    archiveSize);
         } catch (IllegalArgumentException | java.time.DateTimeException exception) {
             throw new IOException("invalid manifest fields", exception);
         }

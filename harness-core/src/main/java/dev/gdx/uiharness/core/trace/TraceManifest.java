@@ -20,7 +20,9 @@ public record TraceManifest(
         long uncompressedBytes,
         String schemaVersion,
         String eventsSha256,
-        Map<String, ArtifactBinding> artifacts) {
+        Map<String, ArtifactBinding> artifacts,
+        String archiveSha256,
+        long archiveSize) {
     public static final String V1 = "trace-manifest/v1";
     public static final String V2 = "trace-manifest/v2";
     /** Upper bound on artifact bindings carried by one v2 manifest. */
@@ -74,8 +76,21 @@ public record TraceManifest(
                             "artifact binding key must match its sha256");
                 }
             }
+            if (archiveSha256 == null) {
+                if (archiveSize != -1) {
+                    throw new IllegalArgumentException(
+                            "legacy v2 manifests must carry archiveSize -1");
+                }
+            } else {
+                requireSha256(archiveSha256, "archiveSha256");
+                if (archiveSize < 0) {
+                    throw new IllegalArgumentException(
+                            "archiveSize must be non-negative");
+                }
+            }
         } else {
-            if (eventsSha256 != null || artifacts != null && !artifacts.isEmpty()) {
+            if (eventsSha256 != null || artifacts != null && !artifacts.isEmpty()
+                    || archiveSha256 != null || archiveSize != -1) {
                 throw new IllegalArgumentException(
                         "v1 manifests carry no digest bindings");
             }
@@ -83,7 +98,9 @@ public record TraceManifest(
         }
     }
 
-    /** Builds a v1 manifest without digest bindings (released constructor shape). */
+    /**
+     * Builds a v1 manifest without digest bindings (released constructor shape).
+     */
     public TraceManifest(
             Path archive,
             String sessionId,
@@ -95,7 +112,29 @@ public record TraceManifest(
             long artifactCount,
             long uncompressedBytes) {
         this(archive, sessionId, startedAt, endedAt, complete, terminationReason,
-                eventCount, artifactCount, uncompressedBytes, V1, null, null);
+                eventCount, artifactCount, uncompressedBytes, V1, null, null, null, -1);
+    }
+
+    /**
+     * Builds a v2 manifest whose archive identity is blank (unverified legacy);
+     * the recorder's returned manifest carries the verified archive digest and size.
+     */
+    public TraceManifest(
+            Path archive,
+            String sessionId,
+            Instant startedAt,
+            Instant endedAt,
+            boolean complete,
+            String terminationReason,
+            long eventCount,
+            long artifactCount,
+            long uncompressedBytes,
+            String schemaVersion,
+            String eventsSha256,
+            Map<String, ArtifactBinding> artifacts) {
+        this(archive, sessionId, startedAt, endedAt, complete, terminationReason,
+                eventCount, artifactCount, uncompressedBytes, schemaVersion,
+                eventsSha256, artifacts, null, -1);
     }
 
     byte[] toJson() {

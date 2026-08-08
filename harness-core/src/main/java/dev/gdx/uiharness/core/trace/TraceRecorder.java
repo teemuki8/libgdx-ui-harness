@@ -25,6 +25,8 @@ import java.nio.file.attribute.AclFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.FileOwnerAttributeView;
+import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserPrincipal;
@@ -63,6 +65,7 @@ public final class TraceRecorder implements AutoCloseable {
     private final Path root;
     private final Object rootFileKey;
     private final PermissionMode permissionMode;
+    private final UserPrincipal trustedPrincipal;
     private final Clock clock;
     private final FinalizationInterceptor interceptor;
     private final Map<String, ArtifactInfo> artifacts = new LinkedHashMap<>();
@@ -118,25 +121,56 @@ public final class TraceRecorder implements AutoCloseable {
         this.interceptor = Objects.requireNonNull(interceptor, "interceptor");
         Objects.requireNonNull(root, "root");
         this.permissionMode = detectPermissionMode(root.getFileSystem());
-        try {
-            verifyTrustedAncestorChain(root, permissionMode);
-        } catch (IOException exception) {
-            throw new IllegalArgumentException("trace root ancestry is not trusted", exception);
-        }
         this.root = initializeRoot(root, permissionMode);
         try {
-            requireExactRootPermissions(this.root, permissionMode);
             this.rootFileKey = requireFileKey(this.root, "trace root");
             // Secure directory streams are mandatory: recording fails closed when the
             // provider cannot anchor every child operation to a verified directory handle.
             try (SecureDirectoryStream<Path> stream = openSecureStreamOrFail(
                     this.root, this.rootFileKey, "trace root")) {
-                // capability and handle identity proven
+                // The effective filesystem principal is derived from a probe created
+                // under the exact root handle (never from the mutable user.name).
+                this.trustedPrincipal = deriveEffectivePrincipal(stream);
             }
+            requireExactRootPermissions(this.root, permissionMode, this.trustedPrincipal);
+            verifyTrustedAncestorChain(root, permissionMode, this.trustedPrincipal);
         } catch (IOException exception) {
             throw new IllegalArgumentException(
                     "trace root identity or access contract cannot be verified", exception);
         }
+    }
+
+    /**
+     * Creates an unpredictable probe file under the exact root handle, reads its
+     * owner through the same handle, and key-check-deletes it. This proves the
+     * effective creator principal under exact root access without consulting the
+     * mutable {@code user.name} system property.
+     */
+    private UserPrincipal deriveEffectivePrincipal(
+            SecureDirectoryStream<Path> rootStream) throws IOException {
+        String probe = ".principal-probe-" + randomHex(16);
+        Object probeKey;
+        UserPrincipal probeOwner;
+        SeekableByteChannel probeChannel = rootStream.newByteChannel(Path.of(probe),
+                Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
+                ownerOnlyFileAttribute());
+        try {
+            probeOwner = rootStream.getFileAttributeView(Path.of(probe),
+                    FileOwnerAttributeView.class, LinkOption.NOFOLLOW_LINKS).getOwner();
+            probeKey = rootStream.getFileAttributeView(Path.of(probe),
+                    BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
+                    .readAttributes().fileKey();
+        } finally {
+            probeChannel.close();
+        }
+        List<Throwable> failures = new ArrayList<>();
+        deleteChildChecked(rootStream, probe, probeKey, true, failures);
+        if (!failures.isEmpty()) {
+            IOException failure = new IOException("unable to remove principal probe");
+            failures.forEach(failure::addSuppressed);
+            throw failure;
+        }
+        return probeOwner;
     }
 
     /** Owner-only enforcement mode for the file system hosting the trace root. */
@@ -155,15 +189,14 @@ public final class TraceRecorder implements AutoCloseable {
     }
 
     /**
-     * Establishes, before any mutation, that every ancestor of the configured root up
-     * to a trust boundary is a NOFOLLOW real directory that cannot be replaced or
-     * redirected by another principal. Sticky world-writable directories (for example
+     * Establishes, before any recording mutation, that every ancestor of the configured
+     * root up to a trust boundary is a NOFOLLOW real directory that cannot be replaced
+     * or redirected by another principal. Sticky world-writable directories (for example
      * /tmp) and directories owned by another principal that the process cannot write
      * are trust boundaries: their entries are owner-protected or outside our reach.
      */
-    private static void verifyTrustedAncestorChain(Path configuredRoot, PermissionMode mode)
-            throws IOException {
-        UserPrincipal principal = processPrincipal();
+    private static void verifyTrustedAncestorChain(Path configuredRoot, PermissionMode mode,
+            UserPrincipal trustedPrincipal) throws IOException {
         Path current = configuredRoot.toAbsolutePath().normalize().getParent();
         while (current != null) {
             if (Files.isSymbolicLink(current)) {
@@ -177,7 +210,8 @@ public final class TraceRecorder implements AutoCloseable {
                 break;
             }
             if (mode == PermissionMode.POSIX) {
-                if (!Files.getOwner(current, LinkOption.NOFOLLOW_LINKS).equals(principal)) {
+                if (!Files.getOwner(current, LinkOption.NOFOLLOW_LINKS)
+                        .equals(trustedPrincipal)) {
                     if (Files.isWritable(current)) {
                         throw new IOException(
                                 "trace path component is a shared writable directory: "
@@ -194,7 +228,12 @@ public final class TraceRecorder implements AutoCloseable {
                                     + current);
                 }
             } else {
-                verifyAclAncestor(current, principal);
+                // ACL ancestors: reject ANY non-owner write/delete-child ACE, owned or not.
+                verifyAclAncestor(current, trustedPrincipal);
+                if (!Files.getOwner(current, LinkOption.NOFOLLOW_LINKS)
+                        .equals(trustedPrincipal)) {
+                    break; // owned by another principal without write ACEs: boundary
+                }
             }
             current = current.getParent();
         }
@@ -231,41 +270,23 @@ public final class TraceRecorder implements AutoCloseable {
                 throw new IOException(
                         "trace path component carries a deny ACL entry: " + directory);
             }
-        }
-        if (!view.getOwner().equals(principal)) {
-            if (aclGrantsWriteToNonOwner(view)) {
+            if (entry.type() == AclEntryType.ALLOW
+                    && !entry.principal().equals(principal)
+                    && entry.permissions().stream()
+                            .anyMatch(TraceRecorder::isAclWriteOrDeleteChild)) {
                 throw new IOException(
-                        "trace path component is writable by other principals: "
+                        "trace path component grants write to a non-owner principal: "
                                 + directory);
             }
-            // otherwise a trust boundary above our reach
         }
     }
 
-    private static boolean aclGrantsWriteToNonOwner(AclFileAttributeView view)
-            throws IOException {
-        UserPrincipal owner = view.getOwner();
-        for (AclEntry entry : view.getAcl()) {
-            if (entry.type() == AclEntryType.ALLOW
-                    && !entry.principal().equals(owner)
-                    && entry.permissions().stream().anyMatch(TraceRecorder::isAclWrite)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean isAclWrite(AclEntryPermission permission) {
+    private static boolean isAclWriteOrDeleteChild(AclEntryPermission permission) {
         return switch (permission) {
             case WRITE_DATA, APPEND_DATA, DELETE, DELETE_CHILD, WRITE_ATTRIBUTES,
                     WRITE_NAMED_ATTRS, WRITE_ACL, WRITE_OWNER -> true;
             default -> false;
         };
-    }
-
-    private static UserPrincipal processPrincipal() throws IOException {
-        return FileSystems.getDefault().getUserPrincipalLookupService()
-                .lookupPrincipalByName(System.getProperty("user.name"));
     }
 
     /** Begins one trace. A recorder has at most one active trace. */
@@ -296,18 +317,18 @@ public final class TraceRecorder implements AutoCloseable {
             stagingDirectory = root.resolve(stagingName);
             Files.createDirectory(stagingDirectory, ownerOnlyDirectoryAttributes());
             stagingFileKey = requireFileKey(stagingDirectory, "trace staging");
-            requireOwnerOnly(stagingDirectory, true);
             try (SecureDirectoryStream<Path> rootStream = openRootStream()) {
                 verifyChildDirectory(rootStream, stagingName, stagingFileKey);
+                requireOwnerOnlyChild(rootStream, stagingName, true);
             }
 
             artifactDirectory = stagingDirectory.resolve("artifacts");
             Files.createDirectory(artifactDirectory, ownerOnlyDirectoryAttributes());
             artifactFileKey = requireFileKey(artifactDirectory, "trace artifact staging");
-            requireOwnerOnly(artifactDirectory, true);
             try (SecureDirectoryStream<Path> stagingStream = openSecureStreamOrFail(
                     stagingDirectory, stagingFileKey, "trace staging")) {
                 verifyChildDirectory(stagingStream, "artifacts", artifactFileKey);
+                requireOwnerOnlyChild(stagingStream, "artifacts", true);
             }
 
             eventFile = stagingDirectory.resolve("events.ndjson");
@@ -318,11 +339,11 @@ public final class TraceRecorder implements AutoCloseable {
                         Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
                         ownerOnlyFileAttribute());
                 eventOutput = new BufferedOutputStream(Channels.newOutputStream(channel));
+                requireOwnerOnlyChild(stagingStream, "events.ndjson", false);
                 eventFileKey = stagingStream.getFileAttributeView(Path.of("events.ndjson"),
                         BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
                         .readAttributes().fileKey();
             }
-            requireOwnerOnly(eventFile, false);
             active = true;
         } catch (IOException | HarnessException exception) {
             List<Throwable> cleanupFailures = cleanupStaging();
@@ -402,6 +423,8 @@ public final class TraceRecorder implements AutoCloseable {
                             Path.of(temporary.getFileName().toString()),
                             Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
                             ownerOnlyFileAttribute());
+                    requireOwnerOnlyChild(artifactStream,
+                            temporary.getFileName().toString(), false);
                     temporaryFileKey = artifactStream.getFileAttributeView(
                             Path.of(temporary.getFileName().toString()),
                             BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
@@ -426,7 +449,6 @@ public final class TraceRecorder implements AutoCloseable {
         byte[] buffer = new byte[COPY_BUFFER_SIZE];
         try (source; OutputStream output = new BufferedOutputStream(
                 Channels.newOutputStream(tempChannel))) {
-            requireOwnerOnly(reservation.temporary(), false);
             int read;
             while ((read = source.read(buffer)) != -1) {
                 if (size > reservation.maxUncompressedBytes() - read) {
@@ -495,7 +517,8 @@ public final class TraceRecorder implements AutoCloseable {
                 "trace artifact staging")) {
             artifactsStream.move(reservation.temporary().getFileName(),
                     artifactsStream, Path.of(published.getFileName().toString()));
-            requireOwnerOnly(published, false);
+            requireOwnerOnlyChild(artifactsStream,
+                    published.getFileName().toString(), false);
             return artifactsStream.getFileAttributeView(
                     Path.of(published.getFileName().toString()),
                     BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
@@ -586,6 +609,7 @@ public final class TraceRecorder implements AutoCloseable {
         Path temporaryArchive = root.resolve(tempName);
         Path archive = root.resolve(archiveName);
         Object tempArchiveFileKey = null;
+        Object destinationReservationKey = null;
         boolean archivePublished = false;
         String eventsSha256 = HexFormat.of().formatHex(eventDigest.digest());
         LinkedHashMap<String, TraceManifest.ArtifactBinding> bindings = new LinkedHashMap<>();
@@ -593,11 +617,14 @@ public final class TraceRecorder implements AutoCloseable {
             bindings.put(entry.getKey(), new TraceManifest.ArtifactBinding(
                     entry.getKey(), entry.getValue().size(), entry.getValue().mediaType()));
         }
-        TraceManifest manifest = new TraceManifest(archive, sessionId, startedAt, endedAt,
+        // The manifest written inside the archive cannot carry its own archive digest
+        // (self-reference), so it is encoded with blank (legacy) archive identity.
+        TraceManifest archiveManifest = new TraceManifest(archive, sessionId, startedAt, endedAt,
                 complete, reason, eventCount, artifacts.size(), uncompressedBytes,
                 TraceManifest.V2, eventsSha256, bindings);
         MessageDigest archiveDigest = sha256();
-        long archiveSize;
+        long archiveSize = -1;
+        String archiveSha256 = null;
         try (SecureDirectoryStream<Path> rootStream = openRootStream()) {
             SeekableByteChannel tempChannel = rootStream.newByteChannel(Path.of(tempName),
                     Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
@@ -617,7 +644,7 @@ public final class TraceRecorder implements AutoCloseable {
                             entry.getKey(), entry.getValue().fileKey(), entry.getKey());
                 }
                 zip.putNextEntry(new ZipEntry("manifest.json"));
-                zip.write(manifest.toJson());
+                zip.write(archiveManifest.toJson());
                 zip.closeEntry();
             }
             BasicFileAttributes attributes = rootStream.getFileAttributeView(
@@ -628,25 +655,47 @@ public final class TraceRecorder implements AutoCloseable {
                         "Trace archive storage changed unexpectedly", null);
             }
             archiveSize = attributes.size();
-            requireOwnerOnly(temporaryArchive, false);
-            String archiveSha256 = HexFormat.of().formatHex(archiveDigest.digest());
+            requireOwnerOnlyChild(rootStream, tempName, false);
+            archiveSha256 = HexFormat.of().formatHex(archiveDigest.digest());
             verifyArchiveContent(rootStream, tempName, temporaryArchive,
                     tempArchiveFileKey, archiveSha256, archiveSize);
+            // Reserve the destination with CREATE_NEW: an occupied destination fails
+            // closed at the reservation, and the reservation fileKey lets the move be
+            // proven to replace only our own reservation.
             interceptor.before(FinalizationInterceptor.Step.CHECK_DESTINATION, archive);
-            if (secureEntryExists(rootStream, archiveName)) {
+            SeekableByteChannel reservation;
+            try {
+                reservation = rootStream.newByteChannel(Path.of(archiveName),
+                        Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
+                        ownerOnlyFileAttribute());
+            } catch (java.nio.file.FileAlreadyExistsException exception) {
                 throw failure(ErrorCode.INVALID_REQUEST,
-                        "Trace archive destination already exists", null);
+                        "Trace archive destination already exists", exception);
+            }
+            try {
+                destinationReservationKey = rootStream.getFileAttributeView(
+                        Path.of(archiveName), BasicFileAttributeView.class,
+                        LinkOption.NOFOLLOW_LINKS).readAttributes().fileKey();
+            } finally {
+                reservation.close();
+            }
+            Object currentDestinationKey = rootStream.getFileAttributeView(
+                    Path.of(archiveName), BasicFileAttributeView.class,
+                    LinkOption.NOFOLLOW_LINKS).readAttributes().fileKey();
+            if (!Objects.equals(currentDestinationKey, destinationReservationKey)) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive destination changed unexpectedly", null);
             }
             rootStream.move(Path.of(tempName), rootStream, Path.of(archiveName));
             archivePublished = true;
             verifyArchiveContent(rootStream, archiveName, archive,
                     tempArchiveFileKey, archiveSha256, archiveSize);
-            requireOwnerOnly(archive, false);
+            requireOwnerOnlyChild(rootStream, archiveName, false);
             interceptor.before(FinalizationInterceptor.Step.AFTER_FINALIZE, archive);
         } catch (IOException exception) {
             List<Throwable> cleanupFailures = new ArrayList<>();
             deleteArchiveEntries(tempName, archiveName, tempArchiveFileKey,
-                    archivePublished, cleanupFailures);
+                    destinationReservationKey, archivePublished, cleanupFailures);
             cleanupFailures.addAll(cleanupStaging());
             HarnessException failure = failure(ErrorCode.INTERNAL_ERROR,
                     "Unable to finalize trace archive", exception);
@@ -655,11 +704,14 @@ public final class TraceRecorder implements AutoCloseable {
         } catch (RuntimeException failure) {
             List<Throwable> cleanupFailures = new ArrayList<>();
             deleteArchiveEntries(tempName, archiveName, tempArchiveFileKey,
-                    archivePublished, cleanupFailures);
+                    destinationReservationKey, archivePublished, cleanupFailures);
             cleanupFailures.addAll(cleanupStaging());
             cleanupFailures.forEach(failure::addSuppressed);
             throw failure;
         }
+        TraceManifest manifest = new TraceManifest(archive, sessionId, startedAt, endedAt,
+                complete, reason, eventCount, artifacts.size(), uncompressedBytes,
+                TraceManifest.V2, eventsSha256, bindings, archiveSha256, archiveSize);
         lastManifest = manifest;
         List<Throwable> cleanupFailures = cleanupStaging();
         if (!cleanupFailures.isEmpty()) {
@@ -671,16 +723,18 @@ public final class TraceRecorder implements AutoCloseable {
         return manifest;
     }
 
-    /** Key-checked deletion of the temporary and published archive names below the root. */
+    /** Key-checked deletion of the temporary, reservation, and published archive names. */
     private void deleteArchiveEntries(String tempName, String archiveName,
-            Object tempArchiveFileKey, boolean archivePublished,
-            List<Throwable> failures) {
+            Object tempArchiveFileKey, Object destinationReservationKey,
+            boolean archivePublished, List<Throwable> failures) {
         try (SecureDirectoryStream<Path> rootStream = openRootStream()) {
-            if (tempArchiveFileKey != null) {
-                deleteChildChecked(rootStream, tempName, tempArchiveFileKey, true, failures);
-            }
             if (archivePublished) {
                 deleteChildChecked(rootStream, archiveName, tempArchiveFileKey, true, failures);
+            } else if (destinationReservationKey != null) {
+                deleteChildChecked(rootStream, archiveName, destinationReservationKey, true, failures);
+            }
+            if (tempArchiveFileKey != null) {
+                deleteChildChecked(rootStream, tempName, tempArchiveFileKey, true, failures);
             }
         } catch (IOException exception) {
             failures.add(exception);
@@ -758,17 +812,6 @@ public final class TraceRecorder implements AutoCloseable {
                 throw failure(ErrorCode.INVALID_REQUEST,
                         "Trace archive content does not match its recorded digest", null);
             }
-        }
-    }
-
-    private static boolean secureEntryExists(SecureDirectoryStream<Path> rootStream,
-            String name) throws IOException {
-        try {
-            rootStream.getFileAttributeView(Path.of(name), BasicFileAttributeView.class,
-                    LinkOption.NOFOLLOW_LINKS).readAttributes();
-            return true;
-        } catch (NoSuchFileException exception) {
-            return false;
         }
     }
 
@@ -935,19 +978,24 @@ public final class TraceRecorder implements AutoCloseable {
                 } catch (IOException exception) {
                     failures.add(exception);
                 }
-                switch (artifactCleanupState(artifactDirectory)) {
-                    case EMPTY -> deleteChildChecked(stagingStream, "artifacts",
-                            artifactFileKey, false, failures);
-                    case IN_FLIGHT_TEMPS -> {
-                        // In-flight reservation streams own these temporary files; the
-                        // detached-reservation cleanup removes them when streaming
-                        // finishes. Leave both directories in place, not a failure.
-                        deferred = true;
+                try {
+                    switch (artifactCleanupState(artifactDirectory)) {
+                        case EMPTY -> deleteChildChecked(stagingStream, "artifacts",
+                                artifactFileKey, false, failures);
+                        case IN_FLIGHT_TEMPS -> {
+                            // In-flight reservation streams own these temporary files; the
+                            // detached-reservation cleanup removes them when streaming
+                            // finishes. Leave both directories in place, not a failure.
+                            deferred = true;
+                        }
+                        case UNEXPECTED -> failures.add(new IOException(
+                                "artifact directory contains unrecognized entries; "
+                                        + "residual evidence may remain under "
+                                        + artifactDirectory));
                     }
-                    case UNEXPECTED -> failures.add(new IOException(
-                            "artifact directory contains unrecognized entries; "
-                                    + "residual evidence may remain under "
-                                    + artifactDirectory));
+                } catch (IOException exception) {
+                    // preserve the exact enumeration failure for suppressed reporting
+                    failures.add(exception);
                 }
             } else if (artifactDirectory != null && Files.isSymbolicLink(artifactDirectory)) {
                 try {
@@ -993,7 +1041,8 @@ public final class TraceRecorder implements AutoCloseable {
     /** Classifies what remains inside the artifact directory after owned files are removed. */
     private enum ArtifactCleanup { EMPTY, IN_FLIGHT_TEMPS, UNEXPECTED }
 
-    private static ArtifactCleanup artifactCleanupState(Path artifactDirectory) {
+    private static ArtifactCleanup artifactCleanupState(Path artifactDirectory)
+            throws IOException {
         boolean sawEntry = false;
         try (var entries = Files.newDirectoryStream(artifactDirectory)) {
             for (Path entry : entries) {
@@ -1002,8 +1051,6 @@ public final class TraceRecorder implements AutoCloseable {
                     return ArtifactCleanup.UNEXPECTED;
                 }
             }
-        } catch (IOException exception) {
-            return ArtifactCleanup.UNEXPECTED;
         }
         return sawEntry ? ArtifactCleanup.IN_FLIGHT_TEMPS : ArtifactCleanup.EMPTY;
     }
@@ -1016,6 +1063,18 @@ public final class TraceRecorder implements AutoCloseable {
     private static void deleteChildChecked(SecureDirectoryStream<Path> parentStream,
             String name, Object expectedFileKey, boolean file, List<Throwable> failures) {
         if (expectedFileKey == null) {
+            // Creation succeeded but no identity was captured: an existing entry
+            // cannot be proven owned, so it is left and reported as residual.
+            try {
+                parentStream.getFileAttributeView(Path.of(name), BasicFileAttributeView.class,
+                        LinkOption.NOFOLLOW_LINKS).readAttributes();
+                failures.add(new IOException(
+                        "cleanup identity unknown; leaving entry untouched: " + name));
+            } catch (NoSuchFileException alreadyRemoved) {
+                // nothing there: fine
+            } catch (IOException | RuntimeException exception) {
+                failures.add(exception);
+            }
             return;
         }
         try {
@@ -1121,28 +1180,39 @@ public final class TraceRecorder implements AutoCloseable {
         return new FileAttribute<?>[0];
     }
 
-    /** Applies and then verifies owner-only permissions; any failure fails closed. */
-    private void requireOwnerOnly(Path path, boolean directory) throws IOException {
+    /**
+     * Sets and then exact-equality verifies owner-only permissions on one child
+     * through the verified parent handle — never through an absolute child path.
+     */
+    private void requireOwnerOnlyChild(SecureDirectoryStream<Path> parentStream,
+            String name, boolean directory) throws IOException {
         switch (permissionMode) {
             case POSIX -> {
-                Set<PosixFilePermission> expected =
-                        directory ? ownerOnlyDirectoryPermissions() : ownerOnlyFilePermissions();
-                Files.setPosixFilePermissions(path, expected);
-                if (!Files.getPosixFilePermissions(path).equals(expected)) {
+                PosixFileAttributeView view = parentStream.getFileAttributeView(
+                        Path.of(name), PosixFileAttributeView.class,
+                        LinkOption.NOFOLLOW_LINKS);
+                if (view == null) {
+                    throw new IOException("posix view unavailable for " + name);
+                }
+                Set<PosixFilePermission> expected = directory
+                        ? ownerOnlyDirectoryPermissions() : ownerOnlyFilePermissions();
+                view.setPermissions(expected);
+                if (!view.readAttributes().permissions().equals(expected)) {
                     throw new IOException(
-                            "trace storage permissions are not owner-only: " + path);
+                            "trace storage permissions are not owner-only: " + name);
                 }
             }
-            case ACL -> requireOwnerOnlyAcl(path);
+            case ACL -> requireOwnerOnlyChildAcl(parentStream, name);
         }
     }
 
-    /** Replaces the ACL with an exact owner-only allow entry and verifies the result. */
-    private static void requireOwnerOnlyAcl(Path path) throws IOException {
-        AclFileAttributeView view = Files.getFileAttributeView(
-                path, AclFileAttributeView.class);
+    /** Sets and then exact-equality verifies one nonempty owner-only ALLOW entry. */
+    private static void requireOwnerOnlyChildAcl(SecureDirectoryStream<Path> parentStream,
+            String name) throws IOException {
+        AclFileAttributeView view = parentStream.getFileAttributeView(
+                Path.of(name), AclFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
         if (view == null) {
-            throw new IOException("acl view unavailable for owner-only enforcement: " + path);
+            throw new IOException("acl view unavailable for " + name);
         }
         UserPrincipal owner = view.getOwner();
         AclEntry ownerEntry = AclEntry.newBuilder()
@@ -1151,36 +1221,56 @@ public final class TraceRecorder implements AutoCloseable {
                 .setPermissions(EnumSet.allOf(AclEntryPermission.class))
                 .build();
         view.setAcl(List.of(ownerEntry));
-        List<AclEntry> acl = view.getAcl();
-        if (acl.isEmpty()) {
-            throw new IOException("trace storage ACL is empty: " + path);
-        }
-        for (AclEntry entry : acl) {
-            if (entry.type() != AclEntryType.ALLOW || !entry.principal().equals(owner)) {
-                throw new IOException("trace storage ACL is not owner-only: " + path);
-            }
+        if (!isExactOwnerOnlyAcl(view.getAcl(), owner)) {
+            throw new IOException("trace storage ACL is not exactly owner-only: " + name);
         }
     }
 
     /**
-     * The configured root must already be exact owner-only and owned by the process
+     * The configured root must already be exactly owner-only and owned by the derived
      * principal. The caller's root is never modified; a non-conforming root is
-     * rejected so recording fails closed.
+     * rejected so recording fails closed. The ACL form is verified only, never
+     * rewritten: one nonempty owner ALLOW entry with the complete permission set and
+     * no flags, inherited, other, or deny entries.
      */
-    private static void requireExactRootPermissions(Path root, PermissionMode mode)
-            throws IOException {
+    private static void requireExactRootPermissions(Path root, PermissionMode mode,
+            UserPrincipal trustedPrincipal) throws IOException {
         if (mode == PermissionMode.POSIX) {
             if (!Files.getPosixFilePermissions(root).equals(ownerOnlyDirectoryPermissions())) {
                 throw new IOException("trace root must be owner-only (0700): " + root);
             }
             if (!Files.getOwner(root, LinkOption.NOFOLLOW_LINKS)
-                    .equals(processPrincipal())) {
+                    .equals(trustedPrincipal)) {
                 throw new IOException(
                         "trace root must be owned by the process principal: " + root);
             }
         } else {
-            requireOwnerOnlyAcl(root);
+            AclFileAttributeView view = Files.getFileAttributeView(
+                    root, AclFileAttributeView.class);
+            if (view == null) {
+                throw new IOException("acl view unavailable for trace root: " + root);
+            }
+            if (!view.getOwner().equals(trustedPrincipal)) {
+                throw new IOException(
+                        "trace root must be owned by the process principal: " + root);
+            }
+            if (!isExactOwnerOnlyAcl(view.getAcl(), trustedPrincipal)) {
+                throw new IOException(
+                        "trace root ACL must be exactly one owner-only allow entry: "
+                                + root);
+            }
         }
+    }
+
+    private static boolean isExactOwnerOnlyAcl(List<AclEntry> acl, UserPrincipal owner) {
+        if (acl.size() != 1) {
+            return false;
+        }
+        AclEntry entry = acl.get(0);
+        return entry.type() == AclEntryType.ALLOW
+                && entry.principal().equals(owner)
+                && entry.permissions().equals(EnumSet.allOf(AclEntryPermission.class))
+                && entry.flags().isEmpty();
     }
 
     private static Path initializeRoot(Path configuredRoot, PermissionMode mode) {
