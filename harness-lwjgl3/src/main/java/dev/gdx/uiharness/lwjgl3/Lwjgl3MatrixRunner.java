@@ -34,6 +34,12 @@ import java.util.concurrent.CompletionStage;
 public final class Lwjgl3MatrixRunner implements AutoCloseable {
     private static final int MAX_RETAINED_RUNS = 8;
 
+    /** Released application-owned display parameter observer for one case. */
+    public interface DisplayObserver {
+        /** Returns the observed window, scale, DPR, and HiDPI mode for one case. */
+        DisplayObservation observe(MatrixCase matrixCase);
+    }
+
     /** Host-owned display-case applicator for one case. */
     public interface MatrixCaseApplicator {
         /**
@@ -77,10 +83,23 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
         }
     }
 
-    /** Observed display parameters, distinct from requested parameters. */
+    /**
+     * Observed display parameters, distinct from requested parameters.
+     *
+     * <p>The identity fields (locale, font set id, restart profile id) are nullable: a released
+     * legacy observer cannot report them, and a null identity marks the observation as legacy so
+     * the runner does not verify fields the observation cannot carry.
+     */
     public record DisplayObservation(
             MatrixWindow window, double uiScale, double devicePixelRatio, MatrixHiDpi hiDpiMode,
             String locale, String fontSetId, String restartProfileId) {
+        /** Released constructor without identity fields: identity is {@code null} (legacy). */
+        public DisplayObservation(
+                MatrixWindow window, double uiScale, double devicePixelRatio,
+                MatrixHiDpi hiDpiMode) {
+            this(window, uiScale, devicePixelRatio, hiDpiMode, null, null, null);
+        }
+
         /** Validates observed parameters. */
         public DisplayObservation {
             Objects.requireNonNull(window, "window");
@@ -91,18 +110,16 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                 throw new IllegalArgumentException("observed devicePixelRatio must be positive");
             }
             Objects.requireNonNull(hiDpiMode, "hiDpiMode");
-            Objects.requireNonNull(locale, "locale");
-            if (locale.isBlank() || locale.length() > 256) {
+            if (locale != null && (locale.isBlank() || locale.length() > 256)) {
                 throw new IllegalArgumentException(
                         "observed locale must be 1..256 characters");
             }
-            Objects.requireNonNull(fontSetId, "fontSetId");
-            if (fontSetId.length() > 256) {
+            if (fontSetId != null && fontSetId.length() > 256) {
                 throw new IllegalArgumentException(
                         "observed fontSetId must be at most 256 characters");
             }
-            Objects.requireNonNull(restartProfileId, "restartProfileId");
-            if (restartProfileId.isBlank() || restartProfileId.length() > 256) {
+            if (restartProfileId != null
+                    && (restartProfileId.isBlank() || restartProfileId.length() > 256)) {
                 throw new IllegalArgumentException(
                         "observed restartProfileId must be 1..256 characters");
             }
@@ -138,6 +155,36 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
     private final LinkedHashMap<String, MatrixReport> retained = new LinkedHashMap<>();
     private boolean open = true;
     private boolean activeRun;
+
+    /**
+     * Released constructor adapting a display observer into an applicator.
+     *
+     * <p>The observer reports only the released display dimensions; the observed locale, font
+     * set id, and restart profile are {@code null} (legacy), and the runner skips identity
+     * verification for observations that cannot report them. Restore is a no-op because the
+     * released observer path never mutated display state through the runner, and the request
+     * deadline is ignored by the observer adapter.
+     *
+     * @param scenarios scenario lifecycle runner supplying per-case known state
+     * @param waits shared wait engine evaluating carried assertions
+     * @param display released application-owned display parameter observer
+     * @param scenario registered scenario binding
+     */
+    public Lwjgl3MatrixRunner(
+            Scene2dScenarioRunner scenarios,
+            WaitEngine waits,
+            DisplayObserver display,
+            Scenario scenario) {
+        this(scenarios, waits, new MatrixCaseApplicator() {
+            @Override public ApplyResult apply(
+                    MatrixCase matrixCase, String restartProfileId, Deadline deadline) {
+                return new ApplyResult.Applied(display.observe(matrixCase));
+            }
+
+            @Override public void restore() {
+            }
+        }, scenario);
+    }
 
     /**
      * Creates a matrix runner.
@@ -408,6 +455,12 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
         if (observed.hiDpiMode() != matrixCase.hiDpiMode()) {
             return "hiDpiMode requested=" + matrixCase.hiDpiMode()
                     + " observed=" + observed.hiDpiMode();
+        }
+        // Identity fields are nullable: a released legacy observer cannot report them, so a null
+        // identity must never misapply a case that reported only the released dimensions.
+        if (observed.locale() == null || observed.fontSetId() == null
+                || observed.restartProfileId() == null) {
+            return null;
         }
         if (!observed.locale().equals(matrixCase.locale())) {
             return "locale requested=" + matrixCase.locale()

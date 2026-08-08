@@ -1,6 +1,7 @@
 package dev.gdx.uiharness.lwjgl3;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -624,6 +625,54 @@ final class Lwjgl3MatrixRunnerTest {
         }
     }
 
+    @Test void releasedObserverConstructorAndDisplayObservationRemainSourceCompatible() {
+        try (Fixture fixture = new Fixture()) {
+            // Exact released v1 API call sites: a lambda targets the functional DisplayObserver,
+            // the 4-arg DisplayObservation constructor is used, and the 4-arg runner constructor
+            // adapts the observer. Identity fields are not reported by the legacy observer.
+            Lwjgl3MatrixRunner legacyRunner = new Lwjgl3MatrixRunner(
+                    fixture.scenarios,
+                    fixture.waits,
+                    matrixCase -> new Lwjgl3MatrixRunner.DisplayObservation(
+                            matrixCase.window(), matrixCase.uiScale(),
+                            matrixCase.devicePixelRatio(), matrixCase.hiDpiMode()),
+                    new Lwjgl3MatrixRunner.Scenario(
+                            "matrix", 7, Map.of(), "desktop", "app", "process", "session"));
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = legacyRunner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = legacyRunner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.PASSED, result.status(),
+                    "a legacy observation without identity must not misapply: "
+                            + result.evidence());
+            assertEquals(new MatrixWindow(1280, 720), result.observedWindow());
+            assertEquals(1.0, result.observedUiScale());
+            assertEquals(MatrixHiDpi.LOGICAL, result.observedHiDpiMode());
+            assertNull(result.observedLocale(),
+                    "a released legacy observer cannot report the observed locale");
+            assertNull(result.observedRestartProfileId(),
+                    "a released legacy observer cannot report the observed restart profile");
+            assertEquals(1, fixture.acquisitions.get());
+        }
+    }
+
     @Test void matrixProductLimitRejectsBeforeAnyCaseStarts() {
         try (Fixture fixture = new Fixture()) {
             MatrixDefinition definition = new MatrixDefinition(
@@ -917,6 +966,7 @@ final class Lwjgl3MatrixRunnerTest {
         final ManualFrames frames = new ManualFrames();
         final ManualDeadlines deadlines = new ManualDeadlines();
         final Scene2dScenarioRunner scenarios;
+        final WaitEngine waits;
         final Lwjgl3MatrixRunner runner;
         boolean visible = true;
         boolean saveAbsent;
@@ -982,7 +1032,7 @@ final class Lwjgl3MatrixRunnerTest {
                     return Fixture.this.snapshot();
                 }
             };
-            WaitEngine waits = new WaitEngine(
+            waits = new WaitEngine(
                     this::snapshot, assertionSnapshots, locators, clock, frames,
                     deadlines);
             runner = new Lwjgl3MatrixRunner(scenarios, waits, applicator,
