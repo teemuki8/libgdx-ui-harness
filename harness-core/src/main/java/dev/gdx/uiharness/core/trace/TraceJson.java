@@ -22,7 +22,6 @@ final class TraceJson {
             "sessionId", "startedAt", "endedAt", "complete", "terminationReason",
             "eventCount", "artifactCount", "uncompressedBytes", "version",
             "eventsSha256", "artifacts");
-    private static final int MAX_MANIFEST_ARTIFACTS = 100_000;
     private static final int MAX_EVENT_NESTING = 1;
     private static final int MAX_MANIFEST_NESTING = 2;
 
@@ -165,11 +164,15 @@ final class TraceJson {
         }
     }
 
+    private static final Set<String> ARTIFACT_BINDING_FIELDS = Set.of(
+            "sha256", "size", "mediaType");
+
     @SuppressWarnings("unchecked")
     private static Map<String, TraceManifest.ArtifactBinding> artifactBindings(
             Map<String, Object> object) throws IOException {
         Object raw = object.get("artifacts");
-        if (!(raw instanceof Map<?, ?> values) || values.size() > MAX_MANIFEST_ARTIFACTS) {
+        if (!(raw instanceof Map<?, ?> values)
+                || values.size() > TraceManifest.MAX_MANIFEST_ARTIFACTS) {
             throw new IOException("manifest artifacts must be a bounded object");
         }
         LinkedHashMap<String, TraceManifest.ArtifactBinding> bindings =
@@ -179,6 +182,8 @@ final class TraceJson {
                     || !(entry.getValue() instanceof Map<?, ?> binding)) {
                 throw new IOException("invalid artifact binding");
             }
+            requireExactFields((Map<String, Object>) binding,
+                    ARTIFACT_BINDING_FIELDS, "artifact binding");
             try {
                 bindings.put(id, new TraceManifest.ArtifactBinding(
                         requiredString((Map<String, Object>) binding, "sha256"),

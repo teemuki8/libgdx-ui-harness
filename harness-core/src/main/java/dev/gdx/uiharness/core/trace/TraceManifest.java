@@ -23,6 +23,8 @@ public record TraceManifest(
         Map<String, ArtifactBinding> artifacts) {
     public static final String V1 = "trace-manifest/v1";
     public static final String V2 = "trace-manifest/v2";
+    /** Upper bound on artifact bindings carried by one v2 manifest. */
+    public static final int MAX_MANIFEST_ARTIFACTS = 100_000;
     private static final Pattern SHA_256 = Pattern.compile("[0-9a-f]{64}");
 
     /** Canonical per-artifact digest binding carried by a v2 manifest. */
@@ -58,6 +60,20 @@ public record TraceManifest(
         if (schemaVersion.equals(V2)) {
             requireSha256(eventsSha256, "eventsSha256");
             artifacts = Map.copyOf(Objects.requireNonNull(artifacts, "artifacts"));
+            if (artifacts.size() > MAX_MANIFEST_ARTIFACTS) {
+                throw new IllegalArgumentException(
+                        "manifest artifact bindings exceed the limit");
+            }
+            if (artifactCount != artifacts.size()) {
+                throw new IllegalArgumentException(
+                        "artifactCount must equal the number of artifact bindings");
+            }
+            for (Map.Entry<String, ArtifactBinding> entry : artifacts.entrySet()) {
+                if (!entry.getKey().equals(entry.getValue().sha256())) {
+                    throw new IllegalArgumentException(
+                            "artifact binding key must match its sha256");
+                }
+            }
         } else {
             if (eventsSha256 != null || artifacts != null && !artifacts.isEmpty()) {
                 throw new IllegalArgumentException(
@@ -65,6 +81,21 @@ public record TraceManifest(
             }
             artifacts = Map.of();
         }
+    }
+
+    /** Builds a v1 manifest without digest bindings (released constructor shape). */
+    public TraceManifest(
+            Path archive,
+            String sessionId,
+            Instant startedAt,
+            Instant endedAt,
+            boolean complete,
+            String terminationReason,
+            long eventCount,
+            long artifactCount,
+            long uncompressedBytes) {
+        this(archive, sessionId, startedAt, endedAt, complete, terminationReason,
+                eventCount, artifactCount, uncompressedBytes, V1, null, null);
     }
 
     byte[] toJson() {
