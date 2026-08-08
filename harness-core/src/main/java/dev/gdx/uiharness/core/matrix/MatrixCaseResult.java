@@ -12,6 +12,9 @@ import java.util.Objects;
  * @param observedUiScale observed UI scale, or {@code null} when not observed
  * @param observedDevicePixelRatio observed device pixel ratio, or {@code null} when not observed
  * @param observedHiDpiMode observed HiDPI mode, or {@code null} when not observed
+ * @param observedLocale observed locale, or {@code null} when not observed
+ * @param observedFontSetId observed font set id, or {@code null} when not observed
+ * @param observedRestartProfileId observed restart profile id, or {@code null} when not observed
  * @param passedAssertions zero-based indices of passed carried assertions
  * @param failedAssertions zero-based indices of failed carried assertions
  * @param artifactReferences opaque bounded artifact references bound to this case
@@ -24,12 +27,37 @@ public record MatrixCaseResult(
         Double observedUiScale,
         Double observedDevicePixelRatio,
         MatrixHiDpi observedHiDpiMode,
+        String observedLocale,
+        String observedFontSetId,
+        String observedRestartProfileId,
         List<Integer> passedAssertions,
         List<Integer> failedAssertions,
         List<String> artifactReferences,
         String evidence) {
     private static final int MAX_ARTIFACTS = 64;
     private static final int MAX_EVIDENCE_LENGTH = 4_096;
+
+    /**
+     * Creates a result with no observed identity evidence, preserving the released
+     * 10-argument constructor; the observed locale, font set id, and restart profile id
+     * are {@code null}.
+     */
+    public MatrixCaseResult(
+            MatrixCaseSummary caseSummary,
+            MatrixCaseStatus status,
+            MatrixWindow observedWindow,
+            Double observedUiScale,
+            Double observedDevicePixelRatio,
+            MatrixHiDpi observedHiDpiMode,
+            List<Integer> passedAssertions,
+            List<Integer> failedAssertions,
+            List<String> artifactReferences,
+            String evidence) {
+        this(caseSummary, status, observedWindow, observedUiScale,
+                observedDevicePixelRatio, observedHiDpiMode,
+                null, null, null,
+                passedAssertions, failedAssertions, artifactReferences, evidence);
+    }
 
     /** Validates and defensively copies the result. */
     public MatrixCaseResult {
@@ -44,6 +72,18 @@ public record MatrixCaseResult(
                         || observedDevicePixelRatio <= 0.0)) {
             throw new IllegalArgumentException(
                     "observed devicePixelRatio must be finite and positive");
+        }
+        if (observedLocale != null && (observedLocale.isBlank()
+                || observedLocale.length() > 256)) {
+            throw new IllegalArgumentException("observedLocale must be null or 1..256 characters");
+        }
+        if (observedFontSetId != null && observedFontSetId.length() > 256) {
+            throw new IllegalArgumentException("observedFontSetId must be null or at most 256 characters");
+        }
+        if (observedRestartProfileId != null && (observedRestartProfileId.isBlank()
+                || observedRestartProfileId.length() > 256)) {
+            throw new IllegalArgumentException(
+                    "observedRestartProfileId must be null or 1..256 characters");
         }
         passedAssertions = List.copyOf(Objects.requireNonNull(
                 passedAssertions, "passedAssertions"));

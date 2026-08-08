@@ -7092,9 +7092,38 @@
                     "type" : "null"
                   } ]
                 },
+                "observedFontSetId" : {
+                  "oneOf" : [ {
+                    "maxLength" : 256,
+                    "minLength" : 0,
+                    "type" : "string"
+                  }, {
+                    "type" : "null"
+                  } ]
+                },
                 "observedHiDpiMode" : {
                   "oneOf" : [ {
                     "enum" : [ "LOGICAL", "PIXELS" ],
+                    "type" : "string"
+                  }, {
+                    "type" : "null"
+                  } ]
+                },
+                "observedLocale" : {
+                  "oneOf" : [ {
+                    "maxLength" : 256,
+                    "minLength" : 1,
+                    "pattern" : ".*[^\\u0009-\\u000D\\u001C-\\u001F\\u0020\\u1680\\u2000-\\u2006\\u2008-\\u200A\\u2028\\u2029\\u205F\\u3000].*",
+                    "type" : "string"
+                  }, {
+                    "type" : "null"
+                  } ]
+                },
+                "observedRestartProfileId" : {
+                  "oneOf" : [ {
+                    "maxLength" : 256,
+                    "minLength" : 1,
+                    "pattern" : ".*[^\\u0009-\\u000D\\u001C-\\u001F\\u0020\\u1680\\u2000-\\u2006\\u2008-\\u200A\\u2028\\u2029\\u205F\\u3000].*",
                     "type" : "string"
                   }, {
                     "type" : "null"
@@ -7140,7 +7169,7 @@
                   "type" : "array"
                 },
                 "status" : {
-                  "enum" : [ "PASSED", "FAILED", "UNSTARTED", "CANCELLED" ],
+                  "enum" : [ "PASSED", "FAILED", "UNSTARTED", "CANCELLED", "UNSUPPORTED", "MISAPPLIED" ],
                   "type" : "string"
                 }
               },

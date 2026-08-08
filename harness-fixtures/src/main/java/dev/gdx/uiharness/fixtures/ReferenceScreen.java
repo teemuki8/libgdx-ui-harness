@@ -94,7 +94,7 @@ public final class ReferenceScreen implements FixtureScreen {
     public void attachSemantics(Semantics newSemantics) {
         semantics = newSemantics;
         newSemantics.bind(username, new dev.gdx.uiharness.core.model.RuntimeBinding(
-                "reference-ui-user", "value", null, null, "reference-ui-frame"));
+                "reference-ui-user", "value", "string", null, "reference-ui-frame"));
         tag(username, "username", "Username");
         tag(password, "password", "Password");
         tag(stage.getRoot().findActor("sign-in"), "sign-in", "Sign in");

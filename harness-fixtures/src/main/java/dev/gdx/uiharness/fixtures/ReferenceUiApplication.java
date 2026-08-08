@@ -6,6 +6,7 @@ import com.badlogic.gdx.backends.lwjgl3.Lwjgl3Application;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration;
 import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.glutils.HdpiMode;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -20,6 +21,7 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
     private final String benchmarkScenario;
     private final int benchmarkDelayMillis;
     private final boolean markup;
+    private final boolean dumpBaseline;
     private FixtureScreen screen;
     private MarkupSigninScreen markupScreen;
     private FixtureControl control;
@@ -31,14 +33,21 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
      * {@link #render()} and {@link #readyPrinted}.
      */
     private boolean readyPrinted;
+    /**
+     * Guards the one-shot baseline dump: the pristine baseline is captured once after the
+     * first completed frame (so the layout matches what a client observes) and before
+     * {@code REFERENCE_UI_READY} is printed. A dump failure is terminal.
+     */
+    private boolean baselineDumped;
 
     private ReferenceUiApplication(
             Path processRoot, String benchmarkScenario, int benchmarkDelayMillis,
-            boolean markup) {
+            boolean markup, boolean dumpBaseline) {
         this.processRoot = processRoot;
         this.benchmarkScenario = benchmarkScenario;
         this.benchmarkDelayMillis = benchmarkDelayMillis;
         this.markup = markup;
+        this.dumpBaseline = dumpBaseline;
     }
 
     /** Launches one hidden, non-networked fixture process. */
@@ -46,16 +55,18 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
         if (args.length != 1 && args.length != 2 && args.length != 3 && args.length != 4) {
             throw new IllegalArgumentException(
                     "Expected a process root, optional benchmark scenario/delay, and an "
-                            + "optional final \"markup\" flag");
+                            + "optional final \"markup\" or \"dump-baseline\" flag");
         }
         Path root = Path.of(args[0]).toAbsolutePath().normalize();
         if (!Files.isDirectory(root)) {
             throw new IllegalArgumentException("Process root must already exist");
         }
+        boolean dumpBaseline = args.length == 2 && "dump-baseline".equals(args[1]);
         boolean markup = (args.length == 2 || args.length == 4)
                 && "markup".equals(args[args.length - 1]);
-        if ((args.length == 2 || args.length == 4) && !markup) {
-            throw new IllegalArgumentException("Final argument must be \"markup\"");
+        if ((args.length == 2 || args.length == 4) && !markup && !dumpBaseline) {
+            throw new IllegalArgumentException(
+                    "Final argument must be \"markup\" or \"dump-baseline\"");
         }
         String benchmarkScenario = (args.length == 3 || args.length == 4) ? args[1] : null;
         int benchmarkDelayMillis = (args.length == 3 || args.length == 4)
@@ -70,8 +81,8 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
         Lwjgl3ApplicationConfiguration configuration = new Lwjgl3ApplicationConfiguration();
         configuration.setTitle("libGDX UI Harness Reference");
         configuration.setWindowedMode(WIDTH, HEIGHT);
-        configuration.setWindowSizeLimits(WIDTH, HEIGHT, WIDTH, HEIGHT);
-        configuration.setResizable(false);
+        configuration.setWindowSizeLimits(320, 240, 3840, 2160);
+        configuration.setResizable(true);
         configuration.setInitialVisible(false);
         configuration.setHdpiMode(HdpiMode.Pixels);
         configuration.useVsync(false);
@@ -79,7 +90,8 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
         configuration.setIdleFPS(60);
         configuration.disableAudio(true);
         new Lwjgl3Application(new ReferenceUiApplication(
-                root, benchmarkScenario, benchmarkDelayMillis, markup), configuration);
+                root, benchmarkScenario, benchmarkDelayMillis, markup, dumpBaseline),
+                configuration);
     }
 
     @Override public void create() {
@@ -109,6 +121,16 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
         screen.draw();
         control.afterDraw();
+        if (dumpBaseline && !baselineDumped) {
+            baselineDumped = true;
+            try {
+                ReferenceBaselineCodec.write(
+                        processRoot.resolve("reference-baseline.json"),
+                        control.pristineBaseline());
+            } catch (IOException failure) {
+                throw new IllegalStateException("Unable to dump reference baseline", failure);
+            }
+        }
         if (!readyPrinted) {
             readyPrinted = true;
             System.err.println("REFERENCE_UI_READY");

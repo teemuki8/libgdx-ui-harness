@@ -21,3 +21,16 @@ The protocol session gains an optional `SemanticCompareCoordinator` boundary wit
 ## Consequences
 
 CI gains durable semantic regression baselines independent of raster comparison, with explicit identity, tolerance, exclusion, and ambiguity semantics. Adding a baseline property or changing identity-key precedence requires protocol golden updates, schema review, and the exact MCP catalog update.
+
+## Amendment (2026-08-08): registration and digest identity
+
+Baselines are immutable and digest-addressed. `SemanticBaseline` carries a canonical SHA-256
+`digest` computed by `BaselineDigest` over the complete versioned baseline (version, id,
+strict-node flag, and the full `BaselineNode` tree). `SemanticBaselineCatalog.register`
+validates the claimed digest against the recomputed canonical value and rejects any
+conflicting replacement under an existing identifier; identical content is an idempotent
+no-op. An unknown or misspelled identifier returns a typed `not-found` result and the harness
+never learns a baseline from the current observation. The production fixture pre-loads its
+committed `reference-ui/reference-baseline.json` resource before serving requests. The
+request's `strictNodes` flag no longer mutates the registered baseline; strictness is a
+property of the registered immutable baseline.

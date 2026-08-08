@@ -184,7 +184,7 @@ final class SemanticComparatorTest {
                         new BaselineNode(Role.GROUP, "root", null, null, null, null, null,
                                 null, null, null, null, null, null, null, null,
                                 null, null, Map.of(), List.of()),
-                        false));
+                        false, "0".repeat(64)));
     }
 
     @Test void repeatedComparisonIsDeterministic() {
@@ -203,7 +203,7 @@ final class SemanticComparatorTest {
     }
 
     private static SemanticBaseline baseline(String id, BaselineNode root) {
-        return new SemanticBaseline(1, 0, id, root, false);
+        return SemanticBaseline.registered(1, 0, id, root, false);
     }
 
     private static SemanticNode node(

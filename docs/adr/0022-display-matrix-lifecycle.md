@@ -21,3 +21,32 @@ The protocol session gains an optional `MatrixCoordinator` boundary with backwar
 ## Consequences
 
 CI can run one scenario and assertion set across a bounded display/locale/font matrix with deterministic order, exact provenance, and compact terminal reports. Adding a display dimension or changing bounds requires protocol golden updates, schema review, and the exact MCP catalog update.
+
+## Amendment (2026-08-08): application, observation, and restart coordination
+
+Every case is applied to the real application/window state before scenario acquisition and
+verified before any assertion runs. A host-owned allowlisted `MatrixCaseApplicator` applies
+and observes each requested dimension (window, UI scale, device pixel ratio, HiDPI mode,
+locale, font set, restart profile); a requested dimension that cannot be applied produces the
+closed `UNSUPPORTED` terminal status with bounded evidence, and a requested/observed mismatch
+produces the distinct `MISAPPLIED` terminal status with no passing assertion result. The
+observed restart profile comes from host-owned active state and is never echoed from the
+request; a request naming an unowned profile is rejected as `UNSUPPORTED`. Observed settings
+are captured for the same case and frame window as the assertions, the original display state
+is restored deterministically after every started case (including misapplied ones and
+application failures), and the Cartesian product remains preflight-bounded. `MatrixCaseResult`
+now carries observed locale, font-set, and restart-profile identities. A restoration
+failure is never suppressed: it upgrades the case terminal to `FAILED` with restoration
+evidence (or is aggregated onto an application failure without losing the primary), and every
+restore call re-attempts the full host-owned window and locale state independently so an
+incomplete restoration is retried on the next case rather than latched into a permanent
+no-op. Every case application is bounded by the request's run deadline: the applicator
+refuses to start once it is expired and bounds every window wait to the remaining time, so no
+application continues beyond the request bound; restoration remains mandatory after expiry
+under a separately bounded cleanup deadline and never reuses the expired request deadline.
+The deadline is threaded into every application step and checked immediately before each
+actual mutation, after the window step, and again after the locale step before any case is
+reported applied — `Applied` is never returned after expiration. The bound is cooperative: a
+synchronous backend call issued before expiry may complete late (it cannot be preempted), but
+the late completion is detected after the call and triggers bounded cleanup through the
+restore path.

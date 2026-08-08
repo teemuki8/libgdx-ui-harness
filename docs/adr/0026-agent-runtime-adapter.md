@@ -23,3 +23,13 @@ Because the new module is publishable, it inherits the generated `apiCompatibili
 ## Consequences
 
 `ui_runtime_compare` EQUAL now proves a genuine runtime value: the displayed value equals the value the application runtime actually computed on a provably correlated frame. Applications using the adapter must record one `UiFrameCorrelation` per render frame, and a missing correlation yields an empty observation that the comparator reports as UNAVAILABLE, making STALE unreachable through this source. The module is a sixth publishable artifact in the same Central group and under the same licensing, and the `revision` limitation is documented on the source so consumers never treat it as a runtime tick.
+
+## Amendment (2026-08-08): runtime type identity and independent model ownership
+
+The fixture's runtime values come from an independent `ReferenceUiModel` rather than being
+read back off the Stage actors; the UI synchronizes the model through normal widget change
+events and the observation provider reads the model only. This closes the self-observation
+hole: a UI faithfully displaying the wrong model value reports `MISMATCH` with bounded
+same-frame correlation evidence. `RuntimeValueRenderer` additionally exposes the bounded
+`formatId` of each sealed `RuntimeValue` variant so the observation carries the runtime type
+identity required by ADR 0025's compatibility gate.

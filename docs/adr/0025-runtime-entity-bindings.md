@@ -23,3 +23,16 @@ The protocol session gains an optional `RuntimeCompareCoordinator` boundary with
 ## Consequences
 
 Agents can find UI for runtime entities, compare displayed and runtime values with explicit correlation, and correlate UI changes to simulation frames without a mandatory runtime library. Adding a binding field or comparator mode requires protocol golden updates, schema review, and the exact MCP catalog update.
+
+## Amendment (2026-08-08): type compatibility and independent ownership
+
+The runtime observation preserves the runtime value's type or format identity through the
+observation boundary: the adapter reports the intrinsic `RuntimeValue` format (null, boolean,
+integer, decimal, string, enum, vector2, list, object) as the observation's value-format
+identity rather than echoing the binding's declared format. The comparator never reports
+`EQUAL` when the binding declares a value format that differs from the observed runtime
+format; the incompatible case returns the closed `AMBIGUOUS` status with bounded mismatch
+details. Bindings may target properties on already-registered runtime entities without
+deriving the observation provider from the bound actor. Applications that install no runtime
+provider, and bindings that declare no format, retain the prior textual comparison and
+unavailable results.

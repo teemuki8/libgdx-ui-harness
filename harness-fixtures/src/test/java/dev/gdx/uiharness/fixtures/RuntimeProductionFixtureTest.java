@@ -30,4 +30,22 @@ final class RuntimeProductionFixtureTest {
             }
         }
     }
+
+    @Test
+    @Timeout(120)
+    void desynchronizedModelAndUiReportMismatchThroughProductionMcp() throws Exception {
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+            try (HarnessMcpClient client = HarnessMcpClient.connect(app)) {
+                JsonNode comparison = client.runtimeCompare(SESSION_ID, 5_000);
+                assertEquals("MISMATCH", comparison.path("status").asText());
+                assertEquals("reference-ui-user", comparison.path("entityId").asText());
+                assertEquals("value", comparison.path("propertyId").asText());
+                assertEquals("", comparison.path("displayedValue").asText());
+                assertEquals("Ada", comparison.path("runtimeValue").asText());
+                assertEquals(comparison.path("displayedFrame").asLong(),
+                        comparison.path("runtimeFrame").asLong(),
+                        "the mismatch must carry bounded same-frame correlation evidence");
+            }
+        }
+    }
 }

@@ -103,6 +103,18 @@ public final class RuntimeComparator {
                     binding.comparatorId(), binding.correlationId(),
                     snapshot.frame(), runtime.frame(), false, Map.of());
         }
+        String runtimeFormat = runtime.valueFormatId();
+        if (binding.valueFormatId() != null
+                && !binding.valueFormatId().equals(runtimeFormat)) {
+            return new DisplayedRuntimeComparison(
+                    DisplayedRuntimeComparison.Status.AMBIGUOUS,
+                    binding.entityId(), binding.propertyId(), displayed, runtime.value(),
+                    binding.comparatorId(), binding.correlationId(),
+                    snapshot.frame(), runtime.frame(), false, Map.of(
+                            "reason", "value-format-mismatch",
+                            "declaredFormat", binding.valueFormatId(),
+                            "runtimeFormat", runtimeFormat == null ? "" : runtimeFormat));
+        }
         boolean equal = typedEqual(displayed, runtime.value(), binding);
         return new DisplayedRuntimeComparison(
                 equal ? DisplayedRuntimeComparison.Status.EQUAL

@@ -95,6 +95,58 @@ final class MatrixProtocolTest {
         assertEquals(MatrixCaseStatus.PASSED, data.results().getFirst().status());
     }
 
+    @Test void observedIdentityFieldsBindToTheWireSchemaDeclaredLimits() {
+        assertThrows(IllegalArgumentException.class, () -> result("", "", null));
+        assertThrows(IllegalArgumentException.class, () -> result("   ", "", null));
+        assertThrows(IllegalArgumentException.class, () -> result("x".repeat(257), "", null));
+        assertThrows(IllegalArgumentException.class, () -> result("en", "", ""));
+        assertThrows(IllegalArgumentException.class, () -> result("en", "", "x".repeat(257)));
+        assertEquals("en", result("en", "font", "profile").observedLocale());
+        assertEquals("", result("en", "", null).observedFontSetId());
+        assertEquals("profile", result("en", "", "profile").observedRestartProfileId());
+        result("x".repeat(256), "x".repeat(256), "x".repeat(256));
+    }
+
+    private static MatrixCaseResult result(
+            String observedLocale, String observedFontSetId, String observedRestartProfileId) {
+        return new MatrixCaseResult(
+                new dev.gdx.uiharness.core.matrix.MatrixCaseSummary(
+                        0, new MatrixWindow(1280, 720), 1.0, 1.0,
+                        MatrixHiDpi.LOGICAL, "en", "", 16.0 / 9.0),
+                MatrixCaseStatus.PASSED,
+                new MatrixWindow(1280, 720), 1.0, 1.0, MatrixHiDpi.LOGICAL,
+                observedLocale, observedFontSetId, observedRestartProfileId,
+                List.of(), List.of(), List.of(), "");
+    }
+
+    @Test void matrixReportCarriesAppliedAndRejectedCaseEvidence() throws Exception {
+        MatrixReport report = new MatrixReport("run-1", "matrix", List.of(
+                new MatrixCaseResult(
+                        new dev.gdx.uiharness.core.matrix.MatrixCaseSummary(
+                                0, new MatrixWindow(1280, 720), 1.0, 1.0,
+                                MatrixHiDpi.LOGICAL, "en", "", 16.0 / 9.0),
+                        MatrixCaseStatus.UNSUPPORTED,
+                        null, null, null, null, null, null, null,
+                        List.of(), List.of(), List.of(),
+                        "unsupported case: unsupported devicePixelRatio: 2.0"),
+                new MatrixCaseResult(
+                        new dev.gdx.uiharness.core.matrix.MatrixCaseSummary(
+                                1, new MatrixWindow(1280, 720), 1.0, 1.0,
+                                MatrixHiDpi.LOGICAL, "en", "", 16.0 / 9.0),
+                        MatrixCaseStatus.MISAPPLIED,
+                        new MatrixWindow(1280, 720), 2.0, 1.0, MatrixHiDpi.LOGICAL,
+                        "en", "", "desktop-restart-1280x720",
+                        List.of(), List.of(), List.of(),
+                        "requested state not applied: uiScale")), false);
+
+        String json = ProtocolJson.mapper().writeValueAsString(report);
+
+        assertEquals(report, ProtocolJson.mapper().readValue(json, MatrixReport.class));
+        assertTrue(json.contains("\"status\":\"UNSUPPORTED\""));
+        assertTrue(json.contains("\"status\":\"MISAPPLIED\""));
+        assertTrue(json.contains("\"observedRestartProfileId\":\"desktop-restart-1280x720\""));
+    }
+
     private static HarnessRequest request(Command command) {
         return new HarnessRequest(ProtocolVersion.V1, "game", "request-matrix", 500, command);
     }
@@ -140,6 +192,7 @@ final class MatrixProtocolTest {
                             new MatrixWindow(1280, 720),
                             1.0, 1.0,
                             MatrixHiDpi.LOGICAL,
+                            "en", "", null,
                             List.of(0), List.of(), List.of(), "")),
                     false));
         }

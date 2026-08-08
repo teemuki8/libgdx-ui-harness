@@ -1,6 +1,8 @@
 package dev.gdx.uiharness.lwjgl3;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -72,11 +74,678 @@ final class Lwjgl3MatrixRunnerTest {
                         result.observedWindow());
                 assertEquals(1.0, result.observedUiScale());
                 assertEquals(MatrixHiDpi.LOGICAL, result.observedHiDpiMode());
+                assertEquals("en", result.observedLocale());
+                assertEquals("desktop", result.observedRestartProfileId());
                 assertEquals(List.of(0), result.passedAssertions());
             }
             assertEquals(2, fixture.acquisitions.get());
-            assertEquals(2, fixture.observed.get());
+            assertEquals(2, fixture.applied.get());
+            assertEquals(2, fixture.restored.get());
         }
+    }
+
+    @Test void unsupportedCaseIsTypedSkipWithoutScenarioAcquisition() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.unsupportedReason = "unsupported devicePixelRatio: 2.0";
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            String runId = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline())
+                    .toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            var result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.UNSUPPORTED, result.status());
+            assertEquals(0, result.passedAssertions().size());
+            assertEquals(0, result.failedAssertions().size());
+            assertEquals(0, fixture.acquisitions.get());
+            assertEquals(1, fixture.applied.get());
+            assertEquals(0, fixture.restored.get());
+            assertTrue(result.evidence().contains("devicePixelRatio"));
+        }
+    }
+
+    @Test void requestedObservedMismatchIsDistinctTerminalWithoutAssertions() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.observedUiScaleOverride = 2.0;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            String runId = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline())
+                    .toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            var result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.MISAPPLIED, result.status());
+            assertEquals(0, result.passedAssertions().size());
+            assertEquals(0, fixture.acquisitions.get());
+            assertEquals(1, fixture.restored.get(),
+                    "a misapplied case must restore the original display state");
+            assertTrue(result.evidence().contains("uiScale requested=1.0 observed=2.0"));
+        }
+    }
+
+    @Test void hostRestartProfileMismatchIsDistinctTerminalWithoutAssertions() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.observedRestartProfileOverride = "other-profile";
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            String runId = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline())
+                    .toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            var result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.MISAPPLIED, result.status());
+            assertEquals(0, result.passedAssertions().size());
+            assertEquals(0, fixture.acquisitions.get());
+            assertEquals(1, fixture.restored.get());
+            assertTrue(result.evidence().contains(
+                    "restartProfile requested=desktop observed=other-profile"));
+        }
+    }
+
+    @Test void expiredDeadlineMarksCasesUnstartedWithoutApplying() {
+        try (Fixture fixture = new Fixture()) {
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720), new MatrixWindow(1920, 1080)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of());
+            Deadline expired = Deadline.after(fixture.clock, Duration.ZERO);
+
+            String runId = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), expired)
+                    .toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            assertEquals(2, report.results().size());
+            for (var result : report.results()) {
+                assertEquals(MatrixCaseStatus.UNSTARTED, result.status());
+            }
+            assertEquals(0, fixture.applied.get());
+            assertEquals(0, fixture.restored.get());
+        }
+    }
+
+    @Test void synchronousAcquireFailureRestoresOnceAndContinuesToNextCase() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.throwOnNextScenarioSchedule = true;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720), new MatrixWindow(1920, 1080)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            assertEquals(2, report.results().size());
+            MatrixCaseResult first = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, first.status());
+            assertEquals(new MatrixWindow(1280, 720), first.observedWindow());
+            assertEquals(1.0, first.observedUiScale());
+            assertEquals(MatrixHiDpi.LOGICAL, first.observedHiDpiMode());
+            assertEquals("en", first.observedLocale());
+            assertEquals("desktop", first.observedRestartProfileId());
+            assertTrue(first.evidence().contains("scenario deadline scheduling rejected"),
+                    first.evidence());
+            assertEquals(MatrixCaseStatus.PASSED, report.results().get(1).status(),
+                    report.results().get(1).evidence());
+            assertEquals(1, fixture.acquisitions.get());
+            assertEquals(2, fixture.applied.get());
+            assertEquals(2, fixture.restored.get(),
+                    "a synchronously failed acquisition must restore exactly once "
+                            + "before the next case");
+        }
+    }
+
+    @Test void restoreFailureFailsAnOtherwisePassingCaseAndNextCaseStillRuns() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.restoreFailuresRemaining = 1;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720), new MatrixWindow(1920, 1080)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            assertEquals(2, report.results().size());
+            MatrixCaseResult first = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, first.status());
+            assertTrue(first.evidence().contains("display restore failed"), first.evidence());
+            assertEquals(MatrixCaseStatus.PASSED, report.results().get(1).status(),
+                    "the next case must still run after a restore failure: "
+                            + report.results().get(1).evidence());
+            assertEquals(2, fixture.applied.get());
+            assertEquals(2, fixture.restored.get());
+            assertEquals(2, fixture.acquisitions.get());
+        }
+    }
+
+    @Test void restoreFailureIsAggregatedAfterPrimaryAssertionFailure() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.saveAbsent = true;
+            fixture.mismatchedSnapshots = true;
+            fixture.restoreFailuresRemaining = 1;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            fixture.nowNanos[0] += Duration.ofSeconds(6).toNanos();
+            fixture.deadlines.expire();
+            for (int index = 0; index < 4 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            String evidence = result.evidence();
+            assertTrue(evidence.contains("does not match delivered frame"),
+                    "the primary assertion failure must stay first: " + evidence);
+            assertTrue(evidence.contains("display restore failed"),
+                    "the restore failure must be aggregated after the primary: " + evidence);
+            assertTrue(evidence.length() <= 512, "case evidence must stay bounded");
+            assertEquals(1, fixture.restored.get());
+        }
+    }
+
+    @Test void asyncAcquireFailureKeepsObservedIdentityEvidence() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.failReset = true;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 8 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            assertEquals(new MatrixWindow(1280, 720), result.observedWindow());
+            assertEquals(1.0, result.observedUiScale());
+            assertEquals(MatrixHiDpi.LOGICAL, result.observedHiDpiMode());
+            assertEquals("en", result.observedLocale());
+            assertEquals("desktop", result.observedRestartProfileId());
+            assertTrue(result.evidence().contains("scenario acquisition failed"),
+                    result.evidence());
+            assertEquals(1, fixture.acquisitions.get());
+            assertEquals(1, fixture.applied.get());
+            assertEquals(1, fixture.restored.get());
+        }
+    }
+
+    @Test void restoreFailureUpgradesAMisappliedCaseToFailed() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.observedUiScaleOverride = 2.0;
+            fixture.restoreFailuresRemaining = 1;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            String runId = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline())
+                    .toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            String evidence = result.evidence();
+            assertTrue(evidence.contains("display restore failed"),
+                    "the restore failure must become the primary failure: " + evidence);
+            assertTrue(evidence.contains("requested state not applied"),
+                    "the misapplied classification must be retained: " + evidence);
+            assertEquals(1, fixture.restored.get());
+        }
+    }
+
+    @Test void longRestoreFailureKeepsPrimaryEvidenceAfterAssertionFailure() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.saveAbsent = true;
+            fixture.mismatchedSnapshots = true;
+            fixture.restoreMessage = "display restore rejected " + "x".repeat(600);
+            fixture.restoreFailuresRemaining = 1;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            fixture.nowNanos[0] += Duration.ofSeconds(6).toNanos();
+            fixture.deadlines.expire();
+            for (int index = 0; index < 4 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            String evidence = result.evidence();
+            assertTrue(evidence.length() <= 512, "case evidence must stay bounded");
+            assertTrue(evidence.contains("does not match delivered frame"),
+                    "the primary assertion failure must never be replaced: " + evidence);
+            assertTrue(evidence.contains("display restore failed"),
+                    "the restore failure must still be represented: " + evidence);
+        }
+    }
+
+    @Test void longRestoreFailureKeepsPrimaryEvidenceAfterAcquisitionFailure() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.failReset = true;
+            fixture.restoreMessage = "display restore rejected " + "y".repeat(600);
+            fixture.restoreFailuresRemaining = 1;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 8 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            String evidence = result.evidence();
+            assertTrue(evidence.length() <= 512, "case evidence must stay bounded");
+            assertTrue(evidence.contains("scenario acquisition failed"),
+                    "the acquisition failure must never be replaced: " + evidence);
+            assertTrue(evidence.contains("display restore failed"),
+                    "the restore failure must still be represented: " + evidence);
+        }
+    }
+
+    @Test void longRestoreFailureAloneStaysBounded() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.restoreMessage = "display restore rejected " + "z".repeat(600);
+            fixture.restoreFailuresRemaining = 1;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            String evidence = result.evidence();
+            assertTrue(evidence.length() <= 512, "case evidence must stay bounded");
+            assertTrue(evidence.startsWith("display restore failed"),
+                    "the restore failure must remain the primary evidence: " + evidence);
+        }
+    }
+
+    @Test void secondRunIsRejectedWhileFirstIsActiveAndNewRunSucceedsAfterTerminal() {
+        try (Fixture fixture = new Fixture()) {
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> first = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            assertEquals(1, fixture.applied.get(),
+                    "the first run applies before its assertion stage waits");
+
+            CompletionStage<String> second = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            java.util.concurrent.CompletionException rejection = assertThrows(
+                    java.util.concurrent.CompletionException.class,
+                    () -> second.toCompletableFuture().join());
+            assertEquals("matrix run already active", rejection.getCause().getMessage());
+            assertEquals(1, fixture.applied.get(),
+                    "a rejected run must never apply a case");
+            assertEquals(0, fixture.acquisitions.get());
+
+            for (int index = 0; index < 16 && !first.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String firstRunId = first.toCompletableFuture().join();
+            assertEquals(MatrixCaseStatus.PASSED, fixture.runner.results(firstRunId)
+                    .orElseThrow().results().getFirst().status());
+
+            CompletionStage<String> third = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !third.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String thirdRunId = third.toCompletableFuture().join();
+            assertEquals(MatrixCaseStatus.PASSED, fixture.runner.results(thirdRunId)
+                    .orElseThrow().results().getFirst().status());
+            assertEquals(2, fixture.applied.get());
+            assertEquals(2, fixture.restored.get());
+        }
+    }
+
+    @Test void applicatorReceivesExactRunDeadline() {
+        try (Fixture fixture = new Fixture()) {
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+            Deadline deadline = fixture.deadline();
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), deadline);
+            assertSame(deadline, fixture.lastApplyDeadline,
+                    "the runner must pass the exact run deadline to the applicator");
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+            assertEquals(MatrixCaseStatus.PASSED,
+                    fixture.runner.results(runId).orElseThrow().results().getFirst().status());
+        }
+    }
+
+    @Test void cancelledRunStillRestoresAndAdmissionOpensOnlyAfterTerminal() {
+        try (Fixture fixture = new Fixture()) {
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> first = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            assertEquals(1, fixture.applied.get());
+            assertTrue(first.toCompletableFuture().cancel(true),
+                    "the caller may cancel the returned run stage");
+
+            for (int index = 0; index < 16 && fixture.restored.get() == 0; index++) {
+                fixture.nextFrame();
+            }
+            assertTrue(first.toCompletableFuture().isCancelled());
+            assertEquals(1, fixture.applied.get(),
+                    "cancellation must not abort the upstream run");
+            assertEquals(1, fixture.restored.get(),
+                    "the upstream run must still restore after cancellation");
+
+            CompletionStage<String> next = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !next.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String nextRunId = next.toCompletableFuture().join();
+            assertEquals(MatrixCaseStatus.PASSED,
+                    fixture.runner.results(nextRunId).orElseThrow().results().getFirst().status(),
+                    "admission must open only after the cancelled run reached its terminal");
+            assertEquals(2, fixture.applied.get());
+            assertEquals(2, fixture.restored.get());
+        }
+    }
+
+    @Test void releasedObserverConstructorAndDisplayObservationRemainSourceCompatible() {
+        try (Fixture fixture = new Fixture()) {
+            // Exact released v1 API call sites: a lambda targets the functional DisplayObserver,
+            // the 4-arg DisplayObservation constructor is used, and the 4-arg runner constructor
+            // adapts the observer. Identity fields are not reported by the legacy observer.
+            Lwjgl3MatrixRunner legacyRunner = new Lwjgl3MatrixRunner(
+                    fixture.scenarios,
+                    fixture.waits,
+                    matrixCase -> new Lwjgl3MatrixRunner.DisplayObservation(
+                            matrixCase.window(), matrixCase.uiScale(),
+                            matrixCase.devicePixelRatio(), matrixCase.hiDpiMode()),
+                    new Lwjgl3MatrixRunner.Scenario(
+                            "matrix", 7, Map.of(), "desktop", "app", "process", "session"));
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = legacyRunner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = legacyRunner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.PASSED, result.status(),
+                    "a legacy observation without identity must not misapply: "
+                            + result.evidence());
+            assertEquals(new MatrixWindow(1280, 720), result.observedWindow());
+            assertEquals(1.0, result.observedUiScale());
+            assertEquals(MatrixHiDpi.LOGICAL, result.observedHiDpiMode());
+            assertNull(result.observedLocale(),
+                    "a released legacy observer cannot report the observed locale");
+            assertNull(result.observedRestartProfileId(),
+                    "a released legacy observer cannot report the observed restart profile");
+            assertEquals(1, fixture.acquisitions.get());
+        }
+    }
+
+    @Test void chainedContinuationCanStartNextRunImmediatelyAfterTerminal() {
+        try (Fixture fixture = new Fixture()) {
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> first = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            CompletionStage<String> chained = first.thenCompose(firstRunId -> {
+                assertTrue(fixture.runner.results(firstRunId).isPresent(),
+                        "the first report must be visible to a continuation");
+                return fixture.runner.run(
+                        definition, MatrixLimits.defaults(), fixture.deadline());
+            });
+            for (int index = 0; index < 32 && !chained.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String secondRunId = chained.toCompletableFuture().join();
+            assertEquals(MatrixCaseStatus.PASSED, fixture.runner.results(secondRunId)
+                    .orElseThrow().results().getFirst().status(),
+                    "a continuation starting the next run must not be rejected");
+            assertEquals(2, fixture.applied.get());
+            assertEquals(2, fixture.restored.get());
+        }
+    }
+
+    @Test void incompleteIdentityFromApplicatorIsRejectedBeforeAcquisition() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.incompleteIdentityObservation = true;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            String runId = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline())
+                    .toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            assertEquals(0, result.passedAssertions().size());
+            assertEquals(0, fixture.acquisitions.get(),
+                    "an observation without complete identity must be rejected before acquisition");
+            assertTrue(result.evidence().contains("case application failed"),
+                    result.evidence());
+            assertEquals(1, fixture.applied.get());
+        }
+    }
+
+    @Test void applyResultSealedHierarchyPermitsExactlyAppliedAndUnsupported() {
+        Class<?>[] permitted = Lwjgl3MatrixRunner.ApplyResult.class.getPermittedSubclasses();
+        assertEquals(2, permitted.length,
+                "external exhaustive switches must see exactly two permitted outcomes");
+        assertTrue(java.util.Arrays.asList(permitted)
+                .contains(Lwjgl3MatrixRunner.ApplyResult.Applied.class));
+        assertTrue(java.util.Arrays.asList(permitted)
+                .contains(Lwjgl3MatrixRunner.ApplyResult.Unsupported.class));
     }
 
     @Test void matrixProductLimitRejectsBeforeAnyCaseStarts() {
@@ -319,10 +988,68 @@ final class Lwjgl3MatrixRunnerTest {
         final AtomicInteger acquisitions = new AtomicInteger();
         final AtomicInteger releases = new AtomicInteger();
         final AtomicInteger releasesAtNextAcquire = new AtomicInteger();
-        final AtomicInteger observed = new AtomicInteger();
+        final AtomicInteger applied = new AtomicInteger();
+        final AtomicInteger restored = new AtomicInteger();
+        String unsupportedReason;
+        Double observedUiScaleOverride;
+        String observedRestartProfileOverride;
+        /** Host-owned active restart profile, never derived from the runner's request. */
+        final String hostRestartProfile = "desktop";
+        boolean throwOnNextScenarioSchedule;
+        boolean failReset;
+        boolean incompleteIdentityObservation;
+        int restoreFailuresRemaining;
+        String restoreMessage = "display restore rejected";
+        Deadline lastApplyDeadline;
+        final Lwjgl3MatrixRunner.MatrixCaseApplicator applicator =
+                new Lwjgl3MatrixRunner.MatrixCaseApplicator() {
+                    @Override public Lwjgl3MatrixRunner.ApplyResult apply(
+                            dev.gdx.uiharness.core.matrix.MatrixCase matrixCase,
+                            String restartProfileId,
+                            Deadline deadline) {
+                        applied.incrementAndGet();
+                        lastApplyDeadline = deadline;
+                        if (unsupportedReason != null) {
+                            return new Lwjgl3MatrixRunner.ApplyResult.Unsupported(
+                                    unsupportedReason);
+                        }
+                        if (incompleteIdentityObservation) {
+                            return new Lwjgl3MatrixRunner.ApplyResult.Applied(
+                                    new Lwjgl3MatrixRunner.DisplayObservation(
+                                            matrixCase.window(), matrixCase.uiScale(),
+                                            matrixCase.devicePixelRatio(), matrixCase.hiDpiMode(),
+                                            null, null, null));
+                        }
+                        return new Lwjgl3MatrixRunner.ApplyResult.Applied(
+                                new Lwjgl3MatrixRunner.DisplayObservation(
+                                        matrixCase.window(),
+                                        observedUiScaleOverride != null
+                                                ? observedUiScaleOverride : matrixCase.uiScale(),
+                                        matrixCase.devicePixelRatio(),
+                                        matrixCase.hiDpiMode(),
+                                        matrixCase.locale(),
+                                        matrixCase.fontSetId(),
+                                        observedRestartProfileOverride != null
+                                                ? observedRestartProfileOverride
+                                                : hostRestartProfile));
+                    }
+
+                    @Override public void restore() {
+                        restored.incrementAndGet();
+                        // Each case ends with a fresh host state, mirroring the previous
+                        // per-case observer reset so ordering tests stay deterministic.
+                        saveAbsent = false;
+                        mismatchedSnapshots = false;
+                        if (restoreFailuresRemaining > 0) {
+                            restoreFailuresRemaining--;
+                            throw new IllegalStateException(restoreMessage);
+                        }
+                    }
+                };
         final ManualFrames frames = new ManualFrames();
         final ManualDeadlines deadlines = new ManualDeadlines();
         final Scene2dScenarioRunner scenarios;
+        final WaitEngine waits;
         final Lwjgl3MatrixRunner runner;
         boolean visible = true;
         boolean saveAbsent;
@@ -339,6 +1066,9 @@ final class Lwjgl3MatrixRunnerTest {
                         @Override public void reset(ScenarioRequest request) {
                             releasesAtNextAcquire.set(releases.get());
                             acquisitions.incrementAndGet();
+                            if (failReset) {
+                                throw new IllegalStateException("reset rejected");
+                            }
                         }
                         @Override public boolean ready(ScenarioRequest request) {
                             return true;
@@ -358,6 +1088,11 @@ final class Lwjgl3MatrixRunnerTest {
                     new DeadlineScheduler() {
                         @Override public Cancellation schedule(
                                 Duration delay, Runnable signal) {
+                            if (Fixture.this.throwOnNextScenarioSchedule) {
+                                Fixture.this.throwOnNextScenarioSchedule = false;
+                                throw new IllegalStateException(
+                                        "scenario deadline scheduling rejected");
+                            }
                             return () -> {};
                         }
                     };
@@ -380,18 +1115,12 @@ final class Lwjgl3MatrixRunnerTest {
                     return Fixture.this.snapshot();
                 }
             };
-            WaitEngine waits = new WaitEngine(
+            waits = new WaitEngine(
                     this::snapshot, assertionSnapshots, locators, clock, frames,
                     deadlines);
-            runner = new Lwjgl3MatrixRunner(scenarios, waits, matrixCase -> {
-                observed.incrementAndGet();
-                saveAbsent = false;
-                mismatchedSnapshots = false;
-                return new Lwjgl3MatrixRunner.DisplayObservation(
-                        matrixCase.window(), matrixCase.uiScale(),
-                        matrixCase.devicePixelRatio(), matrixCase.hiDpiMode());
-            }, new Lwjgl3MatrixRunner.Scenario(
-                    "matrix", 7, Map.of(), "desktop", "app", "process", "session"));
+            runner = new Lwjgl3MatrixRunner(scenarios, waits, applicator,
+                    new Lwjgl3MatrixRunner.Scenario(
+                            "matrix", 7, Map.of(), "desktop", "app", "process", "session"));
         }
 
         Deadline deadline() {

@@ -1,0 +1,610 @@
+{
+  "majorVersion" : 1,
+  "minorVersion" : 0,
+  "id" : "reference-screen",
+  "root" : {
+    "role" : "GROUP",
+    "actorName" : "reference-stage",
+    "actorType" : "Group",
+    "visible" : true,
+    "focused" : false,
+    "focusable" : false,
+    "stageBounds" : {
+      "x" : 0.0,
+      "y" : 0.0,
+      "width" : 0.0,
+      "height" : 0.0
+    },
+    "properties" : { },
+    "children" : [ {
+      "role" : "IMAGE",
+      "actorName" : "background",
+      "actorType" : "Image",
+      "visible" : true,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 0.0,
+        "y" : 0.0,
+        "width" : 1280.0,
+        "height" : 720.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Deterministic UI Harness",
+      "text" : "Deterministic UI Harness",
+      "label" : "Deterministic UI Harness",
+      "testId" : "harness-title",
+      "actorType" : "Label",
+      "visible" : true,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 64.0,
+        "y" : 624.0,
+        "width" : 580.0,
+        "height" : 74.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "GROUP",
+      "actorName" : "sign-in-panel",
+      "actorType" : "Table",
+      "visible" : true,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 64.0,
+        "y" : 300.0,
+        "width" : 500.0,
+        "height" : 300.0
+      },
+      "properties" : { },
+      "children" : [ {
+        "role" : "LABEL",
+        "accessibleName" : "Sign in",
+        "text" : "Sign in",
+        "actorType" : "Label",
+        "visible" : true,
+        "focused" : false,
+        "focusable" : false,
+        "stageBounds" : {
+          "x" : 92.0,
+          "y" : 518.0,
+          "width" : 444.0,
+          "height" : 44.0
+        },
+        "properties" : { },
+        "children" : [ ]
+      }, {
+        "role" : "TEXT_FIELD",
+        "accessibleName" : "Username",
+        "text" : "",
+        "label" : "Username",
+        "testId" : "username",
+        "actorName" : "username",
+        "actorType" : "TextField",
+        "visible" : true,
+        "enabled" : true,
+        "editable" : true,
+        "focused" : false,
+        "focusable" : true,
+        "stageBounds" : {
+          "x" : 92.0,
+          "y" : 462.0,
+          "width" : 444.0,
+          "height" : 44.0
+        },
+        "properties" : { },
+        "children" : [ ]
+      }, {
+        "role" : "TEXT_FIELD",
+        "accessibleName" : "Password",
+        "text" : "",
+        "label" : "Password",
+        "testId" : "password",
+        "actorName" : "password",
+        "actorType" : "TextField",
+        "visible" : true,
+        "enabled" : true,
+        "editable" : true,
+        "focused" : false,
+        "focusable" : true,
+        "stageBounds" : {
+          "x" : 92.0,
+          "y" : 406.0,
+          "width" : 444.0,
+          "height" : 44.0
+        },
+        "properties" : { },
+        "children" : [ ]
+      }, {
+        "role" : "BUTTON",
+        "accessibleName" : "Sign in",
+        "text" : "Sign in",
+        "label" : "Sign in",
+        "testId" : "sign-in",
+        "actorName" : "sign-in",
+        "actorType" : "TextButton",
+        "visible" : true,
+        "enabled" : true,
+        "checked" : false,
+        "focused" : false,
+        "focusable" : true,
+        "stageBounds" : {
+          "x" : 92.0,
+          "y" : 350.0,
+          "width" : 180.0,
+          "height" : 44.0
+        },
+        "properties" : { },
+        "children" : [ {
+          "role" : "GENERIC",
+          "actorType" : "Label",
+          "visible" : true,
+          "focused" : false,
+          "focusable" : false,
+          "stageBounds" : {
+            "x" : 92.0,
+            "y" : 350.0,
+            "width" : 180.0,
+            "height" : 44.0
+          },
+          "properties" : { },
+          "children" : [ ]
+        } ]
+      } ]
+    }, {
+      "role" : "GROUP",
+      "actorName" : "settings-panel",
+      "actorType" : "Table",
+      "visible" : true,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 660.0,
+        "y" : 164.0,
+        "width" : 540.0,
+        "height" : 436.0
+      },
+      "properties" : { },
+      "children" : [ {
+        "role" : "LABEL",
+        "accessibleName" : "Settings",
+        "text" : "Settings",
+        "actorType" : "Label",
+        "visible" : true,
+        "focused" : false,
+        "focusable" : false,
+        "stageBounds" : {
+          "x" : 684.0,
+          "y" : 550.0,
+          "width" : 492.0,
+          "height" : 36.0
+        },
+        "properties" : { },
+        "children" : [ ]
+      }, {
+        "role" : "CHECKBOX",
+        "accessibleName" : " Fixed-step animations",
+        "text" : "Fixed-step animations",
+        "actorType" : "CheckBox",
+        "visible" : true,
+        "enabled" : false,
+        "checked" : true,
+        "focused" : false,
+        "focusable" : true,
+        "stageBounds" : {
+          "x" : 684.0,
+          "y" : 502.0,
+          "width" : 492.0,
+          "height" : 36.0
+        },
+        "properties" : { },
+        "children" : [ {
+          "role" : "IMAGE",
+          "actorType" : "Image",
+          "visible" : true,
+          "focused" : false,
+          "focusable" : false,
+          "stageBounds" : {
+            "x" : 856.0,
+            "y" : 520.0,
+            "width" : 0.0,
+            "height" : 0.0
+          },
+          "properties" : { },
+          "children" : [ ]
+        }, {
+          "role" : "GENERIC",
+          "actorType" : "Label",
+          "visible" : true,
+          "focused" : false,
+          "focusable" : false,
+          "stageBounds" : {
+            "x" : 856.0,
+            "y" : 510.0,
+            "width" : 147.0,
+            "height" : 19.0
+          },
+          "properties" : { },
+          "children" : [ ]
+        } ]
+      }, {
+        "role" : "SCROLL_PANE",
+        "accessibleName" : "Settings list",
+        "label" : "Settings list",
+        "testId" : "settings-scroll",
+        "actorName" : "settings-scroll",
+        "actorType" : "ScrollPane",
+        "visible" : true,
+        "focused" : false,
+        "focusable" : true,
+        "stageBounds" : {
+          "x" : 684.0,
+          "y" : 246.0,
+          "width" : 492.0,
+          "height" : 244.0
+        },
+        "properties" : {
+          "maxX" : "0.0",
+          "maxY" : "0.0",
+          "scrollX" : "0.0",
+          "scrollY" : "0.0"
+        },
+        "children" : [ {
+          "role" : "LIST",
+          "accessibleName" : "Settings choices",
+          "text" : "Gamma",
+          "label" : "Settings choices",
+          "testId" : "settings-list",
+          "actorName" : "settings-list",
+          "actorType" : "List",
+          "visible" : true,
+          "selected" : true,
+          "focused" : false,
+          "focusable" : true,
+          "stageBounds" : {
+            "x" : 684.0,
+            "y" : 246.0,
+            "width" : 492.0,
+            "height" : 244.0
+          },
+          "properties" : {
+            "selectedIndex" : "2"
+          },
+          "children" : [ ]
+        } ]
+      }, {
+        "role" : "BUTTON",
+        "accessibleName" : "Open dialog",
+        "text" : "Open dialog",
+        "label" : "Open dialog",
+        "testId" : "open-dialog",
+        "actorName" : "open-dialog",
+        "actorType" : "TextButton",
+        "visible" : true,
+        "enabled" : true,
+        "checked" : false,
+        "focused" : false,
+        "focusable" : true,
+        "stageBounds" : {
+          "x" : 684.0,
+          "y" : 190.0,
+          "width" : 180.0,
+          "height" : 44.0
+        },
+        "properties" : { },
+        "children" : [ {
+          "role" : "GENERIC",
+          "actorType" : "Label",
+          "visible" : true,
+          "focused" : false,
+          "focusable" : false,
+          "stageBounds" : {
+            "x" : 684.0,
+            "y" : 190.0,
+            "width" : 180.0,
+            "height" : 44.0
+          },
+          "properties" : { },
+          "children" : [ ]
+        } ]
+      } ]
+    }, {
+      "role" : "IMAGE",
+      "accessibleName" : "Rotated card",
+      "label" : "Rotated card",
+      "testId" : "rotated-card",
+      "actorName" : "rotated-card",
+      "actorType" : "Image",
+      "visible" : true,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 176.99847412109375,
+        "y" : 97.25540924072266,
+        "width" : 234.0030517578125,
+        "height" : 145.48919677734375
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "IMAGE",
+      "accessibleName" : "Overlap card",
+      "label" : "Overlap card",
+      "testId" : "overlap-card",
+      "actorName" : "overlap-card",
+      "actorType" : "Image",
+      "visible" : true,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 294.5399475097656,
+        "y" : 78.81959533691406,
+        "width" : 230.92013549804688,
+        "height" : 138.36080932617188
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Transforms and overlap",
+      "text" : "transforms + overlap",
+      "label" : "Transforms and overlap",
+      "testId" : "body-caption",
+      "actorType" : "Label",
+      "visible" : true,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 220.0,
+        "y" : 132.0,
+        "width" : 260.0,
+        "height" : 31.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Assertion state",
+      "text" : "initial",
+      "label" : "Assertion state",
+      "testId" : "assertion-state",
+      "actorName" : "assertion-state",
+      "actorType" : "Label",
+      "visible" : false,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 0.0,
+        "y" : 0.0,
+        "width" : 32.0,
+        "height" : 19.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Assertion candidate",
+      "text" : "candidate-0",
+      "label" : "Assertion candidate",
+      "testId" : "assertion-candidate",
+      "actorType" : "Label",
+      "visible" : false,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 0.0,
+        "y" : 0.0,
+        "width" : 76.0,
+        "height" : 19.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Assertion candidate",
+      "text" : "candidate-1",
+      "label" : "Assertion candidate",
+      "testId" : "assertion-candidate",
+      "actorType" : "Label",
+      "visible" : false,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 0.0,
+        "y" : 0.0,
+        "width" : 76.0,
+        "height" : 19.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Assertion candidate",
+      "text" : "candidate-2",
+      "label" : "Assertion candidate",
+      "testId" : "assertion-candidate",
+      "actorType" : "Label",
+      "visible" : false,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 0.0,
+        "y" : 0.0,
+        "width" : 76.0,
+        "height" : 19.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Assertion candidate",
+      "text" : "candidate-3",
+      "label" : "Assertion candidate",
+      "testId" : "assertion-candidate",
+      "actorType" : "Label",
+      "visible" : false,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 0.0,
+        "y" : 0.0,
+        "width" : 76.0,
+        "height" : 19.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Assertion candidate",
+      "text" : "candidate-4",
+      "label" : "Assertion candidate",
+      "testId" : "assertion-candidate",
+      "actorType" : "Label",
+      "visible" : false,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 0.0,
+        "y" : 0.0,
+        "width" : 76.0,
+        "height" : 19.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Assertion candidate",
+      "text" : "candidate-5",
+      "label" : "Assertion candidate",
+      "testId" : "assertion-candidate",
+      "actorType" : "Label",
+      "visible" : false,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 0.0,
+        "y" : 0.0,
+        "width" : 76.0,
+        "height" : 19.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Assertion candidate",
+      "text" : "candidate-6",
+      "label" : "Assertion candidate",
+      "testId" : "assertion-candidate",
+      "actorType" : "Label",
+      "visible" : false,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 0.0,
+        "y" : 0.0,
+        "width" : 76.0,
+        "height" : 19.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Assertion candidate",
+      "text" : "candidate-7",
+      "label" : "Assertion candidate",
+      "testId" : "assertion-candidate",
+      "actorType" : "Label",
+      "visible" : false,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 0.0,
+        "y" : 0.0,
+        "width" : 76.0,
+        "height" : 19.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Assertion candidate",
+      "text" : "candidate-8",
+      "label" : "Assertion candidate",
+      "testId" : "assertion-candidate",
+      "actorType" : "Label",
+      "visible" : false,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 0.0,
+        "y" : 0.0,
+        "width" : 76.0,
+        "height" : 19.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Assertion candidate",
+      "text" : "candidate-9",
+      "label" : "Assertion candidate",
+      "testId" : "assertion-candidate",
+      "actorType" : "Label",
+      "visible" : false,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 0.0,
+        "y" : 0.0,
+        "width" : 76.0,
+        "height" : 19.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Assertion candidate",
+      "text" : "candidate-10",
+      "label" : "Assertion candidate",
+      "testId" : "assertion-candidate",
+      "actorType" : "Label",
+      "visible" : false,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 0.0,
+        "y" : 0.0,
+        "width" : 84.0,
+        "height" : 19.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    }, {
+      "role" : "LABEL",
+      "accessibleName" : "Assertion candidate",
+      "text" : "candidate-11",
+      "label" : "Assertion candidate",
+      "testId" : "assertion-candidate",
+      "actorType" : "Label",
+      "visible" : false,
+      "focused" : false,
+      "focusable" : false,
+      "stageBounds" : {
+        "x" : 0.0,
+        "y" : 0.0,
+        "width" : 83.0,
+        "height" : 19.0
+      },
+      "properties" : { },
+      "children" : [ ]
+    } ]
+  },
+  "strictNodes" : false,
+  "digest" : "aac632129f8dcee98609422d25fbe7bec729ca4979d4e8c79ab1e6b0c2523e8d"
+}
