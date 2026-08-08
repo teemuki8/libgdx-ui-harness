@@ -4,7 +4,7 @@
 
 **Goal:** Close GitHub issues #21 (session-bound render-thread enforcement), #22 (snapshots only for active scenario/navigation consumers), and #23 (no internal base64 PNG round trips) with typed errors, atomic additive runner APIs, preserved String-typed public API and unchanged JSON wire shape, and a documented single-copy PNG ownership invariant.
 
-**Architecture:** `Scene2dSession` gains a `requireOwnerThread(operation)` guard on every method that reads or mutates Stage, actors, adapters, semantic metadata, or completed-frame state; failures are `HarnessException` with a new `RENDER_THREAD_VIOLATION` code that maps to a new `render-thread-violation` protocol wire code. `Scene2dSession.completedFrame` delegates to new atomic runner overloads `completedFrame(Supplier<SemanticSnapshot>, long, long)` that hold each runner's lifecycle lock through the active-check, the snapshot build, and the delivery enqueue, so a terminal transition cannot invalidate a reserved frame. The public protocol PNG result records are untouched; raw captured bytes travel in an internal `HarnessProtocolService.Execution` envelope (public `HarnessResponse` plus raw-capture attachments) from the service to the MCP handler, which publishes the attachment bytes directly — no base64 decode, no byte-typed public API, exactly two documented boundary snapshots per payload.
+**Architecture:** `Scene2dSession` gains a `requireOwnerThread(operation)` guard on every method that reads or mutates Stage, actors, adapters, semantic metadata, or completed-frame state; failures are `HarnessException` with a new `RENDER_THREAD_VIOLATION` code that maps to a new `render-thread-violation` protocol wire code. `Scene2dSession.completedFrame` delegates to new atomic runner overloads `completedFrame(Supplier<SemanticSnapshot>, long, long)` that hold each runner's lifecycle lock through the active-check, the snapshot build, and the delivery enqueue, so a terminal transition cannot invalidate a reserved frame. The public protocol PNG result records are untouched; raw captured bytes travel in an internal `HarnessProtocolService.Execution` envelope (public `HarnessResponse` plus bounded immutable `BinaryAttachment` values) from the service to the MCP handler, which streams each attachment to the publisher through a read-only buffer — no byte[] accessor, no base64 decode, no byte-typed public API, exactly two documented boundary snapshots per payload.
 
 **Tech Stack:** Java 25, Gradle wrapper (`--no-daemon --console=plain --warning-mode=fail`), JUnit 5, Jackson 2.22.1 (records unchanged), libGDX 1.14.2 Scene2D/LWJGL3, `xvfb-run` for real LWJGL3 smoke tests on headless Linux.
 
@@ -19,9 +19,10 @@
 - Public protocol JSON wire shape is invariant: keys `pngBase64`, `currentPngBase64`, `heatmapPngBase64` keep their exact names and base64 values; `errors.json` golden covers every `ProtocolError.Code` (the contract test asserts full enum coverage), so any new code requires a new golden entry.
 - `ProtocolError.Code.fromCore` maps by `ErrorCode.name()`: a new core `ErrorCode` REQUIRES a matching `ProtocolError.Code` constant or runtime `IllegalArgumentException`.
 - **Public Java API is preserved verbatim (binary and source compatible) for v1.2.0:** `Result.Screenshot`, `InspectCompare`, `TypographyDiagnostic`, and `LayoutDiagnostic` keep their exact String record components, constructors (including the `InspectCompare` 10-argument compatibility constructor), accessors (`pngBase64()` / `currentPngBase64()` / `heatmapPngBase64()`), generated equality/hashCode/toString, and binary descriptors. No record component changes, no byte-typed constructors or accessors are added to the public records, and no `@JsonProperty` changes are made.
-- **PNG byte publication architecture (no internal round trip, no public mutable bytes):** the MCP publication path routes from an internal, documented-not-supported `HarnessProtocolService.Execution` envelope that carries the public `HarnessResponse` plus a `Map<String, byte[]>` of raw capture attachments (keys `SCREENSHOT_CAPTURE`, `COMPARE_CURRENT_CAPTURE`, `COMPARE_HEATMAP_CAPTURE`, `TYPOGRAPHY_CURRENT_CAPTURE`, `LAYOUT_CURRENT_CAPTURE`). The public protocol records never expose bytes; the envelope is the only internal byte vehicle.
-- **PNG ownership contract (exactly two documented boundary snapshots, zero internal copies):** (1) `CapturedImage` (harness-core, unchanged) performs the single defensive snapshot at the capture trust boundary in its constructor; (2) the MCP publish boundary performs exactly one defensive snapshot via `CapturedImage.pngBytes()` when handing the immutable payload to the `ArtifactReference.Publisher` (whose existing contract is "publishes one immutable payload; implementations must not expose filesystem paths"). Between construction and publication the captured bytes are referenced, never copied: the service invokes `CapturedImage.pngBytes()` exactly once per execution to build both the public base64 String and the attachment, and the handler publishes the attachment array without cloning or decoding. The only base64 conversion in the system is the public String encode in `fromCore` (the wire representation); it is never decoded internally.
-- New public API is additive only: the internal `Execution` envelope and `executeWithAttachments` on `HarnessProtocolService`, the `completedFrame(Supplier<SemanticSnapshot>, long, long)` overloads on both runners, and the `ErrorCode.RENDER_THREAD_VIOLATION` wire code.
+- **PNG byte publication architecture (no internal round trip, no public mutable bytes):** the MCP publication path routes from an internal, documented-not-supported `HarnessProtocolService.Execution` envelope that carries the public `HarnessResponse` plus a bounded `Map<String, BinaryAttachment>` of raw capture attachments (keys `SCREENSHOT_CAPTURE`, `COMPARE_CURRENT_CAPTURE`, `COMPARE_HEATMAP_CAPTURE`, `TYPOGRAPHY_CURRENT_CAPTURE`, `LAYOUT_CURRENT_CAPTURE`). `BinaryAttachment` is an immutable value object with privately owned bytes, no `byte[]` accessor, a read-only `ByteBuffer` view, a stream `writeTo` bridge, and `length()`/`sha256()` accessors with content-based `equals`/`hashCode`. The public protocol records never expose bytes.
+- **BinaryAttachment ownership and bounds contract:** the package-private `BinaryAttachment.take(byte[])` factory transfers ownership from the trusted internal pipeline (used exactly once per execution with the single `CapturedImage.pngBytes()` defensive snapshot); the public `BinaryAttachment.of(byte[])` factory defensively copies for external construction. `Execution`'s constructor defensively owns its attachments (`Map.copyOf` over immutable values) and enforces `Execution.MAX_ATTACHMENTS` (4) and `Execution.MAX_ATTACHMENT_BYTES` (`Screenshot.MAX_PNG_BYTES`) with typed `IllegalArgumentException`s. The MCP handler consumes attachments via the read-only buffer only.
+- **PNG ownership contract (exactly two documented boundary snapshots, zero internal copies):** (1) `CapturedImage` (harness-core, unchanged) performs the single defensive snapshot at the capture trust boundary in its constructor; (2) the MCP publish boundary performs exactly one bounded copy — the default `ArtifactReference.Publisher.publish(String, ByteBuffer)` overload wraps the read-only buffer into the existing byte[] overload, and publishers MAY override the ByteBuffer overload for zero-copy streaming. Between construction and publication the captured bytes are referenced, never copied: the service invokes `CapturedImage.pngBytes()` exactly once per execution to build both the public base64 String and the attachment, and the handler streams the attachment without cloning or decoding. The only base64 conversion in the system is the public String encode in `fromCore` (the wire representation); it is never decoded internally.
+- New public API is additive only: the internal `Execution` envelope, `BinaryAttachment`, the default `Publisher.publish(String, ByteBuffer)` overload, and `executeWithAttachments` on `HarnessProtocolService`, the `completedFrame(Supplier<SemanticSnapshot>, long, long)` overloads on both runners, and the `ErrorCode.RENDER_THREAD_VIOLATION` wire code.
 - Every task ends with a commit that leaves the tree compiling and its focused tests green. Do not run formatters, linters, or the full suite mid-task; Task 9 runs the repository gate.
 
 ---
@@ -29,25 +30,97 @@
 ### Task 1 (#23): Internal execution envelope with raw screenshot attachment
 
 **Files:**
+- Create: `harness-protocol/src/main/java/dev/gdx/uiharness/protocol/BinaryAttachment.java` — bounded immutable byte payload (documented internal)
 - Modify: `harness-protocol/src/main/java/dev/gdx/uiharness/protocol/HarnessProtocolService.java` — add the internal `Execution` record, attachment key constants, `executeWithAttachments`, and the internal routing that carries raw captures
 - Modify: `harness-protocol/src/main/java/dev/gdx/uiharness/protocol/HarnessResponse.java:405-418` — add an internal `Screenshot.fromCore(CapturedImage, byte[])` overload; **no change to the public `Screenshot` record**
-- Modify: `harness-protocol/src/test/java/dev/gdx/uiharness/protocol/HarnessProtocolServiceTest.java` — new attachment tests
+- Modify: `harness-protocol/src/test/java/dev/gdx/uiharness/protocol/HarnessProtocolServiceTest.java` — attachment tests
+- Create: `harness-protocol/src/test/java/dev/gdx/uiharness/protocol/BinaryAttachmentTest.java` — immutability, mutation, oversize, and equality tests
 
 **Interfaces:**
 - Consumes: `dev.gdx.uiharness.core.capture.CapturedImage` (unchanged; its constructor is the single defensive snapshot at the capture trust boundary).
 - Produces:
   ```java
-  /** Internal: public response plus raw captured evidence for direct artifact publication. Not part of the supported public API. */
-  public record Execution(HarnessResponse response, Map<String, byte[]> captures) {
-      public Execution {
-          response = Objects.requireNonNull(response, "response");
-          captures = Map.copyOf(Objects.requireNonNull(captures, "captures"));
-      }
+  /** Internal: public response plus bounded immutable evidence attachments for direct artifact publication. Not part of the supported public API. */
+  public record Execution(HarnessResponse response, Map<String, BinaryAttachment> captures) {
+      public static final int MAX_ATTACHMENTS = 4;
+      public static final int MAX_ATTACHMENT_BYTES = HarnessResponse.Result.Screenshot.MAX_PNG_BYTES;
+      public Execution { ... defensively owns (Map.copyOf), enforces count and per-attachment size ... }
   }
   ```
-  with the public internal key constants `SCREENSHOT_CAPTURE = "screenshot-capture"`, `COMPARE_CURRENT_CAPTURE = "compare-current-capture"`, `COMPARE_HEATMAP_CAPTURE = "compare-heatmap-capture"`, `TYPOGRAPHY_CURRENT_CAPTURE = "typography-current-capture"`, `LAYOUT_CURRENT_CAPTURE = "layout-current-capture"`; `HarnessProtocolService.executeWithAttachments(HarnessRequest)` → `CompletionStage<Execution>`; internal `static Screenshot fromCore(CapturedImage image, byte[] raw)` in `HarnessResponse.Result.Screenshot` that encodes the wire String from the provided array (no second accessor call). Consumed by Tasks 2 and 3.
+  with the public internal key constants `SCREENSHOT_CAPTURE = "screenshot-capture"`, `COMPARE_CURRENT_CAPTURE = "compare-current-capture"`, `COMPARE_HEATMAP_CAPTURE = "compare-heatmap-capture"`, `TYPOGRAPHY_CURRENT_CAPTURE = "typography-current-capture"`, `LAYOUT_CURRENT_CAPTURE = "layout-current-capture"`; `HarnessProtocolService.executeWithAttachments(HarnessRequest)` → `CompletionStage<Execution>`; internal `static Screenshot fromCore(CapturedImage image, byte[] raw)` in `HarnessResponse.Result.Screenshot` that encodes the wire String from the provided array (no second accessor call). `BinaryAttachment` provides `public static BinaryAttachment of(byte[])` (defensive copy), package-private `static BinaryAttachment take(byte[])` (trusted ownership transfer), `int length()`, `String sha256()`, `ByteBuffer asByteBuffer()` (read-only), `void writeTo(OutputStream)` (copy-free), and content-based `equals`/`hashCode`. Consumed by Tasks 2 and 3.
 
-- [ ] **Step 1: Write the failing attachment test**
+- [ ] **Step 1: Write the failing attachment and immutability tests**
+
+Create `harness-protocol/src/test/java/dev/gdx/uiharness/protocol/BinaryAttachmentTest.java`:
+
+```java
+package dev.gdx.uiharness.protocol;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.BufferOverflowException;
+import java.nio.ByteBuffer;
+import java.nio.ReadOnlyBufferException;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+import org.junit.jupiter.api.Test;
+
+final class BinaryAttachmentTest {
+    @Test void ofDefensivelyCopiesAndTheValueStaysImmutable() {
+        byte[] supplied = {1, 2, 3, 4, 5};
+        BinaryAttachment attachment = BinaryAttachment.of(supplied);
+        supplied[0] = 99;
+        assertEquals(5, attachment.length());
+        assertEquals(sha256(new byte[] {1, 2, 3, 4, 5}), attachment.sha256());
+        assertArrayEquals(new byte[] {1, 2, 3, 4, 5}, readAll(attachment));
+    }
+
+    @Test void readOnlyBufferRejectsWritesAndHasNoByteArrayAccessor() {
+        BinaryAttachment attachment = BinaryAttachment.of(new byte[] {1, 2, 3});
+        ByteBuffer view = attachment.asByteBuffer();
+        assertTrue(view.isReadOnly());
+        assertThrows(ReadOnlyBufferException.class,
+                () -> view.put((byte) 9));
+    }
+
+    @Test void writeToStreamsTheOwnedBytesWithoutMutation() throws Exception {
+        BinaryAttachment attachment = BinaryAttachment.of(new byte[] {1, 2, 3, 4});
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        attachment.writeTo(sink);
+        assertArrayEquals(new byte[] {1, 2, 3, 4}, sink.toByteArray());
+    }
+
+    @Test void equalityAndHashCodeAreContentBased() {
+        BinaryAttachment first = BinaryAttachment.of(new byte[] {1, 2, 3});
+        BinaryAttachment second = BinaryAttachment.of(new byte[] {1, 2, 3});
+        BinaryAttachment other = BinaryAttachment.of(new byte[] {3, 2, 1});
+        assertEquals(first, second);
+        assertEquals(first.hashCode(), second.hashCode());
+        assertNotEquals(first, other);
+    }
+
+    private static byte[] readAll(BinaryAttachment attachment) {
+        ByteBuffer view = attachment.asByteBuffer();
+        byte[] bytes = new byte[view.remaining()];
+        view.get(bytes);
+        return bytes;
+    }
+
+    private static String sha256(byte[] content) {
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(content));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError("SHA-256 unavailable", impossible);
+        }
+    }
+}
+```
 
 Add to `HarnessProtocolServiceTest.java` (reuse the existing `service(RecordingHarness, RecordingCapture, TraceController)` helper and `RecordingCapture`):
 
@@ -68,9 +141,12 @@ Add to `HarnessProtocolServiceTest.java` (reuse the existing `service(RecordingH
             assertInstanceOf(HarnessResponse.Success.class, execution.response()).result());
     assertArrayEquals(payload, Base64.getDecoder().decode(screenshot.pngBase64()),
             "the public String wire representation must decode to the captured bytes");
-    assertArrayEquals(payload, execution.captures().get(HarnessProtocolService.SCREENSHOT_CAPTURE),
+    BinaryAttachment attachment =
+            execution.captures().get(HarnessProtocolService.SCREENSHOT_CAPTURE);
+    assertArrayEquals(payload, readAll(attachment.asByteBuffer()),
             "the internal capture attachment must equal the captured bytes exactly");
-    assertEquals(sha256Hex(payload), screenshot.sha256());
+    assertEquals(sha256Hex(payload), attachment.sha256());
+    assertEquals(payload.length, attachment.length());
 }
 
 @Test void executeKeepsItsExactPublicContractWithEmptyCaptures() {
@@ -85,9 +161,43 @@ Add to `HarnessProtocolServiceTest.java` (reuse the existing `service(RecordingH
             assertInstanceOf(HarnessResponse.Success.class, response).result());
     assertEquals("AQID", screenshot.pngBase64(), "public execute must keep its exact output");
 }
+
+@Test void executionBoundsAttachmentsAndDefensivelyOwnsTheMap() {
+    Map<String, BinaryAttachment> supplied = new java.util.HashMap<>();
+    supplied.put(HarnessProtocolService.SCREENSHOT_CAPTURE,
+            BinaryAttachment.of(new byte[] {1, 2, 3}));
+    HarnessProtocolService.Execution execution = new HarnessProtocolService.Execution(
+            new HarnessResponse.Success(ProtocolVersion.V1, "r", "game",
+                    new HarnessResponse.Result.Screenshot("AQID", "0".repeat(64),
+                            1, 1, 3, 1, 1, 1)),
+            supplied);
+    supplied.put("extra", BinaryAttachment.of(new byte[] {9}));
+    assertEquals(1, execution.captures().size(),
+            "the Execution must own its attachment map defensively");
+
+    byte[] oversized = new byte[HarnessResponse.Result.Screenshot.MAX_PNG_BYTES + 1];
+    assertThrows(IllegalArgumentException.class,
+            () -> new HarnessProtocolService.Execution(
+                    new HarnessResponse.Success(ProtocolVersion.V1, "r", "game",
+                            new HarnessResponse.Result.Screenshot("AQID", "0".repeat(64),
+                                    1, 1, 3, 1, 1, 1)),
+                    Map.of(HarnessProtocolService.SCREENSHOT_CAPTURE,
+                            BinaryAttachment.of(oversized))));
+
+    Map<String, BinaryAttachment> tooMany = new java.util.HashMap<>();
+    for (int index = 0; index < HarnessProtocolService.Execution.MAX_ATTACHMENTS + 1; index++) {
+        tooMany.put("key-" + index, BinaryAttachment.of(new byte[] {(byte) index}));
+    }
+    assertThrows(IllegalArgumentException.class,
+            () -> new HarnessProtocolService.Execution(
+                    new HarnessResponse.Success(ProtocolVersion.V1, "r", "game",
+                            new HarnessResponse.Result.Screenshot("AQID", "0".repeat(64),
+                                    1, 1, 3, 1, 1, 1)),
+                    tooMany));
+}
 ```
 
-Add the imports `assertArrayEquals`, `java.util.Base64`, and a local `sha256Hex` helper (MessageDigest + HexFormat) if the file does not already have one; reuse the existing `traces()` helper that builds the `TraceController`. The `RecordingCapture.image` field is package-private, so assign it directly.
+Add the imports `assertArrayEquals`, `java.util.Base64`, `java.nio.ByteBuffer`, `java.util.Map`, and a local `sha256Hex`/`readAll(ByteBuffer)` helper pair (MessageDigest + HexFormat) if the file does not already have them; reuse the existing `traces()` helper that builds the `TraceController`. The `RecordingCapture.image` field is package-private, so assign it directly.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -121,6 +231,86 @@ In `HarnessResponse.java`, add the internal overload beside the existing `Screen
 
 The public `Screenshot` record and all other public protocol records are untouched in this cluster.
 
+Create `harness-protocol/src/main/java/dev/gdx/uiharness/protocol/BinaryAttachment.java`:
+
+```java
+package dev.gdx.uiharness.protocol;
+
+import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
+import java.util.HexFormat;
+import java.util.Objects;
+
+/**
+ * Bounded immutable byte payload for internal artifact publication. The bytes are owned
+ * exclusively by this value and there is no {@code byte[]} accessor; consumers read through the
+ * read-only {@link #asByteBuffer()} view or the copy-free {@link #writeTo(OutputStream)} bridge.
+ * Not part of the supported public API.
+ */
+public final class BinaryAttachment {
+    private final byte[] bytes;
+    private final String sha256;
+
+    private BinaryAttachment(byte[] bytes, String sha256) {
+        this.bytes = bytes;
+        this.sha256 = sha256;
+    }
+
+    /** Defensively copies the supplied bytes; safe for untrusted callers. */
+    public static BinaryAttachment of(byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        return new BinaryAttachment(bytes.clone(), sha256(bytes));
+    }
+
+    /** Trusted internal transfer: the caller must not mutate or retain the supplied array. */
+    static BinaryAttachment take(byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        return new BinaryAttachment(bytes, sha256(bytes));
+    }
+
+    /** Returns the number of owned bytes. */
+    public int length() {
+        return bytes.length;
+    }
+
+    /** Returns the canonical lowercase SHA-256 of the owned bytes. */
+    public String sha256() {
+        return sha256;
+    }
+
+    /** Returns a read-only view of the owned bytes. */
+    public ByteBuffer asByteBuffer() {
+        return ByteBuffer.wrap(bytes).asReadOnlyBuffer();
+    }
+
+    /** Writes the owned bytes to the supplied sink without copying. */
+    public void writeTo(OutputStream sink) throws IOException {
+        Objects.requireNonNull(sink, "sink").write(bytes, 0, bytes.length);
+    }
+
+    @Override public boolean equals(Object other) {
+        return other instanceof BinaryAttachment that && Arrays.equals(bytes, that.bytes);
+    }
+
+    @Override public int hashCode() {
+        return Arrays.hashCode(bytes);
+    }
+
+    private static String sha256(byte[] content) {
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(content));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError("SHA-256 unavailable", impossible);
+        }
+    }
+}
+```
+
 In `HarnessProtocolService.java`:
 
 - Add the internal envelope and keys as nested members of `HarnessProtocolService`:
@@ -137,22 +327,38 @@ In `HarnessProtocolService.java`:
   public static final String LAYOUT_CURRENT_CAPTURE = "layout-current-capture";
 
   /**
-   * Internal execution result: the public response plus raw captured evidence bytes attached for
+   * Internal execution result: the public response plus bounded immutable evidence attachments for
    * direct artifact publication, so the MCP publication path never base64 round-trips the public
-   * string representation. The arrays are owned by this envelope (one defensive snapshot per
-   * payload taken at the capture boundary); consumers must treat them as immutable. Not part of
-   * the supported public API.
+   * string representation. Not part of the supported public API.
    */
-  public record Execution(HarnessResponse response, Map<String, byte[]> captures) {
+  public record Execution(HarnessResponse response, Map<String, BinaryAttachment> captures) {
+      /** Maximum number of attachments per execution. */
+      public static final int MAX_ATTACHMENTS = 4;
+      /** Maximum byte length of one attachment. */
+      public static final int MAX_ATTACHMENT_BYTES =
+              HarnessResponse.Result.Screenshot.MAX_PNG_BYTES;
+
       public Execution {
           response = Objects.requireNonNull(response, "response");
           captures = Map.copyOf(Objects.requireNonNull(captures, "captures"));
+          if (captures.size() > MAX_ATTACHMENTS) {
+              throw new IllegalArgumentException(
+                      "too many execution attachments: " + captures.size());
+          }
+          for (Map.Entry<String, BinaryAttachment> entry : captures.entrySet()) {
+              ProtocolJson.requireIdentifier(entry.getKey(), "attachment key");
+              if (entry.getValue().length() > MAX_ATTACHMENT_BYTES) {
+                  throw new IllegalArgumentException(
+                          "attachment exceeds protocol bound: " + entry.getKey());
+              }
+          }
       }
   }
   ```
 - Add an internal routed value so each command's mapping can attach captures:
   ```java
-  private record RoutedValue(HarnessResponse.Result result, Map<String, byte[]> captures) {
+  private record RoutedValue(HarnessResponse.Result result,
+          Map<String, BinaryAttachment> captures) {
       static RoutedValue plain(HarnessResponse.Result result) {
           return new RoutedValue(result, Map.of());
       }
@@ -174,7 +380,7 @@ In `HarnessProtocolService.java`:
   private CompletionStage<Execution> executeInternal(HarnessRequest request) { ... }
   ```
   Adapt `ResponseFuture` to complete `HarnessProtocolService.Execution` (building `Success`/`Failure` exactly as today and attaching the routed value's captures), and have `executeInternal` return it. A successful `execute` response must be byte-for-byte identical to today.
-- The screenshot branch of `route(...)` becomes the single-snapshot mapping:
+- The screenshot branch of `route(...)` becomes the single-snapshot mapping (the array is transferred into the immutable attachment, so no second copy exists):
   ```java
   if (command instanceof Command.Screenshot screenshot) {
       return RoutedOperation.map(session.capture().capture(screenshot.toCore(), deadline),
@@ -182,7 +388,7 @@ In `HarnessProtocolService.java`:
                   byte[] raw = image.pngBytes();   // the single defensive snapshot at the capture boundary
                   return new RoutedValue(
                           HarnessResponse.Result.Screenshot.fromCore(image, raw),
-                          Map.of(SCREENSHOT_CAPTURE, raw));
+                          Map.of(SCREENSHOT_CAPTURE, BinaryAttachment.take(raw)));
               });
   }
   ```
@@ -190,8 +396,8 @@ In `HarnessProtocolService.java`:
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `./gradlew :harness-protocol:test --tests 'dev.gdx.uiharness.protocol.HarnessProtocolServiceTest' --no-daemon --console=plain --warning-mode=fail`
-Expected: PASS — the attachment test and the public-contract test pass, and all existing routing/cancellation tests keep passing.
+Run: `./gradlew :harness-protocol:test --tests 'dev.gdx.uiharness.protocol.HarnessProtocolServiceTest' --tests 'dev.gdx.uiharness.protocol.BinaryAttachmentTest' --no-daemon --console=plain --warning-mode=fail`
+Expected: PASS — the attachment, immutability, mutation, oversize, and public-contract tests pass, and all existing routing/cancellation tests keep passing.
 
 Run: `./gradlew :harness-protocol:test --no-daemon --console=plain --warning-mode=fail`
 Expected: PASS — the golden `results.json` round-trip and every other protocol test are untouched by the internal routing change.
@@ -199,8 +405,8 @@ Expected: PASS — the golden `results.json` round-trip and every other protocol
 - [ ] **Step 5: Commit**
 
 ```bash
-git add harness-protocol/src/main/java/dev/gdx/uiharness/protocol/HarnessProtocolService.java harness-protocol/src/main/java/dev/gdx/uiharness/protocol/HarnessResponse.java harness-protocol/src/test/java/dev/gdx/uiharness/protocol/HarnessProtocolServiceTest.java
-git commit -m "feat(protocol): internal execution envelope with raw capture attachment"
+git add harness-protocol/src/main/java/dev/gdx/uiharness/protocol/HarnessProtocolService.java harness-protocol/src/main/java/dev/gdx/uiharness/protocol/HarnessResponse.java harness-protocol/src/main/java/dev/gdx/uiharness/protocol/BinaryAttachment.java harness-protocol/src/test/java/dev/gdx/uiharness/protocol/HarnessProtocolServiceTest.java harness-protocol/src/test/java/dev/gdx/uiharness/protocol/BinaryAttachmentTest.java
+git commit -m "feat(protocol): internal execution envelope with bounded immutable BinaryAttachment"
 ```
 
 ---
@@ -209,11 +415,12 @@ git commit -m "feat(protocol): internal execution envelope with raw capture atta
 
 **Files:**
 - Modify: `harness-mcp/src/main/java/dev/gdx/uiharness/mcp/HarnessToolHandler.java` — protocol source type, constructors, `toMcpResult`/`structured` signature, screenshot branch, lazy `encoded`
+- Modify: `harness-mcp/src/main/java/dev/gdx/uiharness/mcp/ArtifactReference.java` — add the default `publish(String, ByteBuffer)` overload to `Publisher` (keeps it a functional interface)
 - Modify: `harness-mcp/src/test/java/dev/gdx/uiharness/mcp/HarnessMcpServerContractTest.java` — new observable no-round-trip test, max-size receipt test, update the `malformedScreenshotCanApplyReturnedCorrectionAndSucceedWithinBudget` lambda to `executeWithAttachments`
 
 **Interfaces:**
-- Consumes: Task 1 `HarnessProtocolService.Execution`, `SCREENSHOT_CAPTURE`, `executeWithAttachments`.
-- Produces: `HarnessToolHandler` whose production path publishes the raw capture attachment; the screenshot branch performs zero base64 conversions and zero full-result serializations; `structured(HarnessResponse.Result, Map<String, byte[]>)` computes `encodeResult` lazily only in branches that need it.
+- Consumes: Task 1 `HarnessProtocolService.Execution`, `BinaryAttachment`, `SCREENSHOT_CAPTURE`, `executeWithAttachments`.
+- Produces: `HarnessToolHandler` whose production path publishes the raw capture attachment through the read-only buffer; the screenshot branch performs zero base64 conversions, zero byte[] exposure, and zero full-result serializations; `structured(HarnessResponse.Result, Map<String, BinaryAttachment>)` computes `encodeResult` lazily only in branches that need it; `ArtifactReference.Publisher` gains `default ArtifactReference publish(String mediaType, ByteBuffer content)` that copies once into the existing byte[] overload and may be overridden for zero-copy streaming.
 
 - [ ] **Step 1: Write the failing observable tests**
 
@@ -234,7 +441,8 @@ Add to `HarnessMcpServerContractTest.java`:
                                     new HarnessResponse.Success(
                                             ProtocolVersion.V1, request.requestId(),
                                             request.sessionId(), screenshot),
-                                    Map.of(HarnessProtocolService.SCREENSHOT_CAPTURE, attachment))),
+                                    Map.of(HarnessProtocolService.SCREENSHOT_CAPTURE,
+                                            BinaryAttachment.of(attachment)))),
                     artifacts, executor, 1_024, System::nanoTime)) {
         McpSchema.CallToolResult result = handler.handle(call("ui_screenshot", Map.of(
                 "sessionId", "game", "maxWidth", 8, "maxHeight", 8,
@@ -271,7 +479,7 @@ Add to `HarnessMcpServerContractTest.java`:
 }
 ```
 
-`serviceWithCapture(payload, sha)` is the existing `service(new RecordingHarness())` pattern with a `ScreenCapture` returning `new CapturedImage(payload, sha, 1, 1, 8_192, 8_192, new CapturedImage.Scale(1, 1))`. `RecordingArtifacts` gains a `lastReference` field (the existing class records `lastBytes`). Update the lambda in `malformedScreenshotCanApplyReturnedCorrectionAndSucceedWithinBudget` from `service(new RecordingHarness()).execute(request)` to `service(new RecordingHarness()).executeWithAttachments(request)` and construct the handler through the `ExecutionSource` constructor (same executor/threshold/nanoClock arguments).
+`serviceWithCapture(payload, sha)` is the existing `service(new RecordingHarness())` pattern with a `ScreenCapture` returning `new CapturedImage(payload, sha, 1, 1, 8_192, 8_192, new CapturedImage.Scale(1, 1))`. `RecordingArtifacts` gains a `lastReference` field (the existing class records `lastBytes`). Add the import `dev.gdx.uiharness.protocol.BinaryAttachment`. Update the lambda in `malformedScreenshotCanApplyReturnedCorrectionAndSucceedWithinBudget` from `service(new RecordingHarness()).execute(request)` to `service(new RecordingHarness()).executeWithAttachments(request)` and construct the handler through the `ExecutionSource` constructor (same executor/threshold/nanoClock arguments).
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -279,6 +487,27 @@ Run: `xvfb-run -a ./gradlew :harness-mcp:test --tests 'dev.gdx.uiharness.mcp.Har
 Expected: FAIL — `HarnessToolHandler.ExecutionSource` and the `Execution` constructor do not exist (compilation error), and the current handler still decodes `pngBase64` on the screenshot branch.
 
 - [ ] **Step 3: Implement the attachment-driven publication path**
+
+In `ArtifactReference.java`, add the ByteBuffer overload to the `Publisher` functional interface (default methods keep the SAM contract):
+
+```java
+    @FunctionalInterface
+    public interface Publisher {
+        /** Publishes one immutable payload; implementations must not expose filesystem paths. */
+        ArtifactReference publish(String mediaType, byte[] content);
+
+        /**
+         * Publishes one immutable payload from a read-only buffer. The default implementation
+         * copies once into {@link #publish(String, byte[])}; publishers may override for
+         * zero-copy streaming. Implementations must not retain the buffer beyond the call.
+         */
+        default ArtifactReference publish(String mediaType, ByteBuffer content) {
+            byte[] copy = new byte[content.remaining()];
+            content.get(copy);
+            return publish(mediaType, copy);
+        }
+    }
+```
 
 In `HarnessToolHandler.java`:
 
@@ -316,15 +545,15 @@ In `HarnessToolHandler.java`:
                   call.name(), sequence, arguments))
           ...
   ```
-- Change `toMcpResult(HarnessResponse response, Map<String, byte[]> captures, …)` to pass `captures` into `structured(success.result(), captures)`.
-- Change `structured(HarnessResponse.Result result, Map<String, byte[]> captures)`:
+- Change `toMcpResult(HarnessResponse response, Map<String, BinaryAttachment> captures, …)` to pass `captures` into `structured(success.result(), captures)`.
+- Change `structured(HarnessResponse.Result result, Map<String, BinaryAttachment> captures)`:
   - Delete the eager `byte[] encoded = encodeResult(result);` from the method top.
   - Add `byte[] encoded = encodeResult(result);` as the first statement of ONLY the branches that consume it: `Sessions`, `Snapshot`, `Query`, `Action`, `Assertion`, `Wait`, `InspectCompare`, `TypographyDiagnostic`, `LayoutDiagnostic`. The `Screenshot`, `Capabilities`, `ScenarioList`, `ScenarioStart`, `LayoutValidation`, and matrix branches must NOT compute `encoded`.
-  - Replace the screenshot branch with attachment publication (keep the record pattern binding for the metadata fields):
+  - Replace the screenshot branch with attachment publication through the read-only buffer (keep the record pattern binding for the metadata fields):
     ```java
     if (result instanceof HarnessResponse.Result.Screenshot screenshot) {
-        byte[] png = requireCapture(captures, HarnessProtocolService.SCREENSHOT_CAPTURE);
-        ArtifactReference reference = artifacts.publish("image/png", png);
+        BinaryAttachment png = requireCapture(captures, HarnessProtocolService.SCREENSHOT_CAPTURE);
+        ArtifactReference reference = artifacts.publish("image/png", png.asByteBuffer());
         LinkedHashMap<String, Object> content = content("screenshot-result");
         content.put("artifact", artifactMap(reference));
         content.put("frame", screenshot.frame());
@@ -338,12 +567,13 @@ In `HarnessToolHandler.java`:
     ```
   - Add the helper:
     ```java
-    private static byte[] requireCapture(Map<String, byte[]> captures, String key) {
-        byte[] bytes = captures.get(key);
-        if (bytes == null) {
+    private static BinaryAttachment requireCapture(
+            Map<String, BinaryAttachment> captures, String key) {
+        BinaryAttachment attachment = captures.get(key);
+        if (attachment == null) {
             throw new IllegalArgumentException("accepted screenshot evidence is missing PNG bytes");
         }
-        return bytes;
+        return attachment;
     }
     ```
 - Delete the now-unused `java.util.Base64` import from `HarnessToolHandler.java` (Task 3 removes the remaining branches).
@@ -359,7 +589,7 @@ Expected: PASS — offload tests and every other MCP contract test unchanged.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add harness-mcp/src/main/java/dev/gdx/uiharness/mcp/HarnessToolHandler.java harness-mcp/src/test/java/dev/gdx/uiharness/mcp/HarnessMcpServerContractTest.java
+git add harness-mcp/src/main/java/dev/gdx/uiharness/mcp/HarnessToolHandler.java harness-mcp/src/main/java/dev/gdx/uiharness/mcp/ArtifactReference.java harness-mcp/src/test/java/dev/gdx/uiharness/mcp/HarnessMcpServerContractTest.java
 git commit -m "feat(mcp): publish screenshot artifacts from the internal capture attachment"
 ```
 
@@ -440,31 +670,31 @@ In `HarnessResponse.java`, for each of `InspectCompare`, `TypographyDiagnostic`,
   ```
   with a private helper:
   ```java
-  private static Map<String, byte[]> captures(String firstKey, byte[] first,
-          String secondKey, byte[] second) {
-      java.util.LinkedHashMap<String, byte[]> captures = new java.util.LinkedHashMap<>();
+  private static Map<String, BinaryAttachment> captures(
+          String firstKey, byte[] first, String secondKey, byte[] second) {
+      java.util.LinkedHashMap<String, BinaryAttachment> captures = new java.util.LinkedHashMap<>();
       if (first != null) {
-          captures.put(firstKey, first);
+          captures.put(firstKey, BinaryAttachment.take(first));
       }
       if (second != null) {
-          captures.put(secondKey, second);
+          captures.put(secondKey, BinaryAttachment.take(second));
       }
       return captures;
   }
   ```
   Typography and layout route with `TYPOGRAPHY_CURRENT_CAPTURE`/`LAYOUT_CURRENT_CAPTURE` and their `fromCore(result, current)` overloads.
-- In `HarnessToolHandler.java`, replace the three decode+clone branches with `requireCapture(captures, …)` publication (keep the content fields and the sha256 receipt verification exactly as today):
+- In `HarnessToolHandler.java`, replace the three decode+clone branches with read-only-buffer publication (keep the content fields and the sha256 receipt verification exactly as today):
   ```java
   if (comparison.current() != null) {
-      ArtifactReference current = artifacts.publish(
-              "image/png", requireCapture(captures, HarnessProtocolService.COMPARE_CURRENT_CAPTURE));
+      ArtifactReference current = artifacts.publish("image/png", requireCapture(
+              captures, HarnessProtocolService.COMPARE_CURRENT_CAPTURE).asByteBuffer());
       if (!current.sha256().equals(comparison.current().sha256())) { ... }
       content.put("currentArtifact", artifactMap(current));
       ... unchanged field puts ...
   }
   if (comparison.heatmap() != null) {
-      ArtifactReference heatmap = artifacts.publish(
-              "image/png", requireCapture(captures, HarnessProtocolService.COMPARE_HEATMAP_CAPTURE));
+      ArtifactReference heatmap = artifacts.publish("image/png", requireCapture(
+              captures, HarnessProtocolService.COMPARE_HEATMAP_CAPTURE).asByteBuffer());
       ... unchanged ...
   }
   ```
@@ -990,8 +1220,9 @@ final class Scene2dSnapshotGatingTest {
         }
     }
 
-    @Test void lastTerminalRaceStopsTheStreamAfterTheTerminalState() {
-        try (GatedFixture fixture = new GatedFixture()) {
+    @Test void lastTerminalRaceReservationWinsAndBlocksTheCompetingTerminal() throws Exception {
+        try (GatedFixture fixture = new GatedFixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
             CompletionStage<Scene2dScenarioRunner.Lease> acquired =
                     fixture.acquire(Duration.ofSeconds(2));
             fixture.scheduler.drain();
@@ -999,18 +1230,86 @@ final class Scene2dSnapshotGatingTest {
             Scene2dScenarioRunner.Lease lease = acquired.toCompletableFuture().join();
             assertTrue(fixture.rootReads() > 0, "a READY lease is still an active run");
 
-            // Reserve one frame while the run is READY; then terminate concurrently.
+            // Barrier: a reserver thread runs the atomic completedFrame whose supplier blocks
+            // while HOLDING the runner's lifecycle lock; the owner thread then starts a
+            // competing terminal (close()) that must block on the lock until the reservation
+            // has delivered. The supplier returns a hand-built snapshot so it has no session
+            // owner-thread requirement.
+            CountDownLatch supplierEntered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier = new CountDownLatch(1);
+            AtomicInteger supplierCalls = new AtomicInteger();
+            SemanticSnapshot snapshot = new SemanticSnapshot(1, 1, "root", Map.of());
+            CompletableFuture<Boolean> reservation = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    boolean consumed = fixture.scenarios.completedFrame(() -> {
+                        supplierCalls.incrementAndGet();
+                        supplierEntered.countDown();
+                        try {
+                            releaseSupplier.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        return snapshot;
+                    }, 1, 1);
+                    reservation.complete(consumed);
+                } catch (Throwable failure) {
+                    reservation.completeExceptionally(failure);
+                }
+            });
+            assertTrue(supplierEntered.await(5, TimeUnit.SECONDS),
+                    "the reservation must enter the supplier while holding the lifecycle lock");
+
+            CompletableFuture<Void> closeCompleted = new CompletableFuture<>();
+            workers.submit(() -> {
+                fixture.scenarios.close();
+                closeCompleted.complete(null);
+            });
+            // Deterministic: the closer cannot finish close() while the reserver holds the
+            // lifecycle lock inside the blocked supplier, regardless of thread scheduling.
+            assertFalse(closeCompleted.isDone(),
+                    "the competing terminal must block until the reservation delivers");
+            releaseSupplier.countDown();
+            assertTrue(reservation.get(5, TimeUnit.SECONDS),
+                    "the reservation must deliver even though a terminal was attempted");
+            closeCompleted.get(5, TimeUnit.SECONDS); // completes only after the lock is released
+            fixture.scheduler.drain();
+            assertEquals(1, supplierCalls.get());
+
+            // After the terminal state, subsequent frames invoke no supplier.
+            assertFalse(fixture.scenarios.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return snapshot;
+            }, 2, 2));
+            assertEquals(1, supplierCalls.get(),
+                    "a frame decided after the last run's terminal state must not build");
+        }
+    }
+
+    @Test void lastTerminalRaceTerminalWinsAndTheSupplierIsNeverInvoked() {
+        try (GatedFixture fixture = new GatedFixture()) {
+            CompletionStage<Scene2dScenarioRunner.Lease> acquired =
+                    fixture.acquire(Duration.ofSeconds(2));
+            fixture.scheduler.drain();
             fixture.completedFrame();
-            long reserved = fixture.rootReads();
+            Scene2dScenarioRunner.Lease lease = acquired.toCompletableFuture().join();
+
+            // Terminal completes first: release, drain, and only then decide a frame.
             CompletionStage<ScenarioResult> released = lease.release();
             fixture.scheduler.drain();
             released.toCompletableFuture().join();
 
-            long afterTerminal = fixture.rootReads();
-            fixture.completedFrame();
-            assertEquals(afterTerminal, fixture.rootReads(),
-                    "a frame decided after the last run's terminal state must build no snapshot");
-            assertTrue(afterTerminal >= reserved);
+            AtomicInteger supplierCalls = new AtomicInteger();
+            long before = fixture.rootReads();
+            boolean consumed = fixture.scenarios.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(1, 1);
+            }, 1, 1);
+            assertFalse(consumed);
+            assertEquals(0, supplierCalls.get(),
+                    "the terminal-wins ordering must never invoke the snapshot supplier");
+            assertEquals(before, fixture.rootReads());
         }
     }
 
@@ -1221,7 +1520,7 @@ final class Scene2dSnapshotGatingTest {
 }
 ```
 
-`firstStartRaceNeverLosesTheRunFirstObservation` coordinates launcher and owner with a `launched` latch and a `startedHolder` future, and the owner NEVER calls `Future.get` before draining: the owner awaits the launch barrier, decides the frame while the run is active-but-not-begun (begin is still queued), then drains — the queue order guarantees the run's first observation is exactly the decided frame. `lastTerminalRaceStopsTheStreamAfterTheTerminalState` reserves a frame while the lease is READY, then releases to terminal; the frame decided after the terminal builds nothing because the decision happens under the runner's lifecycle lock with the (now empty) active list. The `CountingStage.getRoot()` override counts exactly the `stage.getRoot()` calls made by `Scene2dSnapshotter.snapshot(Stage, …)` (one per built snapshot); `Scene2dSession`, `ControlledStageClock`, `Scene2dContractSnapshotter`, and `Scene2dTypographyExtractor` constructors only store the Stage, so the count is 0 at fixture construction. `GdxNativesLoader`/`NoopBatch`/`WidgetStyles` are package-visible test utilities already used by `Scene2dSnapshotterTest` and `Scene2dNavigationRunnerTest`.
+`firstStartRaceNeverLosesTheRunFirstObservation` coordinates launcher and owner with a `launched` latch and a `startedHolder` future, and the owner NEVER calls `Future.get` before draining: the owner awaits the launch barrier, decides the frame while the run is active-but-not-begun (begin is still queued), then drains — the queue order guarantees the run's first observation is exactly the decided frame. `lastTerminalRaceReservationWinsAndBlocksTheCompetingTerminal` is a genuine barrier: a reserver thread runs the atomic `completedFrame` whose supplier blocks while HOLDING the runner's lifecycle lock, a competing `scenarios.close()` on another thread starts only after the supplier is entered and therefore blocks on that lock, the owner releases the supplier, the reservation delivers and releases the lock, and only then does the terminal complete; a subsequent frame proves zero supplier invocations. `lastTerminalRaceTerminalWinsAndTheSupplierIsNeverInvoked` proves the inverse ordering: after the terminal state, a frame decision returns false without ever invoking the supplier. Both orderings use latches and observable drains — no sleeps and no deadlock (the reserver blocks on the owner's release latch, the owner blocks on nothing the workers hold, and the closer only waits on the lifecycle lock the owner's release ultimately frees). The `CountingStage.getRoot()` override counts exactly the `stage.getRoot()` calls made by `Scene2dSnapshotter.snapshot(Stage, …)` (one per built snapshot); `Scene2dSession`, `ControlledStageClock`, `Scene2dContractSnapshotter`, and `Scene2dTypographyExtractor` constructors only store the Stage, so the count is 0 at fixture construction. `GdxNativesLoader`/`NoopBatch`/`WidgetStyles` are package-visible test utilities already used by `Scene2dSnapshotterTest` and `Scene2dNavigationRunnerTest`.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1438,8 +1737,8 @@ Base `origin/main`, head `fix/issues-21-23-scene-capture`. Body:
 ## Scene2D ownership and capture efficiency (#21, #22, #23)
 
 - **#21 — session-bound render-thread enforcement.** `Scene2dSession` now rejects off-thread Stage/semantic/adapter access with `HarnessException(ErrorCode.RENDER_THREAD_VIOLATION)` carrying operation and thread names; caller-thread waits keep routing through `RenderThreadScheduler`. New core/protocol code `render-thread-violation`, golden `errors.json` entry, ADR NNNN (computed per the Global Constraints rule).
-- **#22 — snapshots only for active consumers.** Each runner atomically reserves a completed frame under its lifecycle lock (`completedFrame(Supplier<SemanticSnapshot>, long, long)` holds the lock through check, snapshot build, and delivery enqueue); the session builds the shared snapshot at most once per frame and only when a runner consumed it. Idle sessions skip per-frame work while fences, captures, and on-demand snapshots advance. First-start and last-terminal barrier race tests pin the atomic reservation; real LWJGL3 smoke covers idle rendering/fences.
-- **#23 — no internal base64 round trips; public records untouched.** The public protocol records (`Screenshot`, `InspectCompare`, `TypographyDiagnostic`, `LayoutDiagnostic`) keep their exact String components, accessors, equality/hashCode, and binary descriptors. Raw captured bytes travel in an internal `HarnessProtocolService.Execution` envelope from the service to the MCP handler, which publishes them directly — zero base64 decode on the publication path, exactly two documented boundary snapshots per payload. Observable proof: a deliberately invalid public base64 string still publishes the attachment bytes; max-size receipts match; wire JSON goldens unchanged.
+- **#22 — snapshots only for active consumers.** Each runner atomically reserves a completed frame under its lifecycle lock (`completedFrame(Supplier<SemanticSnapshot>, long, long)` holds the lock through check, snapshot build, and delivery enqueue); the session builds the shared snapshot at most once per frame and only when a runner consumed it. Idle sessions skip per-frame work while fences, captures, and on-demand snapshots advance. First-start and both-orderings last-terminal barrier race tests (reservation-wins blocks the competing terminal; terminal-wins never invokes the supplier) pin the atomic reservation; real LWJGL3 smoke covers idle rendering/fences.
+- **#23 — no internal base64 round trips; public records untouched.** The public protocol records (`Screenshot`, `InspectCompare`, `TypographyDiagnostic`, `LayoutDiagnostic`) keep their exact String components, accessors, equality/hashCode, and binary descriptors. Raw captured bytes travel in an internal `HarnessProtocolService.Execution` envelope as bounded immutable `BinaryAttachment` values (no byte[] accessor; read-only `ByteBuffer` and stream bridge) from the service to the MCP handler, which streams them to the publisher — zero base64 decode, exactly two documented boundary snapshots per payload. Observable proof: a deliberately invalid public base64 string still publishes the attachment bytes; max-size receipts match; wire JSON goldens unchanged; immutability, mutation, and oversize tests cover `BinaryAttachment` and `Execution` bounds.
 
 Fixes #21
 Fixes #22
@@ -1462,10 +1761,10 @@ Include in the PR: root causes, the exact verification commands from Steps 1-2 w
 **1. Spec coverage (approved design, cluster 4, plus canonical issue bodies):**
 
 - #21: off-thread Stage/session access fails immediately with a typed actionable error → Task 5 (`RENDER_THREAD_VIOLATION` + operation/thread evidence); correct scheduler-routed calls remain supported → Task 5 test 3 and unchanged `Scene2dHarness`/`Lwjgl3ScreenCapture` wiring; a render-thread fixture covers the boundary → `Scene2dSessionTest`; threading ADR documenting the new public error code → Task 4 ADR `N`; allocation-light success path → single reference comparison in `requireOwnerThread`.
-- #22: idle sessions do not build runner snapshots → Task 6 counting test (the atomic gate returns false; the supplier never runs); starting a runner enables the stream → Task 6 test 2 + first-start barrier race; stopping the last runner removes per-frame work → Task 6 tests 3-4 + last-terminal barrier race; frame correlation/fences remain correct → Task 6 test 6 + Task 7 real-LWJGL3 smoke; the gate is atomic — the runner holds its lifecycle lock through check, supplier, and delivery enqueue, so a terminal transition cannot invalidate a reserved frame → `completedFrame(Supplier<SemanticSnapshot>, long, long)` on both runners; proof counts snapshot construction across idle/active/navigation/cancellation/return-to-idle → `CountingStage.getRoot()` counts.
-- #23: artifact publication performs no intermediate base64 round trip → Tasks 1-3 (the MCP handler publishes the internal `Execution` capture attachment; no `Base64` decode remains in `HarnessToolHandler`); the observable proof is the invalid-public-String test — a public `pngBase64` that cannot be decoded still publishes the attachment bytes (Task 2); digest/length receipts remain identical → Task 2 max-size receipt assertions against the exact captured bytes; unchanged wire JSON and public records → golden `results.json` round trip plus `executeKeepsItsExactPublicContractWithEmptyCaptures` (Task 1); public records keep their String components, accessors, generated equality/hashCode, and binary descriptors (no record changes anywhere in the cluster); exactly two documented boundary snapshots per payload (CapturedImage construction + the publish-boundary `pngBytes()`), zero copies between them → Global Constraints ownership contract; "MCP artifact paths do not serialize an unused full inline result before offloading" → Task 2 lazy `encodeResult` (the screenshot branch never serializes).
+- #22: idle sessions do not build runner snapshots → Task 6 counting test (the atomic gate returns false; the supplier never runs); starting a runner enables the stream → Task 6 test 2 + first-start barrier race; stopping the last runner removes per-frame work → Task 6 tests 3-5 (both last-terminal orderings: reservation-wins with the competing terminal blocked on the held lifecycle lock, and terminal-wins with the supplier never invoked); frame correlation/fences remain correct → Task 6 test 7 + Task 7 real-LWJGL3 smoke; the gate is atomic — the runner holds its lifecycle lock through check, supplier, and delivery enqueue, so a terminal transition cannot invalidate a reserved frame → `completedFrame(Supplier<SemanticSnapshot>, long, long)` on both runners; proof counts snapshot construction across idle/active/navigation/cancellation/return-to-idle → `CountingStage.getRoot()` counts.
+- #23: artifact publication performs no intermediate base64 round trip → Tasks 1-3 (the MCP handler streams the internal `Execution` capture attachment via a read-only `ByteBuffer`; no `Base64` decode remains in `HarnessToolHandler`); the observable proof is the invalid-public-String test — a public `pngBase64` that cannot be decoded still publishes the attachment bytes (Task 2); digest/length receipts remain identical → Task 2 max-size receipt assertions against the exact captured bytes; unchanged wire JSON and public records → golden `results.json` round trip plus `executeKeepsItsExactPublicContractWithEmptyCaptures` (Task 1); public records keep their String components, accessors, generated equality/hashCode, and binary descriptors (no record changes anywhere in the cluster); bounded immutability → `BinaryAttachment` (no byte[] accessor, read-only view, stream bridge, content equality) with mutation/oversize tests plus `Execution` attachment count/size bounds (Task 1); exactly two documented boundary snapshots per payload (CapturedImage construction + the publish-boundary default `Publisher.publish(String, ByteBuffer)` copy, overridable for zero-copy) → Global Constraints ownership contract; "MCP artifact paths do not serialize an unused full inline result before offloading" → Task 2 lazy `encodeResult` (the screenshot branch never serializes).
 - Error/compatibility policy: typed `render-thread-violation` code with operation identity and bounded details; existing valid requests, JSON shapes, artifact references, String-typed Java API, and non-scenario `Scene2dSession` use remain supported; the design's "internal byte ownership may change while serialized screenshot JSON stays compatible" clause is satisfied by the internal envelope, with no public API change.
 
 **2. Placeholder scan:** no TBD/TODO/“appropriate error handling”/“similar to Task N” patterns; every code step contains verbatim code; every acceptance criterion names an exact command and expected result. The ADR number is a computed value (`N` = next free number after the rebase) with an exact rule and consistent use, not a hardcoded stale constant.
 
-**3. Type consistency:** the public protocol records keep their exact String components and accessors (no byte accessors exist anywhere); the internal keys `SCREENSHOT_CAPTURE`/`COMPARE_CURRENT_CAPTURE`/`COMPARE_HEATMAP_CAPTURE`/`TYPOGRAPHY_CURRENT_CAPTURE`/`LAYOUT_CURRENT_CAPTURE` are identical across Tasks 1-3; `MAX_PNG_BYTES` remains the single byte bound; `RENDER_THREAD_VIOLATION` is spelled identically in `ErrorCode`, `ProtocolError.Code`, the golden wire name `render-thread-violation`, and the tests; `completedFrame(Supplier<SemanticSnapshot>, long, long)` has the same signature on both runners and is consumed only by `Scene2dSession.completedFrame`; the ADR number rule in Global Constraints, Task 4, Task 9, and this review use the same computed `N`; the handler's `ExecutionSource` is the one Execution-typed protocol seam (distinct functional interface, no erasure clash).
+**3. Type consistency:** the public protocol records keep their exact String components and accessors (no byte accessors exist anywhere); `BinaryAttachment` is the single byte-carrying value across Tasks 1-3 (factories `of`/`take`, read APIs `length`/`sha256`/`asByteBuffer`/`writeTo`, content equality); the internal keys `SCREENSHOT_CAPTURE`/`COMPARE_CURRENT_CAPTURE`/`COMPARE_HEATMAP_CAPTURE`/`TYPOGRAPHY_CURRENT_CAPTURE`/`LAYOUT_CURRENT_CAPTURE` are identical across Tasks 1-3; `Execution.MAX_ATTACHMENTS`/`MAX_ATTACHMENT_BYTES` are the attachment bounds and `MAX_PNG_BYTES` remains the single wire bound; `RENDER_THREAD_VIOLATION` is spelled identically in `ErrorCode`, `ProtocolError.Code`, the golden wire name `render-thread-violation`, and the tests; `completedFrame(Supplier<SemanticSnapshot>, long, long)` has the same signature on both runners and is consumed only by `Scene2dSession.completedFrame`; the ADR number rule in Global Constraints, Task 4, Task 9, and this review use the same computed `N`; the handler's `ExecutionSource` is the one Execution-typed protocol seam (distinct functional interface, no erasure clash); the new `Publisher.publish(String, ByteBuffer)` default keeps the functional-interface contract.
