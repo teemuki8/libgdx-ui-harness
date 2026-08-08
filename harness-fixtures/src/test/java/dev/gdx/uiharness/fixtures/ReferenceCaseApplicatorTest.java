@@ -2,6 +2,7 @@ package dev.gdx.uiharness.fixtures;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -16,8 +17,13 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 final class ReferenceCaseApplicatorTest {
@@ -389,6 +395,76 @@ final class ReferenceCaseApplicatorTest {
             assertEquals(List.of(Locale.getDefault()), appliedLocales,
                     "the requested en-US locale must not be applied after expiry");
         }
+    }
+
+    @Test
+    void queuedWindowCommandRefusesAtExecutionTimeThroughRealScheduler() throws Exception {
+        AtomicLong now = new AtomicLong(0L);
+        MonotonicClock manual = now::get;
+        Deadline run = Deadline.after(manual, Duration.ofSeconds(30));
+        CountDownLatch schedulerReady = new CountDownLatch(1);
+        CountDownLatch go = new CountDownLatch(1);
+        CountDownLatch ownerDone = new CountDownLatch(1);
+        AtomicBoolean applyDone = new AtomicBoolean();
+        AtomicReference<RenderThreadScheduler> schedulerRef = new AtomicReference<>();
+        AtomicReference<Throwable> ownerFailure = new AtomicReference<>();
+
+        // The scheduler owner holds the queue and controls when the real submitted lambda
+        // executes: the manual clock advances past the run deadline between the submission
+        // (whose pre-check passes) and the drain, so the execution-time check inside the real
+        // lambda must refuse before setWindowedMode. The clock is then advanced past the
+        // bounded cleanup deadline too, so the restore's window and locale steps also refuse
+        // before mutating — no GL is touched anywhere in this unit test.
+        Thread owner = Thread.ofPlatform().name("fixture-render-owner").start(() -> {
+            try {
+                RenderThreadScheduler scheduler = new RenderThreadScheduler(16);
+                schedulerRef.set(scheduler);
+                schedulerReady.countDown();
+                go.await();
+                now.addAndGet(31_000_000_000L);
+                scheduler.drain();
+                now.addAndGet(16_000_000_000L);
+                while (!applyDone.get()) {
+                    scheduler.drain();
+                    Thread.onSpinWait();
+                }
+                scheduler.close();
+            } catch (Throwable failure) {
+                ownerFailure.set(failure);
+            } finally {
+                ownerDone.countDown();
+            }
+        });
+
+        assertTrue(schedulerReady.await(10, TimeUnit.SECONDS), "scheduler owner must start");
+        ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
+                schedulerRef.get(), manual, "host-owned-profile");
+        MatrixCase matrixCase = new MatrixCase(
+                0, new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
+                "en-US", "", 16.0 / 9.0, List.of());
+        CompletableFuture<Lwjgl3MatrixRunner.ApplyResult> applied = new CompletableFuture<>();
+        Thread.ofVirtual().name("fixture-mcp-apply").start(() -> {
+            try {
+                applied.complete(applicator.apply(matrixCase, "host-owned-profile", run));
+            } catch (RuntimeException failure) {
+                applied.completeExceptionally(failure);
+            }
+        });
+        go.countDown();
+
+        Throwable failure = assertThrows(CompletionException.class, applied::join);
+        Throwable root = failure;
+        while (root.getCause() != null) {
+            root = root.getCause();
+        }
+        assertTrue(root.getMessage().contains("deadline expired"),
+                "the real scheduled lambda must refuse the late window mutation: "
+                        + root.getMessage());
+        assertTrue(root.getMessage().contains("display restore also failed"),
+                "the bounded restore failure must be surfaced: " + root.getMessage());
+        applyDone.set(true);
+        assertTrue(ownerDone.await(10, TimeUnit.SECONDS), "scheduler owner must finish");
+        assertNull(ownerFailure.get(), "scheduler owner must not fail: " + ownerFailure.get());
     }
 
     @Test

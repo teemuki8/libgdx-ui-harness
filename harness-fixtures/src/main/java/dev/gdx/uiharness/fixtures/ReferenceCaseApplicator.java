@@ -225,8 +225,9 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
     private final class RealApplication implements CaseApplication {
         @Override
         public void applyWindow(MatrixWindow window, Deadline deadline) {
-            // Check immediately before the actual mutation: the outer checks in apply() cannot
-            // close the race between the check and the synchronous backend call.
+            // Fast-fail before issuing any work; each actual mutation is then re-checked
+            // immediately before it runs (a single check before the branch cannot cover the
+            // gap to the synchronous owner-thread call or the scheduled execution).
             if (deadline.isExpired()) {
                 throw new IllegalStateException(
                         "case application deadline expired before window apply");
@@ -235,7 +236,12 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
                 // The matrix runner's final restore can complete on the render thread inside a
                 // scheduler drain (via a completed-frame observation); submitting and joining here
                 // would deadlock, since only the render thread can drain. Window state is owned by
-                // the render thread, so apply it directly.
+                // the render thread, so apply it directly, re-checking the deadline immediately
+                // before the mutation.
+                if (deadline.isExpired()) {
+                    throw new IllegalStateException(
+                            "case application deadline expired before window apply");
+                }
                 Gdx.graphics.setWindowedMode(window.width(), window.height());
             } else {
                 scheduler.submit(() -> {
