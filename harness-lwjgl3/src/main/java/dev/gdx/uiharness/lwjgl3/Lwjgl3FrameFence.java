@@ -4,12 +4,15 @@ import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.wait.FrameSignal;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -20,22 +23,24 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
 
     private final Thread ownerThread = Thread.currentThread();
     private final int capacity;
+    private final DeadlineScheduler deadlines;
     private final Object lifecycle = new Object();
     private final ArrayDeque<Command<?>> queued = new ArrayDeque<>();
     private final CopyOnWriteArrayList<FrameListener> listeners =
             new CopyOnWriteArrayList<>();
     private boolean open = true;
 
-    /** Creates a fence with the default bounded pending-work capacity. */
-    public Lwjgl3FrameFence() {
-        this(DEFAULT_CAPACITY);
+    /** Creates a fence owned by the current graphics thread with the default bounded capacity. */
+    public Lwjgl3FrameFence(DeadlineScheduler deadlines) {
+        this(deadlines, DEFAULT_CAPACITY);
     }
 
     /** Creates a fence owned by the current graphics thread. */
-    public Lwjgl3FrameFence(int capacity) {
+    public Lwjgl3FrameFence(DeadlineScheduler deadlines, int capacity) {
         if (capacity <= 0) {
             throw new IllegalArgumentException("capacity must be positive");
         }
+        this.deadlines = Objects.requireNonNull(deadlines, "deadlines");
         this.capacity = capacity;
     }
 
@@ -60,6 +65,8 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
         }
         if (rejection != null) {
             command.completeExceptionally(rejection);
+        } else {
+            command.armDeadline();
         }
         return command;
     }
@@ -141,9 +148,18 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
         return new HarnessException(
                 ErrorCode.TIMEOUT,
                 "completed frame was not available before the deadline",
-                ErrorEvidence.ofDetails(Map.of(
-                        "elapsed", deadline.elapsed().toString(),
-                        "timeout", deadline.timeout().toString())));
+                new ErrorEvidence(
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        deadline.elapsed(),
+                        OptionalLong.empty(),
+                        Optional.empty(),
+                        List.of(),
+                        Map.of(
+                                "elapsed", deadline.elapsed().toString(),
+                                "timeout", deadline.timeout().toString()),
+                        List.of()));
     }
 
     private static HarnessException closedFailure() {
@@ -172,6 +188,7 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
     private final class Command<T> extends CompletableFuture<T> {
         private final FrameTask<T> task;
         private final Deadline deadline;
+        private DeadlineScheduler.Cancellation deadlineCancellation;
         private CommandState state = CommandState.NEW;
 
         Command(FrameTask<T> task, Deadline deadline) {
@@ -183,11 +200,46 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
             state = CommandState.QUEUED;
         }
 
+        /**
+         * Arms one deadline signal for the queued command. A frame may claim the command before
+         * the registration lands; the claim under {@link #lifecycle} then cancels it immediately.
+         */
+        void armDeadline() {
+            DeadlineScheduler.Cancellation scheduled =
+                    deadlines.schedule(deadline.remaining(), this::deadlineReached);
+            synchronized (lifecycle) {
+                if (state != CommandState.QUEUED) {
+                    scheduled.cancel();
+                } else {
+                    deadlineCancellation = scheduled;
+                }
+            }
+        }
+
+        /** Claims the timeout under {@link #lifecycle}; a late signal observes the claimed state. */
+        void deadlineReached() {
+            boolean claimed;
+            synchronized (lifecycle) {
+                claimed = state == CommandState.QUEUED && queued.remove(this);
+                if (claimed) {
+                    state = CommandState.TERMINAL;
+                    deadlineCancellation = null;
+                }
+            }
+            if (claimed) {
+                completeExceptionally(timeoutFailure(deadline));
+            }
+        }
+
         void markClaimed() {
             if (state != CommandState.QUEUED) {
                 throw new IllegalStateException("only queued frame work can be claimed");
             }
             state = CommandState.CLAIMED;
+            if (deadlineCancellation != null) {
+                deadlineCancellation.cancel();
+                deadlineCancellation = null;
+            }
         }
 
         @Override public boolean cancel(boolean mayInterruptIfRunning) {
@@ -196,6 +248,10 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
                     return false;
                 }
                 state = CommandState.TERMINAL;
+                if (deadlineCancellation != null) {
+                    deadlineCancellation.cancel();
+                    deadlineCancellation = null;
+                }
             }
             return super.cancel(mayInterruptIfRunning);
         }

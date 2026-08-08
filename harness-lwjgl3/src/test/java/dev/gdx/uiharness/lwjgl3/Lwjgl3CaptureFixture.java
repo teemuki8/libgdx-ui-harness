@@ -14,6 +14,7 @@ import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import dev.gdx.uiharness.core.wait.FrameSignal;
 import dev.gdx.uiharness.scene2d.Scene2dSession;
@@ -27,6 +28,8 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -43,6 +46,13 @@ final class Lwjgl3CaptureFixture implements AutoCloseable {
 
     private final CompletableFuture<Void> ready = new CompletableFuture<>();
     private final AtomicReference<Throwable> applicationFailure = new AtomicReference<>();
+    private final ScheduledExecutorService deadlineExecutor =
+            Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform()
+                    .name("lwjgl3-capture-fixture-deadlines").daemon().factory());
+    private final DeadlineScheduler deadlineScheduler = (delay, signal) -> {
+        var scheduled = deadlineExecutor.schedule(signal, delay.toNanos(), TimeUnit.NANOSECONDS);
+        return () -> scheduled.cancel(false);
+    };
     private final FixtureApplication application = new FixtureApplication();
     private final Thread applicationThread;
 
@@ -174,6 +184,7 @@ final class Lwjgl3CaptureFixture implements AutoCloseable {
         if (applicationThread.isAlive()) {
             throw new AssertionError("LWJGL3 application thread did not exit");
         }
+        deadlineExecutor.shutdownNow();
         Throwable failure = applicationFailure.get();
         if (failure != null) {
             throw new AssertionError("LWJGL3 application failed", failure);
@@ -215,7 +226,7 @@ final class Lwjgl3CaptureFixture implements AutoCloseable {
             pixel.dispose();
             stage = new Stage(new FitViewport(WINDOW_SIZE, WINDOW_SIZE));
             semantics = new Scene2dSession(stage);
-            fence = new Lwjgl3FrameFence();
+            fence = new Lwjgl3FrameFence(deadlineScheduler);
             capture = new Lwjgl3ScreenCapture(fence, semantics::snapshot);
             configureQuadrants(WINDOW_SIZE);
         }

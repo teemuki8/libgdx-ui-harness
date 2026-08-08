@@ -15,6 +15,7 @@ import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
 import dev.gdx.uiharness.core.scenario.ScenarioRequest;
 import dev.gdx.uiharness.core.scenario.ScenarioResult;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -599,7 +600,7 @@ final class Scene2dScenarioRunnerTest {
         }
     }
     private static final class ManualDeadlineScheduler
-            implements Scene2dScenarioDeadlineScheduler {
+            implements DeadlineScheduler {
         private Runnable task;
         private boolean cancelled;
 

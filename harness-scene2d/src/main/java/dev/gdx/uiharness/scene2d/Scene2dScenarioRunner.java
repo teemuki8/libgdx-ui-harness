@@ -8,6 +8,7 @@ import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
 import dev.gdx.uiharness.core.scenario.ScenarioRequest;
 import dev.gdx.uiharness.core.scenario.ScenarioResult;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -52,7 +53,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
     private final ScenarioRegistry registry;
     private final RenderThreadScheduler scheduler;
     private final MonotonicClock clock;
-    private final Scene2dScenarioDeadlineScheduler deadlineScheduler;
+    private final DeadlineScheduler deadlineScheduler;
     private final Object lifecycle = new Object();
     private final ArrayList<Run> active = new ArrayList<>();
     private final Map<InputIdentity, String> startStateIdentities = new LinkedHashMap<>();
@@ -62,7 +63,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             ScenarioRegistry registry,
             RenderThreadScheduler scheduler,
             MonotonicClock clock,
-            Scene2dScenarioDeadlineScheduler deadlineScheduler) {
+            DeadlineScheduler deadlineScheduler) {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.clock = Objects.requireNonNull(clock, "clock");
@@ -204,7 +205,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         private int setupAttempts;
         private String stateIdentity = "unavailable";
 
-        private Scene2dScenarioDeadlineScheduler.Cancellation deadlineCancellation;
+        private DeadlineScheduler.Cancellation deadlineCancellation;
         Run(
                 ScenarioRequest request,
                 ScenarioDefinition definition,
@@ -234,7 +235,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             if (maximumRemaining.compareTo(delay) < 0) {
                 delay = maximumRemaining;
             }
-            Scene2dScenarioDeadlineScheduler.Cancellation scheduled =
+            DeadlineScheduler.Cancellation scheduled =
                     deadlineScheduler.schedule(delay, this::deadlineReached);
             synchronized (this) {
                 if (phase == Phase.TERMINAL) {
@@ -434,7 +435,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         }
 
         private void completeTerminal(ScenarioFailure failure, boolean cleaned) {
-            Scene2dScenarioDeadlineScheduler.Cancellation scheduled;
+            DeadlineScheduler.Cancellation scheduled;
             synchronized (this) {
                 scheduled = deadlineCancellation;
                 deadlineCancellation = null;

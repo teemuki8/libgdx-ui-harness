@@ -35,6 +35,21 @@ import reactor.core.publisher.Mono;
 
 /** MCP SDK 2.0 server exposing only the fixed harness tool catalog over stdio. */
 public final class HarnessMcpServer implements AutoCloseable {
+    /**
+     * Fixed bounded allowance translating an accepted scenario deadline into the SDK's outer
+     * request timeout, covering protocol translation and dispatch before the scenario's own
+     * validated deadline starts governing.
+     */
+    private static final Duration OUTER_TRANSLATION_ALLOWANCE = Duration.ofSeconds(30);
+
+    /**
+     * SDK outer request timeout: the full published scenario maximum plus the bounded
+     * translation allowance, so a {@code ui_scenario_start} with {@code maxDurationMillis}
+     * above the default request deadline is never aborted by the outer SDK timeout.
+     */
+    static final Duration OUTER_REQUEST_TIMEOUT = Duration.ofMillis(
+            HarnessRequest.MAX_SCENARIO_DEADLINE_MILLIS + OUTER_TRANSLATION_ALLOWANCE.toMillis());
+
     private final VirtualStdioProvider transport;
     private final HarnessToolHandler handler;
     private final McpAsyncServer server;
@@ -42,6 +57,10 @@ public final class HarnessMcpServer implements AutoCloseable {
 
     private HarnessMcpServer(HarnessProtocolService protocol,
             ArtifactReference.Publisher artifacts, InputStream input, OutputStream output) {
+        if (OUTER_REQUEST_TIMEOUT.toMillis() <= HarnessRequest.MAX_SCENARIO_DEADLINE_MILLIS) {
+            throw new IllegalStateException(
+                    "the outer request timeout must exceed the maximum accepted scenario deadline");
+        }
         transport = new VirtualStdioProvider(input, output);
         // The server owns one admission and wires it into the handler so every tool call is
         // bounded before protocol dispatch.
@@ -52,7 +71,7 @@ public final class HarnessMcpServer implements AutoCloseable {
                 .serverInfo("libgdx-ui-harness", "1.0.0")
                 .capabilities(McpSchema.ServerCapabilities.builder().tools(false).build())
                 .validateToolInputs(false)
-                .requestTimeout(Duration.ofMillis(HarnessRequest.MAX_DEADLINE_MILLIS));
+                .requestTimeout(OUTER_REQUEST_TIMEOUT);
         for (McpSchema.Tool tool : catalog.tools()) {
             specification.toolCall(tool, (exchange, request) -> handler.handle(request));
         }

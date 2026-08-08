@@ -49,6 +49,7 @@ import dev.gdx.uiharness.core.scenario.ScenarioLifecycle;
 import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
 import dev.gdx.uiharness.core.scenario.ScenarioRequest;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.trace.SemanticObservation;
 import dev.gdx.uiharness.core.trace.SemanticObservationStore;
 import dev.gdx.uiharness.core.trace.TraceEvent;
@@ -93,7 +94,6 @@ import dev.gdx.uiharness.scene2d.Scene2dNavigationRunner;
 import dev.gdx.uiharness.scene2d.Scene2dScenarioRunner;
 import dev.gdx.uiharness.scene2d.Scene2dInputDispatcher;
 import dev.gdx.uiharness.scene2d.Scene2dSession;
-import dev.gdx.uiharness.scene2d.Scene2dScenarioDeadlineScheduler;
 import dev.gdx.uiharness.scene2d.TypographyCaptureContext;
 import java.io.IOException;
 import java.io.InputStream;
@@ -216,8 +216,16 @@ public final class FixtureControl implements AutoCloseable {
         clock = new ControlledStageClock(stage, FIXED_STEP);
         scheduler = new RenderThreadScheduler(128);
         sceneSession = new Scene2dSession(stage);
+        scenarioDeadlines = Executors.newSingleThreadScheduledExecutor(
+                Thread.ofPlatform().name("reference-scenario-deadline").factory());
+        DeadlineScheduler deadlineScheduler = (delay, signal) -> {
+            java.util.concurrent.ScheduledFuture<?> scheduled =
+                    scenarioDeadlines.schedule(signal, delay.toNanos(),
+                            java.util.concurrent.TimeUnit.NANOSECONDS);
+            return () -> scheduled.cancel(false);
+        };
         sceneHarness = new Scene2dHarness(stage, stage, sceneSession, scheduler, clock,
-                clock::revision, clock::frame);
+                clock::revision, clock::frame, deadlineScheduler);
         scenarios = new ScenarioRegistry();
         ReferenceScenarioLifecycle lifecycle =
                 new ReferenceScenarioLifecycle(stage, withholdScenarioFrames);
@@ -225,21 +233,13 @@ public final class FixtureControl implements AutoCloseable {
         scenarios.register(scenario(
                 "never-ready", APPLICATION_ID, Duration.ofMillis(100)), lifecycle);
         scenarios.register(scenario("incompatible-reference", "another-application"), lifecycle);
-        scenarioDeadlines = Executors.newSingleThreadScheduledExecutor(
-                Thread.ofPlatform().name("reference-scenario-deadline").factory());
         scenarios.register(scenario("navigation", APPLICATION_ID), lifecycle);
-        Scene2dScenarioDeadlineScheduler scenarioDeadlineScheduler = (delay, signal) -> {
-            java.util.concurrent.ScheduledFuture<?> scheduled =
-                    scenarioDeadlines.schedule(signal, delay.toMillis(),
-                            java.util.concurrent.TimeUnit.MILLISECONDS);
-            return () -> scheduled.cancel(false);
-        };
         scenarioRunner = new Scene2dScenarioRunner(
-                scenarios, scheduler, clock, scenarioDeadlineScheduler);
+                scenarios, scheduler, clock, deadlineScheduler);
         navigationRunner = new Scene2dNavigationRunner(
                 scenarioRunner, sceneSession,
                 new Scene2dInputDispatcher(stage, stage), scheduler, clock,
-                scenarioDeadlineScheduler, clock::revision, clock::frame,
+                deadlineScheduler, clock::revision, clock::frame,
                 new Scene2dNavigationRunner.Scenario(
                         "navigation", 7, Map.of(), RESTART_PROFILE.id(), APPLICATION_ID, PROCESS_ID,
                         SESSION_ID),
@@ -251,7 +251,7 @@ public final class FixtureControl implements AutoCloseable {
         replacementCoordinator = new ReplacementProcessCoordinator(
                 RESTART_PROFILE.id(), replacementExecutor, ReplacementProcess::launch);
         launchCoordinator = replacementCoordinator;
-        fence = new Lwjgl3FrameFence(64);
+        fence = new Lwjgl3FrameFence(deadlineScheduler, 64);
         capture = new Lwjgl3ScreenCapture(fence, sceneSession::snapshot);
         LocatorEngine locators = new StrictResolution();
         artifactStore = new FileArtifactStore(artifactRoot,

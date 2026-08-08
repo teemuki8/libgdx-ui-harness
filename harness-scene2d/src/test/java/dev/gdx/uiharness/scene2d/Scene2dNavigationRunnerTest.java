@@ -20,6 +20,7 @@ import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
 import dev.gdx.uiharness.core.scenario.ScenarioLifecycle;
 import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
 import dev.gdx.uiharness.core.scenario.ScenarioRequest;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -373,7 +374,7 @@ final class Scene2dNavigationRunnerTest {
         }
     }
 
-    private static final class ManualDeadlines implements Scene2dScenarioDeadlineScheduler {
+    private static final class ManualDeadlines implements DeadlineScheduler {
         private final List<Entry> entries = new ArrayList<>();
         @Override public Cancellation schedule(Duration delay, Runnable signal) {
             Entry entry = new Entry(delay, signal);

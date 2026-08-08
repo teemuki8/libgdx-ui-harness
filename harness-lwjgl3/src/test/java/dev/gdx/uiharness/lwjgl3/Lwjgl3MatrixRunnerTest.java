@@ -28,9 +28,9 @@ import dev.gdx.uiharness.core.scenario.ScenarioRequest;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.wait.FrameSignal;
 import dev.gdx.uiharness.core.wait.WaitEngine;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import dev.gdx.uiharness.scene2d.RenderThreadScheduler;
-import dev.gdx.uiharness.scene2d.Scene2dScenarioDeadlineScheduler;
 import dev.gdx.uiharness.scene2d.Scene2dScenarioRunner;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -353,8 +353,8 @@ final class Lwjgl3MatrixRunnerTest {
                             }
                         }
                     });
-            Scene2dScenarioDeadlineScheduler scenarioDeadlines =
-                    new Scene2dScenarioDeadlineScheduler() {
+            DeadlineScheduler scenarioDeadlines =
+                    new DeadlineScheduler() {
                         @Override public Cancellation schedule(
                                 Duration delay, Runnable signal) {
                             return () -> {};

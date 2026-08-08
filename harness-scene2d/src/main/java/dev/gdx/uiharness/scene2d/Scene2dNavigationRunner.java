@@ -12,6 +12,7 @@ import dev.gdx.uiharness.core.navigation.NavigationValidator;
 import dev.gdx.uiharness.core.scenario.ScenarioFailure;
 import dev.gdx.uiharness.core.scenario.ScenarioRequest;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -53,7 +54,7 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
     private final Scene2dInputDispatcher input;
     private final RenderThreadScheduler scheduler;
     private final MonotonicClock clock;
-    private final Scene2dScenarioDeadlineScheduler deadlines;
+    private final DeadlineScheduler deadlines;
     private final LongSupplier revision;
     private final LongSupplier frame;
     private final Scenario scenario;
@@ -68,7 +69,7 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
             Scene2dInputDispatcher input,
             RenderThreadScheduler scheduler,
             MonotonicClock clock,
-            Scene2dScenarioDeadlineScheduler deadlines,
+            DeadlineScheduler deadlines,
             LongSupplier revision,
             LongSupplier frame,
             Scenario scenario,
@@ -168,7 +169,7 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         private final ArrayList<NavigationStep> steps = new ArrayList<>();
         private final ResultFuture result = new ResultFuture(this);
         private final Deadline deadline;
-        private Scene2dScenarioDeadlineScheduler.Cancellation deadlineCancellation;
+        private DeadlineScheduler.Cancellation deadlineCancellation;
         private CompletionStage<Scene2dScenarioRunner.Lease> scenarioStage;
         private Scene2dScenarioRunner.Lease scenarioLease;
         private Observation before;
@@ -224,7 +225,7 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         }
 
         void armDeadline() {
-            Scene2dScenarioDeadlineScheduler.Cancellation scheduled =
+            DeadlineScheduler.Cancellation scheduled =
                     deadlines.schedule(request.deadline(), this::deadlineReached);
             synchronized (this) {
                 if (terminal) {
@@ -419,7 +420,7 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         }
 
         private void cancelDeadline() {
-            Scene2dScenarioDeadlineScheduler.Cancellation cancellation;
+            DeadlineScheduler.Cancellation cancellation;
             synchronized (this) {
                 cancellation = deadlineCancellation;
                 deadlineCancellation = null;

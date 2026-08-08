@@ -21,6 +21,7 @@ import dev.gdx.uiharness.core.model.Bounds;
 import dev.gdx.uiharness.core.model.SemanticNode;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.wait.FrameSignal;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -44,6 +45,7 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
     private final FrameSignal frames;
     private final LongSupplier revisions;
     private final LongSupplier frameNumbers;
+    private final DeadlineScheduler deadlines;
     private final LocatorEngine locators = new StrictResolution();
     private final Scene2dActionability actionability = new Scene2dActionability();
     private final Scene2dInputDispatcher input;
@@ -60,13 +62,15 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
             RenderThreadScheduler scheduler,
             FrameSignal frames,
             LongSupplier revisions,
-            LongSupplier frameNumbers) {
+            LongSupplier frameNumbers,
+            DeadlineScheduler deadlines) {
         this.stage = Objects.requireNonNull(stage, "stage");
         this.session = Objects.requireNonNull(session, "session");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.frames = Objects.requireNonNull(frames, "frames");
         this.revisions = Objects.requireNonNull(revisions, "revisions");
         this.frameNumbers = Objects.requireNonNull(frameNumbers, "frameNumbers");
+        this.deadlines = Objects.requireNonNull(deadlines, "deadlines");
         this.input = new Scene2dInputDispatcher(stage, Objects.requireNonNull(input, "input"));
     }
 
@@ -115,6 +119,7 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
         HarnessException failure = sessionClosed();
         for (ActionRequest request : pending) {
             request.failBeforeDispatch(failure);
+            request.cancelDeadline();
         }
     }
 
@@ -134,6 +139,7 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
         private final Action action;
         private final Deadline deadline;
         private FrameSignal.Subscription subscription;
+        private DeadlineScheduler.Cancellation deadlineCancellation;
         private SemanticSnapshot lastSnapshot;
         private ActionabilityCheck lastCheck;
         private Bounds lastBounds;
@@ -337,8 +343,43 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
             synchronized (this) {
                 if (phase == RequestPhase.DISPATCHING) {
                     phase = RequestPhase.AWAITING_FRAME;
+                    armDeadlineLocked();
                 }
             }
+        }
+
+        /**
+         * Arms one deadline signal for the dispatched action. Post-dispatch the action can only
+         * complete through a rendered frame; the signal enforces the remaining deadline when no
+         * frame arrives. The claim happens under the request monitor so a racing completion,
+         * cancellation, or close observes a consistent terminal state.
+         */
+        private void armDeadlineLocked() {
+            if (deadlineCancellation != null) {
+                return;
+            }
+            DeadlineScheduler.Cancellation scheduled =
+                    deadlines.schedule(deadline.remaining(), this::deadlineReached);
+            if (phase == RequestPhase.TERMINAL) {
+                scheduled.cancel();
+            } else {
+                deadlineCancellation = scheduled;
+            }
+        }
+
+        /** Claims the timeout under the request monitor; a late signal observes terminal state. */
+        private void deadlineReached() {
+            HarnessException failure;
+            synchronized (this) {
+                if (phase != RequestPhase.AWAITING_FRAME) {
+                    return;
+                }
+                if (!deadline.isExpired()) {
+                    return;
+                }
+                failure = timeoutLocked();
+            }
+            fail(failure);
         }
 
         private boolean beginDispatch(SemanticSnapshot snapshot) {
@@ -586,11 +627,29 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
             return failure instanceof CompletionException ? unwrap(failure) : failure;
         }
 
+        /** Invalidates the armed deadline signal; a signal already dispatched stays a no-op. */
+        void cancelDeadline() {
+            DeadlineScheduler.Cancellation scheduled;
+            synchronized (this) {
+                scheduled = deadlineCancellation;
+                deadlineCancellation = null;
+            }
+            if (scheduled != null) {
+                scheduled.cancel();
+            }
+        }
+
         private void cleanup() {
+            DeadlineScheduler.Cancellation scheduled;
             FrameSignal.Subscription attached;
             synchronized (this) {
                 attached = subscription;
                 subscription = null;
+                scheduled = deadlineCancellation;
+                deadlineCancellation = null;
+            }
+            if (scheduled != null) {
+                scheduled.cancel();
             }
             if (attached != null) {
                 attached.close();

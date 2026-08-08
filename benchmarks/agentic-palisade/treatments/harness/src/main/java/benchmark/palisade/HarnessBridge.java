@@ -8,6 +8,7 @@ import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.locator.StrictResolution;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import dev.gdx.uiharness.core.trace.TraceEvent;
 import dev.gdx.uiharness.core.trace.TraceManifest;
@@ -52,6 +53,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -73,6 +76,13 @@ public final class HarnessBridge implements AutoCloseable {
     private final MonotonicClock clock = System::nanoTime;
     private final AtomicLong revision = new AtomicLong();
     private final AtomicLong frame = new AtomicLong();
+    private final ScheduledExecutorService deadlineExecutor =
+            Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform()
+                    .name("palisade-harness-deadlines").daemon().factory());
+    private final DeadlineScheduler deadlineScheduler = (delay, signal) -> {
+        var scheduled = deadlineExecutor.schedule(signal, delay.toNanos(), TimeUnit.NANOSECONDS);
+        return () -> scheduled.cancel(false);
+    };
     private final RenderThreadScheduler scheduler;
     private final Scene2dSession sceneSession;
     private final Scene2dHarness sceneHarness;
@@ -97,9 +107,9 @@ public final class HarnessBridge implements AutoCloseable {
 
         scheduler = new RenderThreadScheduler(SCHEDULER_CAPACITY);
         sceneSession = new Scene2dSession(stage);
-        fence = new Lwjgl3FrameFence(FENCE_CAPACITY);
+        fence = new Lwjgl3FrameFence(deadlineScheduler, FENCE_CAPACITY);
         sceneHarness = new Scene2dHarness(stage, stage, sceneSession, scheduler, fence,
-                revision::get, frame::get);
+                revision::get, frame::get, deadlineScheduler);
         capture = new Lwjgl3ScreenCapture(fence, sceneSession::snapshot);
         LocatorEngine locators = new StrictResolution();
         artifactStore = new FileArtifactStore(this.artifactRoot,
@@ -212,6 +222,7 @@ public final class HarnessBridge implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) return;
         RuntimeException failure = null;
         failure = closeResource(tools, failure);
+        failure = closeResource(deadlineExecutor, failure);
         failure = closeResource(waits, failure);
         failure = closeResource(capture, failure);
         failure = closeResource(fence, failure);

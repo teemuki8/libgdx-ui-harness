@@ -21,6 +21,8 @@ import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
+import dev.gdx.uiharness.core.time.MonotonicClock;
 import dev.gdx.uiharness.core.wait.FrameSignal;
 import java.awt.image.BufferedImage;
 import java.time.Duration;
@@ -117,7 +119,7 @@ final class Lwjgl3ScreenCaptureTest {
     }
 
     @Test void closingFenceReleasesQueuedCompletedFrameWork() {
-        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(1);
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(noopDeadlines(), 1);
         CompletionStage<String> pending = localFence.afterNextFrame(
                 ignored -> "unreachable", fixture.deadline());
 
@@ -129,7 +131,7 @@ final class Lwjgl3ScreenCaptureTest {
     }
 
     @Test void closingScreenCaptureImmediatelyFailsItsQueuedRequest() {
-        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(1);
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(noopDeadlines(), 1);
         Lwjgl3ScreenCapture localCapture = new Lwjgl3ScreenCapture(
                 localFence, (revision, frame) -> {
                     throw new AssertionError("full-window capture must not resolve semantics");
@@ -151,7 +153,7 @@ final class Lwjgl3ScreenCaptureTest {
     }
 
     @Test void cancellingQueuedFenceWorkImmediatelyReleasesCapacity() {
-        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(1);
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(noopDeadlines(), 1);
         AtomicBoolean cancelledWorkRan = new AtomicBoolean();
         CompletionStage<String> cancelled = localFence.afterNextFrame(frame -> {
             cancelledWorkRan.set(true);
@@ -174,7 +176,7 @@ final class Lwjgl3ScreenCaptureTest {
         CountDownLatch taskEntered = new CountDownLatch(1);
         CountDownLatch releaseTask = new CountDownLatch(1);
         Thread owner = new Thread(() -> {
-            Lwjgl3FrameFence ownedFence = new Lwjgl3FrameFence(1);
+            Lwjgl3FrameFence ownedFence = new Lwjgl3FrameFence(noopDeadlines(), 1);
             ready.complete(ownedFence);
             try {
                 if (!completeFrame.await(1, TimeUnit.SECONDS)) {
@@ -240,11 +242,126 @@ final class Lwjgl3ScreenCaptureTest {
         assertEquals(0xFFFF00FF, decode(captured).getRGB(8, 8));
     }
 
+    @Test void queuedCaptureExpiresWithoutACompletedFrame() {
+        ManualClock clock = new ManualClock();
+        ManualDeadlineScheduler deadlines = new ManualDeadlineScheduler();
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(deadlines, 1);
+        CompletionStage<String> pending = localFence.afterNextFrame(
+                frame -> "unreachable", Deadline.after(clock, Duration.ofSeconds(1)));
+
+        clock.advance(Duration.ofSeconds(1));
+        deadlines.expire();
+        assertTrue(pending.toCompletableFuture().isDone(),
+                "the deadline signal must fail the queued capture without a completed frame");
+        HarnessException failure = assertThrows(HarnessException.class, () -> await(pending));
+        assertEquals(ErrorCode.TIMEOUT, failure.code());
+        assertTrue(failure.evidence().elapsed().toMillis() >= 1000,
+                "the typed timeout must retain the elapsed monotonic time");
+        localFence.close();
+    }
+
+    @Test void deadlineSignalRacingACompletedFrameCompletesExactlyOnce() {
+        ManualClock clock = new ManualClock();
+        ManualDeadlineScheduler deadlines = new ManualDeadlineScheduler();
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(deadlines, 1);
+        AtomicBoolean taskRan = new AtomicBoolean();
+        CompletionStage<String> pending = localFence.afterNextFrame(frame -> {
+            taskRan.set(true);
+            return "ran";
+        }, Deadline.after(clock, Duration.ofSeconds(1)));
+
+        clock.advance(Duration.ofSeconds(1));
+        deadlines.expire();
+        assertTrue(pending.toCompletableFuture().isDone(),
+                "the signal must claim the queued command before any frame is completed");
+        localFence.completedFrame(1, 1);
+        localFence.close();
+
+        HarnessException failure = assertThrows(HarnessException.class, () -> await(pending));
+        assertEquals(ErrorCode.TIMEOUT, failure.code());
+        assertFalse(taskRan.get(), "a late completed frame must not execute claimed work");
+    }
+
+    @Test void completedFrameBeforeTheDeadlineSignalWins() {
+        ManualClock clock = new ManualClock();
+        ManualDeadlineScheduler deadlines = new ManualDeadlineScheduler();
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(deadlines, 1);
+        AtomicBoolean taskRan = new AtomicBoolean();
+        CompletionStage<String> pending = localFence.afterNextFrame(frame -> {
+            taskRan.set(true);
+            return "ran";
+        }, Deadline.after(clock, Duration.ofSeconds(5)));
+
+        localFence.completedFrame(1, 1);
+        clock.advance(Duration.ofSeconds(5));
+        deadlines.expire();
+        localFence.close();
+
+        assertEquals("ran", await(pending));
+        assertTrue(taskRan.get(), "the claimed frame work must run exactly once");
+    }
+
+    @Test void closingFenceCancelsArmedDeadlineSignals() {
+        ManualClock clock = new ManualClock();
+        ManualDeadlineScheduler deadlines = new ManualDeadlineScheduler();
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(deadlines, 1);
+        CompletionStage<String> pending = localFence.afterNextFrame(
+                frame -> "unreachable", Deadline.after(clock, Duration.ofSeconds(1)));
+
+        localFence.close();
+        assertTrue(deadlines.cancelled,
+                "closing the fence must cancel every armed deadline signal");
+        HarnessException failure = assertThrows(HarnessException.class, () -> await(pending));
+        assertEquals(ErrorCode.SESSION_CLOSED, failure.code());
+        clock.advance(Duration.ofSeconds(1));
+        deadlines.expire();
+        HarnessException late = assertThrows(HarnessException.class, () -> await(pending));
+        assertEquals(ErrorCode.SESSION_CLOSED, late.code(),
+                "a late signal must not overwrite the terminal close outcome");
+    }
+
+    private static DeadlineScheduler noopDeadlines() {
+        return (delay, signal) -> () -> {};
+    }
+
     private static String sha256(byte[] bytes) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
         } catch (NoSuchAlgorithmException exception) {
             throw new AssertionError("SHA-256 is required by the JDK", exception);
+        }
+    }
+
+    /** Deterministic monotonic time source advanced explicitly by the test. */
+    private static final class ManualClock implements MonotonicClock {
+        private long nowNanos;
+
+        void advance(Duration duration) {
+            nowNanos = Math.addExact(nowNanos, duration.toNanos());
+        }
+
+        @Override public long nanoTime() {
+            return nowNanos;
+        }
+    }
+
+    /**
+     * Records one armed deadline signal. {@link #expire()} fires the signal even when a
+     * cancellation raced it, mirroring a real executor whose signal was already dispatched.
+     */
+    private static final class ManualDeadlineScheduler implements DeadlineScheduler {
+        private Runnable signal;
+        private boolean cancelled;
+
+        @Override public Cancellation schedule(Duration delay, Runnable signal) {
+            this.signal = signal;
+            return () -> cancelled = true;
+        }
+
+        void expire() {
+            if (signal != null) {
+                signal.run();
+            }
         }
     }
 }

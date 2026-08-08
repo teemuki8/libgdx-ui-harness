@@ -1135,6 +1135,51 @@ final class HarnessMcpServerContractTest {
 
     @Test
     @Timeout(10)
+    void scenarioDeadlineCanExceedDefaultRequestDeadline() throws Exception {
+        // The SDK's outer request timeout must cover the full published scenario maximum
+        // (600s) plus a bounded translation allowance, not the 120s default request
+        // deadline, so a ui_scenario_start with maxDurationMillis above 120_000 is not
+        // aborted by the outer timeout before its own validated deadline applies.
+        assertTrue(HarnessMcpServer.OUTER_REQUEST_TIMEOUT.toMillis()
+                        > HarnessRequest.MAX_DEADLINE_MILLIS,
+                "the outer request timeout must exceed the default request deadline");
+        assertTrue(HarnessMcpServer.OUTER_REQUEST_TIMEOUT.toMillis()
+                        >= HarnessRequest.MAX_SCENARIO_DEADLINE_MILLIS,
+                "the outer request timeout must cover the full published scenario maximum");
+        assertTrue(HarnessRequest.MAX_SCENARIO_DEADLINE_MILLIS
+                        <= HarnessMcpServer.OUTER_REQUEST_TIMEOUT.toMillis(),
+                "no accepted scenario deadline may exceed the outer request bound");
+
+        try (PipedInputStream serverInput = new PipedInputStream();
+                PipedOutputStream clientOutput = new PipedOutputStream(serverInput);
+                PipedInputStream clientInput = new PipedInputStream();
+                PipedOutputStream serverOutput = new PipedOutputStream(clientInput);
+                HarnessMcpServer server = HarnessMcpServer.open(
+                        service(new RecordingHarness()), new RecordingArtifacts(),
+                        serverInput, serverOutput);
+                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+                        clientOutput, StandardCharsets.UTF_8));
+                BufferedReader reader = new BufferedReader(new InputStreamReader(
+                        clientInput, StandardCharsets.UTF_8))) {
+            assertNotNull(server);
+            initialize(writer, reader);
+            send(writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
+            send(writer, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
+                    + "\"params\":{\"name\":\"ui_scenario_start\",\"arguments\":{"
+                    + "\"sessionId\":\"game\",\"scenarioId\":\"main-menu\",\"seed\":7,"
+                    + "\"configuration\":{\"locale\":\"en\"},\"profileId\":\"desktop\","
+                    + "\"deadlineMillis\":600000}}}");
+            JsonNode called = read(reader);
+            assertEquals(3, called.path("id").asInt());
+            assertTrue(called.path("result").isObject() || called.path("error").isObject(),
+                    "the server must answer the 600s-deadline scenario call instead of "
+                            + "aborting it through the outer SDK timeout");
+            closeStdin(clientOutput);
+        }
+    }
+
+    @Test
+    @Timeout(10)
     void stdioInitializeListAndCallRoundTripThenCleanlyCloses() throws Exception {
         RecordingHarness harness = new RecordingHarness();
         try (PipedInputStream serverInput = new PipedInputStream();

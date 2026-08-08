@@ -41,6 +41,8 @@ import dev.gdx.uiharness.protocol.CapabilitySet;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
 import io.modelcontextprotocol.spec.McpSchema;
 import dev.gdx.uiharness.core.time.Deadline;
+import dev.gdx.uiharness.core.time.DeadlineScheduler;
+import dev.gdx.uiharness.core.time.MonotonicClock;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -492,6 +494,87 @@ final class Scene2dActionEndToEndTest {
         }
     }
 
+    @Test void awaitingFrameActionExpiresWithoutAnotherFrame() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.button("frozen", "Frozen", 100, 100);
+            ManualClock manual = new ManualClock();
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("frozen"), Deadline.after(manual, Duration.ofSeconds(1)));
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch completes and the deadline signal is armed
+
+            manual.advance(Duration.ofSeconds(1));
+            fixture.deadlines.expire();
+            assertTrue(click.toCompletableFuture().isDone(),
+                    "the deadline signal must fail the action without a completed frame");
+            HarnessException error = failure(click);
+            assertEquals(ErrorCode.TIMEOUT, error.code());
+            assertTrue(error.evidence().elapsed().toMillis() >= 1000,
+                    "the typed timeout must retain the elapsed monotonic time");
+            assertTrue(error.evidence().lastSnapshotRevision().isPresent(),
+                    "the typed timeout must retain the last observed revision");
+            assertTrue(error.evidence().details().containsKey("unmet"),
+                    "the typed timeout must retain the last actionability evidence");
+        }
+    }
+
+    @Test void deadlineSignalRacingACompletedFrameCompletesExactlyOnce() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.button("race", "Race", 100, 100);
+            ManualClock manual = new ManualClock();
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("race"), Deadline.after(manual, Duration.ofSeconds(1)));
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch completes and the deadline signal is armed
+
+            manual.advance(Duration.ofSeconds(1));
+            fixture.deadlines.expire();
+            assertTrue(click.toCompletableFuture().isDone(),
+                    "the signal must win the race before any completed frame");
+            fixture.nextFrame(); // a late completed frame must not override the timeout
+
+            assertTrue(click.toCompletableFuture().isCompletedExceptionally(),
+                    "the timeout must complete exactly once");
+            assertEquals(ErrorCode.TIMEOUT, failure(click).code());
+        }
+    }
+
+    @Test void completionImmediatelyBeforeTheSignalWins() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.button("wins", "Wins", 100, 100);
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("wins"), fixture.deadline());
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch completes and the deadline signal is armed
+            fixture.nextFrame(); // the completing frame wins and cancels the signal
+
+            ActionResult result = click.toCompletableFuture().join();
+            assertTrue(result.afterRevision() > result.beforeRevision());
+            fixture.deadlines.expire(); // a late signal must observe the terminal state
+            assertFalse(click.toCompletableFuture().isCompletedExceptionally());
+            assertEquals("true", click.toCompletableFuture().join().observedState());
+        }
+    }
+
+    @Test void closingHarnessCancelsArmedActionDeadlineSignals() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.button("closing", "Closing", 100, 100);
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("closing"), fixture.deadline());
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch completes and the deadline signal is armed
+
+            fixture.harness.close();
+            assertTrue(fixture.deadlines.cancelled,
+                    "closing the harness must cancel every armed deadline signal");
+            fixture.deadlines.expire(); // a late signal must not disturb the dispatched action
+            assertFalse(click.toCompletableFuture().isCompletedExceptionally());
+            fixture.nextFrame();
+            assertTrue(click.toCompletableFuture().join().afterRevision() > 0,
+                    "the dispatched action still completes through the post-action frame");
+        }
+    }
+
     private static HarnessException failure(CompletionStage<?> stage) {
         CompletionException completion = assertThrows(
                 CompletionException.class, () -> stage.toCompletableFuture().join());
@@ -506,6 +589,39 @@ final class Scene2dActionEndToEndTest {
         style.knob.setMinWidth(10);
         style.knob.setMinHeight(10);
         return style;
+    }
+
+    /** Deterministic monotonic time source advanced explicitly by the test. */
+    private static final class ManualClock implements MonotonicClock {
+        private long nowNanos;
+
+        void advance(Duration duration) {
+            nowNanos = Math.addExact(nowNanos, duration.toNanos());
+        }
+
+        @Override public long nanoTime() {
+            return nowNanos;
+        }
+    }
+
+    /**
+     * Records one armed deadline signal. {@link #expire()} fires the signal even when a
+     * cancellation raced it, mirroring a real executor whose signal was already dispatched.
+     */
+    private static final class ManualDeadlineScheduler implements DeadlineScheduler {
+        private Runnable signal;
+        private boolean cancelled;
+
+        @Override public Cancellation schedule(Duration delay, Runnable signal) {
+            this.signal = signal;
+            return () -> cancelled = true;
+        }
+
+        void expire() {
+            if (signal != null) {
+                signal.run();
+            }
+        }
     }
 
     private static final class CountingInput implements InputProcessor {
@@ -609,6 +725,7 @@ final class Scene2dActionEndToEndTest {
         final ControlledStageClock clock;
         final RenderThreadScheduler scheduler = new RenderThreadScheduler(64);
         final Scene2dSession session;
+        final ManualDeadlineScheduler deadlines = new ManualDeadlineScheduler();
         final Scene2dHarness harness;
 
         Fixture() {
@@ -621,7 +738,7 @@ final class Scene2dActionEndToEndTest {
             this.session = new Scene2dSession(stage);
             harness = new Scene2dHarness(
                     stage, input == null ? stage : input, session, scheduler, clock,
-                    clock::revision, clock::frame);
+                    clock::revision, clock::frame, deadlines);
         }
 
         Deadline deadline() {
