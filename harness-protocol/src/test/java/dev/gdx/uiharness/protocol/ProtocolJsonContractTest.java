@@ -343,6 +343,21 @@ final class ProtocolJsonContractTest {
         assertEquals("\"readiness-rejected\"", ProtocolJson.mapper().writeValueAsString(
                 HarnessResponse.ScenarioFailureData.READINESS_REJECTED));
     }
+    @Test void scenarioSessionBusyUsesClosedDistinctWireOutcome() throws Exception {
+        HarnessResponse.ScenarioResultData busy = new HarnessResponse.ScenarioResultData(
+                1, "known", "v1", "digest", 7, "game", "process", "game",
+                10, 20, 0, 0, "desktop", "unavailable", 25, 0, false,
+                HarnessResponse.ScenarioFailureData.SESSION_BUSY);
+        assertEquals("session-busy", busy.failure().wireName());
+        assertTrue(ProtocolJson.mapper().writeValueAsString(busy)
+                .contains("\"failure\":\"session-busy\""));
+        assertEquals(
+                HarnessResponse.ScenarioFailureData.SESSION_BUSY,
+                HarnessResponse.ScenarioFailureData.fromWireName("session-busy"));
+        assertEquals("\"session-busy\"", ProtocolJson.mapper().writeValueAsString(
+                HarnessResponse.ScenarioFailureData.SESSION_BUSY));
+    }
+
     @Test void scenarioResultRejectsUnknownTerminalFailure() {
         String unknownFailure = "{\"schemaVersion\":1,\"scenarioId\":\"known\","
                 + "\"definitionVersion\":\"v1\",\"configurationDigest\":\"digest\","

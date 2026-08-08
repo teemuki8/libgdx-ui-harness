@@ -107,11 +107,21 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 Objects.requireNonNull(processId, "processId"),
                 Objects.requireNonNull(sessionId, "sessionId"),
                 releaseAtReady);
+        boolean rejected;
         synchronized (lifecycle) {
             if (!open) {
                 throw new IllegalStateException("scenario runner is closed");
             }
-            active.add(run);
+            rejected = !active.isEmpty();
+            if (!rejected) {
+                active.add(run);
+            }
+        }
+        if (rejected) {
+            // A competing run owns the single active lease: reject with bounded evidence and
+            // never execute hooks for the loser.
+            run.rejectBusy();
+            return run;
         }
         observeSubmission(run, scheduler.submit(() -> {
             run.begin();
@@ -162,7 +172,12 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
     }
 
 
-    private void finished(Run run) {
+    /**
+     * Releases the single active lease only when the identical {@link Run} still owns it. A stale
+     * release from an already-terminal run cannot clear its successor, keeping {@code active}
+     * bounded to one owner.
+     */
+    private void releaseIfOwner(Run run) {
         synchronized (lifecycle) {
             active.remove(run);
         }
@@ -242,6 +257,17 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 }
                 return null;
             }, dispatchDeadline()));
+        }
+
+        /** Terminates a competing acquisition without scheduling any hook execution. */
+        void rejectBusy() {
+            synchronized (this) {
+                if (phase != Phase.QUEUED) {
+                    return;
+                }
+                phase = Phase.TERMINAL;
+            }
+            completeTerminal(ScenarioFailure.SESSION_BUSY, false);
         }
 
         void begin() {
@@ -435,11 +461,11 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     setupAttempts,
                     cleaned,
                     Optional.ofNullable(failure));
+            releaseIfOwner(this);
             result.complete(value);
             if (!acquisition.isDone()) {
                 acquisition.completeExceptionally(new AcquisitionException(value));
             }
-            finished(this);
         }
 
         private Duration elapsed() {

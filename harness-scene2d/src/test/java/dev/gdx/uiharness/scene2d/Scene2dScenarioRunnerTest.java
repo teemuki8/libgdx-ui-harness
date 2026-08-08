@@ -284,6 +284,263 @@ final class Scene2dScenarioRunnerTest {
     }
 
 
+    @Test void concurrentAcquisitionsHaveExactlyOneWinnerAndRejectTheLoserWithSessionBusy() {
+        try (Fixture fixture = new Fixture()) {
+            java.util.concurrent.atomic.AtomicInteger setups =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicInteger cleanups =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready") {
+                @Override public void setup(ScenarioRequest request) {
+                    setups.incrementAndGet();
+                }
+                @Override public void cleanup(ScenarioRequest request) {
+                    cleanups.incrementAndGet();
+                }
+            });
+
+            java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(2);
+            List<java.util.concurrent.CompletableFuture<CompletionStage<Scene2dScenarioRunner.Lease>>> submitted =
+                    new ArrayList<>();
+            try (ExecutorService callers = Executors.newVirtualThreadPerTaskExecutor()) {
+                for (int index = 0; index < 2; index++) {
+                    submitted.add(java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                        await(barrier);
+                        return fixture.acquire(Duration.ofSeconds(1));
+                    }, callers));
+                }
+            }
+            List<CompletionStage<Scene2dScenarioRunner.Lease>> acquisitions =
+                    submitted.stream()
+                            .map(java.util.concurrent.CompletableFuture::join)
+                            .toList();
+
+            fixture.scheduler.drain();
+            fixture.completedFrame();
+
+            Scene2dScenarioRunner.Lease winner = null;
+            int busy = 0;
+            for (CompletionStage<Scene2dScenarioRunner.Lease> acquisition : acquisitions) {
+                try {
+                    winner = acquisition.toCompletableFuture().join();
+                } catch (java.util.concurrent.CompletionException failure) {
+                    Scene2dScenarioRunner.AcquisitionException rejection = assertInstanceOf(
+                            Scene2dScenarioRunner.AcquisitionException.class, failure.getCause());
+                    assertEquals(ScenarioFailure.SESSION_BUSY,
+                            rejection.result().failure().orElseThrow());
+                    assertEquals(0, rejection.result().setupAttempts(),
+                            "the rejected acquisition must not attempt setup");
+                    assertFalse(rejection.result().cleanupCompleted(),
+                            "the rejected acquisition must not run cleanup");
+                    busy++;
+                }
+            }
+            assertEquals(1, busy, "exactly one competing acquisition must be rejected as busy");
+            assertFalse(winner == null, "exactly one acquisition must own the session");
+            assertEquals(1, setups.get(), "only the owner's hooks may execute");
+            assertEquals(0, cleanups.get(), "no cleanup before the owner releases");
+
+            winner.release();
+            fixture.scheduler.drain();
+            assertEquals(1, cleanups.get(), "the owner cleans exactly once");
+        }
+    }
+
+    @Test void everyTerminalPathReleasesTheLeaseBeforeTheNextAcquisition() {
+        for (TerminalPath path : TerminalPath.values()) {
+            releaseOnTerminalPath(path);
+        }
+    }
+
+    @Test void staleReleaseOfAnEarlierLeaseCannotClearItsSuccessor() {
+        try (Fixture fixture = new Fixture()) {
+            java.util.concurrent.atomic.AtomicInteger cleanups =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready") {
+                @Override public void cleanup(ScenarioRequest request) {
+                    cleanups.incrementAndGet();
+                }
+            });
+
+            Scene2dScenarioRunner.Lease first = fixture.acquireReady(Duration.ofSeconds(1));
+            first.release();
+            fixture.scheduler.drain();
+            assertEquals(1, cleanups.get(), "the first lease cleans once");
+
+            Scene2dScenarioRunner.Lease second = fixture.acquireReady(Duration.ofSeconds(1));
+            assertFalse(second.completion().toCompletableFuture().isDone(),
+                    "the successor lease is active");
+
+            first.release();
+            fixture.scheduler.drain();
+            assertFalse(second.completion().toCompletableFuture().isDone(),
+                    "a stale release must not clear the successor lease");
+            assertEquals(1, cleanups.get(), "the stale release must not clean again");
+
+            second.release();
+            fixture.scheduler.drain();
+            assertEquals(2, cleanups.get(), "releasing the successor cleans exactly once more");
+            assertTrue(second.completion().toCompletableFuture().join().cleanupCompleted());
+        }
+    }
+
+    private enum TerminalPath {
+        SUCCESS,
+        CALLER_CANCELLATION,
+        DEADLINE,
+        SETUP_REJECTED,
+        RESET_REJECTED,
+        READINESS_REJECTED,
+        CLOSE
+    }
+
+    private static void releaseOnTerminalPath(TerminalPath path) {
+        switch (path) {
+            case SUCCESS -> successReleasesThenReacquires();
+            case CALLER_CANCELLATION -> callerCancellationReleasesThenReacquires();
+            case DEADLINE -> deadlineReleasesThenReacquires();
+            case SETUP_REJECTED, RESET_REJECTED, READINESS_REJECTED ->
+                    rejectionReleasesThenReacquires(path);
+            case CLOSE -> closeReleasesTheHeldLease();
+        }
+    }
+
+    private static void successReleasesThenReacquires() {
+        try (Fixture fixture = new Fixture()) {
+            java.util.concurrent.atomic.AtomicInteger cleanups =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready") {
+                @Override public void cleanup(ScenarioRequest request) {
+                    cleanups.incrementAndGet();
+                }
+            });
+            Scene2dScenarioRunner.Lease lease = fixture.acquireReady(Duration.ofSeconds(1));
+            lease.release();
+            fixture.scheduler.drain();
+            assertEquals(1, cleanups.get(), "explicit release cleans once");
+            assertSubsequentAcquisitionSucceeds(fixture, "success");
+        }
+    }
+
+    private static void callerCancellationReleasesThenReacquires() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready"));
+            Scene2dScenarioRunner.Lease lease = fixture.acquireReady(Duration.ofSeconds(1));
+            assertTrue(lease.completion().toCompletableFuture().cancel(false),
+                    "caller cancellation must not bypass cleanup");
+            fixture.scheduler.drain();
+            assertEquals(ScenarioFailure.CANCELLED,
+                    lease.completion().toCompletableFuture().join().failure().orElseThrow());
+            assertTrue(lease.completion().toCompletableFuture().join().cleanupCompleted());
+            assertSubsequentAcquisitionSucceeds(fixture, "caller cancellation");
+        }
+    }
+
+    private static void deadlineReleasesThenReacquires() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready"));
+            Scene2dScenarioRunner.Lease lease = fixture.acquireReady(Duration.ofMillis(20));
+            fixture.clock.advance(Duration.ofMillis(10));
+            fixture.deadlines.expire();
+            fixture.scheduler.drain();
+            assertEquals(ScenarioFailure.READINESS_DEADLINE,
+                    lease.completion().toCompletableFuture().join().failure().orElseThrow());
+            assertTrue(lease.completion().toCompletableFuture().join().cleanupCompleted());
+            assertSubsequentAcquisitionSucceeds(fixture, "deadline");
+        }
+    }
+
+    private static void rejectionReleasesThenReacquires(TerminalPath path) {
+        try (Fixture fixture = new Fixture()) {
+            java.util.concurrent.atomic.AtomicBoolean failOnce =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready") {
+                @Override public void setup(ScenarioRequest request) {
+                    if (path == TerminalPath.SETUP_REJECTED && failOnce.getAndSet(false)) {
+                        throw new IllegalStateException("setup rejected");
+                    }
+                }
+                @Override public void reset(ScenarioRequest request) {
+                    if (path == TerminalPath.RESET_REJECTED && failOnce.getAndSet(false)) {
+                        throw new IllegalStateException("reset rejected");
+                    }
+                }
+                @Override public boolean ready(ScenarioRequest request) {
+                    if (path == TerminalPath.READINESS_REJECTED && failOnce.getAndSet(false)) {
+                        throw new IllegalStateException("readiness rejected");
+                    }
+                    return true;
+                }
+            });
+            ScenarioFailure expected = switch (path) {
+                case SETUP_REJECTED -> ScenarioFailure.SETUP_REJECTED;
+                case RESET_REJECTED -> ScenarioFailure.RESET_REJECTED;
+                case READINESS_REJECTED -> ScenarioFailure.READINESS_REJECTED;
+                default -> throw new AssertionError(path);
+            };
+            CompletionStage<Scene2dScenarioRunner.Lease> rejected =
+                    fixture.acquire(Duration.ofSeconds(1));
+            fixture.scheduler.drain();
+            if (path == TerminalPath.READINESS_REJECTED) {
+                fixture.completedFrame();
+            }
+            assertEquals(expected, failureOf(rejected), path.name());
+            assertSubsequentAcquisitionSucceeds(fixture, path.name());
+        }
+    }
+
+    private static void closeReleasesTheHeldLease() {
+        Fixture fixture = new Fixture();
+        try {
+            java.util.concurrent.atomic.AtomicInteger cleanups =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready") {
+                @Override public void cleanup(ScenarioRequest request) {
+                    cleanups.incrementAndGet();
+                }
+            });
+            Scene2dScenarioRunner.Lease lease = fixture.acquireReady(Duration.ofSeconds(1));
+            fixture.runner.close();
+            fixture.scheduler.drain();
+            assertEquals(ScenarioFailure.CANCELLED,
+                    lease.completion().toCompletableFuture().join().failure().orElseThrow());
+            assertTrue(lease.completion().toCompletableFuture().join().cleanupCompleted());
+            assertEquals(1, cleanups.get(), "close releases the held lease exactly once");
+            assertThrows(IllegalStateException.class,
+                    () -> fixture.acquire(Duration.ofSeconds(1)),
+                    "a closed runner rejects new acquisitions");
+        } finally {
+            fixture.close();
+        }
+    }
+
+    private static void assertSubsequentAcquisitionSucceeds(Fixture fixture, String label) {
+        Scene2dScenarioRunner.Lease next = fixture.acquireReady(Duration.ofSeconds(1));
+        assertFalse(next.completion().toCompletableFuture().isDone(), label);
+        next.release();
+        fixture.scheduler.drain();
+        assertTrue(next.completion().toCompletableFuture().join().cleanupCompleted(), label);
+    }
+
+    private static ScenarioFailure failureOf(
+            CompletionStage<Scene2dScenarioRunner.Lease> acquisition) {
+        try {
+            acquisition.toCompletableFuture().join();
+            throw new AssertionError("acquisition unexpectedly succeeded");
+        } catch (java.util.concurrent.CompletionException failure) {
+            return assertInstanceOf(Scene2dScenarioRunner.AcquisitionException.class,
+                    failure.getCause()).result().failure().orElseThrow();
+        }
+    }
+
+    private static void await(java.util.concurrent.CyclicBarrier barrier) {
+        try {
+            barrier.await(5, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception failure) {
+            throw new IllegalStateException("acquisition barrier did not open", failure);
+        }
+    }
+
     @Test void repeatedInputsRetainIdentityOrReportNondeterminism() {
         try (Fixture fixture = new Fixture()) {
             AtomicReference<String> identity = new AtomicReference<>("stable");
@@ -403,6 +660,13 @@ final class Scene2dScenarioRunnerTest {
                     "test-app",
                     "process-1",
                     "session-1");
+        }
+
+        Scene2dScenarioRunner.Lease acquireReady(Duration timeout) {
+            CompletionStage<Scene2dScenarioRunner.Lease> acquired = acquire(timeout);
+            scheduler.drain();
+            completedFrame();
+            return acquired.toCompletableFuture().join();
         }
 
         CompletionStage<Scene2dScenarioRunner.Lease> acquire(Duration timeout) {

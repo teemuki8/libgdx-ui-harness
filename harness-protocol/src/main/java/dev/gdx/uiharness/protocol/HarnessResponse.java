@@ -889,7 +889,8 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         CLEANUP_FAILED("cleanup-failed"),
         NONDETERMINISTIC_INITIAL_STATE("nondeterministic-initial-state"),
         DISPATCH_FAILED("dispatch-failed"),
-        CANCELLED("cancelled");
+        CANCELLED("cancelled"),
+        SESSION_BUSY("session-busy");
 
         private final String wireName;
 
@@ -931,6 +932,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                 case NONDETERMINISTIC_INITIAL_STATE -> NONDETERMINISTIC_INITIAL_STATE;
                 case DISPATCH_FAILED -> DISPATCH_FAILED;
                 case CANCELLED -> CANCELLED;
+                case SESSION_BUSY -> SESSION_BUSY;
             };
         }
     }
