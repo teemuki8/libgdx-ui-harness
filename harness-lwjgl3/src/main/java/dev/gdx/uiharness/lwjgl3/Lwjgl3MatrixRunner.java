@@ -23,6 +23,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 
 /**
@@ -42,8 +43,13 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
          * <p>On failure to apply (including an expired apply deadline), the implementation must
          * restore the original display state before throwing; the runner never observes a
          * partially applied case.
+         *
+         * @param matrixCase the case to apply
+         * @param restartProfileId the runner's scenario restart profile
+         * @param deadline the run deadline; application must not start when it is expired and
+         *     the implementation may bound its waits to the remaining time
          */
-        ApplyResult apply(MatrixCase matrixCase, String restartProfileId);
+        ApplyResult apply(MatrixCase matrixCase, String restartProfileId, Deadline deadline);
 
         /** Restores the pre-case display state after the case reaches a terminal state. */
         void restore();
@@ -132,6 +138,7 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
     private final Object lifecycle = new Object();
     private final LinkedHashMap<String, MatrixReport> retained = new LinkedHashMap<>();
     private boolean open = true;
+    private boolean activeRun;
 
     /**
      * Creates a matrix runner.
@@ -156,6 +163,11 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
      * Plans and executes one bounded matrix, completing with the bounded run identifier once
      * every started case reaches a terminal state.
      *
+     * <p>Only one matrix run may be active at a time because the host-owned applicator is
+     * shared: a second concurrent run is rejected with {@code matrix run already active}
+     * before any case is planned or applied, and admission is released again when the active
+     * run reaches a terminal state on every path (normal, exceptional, or cancelled).
+     *
      * @param definition immutable matrix definition
      * @param limits hard case bounds
      * @param deadline monotonic run deadline
@@ -166,10 +178,22 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
         Objects.requireNonNull(definition, "definition");
         Objects.requireNonNull(limits, "limits");
         Objects.requireNonNull(deadline, "deadline");
+        synchronized (lifecycle) {
+            if (!open) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("matrix runner is closed"));
+            }
+            if (activeRun) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("matrix run already active"));
+            }
+            activeRun = true;
+        }
         final List<MatrixCase> cases;
         try {
             cases = planner.plan(definition, limits);
         } catch (IllegalArgumentException rejection) {
+            releaseRun();
             return CompletableFuture.failedFuture(rejection);
         }
         String runId = "matrix-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
@@ -178,7 +202,13 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
         for (MatrixCase matrixCase : cases) {
             chain = chain.thenCompose(ignored -> executeCase(matrixCase, deadline, results));
         }
-        return chain.thenApply(ignored -> {
+        return chain.handle((ignored, failure) -> {
+            releaseRun();
+            if (failure != null) {
+                throw new CompletionException(failure);
+            }
+            return ignored;
+        }).thenApply(ignored -> {
             MatrixReport report = new MatrixReport(runId, definition.scenarioId(),
                     List.copyOf(results), false);
             synchronized (lifecycle) {
@@ -192,6 +222,12 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
             }
             return runId;
         });
+    }
+
+    private void releaseRun() {
+        synchronized (lifecycle) {
+            activeRun = false;
+        }
     }
 
     /** Returns the compact retained report for one run, or empty when not retained. */
@@ -215,7 +251,7 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
         }
         ApplyResult applied;
         try {
-            applied = applicator.apply(matrixCase, scenario.profileId());
+            applied = applicator.apply(matrixCase, scenario.profileId(), deadline);
         } catch (RuntimeException failure) {
             results.add(new MatrixCaseResult(
                     dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),

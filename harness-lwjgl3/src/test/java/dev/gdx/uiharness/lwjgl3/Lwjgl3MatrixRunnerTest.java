@@ -1,6 +1,7 @@
 package dev.gdx.uiharness.lwjgl3;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -503,6 +504,83 @@ final class Lwjgl3MatrixRunnerTest {
         }
     }
 
+    @Test void secondRunIsRejectedWhileFirstIsActiveAndNewRunSucceedsAfterTerminal() {
+        try (Fixture fixture = new Fixture()) {
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> first = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            assertEquals(1, fixture.applied.get(),
+                    "the first run applies before its assertion stage waits");
+
+            CompletionStage<String> second = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            java.util.concurrent.CompletionException rejection = assertThrows(
+                    java.util.concurrent.CompletionException.class,
+                    () -> second.toCompletableFuture().join());
+            assertEquals("matrix run already active", rejection.getCause().getMessage());
+            assertEquals(1, fixture.applied.get(),
+                    "a rejected run must never apply a case");
+            assertEquals(0, fixture.acquisitions.get());
+
+            for (int index = 0; index < 16 && !first.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String firstRunId = first.toCompletableFuture().join();
+            assertEquals(MatrixCaseStatus.PASSED, fixture.runner.results(firstRunId)
+                    .orElseThrow().results().getFirst().status());
+
+            CompletionStage<String> third = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !third.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String thirdRunId = third.toCompletableFuture().join();
+            assertEquals(MatrixCaseStatus.PASSED, fixture.runner.results(thirdRunId)
+                    .orElseThrow().results().getFirst().status());
+            assertEquals(2, fixture.applied.get());
+            assertEquals(2, fixture.restored.get());
+        }
+    }
+
+    @Test void applicatorReceivesExactRunDeadline() {
+        try (Fixture fixture = new Fixture()) {
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+            Deadline deadline = fixture.deadline();
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), deadline);
+            assertSame(deadline, fixture.lastApplyDeadline,
+                    "the runner must pass the exact run deadline to the applicator");
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+            assertEquals(MatrixCaseStatus.PASSED,
+                    fixture.runner.results(runId).orElseThrow().results().getFirst().status());
+        }
+    }
+
     @Test void matrixProductLimitRejectsBeforeAnyCaseStarts() {
         try (Fixture fixture = new Fixture()) {
             MatrixDefinition definition = new MatrixDefinition(
@@ -754,12 +832,15 @@ final class Lwjgl3MatrixRunnerTest {
         boolean failReset;
         int restoreFailuresRemaining;
         String restoreMessage = "display restore rejected";
+        Deadline lastApplyDeadline;
         final Lwjgl3MatrixRunner.MatrixCaseApplicator applicator =
                 new Lwjgl3MatrixRunner.MatrixCaseApplicator() {
                     @Override public Lwjgl3MatrixRunner.ApplyResult apply(
                             dev.gdx.uiharness.core.matrix.MatrixCase matrixCase,
-                            String restartProfileId) {
+                            String restartProfileId,
+                            Deadline deadline) {
                         applied.incrementAndGet();
+                        lastApplyDeadline = deadline;
                         if (unsupportedReason != null) {
                             return new Lwjgl3MatrixRunner.ApplyResult.Unsupported(
                                     unsupportedReason);
