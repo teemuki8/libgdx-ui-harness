@@ -25,9 +25,23 @@ final class RequestAdmission implements AutoCloseable {
     static final int DEFAULT_PER_SESSION_LIMIT = 4;
     static final int DEFAULT_MAX_QUEUED_MUTATIONS = 16;
 
+    /**
+     * Package-private observation seam at the genuine admission boundary: fires under the
+     * admission monitor at the exact moment a request is accepted (started immediately or
+     * enqueued), so tests can observe the true enqueue order without racing virtual-thread
+     * dispatch or recording rejected attempts. Never fired for rejected or closed requests.
+     */
+    interface AdmissionObserver {
+        AdmissionObserver NOOP = requestId -> {};
+
+        /** Called under the admission monitor exactly when a request is admitted. */
+        void onAdmitted(String requestId);
+    }
+
     private final int globalLimit;
     private final int perSessionLimit;
     private final int maxQueuedMutations;
+    private final AdmissionObserver observer;
     private final Object monitor = new Object();
     private final Map<SessionKey, SessionLane> lanes = new HashMap<>();
     private int globalInFlight;
@@ -60,6 +74,11 @@ final class RequestAdmission implements AutoCloseable {
     }
 
     RequestAdmission(int globalLimit, int perSessionLimit, int maxQueuedMutations) {
+        this(globalLimit, perSessionLimit, maxQueuedMutations, AdmissionObserver.NOOP);
+    }
+
+    RequestAdmission(int globalLimit, int perSessionLimit, int maxQueuedMutations,
+            AdmissionObserver observer) {
         if (globalLimit <= 0) {
             throw new IllegalArgumentException("globalLimit must be positive");
         }
@@ -72,6 +91,7 @@ final class RequestAdmission implements AutoCloseable {
         this.globalLimit = globalLimit;
         this.perSessionLimit = perSessionLimit;
         this.maxQueuedMutations = maxQueuedMutations;
+        this.observer = Objects.requireNonNull(observer, "observer");
     }
 
     /**
@@ -82,6 +102,18 @@ final class RequestAdmission implements AutoCloseable {
      * (which includes result translation and output accounting) reaches a terminal state.
      */
     <T> CompletionStage<T> submit(
+            SessionKey sessionKey,
+            HarnessToolCatalog.AccessMode mode,
+            Supplier<CompletionStage<T>> work) {
+        return submit(null, sessionKey, mode, work);
+    }
+
+    /**
+     * Admits one named request or rejects it immediately. The {@code requestId} is opaque and
+     * forwarded to the {@link AdmissionObserver}; callers that do not name requests pass null.
+     */
+    <T> CompletionStage<T> submit(
+            String requestId,
             SessionKey sessionKey,
             HarnessToolCatalog.AccessMode mode,
             Supplier<CompletionStage<T>> work) {
@@ -118,6 +150,7 @@ final class RequestAdmission implements AutoCloseable {
                 lane.queue.add(item);
                 globalInFlight++;
                 lane.inFlight++;
+                observer.onAdmitted(requestId);
                 // A queued mutation cancelled before it starts releases its permit and queue
                 // slot immediately instead of leaking until the lane drains.
                 result.whenComplete((value, failure) -> cancelQueued(sessionKey, lane, item));
@@ -128,6 +161,7 @@ final class RequestAdmission implements AutoCloseable {
             if (mode == HarnessToolCatalog.AccessMode.MUTATING) {
                 lane.runningMutation = result;
             }
+            observer.onAdmitted(requestId);
             startNow = true;
         }
         if (startNow) {
