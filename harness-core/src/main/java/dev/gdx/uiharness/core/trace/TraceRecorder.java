@@ -7,13 +7,19 @@ import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
@@ -25,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -44,6 +51,7 @@ public final class TraceRecorder implements AutoCloseable {
     private final Path root;
     private final Path realRoot;
     private final Clock clock;
+    private final FileOpener fileOpener;
     private final Map<String, ArtifactInfo> artifacts = new LinkedHashMap<>();
     private OutputStream eventOutput;
     private Path stagingDirectory;
@@ -61,15 +69,33 @@ public final class TraceRecorder implements AutoCloseable {
     private long generation;
     private TraceManifest lastManifest;
 
+    /** Opens one owned regular file; the default implementation uses NOFOLLOW semantics. */
+    @FunctionalInterface
+    interface FileOpener {
+        /** Opens the file for reading without following a substituted final-component symlink. */
+        InputStream open(Path path) throws IOException;
+    }
+
     /** Creates a recorder rooted below one non-symbolic-link server-owned directory. */
     public TraceRecorder(Path root, Clock clock) {
+        this(root, clock, TraceRecorder::openNoFollow);
+    }
+
+    /** Test-only constructor injecting the finalization file opener. */
+    TraceRecorder(Path root, Clock clock, FileOpener fileOpener) {
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.fileOpener = Objects.requireNonNull(fileOpener, "fileOpener");
         this.root = initializeRoot(root);
         try {
             realRoot = this.root.toRealPath();
         } catch (IOException exception) {
             throw new IllegalArgumentException("trace root cannot be resolved", exception);
         }
+    }
+
+    static InputStream openNoFollow(Path path) throws IOException {
+        return Channels.newInputStream(FileChannel.open(
+                path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
     }
 
     /** Begins one trace. A recorder has at most one active trace. */
@@ -91,13 +117,16 @@ public final class TraceRecorder implements AutoCloseable {
         generation++;
         try {
             stagingDirectory = Files.createDirectory(
-                    root.resolve(".trace-" + randomHex(16) + ".tmp"));
+                    root.resolve(".trace-" + randomHex(16) + ".tmp"),
+                    ownerOnlyDirectoryAttributes());
             realStagingDirectory = stagingDirectory.toRealPath();
-            artifactDirectory = Files.createDirectory(stagingDirectory.resolve("artifacts"));
+            artifactDirectory = Files.createDirectory(stagingDirectory.resolve("artifacts"),
+                    ownerOnlyDirectoryAttributes());
             realArtifactDirectory = artifactDirectory.toRealPath();
             eventFile = stagingDirectory.resolve("events.ndjson");
             eventOutput = new BufferedOutputStream(Files.newOutputStream(eventFile,
                     StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE));
+            applyOwnerOnlyFilePermissions(eventFile);
             active = true;
         } catch (IOException exception) {
             cleanupStaging();
@@ -167,6 +196,7 @@ public final class TraceRecorder implements AutoCloseable {
         try (source; OutputStream output = new BufferedOutputStream(Files.newOutputStream(
                 reservation.temporary(), StandardOpenOption.CREATE_NEW,
                 StandardOpenOption.WRITE))) {
+            applyOwnerOnlyFilePermissions(reservation.temporary());
             int read;
             while ((read = source.read(buffer)) != -1) {
                 if (size > reservation.maxUncompressedBytes() - read) {
@@ -261,6 +291,7 @@ public final class TraceRecorder implements AutoCloseable {
         }
         Path temporaryArchive = root.resolve(".trace-" + randomHex(16) + ".zip.tmp");
         Path archive = root.resolve("trace-" + randomHex(16) + ".zip");
+        String eventsSha256 = HexFormat.of().formatHex(eventDigest.digest());
         LinkedHashMap<String, TraceManifest.ArtifactBinding> bindings = new LinkedHashMap<>();
         for (Map.Entry<String, ArtifactInfo> entry : artifacts.entrySet()) {
             bindings.put(entry.getKey(), new TraceManifest.ArtifactBinding(
@@ -268,13 +299,15 @@ public final class TraceRecorder implements AutoCloseable {
         }
         TraceManifest manifest = new TraceManifest(archive, sessionId, startedAt, endedAt,
                 complete, reason, eventCount, artifacts.size(), uncompressedBytes,
-                TraceManifest.V2, HexFormat.of().formatHex(eventDigest.digest()), bindings);
+                TraceManifest.V2, eventsSha256, bindings);
         try (ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(
                 Files.newOutputStream(temporaryArchive, StandardOpenOption.CREATE_NEW,
                         StandardOpenOption.WRITE)), StandardCharsets.UTF_8)) {
-            copyEntry(zip, "events.ndjson", eventFile);
+            applyOwnerOnlyFilePermissions(temporaryArchive);
+            copyEntry(zip, "events.ndjson", eventFile, eventsSha256);
             for (Map.Entry<String, ArtifactInfo> entry : artifacts.entrySet()) {
-                copyEntry(zip, "artifacts/" + entry.getKey(), entry.getValue().path());
+                copyEntry(zip, "artifacts/" + entry.getKey(),
+                        entry.getValue().path(), entry.getKey());
             }
             zip.putNextEntry(new ZipEntry("manifest.json"));
             zip.write(manifest.toJson());
@@ -283,6 +316,21 @@ public final class TraceRecorder implements AutoCloseable {
             deleteIfExists(temporaryArchive);
             cleanupStaging();
             throw failure(ErrorCode.INTERNAL_ERROR, "Unable to finalize trace archive", exception);
+        } catch (RuntimeException failure) {
+            deleteIfExists(temporaryArchive);
+            cleanupStaging();
+            throw failure;
+        }
+        // The temporary archive lives directly under root (not staging), so it gets
+        // its own regular-file/no-follow check before the atomic move.
+        Path normalizedTemporary = temporaryArchive.toAbsolutePath().normalize();
+        if (!normalizedTemporary.startsWith(root)
+                || Files.isSymbolicLink(normalizedTemporary)
+                || !Files.isRegularFile(normalizedTemporary, LinkOption.NOFOLLOW_LINKS)) {
+            deleteIfExists(temporaryArchive);
+            cleanupStaging();
+            throw failure(ErrorCode.INVALID_REQUEST,
+                    "Trace archive storage changed unexpectedly", null);
         }
         try {
             Files.move(temporaryArchive, archive, StandardCopyOption.ATOMIC_MOVE);
@@ -296,18 +344,46 @@ public final class TraceRecorder implements AutoCloseable {
             cleanupStaging();
             throw failure(ErrorCode.INTERNAL_ERROR, "Unable to publish trace archive", exception);
         }
+        if (Files.isSymbolicLink(archive)
+                || !Files.isRegularFile(archive, LinkOption.NOFOLLOW_LINKS)) {
+            deleteIfExists(archive);
+            cleanupStaging();
+            throw failure(ErrorCode.INVALID_REQUEST,
+                    "Trace archive publication failed identity verification", null);
+        }
         lastManifest = manifest;
         cleanupStaging();
         return manifest;
     }
 
-    private void copyEntry(ZipOutputStream zip, String name, Path source) throws IOException {
-        verifyOwnedRegularFile(source);
-        zip.putNextEntry(new ZipEntry(name));
-        try (InputStream input = Files.newInputStream(source, StandardOpenOption.READ)) {
-            input.transferTo(zip);
+    private void copyEntry(ZipOutputStream zip, String name, Path source,
+            String expectedSha256) throws IOException {
+        verifyOwnedRegularFile(source); // fast-fail defense in depth; not the identity guarantee
+        try (InputStream input = openVerified(source)) {
+            zip.putNextEntry(new ZipEntry(name));
+            MessageDigest copyDigest = sha256();
+            byte[] buffer = new byte[COPY_BUFFER_SIZE];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                copyDigest.update(buffer, 0, read);
+                zip.write(buffer, 0, read);
+            }
+            zip.closeEntry();
+            if (!HexFormat.of().formatHex(copyDigest.digest()).equals(expectedSha256)) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace evidence content does not match its recorded digest", null);
+            }
         }
-        zip.closeEntry();
+    }
+
+    private InputStream openVerified(Path source) {
+        Path normalized = source.toAbsolutePath().normalize();
+        try {
+            return fileOpener.open(normalized);
+        } catch (IOException exception) {
+            throw failure(ErrorCode.INVALID_REQUEST,
+                    "Trace evidence path is unavailable", exception);
+        }
     }
 
     private String failStreamedArtifact(
@@ -501,6 +577,27 @@ public final class TraceRecorder implements AutoCloseable {
         verifyStaging();
     }
 
+    private static FileAttribute<?>[] ownerOnlyDirectoryAttributes() {
+        if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            return new FileAttribute<?>[] { PosixFilePermissions.asFileAttribute(Set.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE)) };
+        }
+        return new FileAttribute<?>[0];
+    }
+
+    private static void applyOwnerOnlyFilePermissions(Path path) {
+        if (!FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            return;
+        }
+        try {
+            Files.setPosixFilePermissions(path, Set.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+        } catch (IOException ignored) {
+            // Best effort: the no-follow open and content identity still protect finalization.
+        }
+    }
+
     private static Path initializeRoot(Path configuredRoot) {
         Objects.requireNonNull(configuredRoot, "root");
         Path normalized = configuredRoot.toAbsolutePath().normalize();
@@ -509,7 +606,7 @@ public final class TraceRecorder implements AutoCloseable {
                     && Files.isSymbolicLink(normalized)) {
                 throw new IllegalArgumentException("trace root must not be a symbolic link");
             }
-            Files.createDirectories(normalized);
+            Files.createDirectories(normalized, ownerOnlyDirectoryAttributes());
             if (!Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS)) {
                 throw new IllegalArgumentException("trace root must be a directory");
             }

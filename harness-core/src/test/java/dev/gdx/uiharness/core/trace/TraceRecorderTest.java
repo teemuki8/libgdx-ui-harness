@@ -17,10 +17,13 @@ import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.model.SemanticState;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Duration;
@@ -31,6 +34,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -273,6 +277,134 @@ final class TraceRecorderTest {
         }
     }
 
+    @Test void symlinkSwapAtOpenAbortsFinalizationWithoutFollowingTarget() throws Exception {
+        Path outside = temporaryDirectory.resolveSibling(
+                temporaryDirectory.getFileName() + "-secret");
+        Files.writeString(outside, "victim-secret", StandardCharsets.UTF_8);
+        try {
+            TraceRecorder recorder = new TraceRecorder(temporaryDirectory,
+                    Clock.systemUTC(), path -> {
+                        Files.deleteIfExists(path);
+                        Files.createSymbolicLink(path, outside);
+                        try {
+                            return TraceRecorder.openNoFollow(path); // throws: final component is a link
+                        } finally {
+                            Files.deleteIfExists(path);
+                        }
+                    });
+            recorder.start("session-race", TraceRecorder.Limits.defaults());
+            recorder.record(TraceEvent.commandStarted(
+                    "session-race", "request-1", 1, snapshot(1, 1), Map.of()));
+
+            HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+            assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+            assertEquals("victim-secret", Files.readString(outside, StandardCharsets.UTF_8));
+            assertTrue(noTemporaryFiles(temporaryDirectory));
+            assertNull(publishedArchives(temporaryDirectory),
+                    "no archive may be published from tampered staging");
+        } finally {
+            Files.deleteIfExists(outside);
+        }
+    }
+
+    @Test void swapAndRestoreOfValidatedFileCannotDefeatHandleContentIdentity()
+            throws Exception {
+        Path attacker = temporaryDirectory.resolveSibling(
+                temporaryDirectory.getFileName() + "-attacker");
+        try {
+            TraceRecorder recorder = new TraceRecorder(temporaryDirectory,
+                    Clock.systemUTC(), path -> {
+                        byte[] original = Files.readAllBytes(path);
+                        byte[] substituted = new byte[original.length];
+                        java.util.Arrays.fill(substituted, (byte) 'A');
+                        Files.write(attacker, substituted);
+                        Files.deleteIfExists(path);
+                        Files.copy(attacker, path);       // same size, different content
+                        InputStream opened = TraceRecorder.openNoFollow(path); // regular file: opens
+                        Files.deleteIfExists(path);
+                        Files.write(path, original);      // restore the path before the check
+                        return opened;                    // handle still refers to the substituted inode
+                    });
+            recorder.start("session-restore", TraceRecorder.Limits.defaults());
+            recorder.record(TraceEvent.commandStarted(
+                    "session-restore", "request-1", 1, snapshot(1, 1), Map.of()));
+
+            HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+            assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+            assertTrue(failure.getMessage().contains("digest"));
+            assertTrue(new String(Files.readAllBytes(attacker), StandardCharsets.UTF_8)
+                            .matches("A+"),
+                    "the substituted file must be untouched");
+            assertTrue(noTemporaryFiles(temporaryDirectory));
+            assertNull(publishedArchives(temporaryDirectory),
+                    "no archive may be published from substituted evidence");
+        } finally {
+            Files.deleteIfExists(attacker);
+        }
+    }
+
+    @Test void symlinkSubstitutedForArtifactAtFinalizeIsRejected() throws Exception {
+        Path outside = temporaryDirectory.resolveSibling(
+                temporaryDirectory.getFileName() + "-artifact-secret");
+        Files.writeString(outside, "artifact-secret", StandardCharsets.UTF_8);
+        try {
+            TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+            recorder.start("session-swap", TraceRecorder.Limits.defaults());
+            recorder.record(TraceEvent.commandStarted(
+                    "session-swap", "request-1", 1, snapshot(1, 1), Map.of()));
+            recorder.addArtifact("image/png",
+                    new ByteArrayInputStream("evidence".getBytes(StandardCharsets.UTF_8)));
+            Path artifactFile;
+            try (var paths = Files.walk(temporaryDirectory)) {
+                artifactFile = paths
+                        .filter(path -> path.getParent() != null
+                                && path.getParent().getFileName().toString().equals("artifacts"))
+                        .filter(path -> Files.isRegularFile(path,
+                                java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                        .findFirst().orElseThrow();
+            }
+            Files.delete(artifactFile);
+            Files.createSymbolicLink(artifactFile, outside);
+
+            HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+            assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+            assertEquals("artifact-secret",
+                    Files.readString(outside, StandardCharsets.UTF_8));
+            assertTrue(noTemporaryFiles(temporaryDirectory));
+            assertNull(publishedArchives(temporaryDirectory),
+                    "no archive may be published from tampered staging");
+        } finally {
+            Files.deleteIfExists(outside);
+        }
+    }
+
+    @Test void stagingDirectoriesAndFilesAreOwnerOnlyWherePosixSupported() throws Exception {
+        if (!FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "posix permissions unavailable");
+        }
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-perms", TraceRecorder.Limits.defaults());
+        Set<PosixFilePermission> ownerOnlyDirectory = Set.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE);
+        Set<PosixFilePermission> ownerOnlyFile = Set.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
+        try (var paths = Files.walk(temporaryDirectory)) {
+            for (Path path : paths.toList()) {
+                if (Files.isDirectory(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    assertEquals(ownerOnlyDirectory,
+                            Files.getPosixFilePermissions(path), path.toString());
+                } else if (Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    assertEquals(ownerOnlyFile,
+                            Files.getPosixFilePermissions(path), path.toString());
+                }
+            }
+        }
+    }
+
     @Test void coreTraceRuntimeRemainsJdkOnly() {
         String[] classPath = System.getProperty("java.class.path")
                 .split(java.util.regex.Pattern.quote(java.io.File.pathSeparator));
@@ -373,6 +505,13 @@ final class TraceRecorderTest {
         }
         try (var paths = Files.walk(root)) {
             return paths.noneMatch(path -> path.getFileName().toString().contains(".tmp"));
+        }
+    }
+
+    private static Path publishedArchives(Path root) throws Exception {
+        try (var paths = Files.walk(root)) {
+            return paths.filter(path -> path.getFileName().toString().endsWith(".zip"))
+                    .findFirst().orElse(null);
         }
     }
 
