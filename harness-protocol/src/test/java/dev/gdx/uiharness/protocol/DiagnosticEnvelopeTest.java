@@ -95,6 +95,10 @@ final class DiagnosticEnvelopeTest {
 
         assertEquals(List.of(), envelope.suggestions());
         assertEquals("role=button", envelope.locator());
+        assertEquals(
+                "diag-6ca89c1683b106dd4efb159c6fe817cd4a22b187b528daf96737fd788a99ad59",
+                envelope.diagnosticId(),
+                "the released factory excludes the later suggestions field from its identity");
     }
 
     @Test void terminalCodesCannotClaimRetryability() {
