@@ -61,13 +61,16 @@ import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -921,19 +924,22 @@ final class HarnessMcpServerContractTest {
         HarnessResponse capabilities = new HarnessResponse.Success(
                 ProtocolVersion.V1, "mcp-1", "game",
                 new HarnessResponse.Result.Capabilities(List.of("action")));
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+        RecordingObserver observer = new RecordingObserver();
+        // A single-thread executor serializes the deferred tool-call bodies, so the admission
+        // order is deterministic and the observer's recorded enqueue order is exact.
+        try (ExecutorService executor = Executors.newSingleThreadExecutor();
                 HarnessToolHandler handler = new HarnessToolHandler(request -> {
                     protocolCalls.incrementAndGet();
                     return protocolCalls.get() == 1 ? firstGate : secondGate;
                 }, new RecordingArtifacts(), executor, 1024, System::nanoTime,
-                new RequestAdmission(2, 4, 4))) {
+                new RequestAdmission(2, 4, 4), observer)) {
             CompletableFuture<McpSchema.CallToolResult> first = handler.handle(call(
                     "ui_capabilities", Map.of("sessionId", "game"))).toFuture();
             CompletableFuture<McpSchema.CallToolResult> second = handler.handle(call(
                     "ui_capabilities", Map.of("sessionId", "game"))).toFuture();
-            for (int attempt = 0; attempt < 200 && protocolCalls.get() < 2; attempt++) {
-                Thread.sleep(5);
-            }
+            // Both read-only calls are admitted and running; onStart fires only after the
+            // protocol service was reached, so the call counter is already incremented.
+            observer.startSignal(2).get(5, TimeUnit.SECONDS);
             assertEquals(2, protocolCalls.get());
 
             // The third concurrent request is rejected immediately with a stable
@@ -958,19 +964,22 @@ final class HarnessMcpServerContractTest {
         CompletableFuture<HarnessResponse> mutationTwo = new CompletableFuture<>();
         CompletableFuture<HarnessResponse> mutationThree = new CompletableFuture<>();
         AtomicInteger actionCalls = new AtomicInteger();
+        List<String> protocolStarts = Collections.synchronizedList(new ArrayList<>());
         HarnessResponse action = new HarnessResponse.Success(
                 ProtocolVersion.V1, "mcp-1", "game",
                 new HarnessResponse.Result.Action(1, 2, "clicked", Map.of()));
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+        RecordingObserver mutationObserver = new RecordingObserver();
+        try (ExecutorService executor = Executors.newSingleThreadExecutor();
                 HarnessToolHandler handler = new HarnessToolHandler(request -> {
                     actionCalls.incrementAndGet();
+                    protocolStarts.add(request.requestId());
                     return switch (actionCalls.get()) {
                         case 1 -> mutationOne;
                         case 2 -> mutationTwo;
                         default -> mutationThree;
                     };
                 }, new RecordingArtifacts(), executor, 1024, System::nanoTime,
-                new RequestAdmission(8, 4, 4))) {
+                new RequestAdmission(8, 4, 4), mutationObserver)) {
             Map<String, Object> arguments = Map.of(
                     "sessionId", "game",
                     "locator", Map.of("kind", "role", "role", "button"),
@@ -978,40 +987,32 @@ final class HarnessMcpServerContractTest {
                             "force", false));
             CompletableFuture<McpSchema.CallToolResult> first = handler.handle(call(
                     "ui_action", arguments)).toFuture();
-            for (int attempt = 0; attempt < 200 && actionCalls.get() < 1; attempt++) {
-                Thread.sleep(5);
-            }
-            assertEquals(1, actionCalls.get());
-            assertFalse(first.isDone());
             CompletableFuture<McpSchema.CallToolResult> second = handler.handle(call(
                     "ui_action", arguments)).toFuture();
             CompletableFuture<McpSchema.CallToolResult> third = handler.handle(call(
                     "ui_action", arguments)).toFuture();
 
-            // The two later calls are admitted into the bounded lane in whichever order their
-            // virtual-thread defers run; the lane is FIFO and never runs two at once. Drive the
-            // gates by start order so the test does not assume a call-to-gate identity.
+            // One mutation is admitted and running; the two later calls are admitted into the
+            // bounded lane by the serialized defers. The observer records the actual enqueue
+            // order, which must equal the protocol-start order: a LIFO lane would start them in
+            // reverse and fail the order assertions below.
+            mutationObserver.startSignal(1).get(5, TimeUnit.SECONDS);
+            mutationObserver.admissionSignal(3).get(5, TimeUnit.SECONDS);
+            List<String> enqueueOrder = mutationObserver.admissions();
+
             mutationOne.complete(action);
-            for (int attempt = 0; attempt < 200 && actionCalls.get() < 2; attempt++) {
-                Thread.sleep(5);
-            }
-            assertEquals(2, actionCalls.get());
-            assertEquals("action-result",
-                    structured(first.get(5, TimeUnit.SECONDS)).get("kind"));
-            // Exactly one queued mutation started and is in flight; the last is still queued.
-            assertFalse(second.isDone());
-            assertFalse(third.isDone());
+            mutationObserver.startSignal(2).get(5, TimeUnit.SECONDS);
+            assertEquals(enqueueOrder.subList(0, 2), protocolStarts);
+            // The last queued mutation must not have started while the second was running.
+            assertFalse(mutationObserver.startSignal(3).isDone());
 
             mutationTwo.complete(action);
-            for (int attempt = 0; attempt < 200 && actionCalls.get() < 3; attempt++) {
-                Thread.sleep(5);
-            }
-            assertEquals(3, actionCalls.get());
-            // Exactly one of the two later calls has delivered; the other is in flight on the
-            // last gate and must not have started while the previous mutation was running.
-            assertTrue(second.isDone() != third.isDone());
+            mutationObserver.startSignal(3).get(5, TimeUnit.SECONDS);
+            assertEquals(enqueueOrder, protocolStarts);
 
             mutationThree.complete(action);
+            assertEquals("action-result",
+                    structured(first.get(5, TimeUnit.SECONDS)).get("kind"));
             assertEquals("action-result",
                     structured(second.get(5, TimeUnit.SECONDS)).get("kind"));
             assertEquals("action-result",
@@ -1031,31 +1032,29 @@ final class HarnessMcpServerContractTest {
         HarnessResponse action = new HarnessResponse.Success(
                 ProtocolVersion.V1, "mcp-1", "game",
                 new HarnessResponse.Result.Action(1, 2, "clicked", Map.of()));
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+        RecordingObserver observer = new RecordingObserver();
+        try (ExecutorService executor = Executors.newSingleThreadExecutor();
                 HarnessToolHandler handler = new HarnessToolHandler(request -> {
                     calls.incrementAndGet();
                     return request.command() instanceof Command.Sessions
                             ? sessionlessGate : catalogGate;
                 }, new RecordingArtifacts(), executor, 1024, System::nanoTime,
-                new RequestAdmission(8, 1, 1))) {
+                new RequestAdmission(8, 1, 1), observer)) {
             CompletableFuture<McpSchema.CallToolResult> sessionless = handler.handle(call(
                     "ui_sessions", Map.of())).toFuture();
-            for (int attempt = 0; attempt < 200 && calls.get() < 1; attempt++) {
-                Thread.sleep(5);
-            }
+            observer.startSignal(1).get(5, TimeUnit.SECONDS);
             assertEquals(1, calls.get());
 
             // A real client session literally named "catalog" must have its own per-session
-            // lane and be admitted even while the sessionless lane is occupied.
+            // lane and be admitted even while the sessionless lane is occupied: with the
+            // per-session limit at 1, a shared lane would reject the second start.
             CompletableFuture<McpSchema.CallToolResult> catalogSession = handler.handle(call(
                     "ui_action", Map.of(
                             "sessionId", "catalog",
                             "locator", Map.of("kind", "role", "role", "button"),
                             "action", Map.of("kind", "click", "pointer", 0, "button", 0,
                                     "force", false)))).toFuture();
-            for (int attempt = 0; attempt < 200 && calls.get() < 2; attempt++) {
-                Thread.sleep(5);
-            }
+            observer.startSignal(2).get(5, TimeUnit.SECONDS);
             assertEquals(2, calls.get());
             assertFalse(catalogSession.isDone());
 
@@ -1620,6 +1619,68 @@ final class HarnessMcpServerContractTest {
 
         @Override public CompletionStage<SemanticSnapshot> snapshot(Deadline deadline) {
             return CompletableFuture.completedFuture(SNAPSHOT);
+        }
+    }
+
+    /**
+     * Records the admission (enqueue) order and completes one signal per admission and per
+     * protocol start, so tests can await observable events without polling or sleeping.
+     */
+    private static final class RecordingObserver implements HarnessToolHandler.ToolCallObserver {
+        private final List<String> admissions = Collections.synchronizedList(new ArrayList<>());
+        private final List<String> starts = Collections.synchronizedList(new ArrayList<>());
+        private final Map<Integer, CompletableFuture<Void>> admissionSignals =
+                new ConcurrentHashMap<>();
+        private final Map<Integer, CompletableFuture<Void>> startSignals =
+                new ConcurrentHashMap<>();
+
+        @Override public void onAdmission(String requestId) {
+            synchronized (admissions) {
+                admissions.add(requestId);
+                complete(admissionSignals, admissions.size());
+            }
+        }
+
+        @Override public void onStart(String requestId) {
+            synchronized (starts) {
+                starts.add(requestId);
+                complete(startSignals, starts.size());
+            }
+        }
+
+        private static void complete(Map<Integer, CompletableFuture<Void>> signals, int count) {
+            CompletableFuture<Void> signal = signals.get(count);
+            if (signal != null) {
+                signal.complete(null);
+            }
+        }
+
+        CompletableFuture<Void> admissionSignal(int count) {
+            synchronized (admissions) {
+                CompletableFuture<Void> signal = admissionSignals.computeIfAbsent(
+                        count, ignored -> new CompletableFuture<>());
+                if (admissions.size() >= count) {
+                    signal.complete(null);
+                }
+                return signal;
+            }
+        }
+
+        CompletableFuture<Void> startSignal(int count) {
+            synchronized (starts) {
+                CompletableFuture<Void> signal = startSignals.computeIfAbsent(
+                        count, ignored -> new CompletableFuture<>());
+                if (starts.size() >= count) {
+                    signal.complete(null);
+                }
+                return signal;
+            }
+        }
+
+        List<String> admissions() {
+            synchronized (admissions) {
+                return List.copyOf(admissions);
+            }
         }
     }
 

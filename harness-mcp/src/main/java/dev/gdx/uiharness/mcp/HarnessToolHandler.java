@@ -49,6 +49,24 @@ public final class HarnessToolHandler implements AutoCloseable {
     static final int MAX_LOCATOR_NODES = ProtocolJson.MAX_REQUEST_BYTES / 256;
     private static final ObjectMapper COMMAND_MAPPER = ProtocolJson.mapper();
 
+    /**
+     * Package-private test hook recording when tool calls are submitted to admission and when
+     * admitted work reaches the protocol service, so tests can assert ordering deterministically
+     * without polling or assuming virtual-thread dispatch order.
+     */
+    interface ToolCallObserver {
+        ToolCallObserver NOOP = new ToolCallObserver() {
+            @Override public void onAdmission(String requestId) {}
+            @Override public void onStart(String requestId) {}
+        };
+
+        /** Called synchronously before one tool call is submitted to admission. */
+        void onAdmission(String requestId);
+
+        /** Called synchronously after admitted work reaches the protocol service. */
+        void onStart(String requestId);
+    }
+
     private final Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol;
     private final ArtifactReference.Publisher artifacts;
     private final ExecutorService executor;
@@ -56,6 +74,7 @@ public final class HarnessToolHandler implements AutoCloseable {
     private final int artifactThresholdBytes;
     private final LongSupplier nanoClock;
     private final RequestAdmission admission;
+    private final ToolCallObserver observer;
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
     private final AtomicLong requestSequence = new AtomicLong();
     private final Map<String, Integer> diagnosticAttempts = new ConcurrentHashMap<>();
@@ -95,6 +114,14 @@ public final class HarnessToolHandler implements AutoCloseable {
     HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes, LongSupplier nanoClock, RequestAdmission admission) {
+        this(protocol, artifacts, executor, artifactThresholdBytes, nanoClock, admission,
+                ToolCallObserver.NOOP);
+    }
+
+    HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
+            ArtifactReference.Publisher artifacts, ExecutorService executor,
+            int artifactThresholdBytes, LongSupplier nanoClock, RequestAdmission admission,
+            ToolCallObserver observer) {
         this.protocol = Objects.requireNonNull(protocol, "protocol");
         this.artifacts = Objects.requireNonNull(artifacts, "artifacts");
         this.executor = Objects.requireNonNull(executor, "executor");
@@ -104,6 +131,7 @@ public final class HarnessToolHandler implements AutoCloseable {
         }
         this.artifactThresholdBytes = artifactThresholdBytes;
         this.admission = Objects.requireNonNull(admission, "admission");
+        this.observer = Objects.requireNonNull(observer, "observer");
         startedNanos = nanoClock.getAsLong();
         scheduler = Schedulers.fromExecutorService(executor);
     }
@@ -167,6 +195,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             // Bound admission before protocol dispatch: excess work is rejected immediately
             // with a stable LIMIT_EXCEEDED diagnostic and never reaches the protocol service.
             HarnessToolCatalog.AccessMode mode = catalog.accessMode(call.name());
+            observer.onAdmission(requestId);
             CompletionStage<McpSchema.CallToolResult> admitted = admission.submit(
                     admissionKey(arguments), mode,
                     () -> execute(request, call.name(), sequence, arguments));
@@ -191,11 +220,13 @@ public final class HarnessToolHandler implements AutoCloseable {
         try {
             stage = Objects.requireNonNull(protocol.apply(request), "protocol stage");
         } catch (RuntimeException failure) {
+            observer.onStart(request.requestId());
             return CompletableFuture.completedFuture(diagnostic(
                     request.requestId(), sequence, operation, arguments,
                     DiagnosticCode.INTERNAL_ERROR,
                     "Protocol invocation failed", List.of(), null));
         }
+        observer.onStart(request.requestId());
         return Mono.fromFuture(stage.toCompletableFuture())
                 .map(response -> toMcpResult(
                         response, operation, sequence, arguments))
