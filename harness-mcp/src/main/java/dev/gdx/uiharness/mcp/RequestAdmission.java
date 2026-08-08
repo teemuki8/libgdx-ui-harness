@@ -30,6 +30,11 @@ final class RequestAdmission implements AutoCloseable {
      * admission monitor at the exact moment a request is accepted (started immediately or
      * enqueued), so tests can observe the true enqueue order without racing virtual-thread
      * dispatch or recording rejected attempts. Never fired for rejected or closed requests.
+     *
+     * <p>The callback is invoked only after all admission validation passes and before any
+     * admission state (lane insertion, counters, queue) is committed, so a throwing observer
+     * leaves the admission untouched and the exception propagates out of {@link #submit}
+     * without leaking permits or lane slots.
      */
     interface AdmissionObserver {
         AdmissionObserver NOOP = requestId -> {};
@@ -134,7 +139,7 @@ final class RequestAdmission implements AutoCloseable {
                         "Global admission limit exceeded (limit=" + globalLimit + ")"));
                 return result;
             }
-            lane = lanes.computeIfAbsent(sessionKey, ignored -> new SessionLane());
+            lane = laneFor(lanes, sessionKey);
             if (lane.inFlight >= perSessionLimit) {
                 result.completeExceptionally(new LimitExceededException(
                         "Session admission limit exceeded (limit=" + perSessionLimit + ")"));
@@ -147,27 +152,45 @@ final class RequestAdmission implements AutoCloseable {
                             "Mutation queue limit exceeded (limit=" + maxQueuedMutations + ")"));
                     return result;
                 }
+                // Notify only after validation and before any admission state is committed
+                // (lane insertion, counters, queue), so a throwing observer leaves the
+                // admission untouched and the exception propagates without leaking permits.
+                observer.onAdmitted(requestId);
+                lanes.put(sessionKey, lane);
                 lane.queue.add(item);
                 globalInFlight++;
                 lane.inFlight++;
-                observer.onAdmitted(requestId);
                 // A queued mutation cancelled before it starts releases its permit and queue
                 // slot immediately instead of leaking until the lane drains.
                 result.whenComplete((value, failure) -> cancelQueued(sessionKey, lane, item));
                 return result;
             }
+            observer.onAdmitted(requestId);
+            lanes.put(sessionKey, lane);
             globalInFlight++;
             lane.inFlight++;
             if (mode == HarnessToolCatalog.AccessMode.MUTATING) {
                 lane.runningMutation = result;
             }
-            observer.onAdmitted(requestId);
             startNow = true;
         }
         if (startNow) {
             run(sessionKey, lane, item);
         }
         return result;
+    }
+
+    /**
+     * Returns the lane for one session, creating it without inserting it into the map. The
+     * lane enters the map only when a request is actually admitted, so rejected or
+     * observer-failed requests never leave an empty lane behind.
+     */
+    private static SessionLane laneFor(Map<SessionKey, SessionLane> lanes, SessionKey sessionKey) {
+        SessionLane lane = lanes.get(sessionKey);
+        if (lane == null) {
+            lane = new SessionLane();
+        }
+        return lane;
     }
 
     /** Releases one queued mutation whose result reached a terminal state before it started. */

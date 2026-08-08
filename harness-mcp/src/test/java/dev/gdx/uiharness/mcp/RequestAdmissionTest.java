@@ -326,6 +326,75 @@ final class RequestAdmissionTest {
                 .toCompletableFuture().join());
     }
 
+    @Test void throwingAdmissionObserverLeaksNoPermitOrLaneSlot() {
+        AtomicInteger observerCalls = new AtomicInteger();
+        RequestAdmission admission = new RequestAdmission(1, 1, 1, requestId -> {
+            if (observerCalls.getAndIncrement() == 0) {
+                throw new IllegalStateException("observer exploded");
+            }
+        });
+        CompletableFuture<String> g0 = new CompletableFuture<>();
+        AtomicInteger invoked = new AtomicInteger();
+        AtomicInteger index = new AtomicInteger();
+
+        // The observer throws before any permit or lane state is committed, so the failure
+        // propagates out of submit and neither the global nor the per-session permit is used.
+        assertThrows(IllegalStateException.class, () -> admission.submit(
+                RequestAdmission.SessionKey.session("s"), READ,
+                gated(invoked, index, g0)));
+        assertEquals(0, invoked.get());
+
+        // With both limits at 1, the next request would be rejected if the throwing observer
+        // had consumed either permit or left a stale lane entry behind.
+        CompletionStage<String> next = admission.submit(
+                RequestAdmission.SessionKey.session("s"), READ,
+                gated(invoked, index, g0));
+        assertEquals(1, invoked.get());
+        assertFalse(next.toCompletableFuture().isDone());
+
+        g0.complete("ok");
+        assertEquals("ok", next.toCompletableFuture().join());
+    }
+
+    @Test void throwingObserverOnQueuedMutationLeaksNoQueueSlotOrPermit() {
+        AtomicInteger observerCalls = new AtomicInteger();
+        RequestAdmission admission = new RequestAdmission(8, 8, 1, requestId -> {
+            if (observerCalls.getAndIncrement() == 1) {
+                throw new IllegalStateException("observer exploded");
+            }
+        });
+        CompletableFuture<String> m0 = new CompletableFuture<>();
+        CompletableFuture<String> m1 = new CompletableFuture<>();
+        AtomicInteger invoked = new AtomicInteger();
+        AtomicInteger index = new AtomicInteger();
+
+        CompletionStage<String> first = admission.submit(
+                RequestAdmission.SessionKey.session("s"), WRITE,
+                gated(invoked, index, m0, m1));
+        assertEquals(1, invoked.get());
+
+        // The queued-path observer throws before the queue slot or its permits are committed,
+        // so the failed attempt must not occupy the single queue slot or hold a permit.
+        assertThrows(IllegalStateException.class, () -> admission.submit(
+                RequestAdmission.SessionKey.session("s"), WRITE,
+                gated(invoked, index, m0, m1)));
+        assertEquals(1, invoked.get());
+
+        // The single queue slot is still free: a replacement mutation is admitted and runs
+        // after the first completes, proving no slot or permit leaked.
+        CompletionStage<String> next = admission.submit(
+                RequestAdmission.SessionKey.session("s"), WRITE,
+                gated(invoked, index, m0, m1));
+        assertEquals(1, invoked.get());
+        assertFalse(next.toCompletableFuture().isDone());
+
+        m0.complete("m0");
+        assertEquals("m0", first.toCompletableFuture().join());
+        assertEquals(2, invoked.get());
+        m1.complete("m1");
+        assertEquals("m1", next.toCompletableFuture().join());
+    }
+
     @SafeVarargs
     private static Supplier<CompletionStage<String>> gated(
             AtomicInteger invoked,
