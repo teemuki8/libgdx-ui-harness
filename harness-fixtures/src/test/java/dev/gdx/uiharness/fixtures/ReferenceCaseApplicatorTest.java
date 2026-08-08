@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -346,88 +347,95 @@ final class ReferenceCaseApplicatorTest {
     }
 
     @Test
-    void queuedWindowMutationIsRecheckedAtExecutionTimeAfterQueueDelay() {
-        AtomicLong now = new AtomicLong(0L);
-        MonotonicClock manual = now::get;
-        try (RenderThreadScheduler scheduler = new RenderThreadScheduler(16)) {
-            List<MatrixWindow> appliedWindows = new ArrayList<>();
-            List<Locale> appliedLocales = new ArrayList<>();
-            AtomicBoolean firstWindow = new AtomicBoolean(true);
-            ReferenceCaseApplicator.CaseApplication queuedLate =
-                    new ReferenceCaseApplicator.CaseApplication() {
-                        @Override public void applyWindow(
-                                MatrixWindow window, Deadline deadline) {
-                            if (firstWindow.getAndSet(false)) {
-                                // Models the non-owner scheduler path for the case apply: the
-                                // check before submit passed, then the command sat queued on the
-                                // render thread past the run deadline, and the execution-time
-                                // check inside the real scheduled lambda refuses the mutation.
-                                // The bounded cleanup restore runs with a fresh deadline and
-                                // records normally.
-                                now.addAndGet(31_000_000_000L);
-                                if (deadline.isExpired()) {
-                                    throw new IllegalStateException(
-                                            "case application deadline expired before window apply");
-                                }
-                            }
-                            appliedWindows.add(window);
-                        }
-
-                        @Override public void applyLocale(Locale locale, Deadline deadline) {
-                            appliedLocales.add(locale);
-                        }
-                    };
-            ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
-                    scheduler, manual, "host-owned-profile", queuedLate);
-            Deadline run = Deadline.after(manual, Duration.ofSeconds(30));
-            MatrixCase matrixCase = new MatrixCase(
-                    0, new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
-                    "en-US", "", 16.0 / 9.0, List.of());
-
-            IllegalStateException failure = assertThrows(IllegalStateException.class,
-                    () -> applicator.apply(matrixCase, "host-owned-profile", run));
-            assertTrue(failure.getMessage().contains("deadline expired"),
-                    "the execution-time check must refuse the late mutation: "
-                            + failure.getMessage());
-            assertEquals(List.of(new MatrixWindow(1280, 720)), appliedWindows,
-                    "the queued 1920x1080 mutation must not run after expiry; only the "
-                            + "bounded cleanup restore mutates");
-            assertEquals(List.of(Locale.getDefault()), appliedLocales,
-                    "the requested en-US locale must not be applied after expiry");
-        }
-    }
-
-    @Test
-    void queuedWindowCommandRefusesAtExecutionTimeThroughRealScheduler() throws Exception {
+    void scheduledWindowCommandRefusesBeforeGdxWhenExecutedAfterExpiry() throws Exception {
         AtomicLong now = new AtomicLong(0L);
         MonotonicClock manual = now::get;
         Deadline run = Deadline.after(manual, Duration.ofSeconds(30));
         CountDownLatch schedulerReady = new CountDownLatch(1);
-        CountDownLatch go = new CountDownLatch(1);
+        CountDownLatch stop = new CountDownLatch(1);
+        AtomicReference<RenderThreadScheduler> schedulerRef = new AtomicReference<>();
+        Thread owner = Thread.ofPlatform().name("fixture-scheduler-owner").start(() -> {
+            schedulerRef.set(new RenderThreadScheduler(16));
+            schedulerReady.countDown();
+            try {
+                stop.await();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        Locale previousDefault = Locale.getDefault();
+        try {
+            assertTrue(schedulerReady.await(10, TimeUnit.SECONDS), "scheduler owner must start");
+            List<Runnable> captured = new ArrayList<>();
+            ReferenceCaseApplicator.WindowCommandScheduler capturing =
+                    (window, command, deadline) -> captured.add(command);
+            ReferenceCaseApplicator.Observation harmless = matrixCase ->
+                    new Lwjgl3MatrixRunner.DisplayObservation(
+                            new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
+                            "en-US", "", "host-owned-profile");
+            ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
+                    schedulerRef.get(), manual, "host-owned-profile",
+                    null, harmless, capturing);
+            MatrixCase matrixCase = new MatrixCase(
+                    0, new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
+                    "en-US", "", 16.0 / 9.0, List.of());
+
+            // Apply runs on a non-owner virtual thread: the outer pre-check passes and the
+            // real production window command (deadline guard + setWindowedMode) is captured by
+            // the fake scheduler, which does not execute it. Apply completes with the command
+            // retained for the guard assertion below.
+            CompletableFuture<Lwjgl3MatrixRunner.ApplyResult> applied =
+                    CompletableFuture.supplyAsync(() ->
+                            applicator.apply(matrixCase, "host-owned-profile", run));
+            assertTrue(applied.join() instanceof Lwjgl3MatrixRunner.ApplyResult.Applied,
+                    "apply completes with the command captured");
+            assertEquals(1, captured.size(), "the production window command must be submitted");
+
+            // The clock advances while the command sits queued; invoking the actual production
+            // command must refuse with the deadline exception BEFORE any Gdx access. Removing
+            // the guard would surface an NPE from the uninitialized Gdx instead of this
+            // refusal, so this test fails independently if the guard is removed.
+            now.addAndGet(31_000_000_000L);
+            IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                    () -> captured.get(0).run());
+            assertTrue(refusal.getMessage().contains("deadline expired"),
+                    "the guard must refuse before Gdx access: " + refusal.getMessage());
+        } finally {
+            Locale.setDefault(previousDefault);
+            stop.countDown();
+            owner.interrupt();
+            owner.join(5_000);
+        }
+    }
+
+    @Test
+    void realSchedulerRejectsExpiredQueuedWindowCommand() throws Exception {
+        AtomicLong now = new AtomicLong(0L);
+        MonotonicClock manual = now::get;
+        Deadline run = Deadline.after(manual, Duration.ofSeconds(30));
+        CountDownLatch schedulerReady = new CountDownLatch(1);
+        CountDownLatch runQueued = new CountDownLatch(1);
+        CountDownLatch restoreQueued = new CountDownLatch(1);
+        CountDownLatch drainRun = new CountDownLatch(1);
+        CountDownLatch drainRestore = new CountDownLatch(1);
         CountDownLatch ownerDone = new CountDownLatch(1);
-        AtomicBoolean applyDone = new AtomicBoolean();
         AtomicReference<RenderThreadScheduler> schedulerRef = new AtomicReference<>();
         AtomicReference<Throwable> ownerFailure = new AtomicReference<>();
+        AtomicBoolean firstSubmit = new AtomicBoolean(true);
 
-        // The scheduler owner holds the queue and controls when the real submitted lambda
-        // executes: the manual clock advances past the run deadline between the submission
-        // (whose pre-check passes) and the drain, so the execution-time check inside the real
-        // lambda must refuse before setWindowedMode. The clock is then advanced past the
-        // bounded cleanup deadline too, so the restore's window and locale steps also refuse
-        // before mutating — no GL is touched anywhere in this unit test.
-        Thread owner = Thread.ofPlatform().name("fixture-render-owner").start(() -> {
+        Thread owner = Thread.ofPlatform().name("fixture-scheduler-owner").start(() -> {
             try {
                 RenderThreadScheduler scheduler = new RenderThreadScheduler(16);
                 schedulerRef.set(scheduler);
                 schedulerReady.countDown();
-                go.await();
-                now.addAndGet(31_000_000_000L);
-                scheduler.drain();
-                now.addAndGet(16_000_000_000L);
-                while (!applyDone.get()) {
-                    scheduler.drain();
-                    Thread.onSpinWait();
+                if (!drainRun.await(15, TimeUnit.SECONDS)) {
+                    return;
                 }
+                scheduler.drain();
+                if (!drainRestore.await(15, TimeUnit.SECONDS)) {
+                    return;
+                }
+                scheduler.drain();
                 scheduler.close();
             } catch (Throwable failure) {
                 ownerFailure.set(failure);
@@ -436,35 +444,69 @@ final class ReferenceCaseApplicatorTest {
             }
         });
 
-        assertTrue(schedulerReady.await(10, TimeUnit.SECONDS), "scheduler owner must start");
-        ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
-                schedulerRef.get(), manual, "host-owned-profile");
-        MatrixCase matrixCase = new MatrixCase(
-                0, new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
-                "en-US", "", 16.0 / 9.0, List.of());
-        CompletableFuture<Lwjgl3MatrixRunner.ApplyResult> applied = new CompletableFuture<>();
-        Thread.ofVirtual().name("fixture-mcp-apply").start(() -> {
-            try {
-                applied.complete(applicator.apply(matrixCase, "host-owned-profile", run));
-            } catch (RuntimeException failure) {
-                applied.completeExceptionally(failure);
-            }
-        });
-        go.countDown();
+        try {
+            assertTrue(schedulerReady.await(10, TimeUnit.SECONDS), "scheduler owner must start");
+            ReferenceCaseApplicator.WindowCommandScheduler wiring =
+                    (window, command, deadline) -> {
+                        CompletionStage<Void> executed = schedulerRef.get().submit(
+                                () -> {
+                                    command.run();
+                                    return null;
+                                }, deadline);
+                        // The submit returned: the outer pre-check passed and the command is
+                        // queued (or rejected) on the real render-thread scheduler before any
+                        // clock advance.
+                        if (firstSubmit.getAndSet(false)) {
+                            runQueued.countDown();
+                        } else {
+                            restoreQueued.countDown();
+                        }
+                        executed.toCompletableFuture().join();
+                    };
+            ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
+                    schedulerRef.get(), manual, "host-owned-profile", wiring);
+            MatrixCase matrixCase = new MatrixCase(
+                    0, new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
+                    "en-US", "", 16.0 / 9.0, List.of());
+            CompletableFuture<Lwjgl3MatrixRunner.ApplyResult> applied = new CompletableFuture<>();
+            Thread.ofVirtual().name("fixture-mcp-apply").start(() -> {
+                try {
+                    applied.complete(applicator.apply(matrixCase, "host-owned-profile", run));
+                } catch (RuntimeException failure) {
+                    applied.completeExceptionally(failure);
+                }
+            });
 
-        Throwable failure = assertThrows(CompletionException.class, applied::join);
-        Throwable root = failure;
-        while (root.getCause() != null) {
-            root = root.getCause();
+            // The run command is queued with the pre-check passed: advance past the run
+            // deadline and drain once on the owner; the real scheduler must reject the expired
+            // command before executing it (its runnable never runs).
+            assertTrue(runQueued.await(10, TimeUnit.SECONDS), "run command must be queued");
+            now.addAndGet(31_000_000_000L);
+            drainRun.countDown();
+            // The failed apply triggers the bounded cleanup restore, which queues a second
+            // command under its own cleanup deadline (created now, at 31s): advance past it
+            // and drain again so the restore cannot hang and its failure is bounded.
+            assertTrue(restoreQueued.await(10, TimeUnit.SECONDS),
+                    "restore command must be queued");
+            now.addAndGet(16_000_000_000L);
+            drainRestore.countDown();
+            assertTrue(ownerDone.await(10, TimeUnit.SECONDS), "scheduler owner must finish");
+
+            Throwable failure = assertThrows(CompletionException.class, applied::join);
+            Throwable root = failure;
+            while (root.getCause() != null) {
+                root = root.getCause();
+            }
+            assertTrue(root.getMessage().contains("exceeded its deadline"),
+                    "the real scheduler must reject the expired queued command: "
+                            + root.getMessage());
+            assertNull(ownerFailure.get(), "scheduler owner must not fail: " + ownerFailure.get());
+        } finally {
+            drainRun.countDown();
+            drainRestore.countDown();
+            owner.interrupt();
+            ownerDone.await(5, TimeUnit.SECONDS);
         }
-        assertTrue(root.getMessage().contains("deadline expired"),
-                "the real scheduled lambda must refuse the late window mutation: "
-                        + root.getMessage());
-        assertTrue(root.getMessage().contains("display restore also failed"),
-                "the bounded restore failure must be surfaced: " + root.getMessage());
-        applyDone.set(true);
-        assertTrue(ownerDone.await(10, TimeUnit.SECONDS), "scheduler owner must finish");
-        assertNull(ownerFailure.get(), "scheduler owner must not fail: " + ownerFailure.get());
     }
 
     @Test

@@ -48,6 +48,17 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
         Lwjgl3MatrixRunner.DisplayObservation observe(MatrixCase matrixCase);
     }
 
+    /**
+     * Submits the production window command for the owning render thread and waits until the
+     * resize is confirmed (or the deadline expires). The command is the actual production
+     * runnable — the deadline guard plus {@code setWindowedMode} — so an injectable test fake
+     * can capture and invoke it without reimplementing the guard or touching GL; the default
+     * delegates to the real {@link RenderThreadScheduler}.
+     */
+    interface WindowCommandScheduler {
+        void submit(MatrixWindow window, Runnable command, Deadline deadline);
+    }
+
     private final RenderThreadScheduler scheduler;
     private final MonotonicClock clock;
     /** The host's active restart profile; observations come from this state, never the request. */
@@ -55,30 +66,48 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
     private final Locale originalLocale;
     private final CaseApplication caseApplication;
     private final Observation observation;
+    private final WindowCommandScheduler windowCommandScheduler;
 
     /** Creates an applicator for the registered restart profile using the real window backend. */
     public ReferenceCaseApplicator(
             RenderThreadScheduler scheduler, MonotonicClock clock, String restartProfileId) {
-        this(scheduler, clock, restartProfileId, null, null);
+        this(scheduler, clock, restartProfileId, null, null, null);
     }
 
     /** Creates an applicator with an injectable application step (package-private for tests). */
     ReferenceCaseApplicator(
             RenderThreadScheduler scheduler, MonotonicClock clock, String restartProfileId,
             CaseApplication caseApplication) {
-        this(scheduler, clock, restartProfileId, caseApplication, null);
+        this(scheduler, clock, restartProfileId, caseApplication, null, null);
     }
 
     /** Creates an applicator with injectable application and observation steps (for tests). */
     ReferenceCaseApplicator(
             RenderThreadScheduler scheduler, MonotonicClock clock, String restartProfileId,
             CaseApplication caseApplication, Observation observation) {
+        this(scheduler, clock, restartProfileId, caseApplication, observation, null);
+    }
+
+    /** Creates an applicator with an injectable window-command scheduler (for tests). */
+    ReferenceCaseApplicator(
+            RenderThreadScheduler scheduler, MonotonicClock clock, String restartProfileId,
+            WindowCommandScheduler windowCommandScheduler) {
+        this(scheduler, clock, restartProfileId, null, null, windowCommandScheduler);
+    }
+
+    /** Creates an applicator with injectable application, observation, and command steps. */
+    ReferenceCaseApplicator(
+            RenderThreadScheduler scheduler, MonotonicClock clock, String restartProfileId,
+            CaseApplication caseApplication, Observation observation,
+            WindowCommandScheduler windowCommandScheduler) {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.restartProfileId = Objects.requireNonNull(restartProfileId, "restartProfileId");
         originalLocale = Locale.getDefault();
         this.caseApplication = caseApplication != null ? caseApplication : new RealApplication();
         this.observation = observation != null ? observation : this::observe;
+        this.windowCommandScheduler = windowCommandScheduler != null
+                ? windowCommandScheduler : new RealWindowCommandScheduler();
     }
 
     @Override
@@ -244,7 +273,7 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
                 }
                 Gdx.graphics.setWindowedMode(window.width(), window.height());
             } else {
-                scheduler.submit(() -> {
+                windowCommandScheduler.submit(window, () -> {
                             // The check before submit cannot cover the render-thread queue
                             // delay: the mutation is re-checked immediately before it executes.
                             if (deadline.isExpired()) {
@@ -252,22 +281,8 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
                                         "case application deadline expired before window apply");
                             }
                             Gdx.graphics.setWindowedMode(window.width(), window.height());
-                            return null;
                         },
-                        deadline)
-                        .toCompletableFuture().join();
-            }
-            while (!deadline.isExpired()
-                    && (Gdx.graphics.getBackBufferWidth() != window.width()
-                            || Gdx.graphics.getBackBufferHeight() != window.height())) {
-                LockSupport.parkNanos(1_000_000L);
-            }
-            if (Gdx.graphics.getBackBufferWidth() != window.width()
-                    || Gdx.graphics.getBackBufferHeight() != window.height()) {
-                throw new IllegalStateException("window resize did not complete: requested="
-                        + window + " observed=" + new MatrixWindow(
-                                Gdx.graphics.getBackBufferWidth(),
-                                Gdx.graphics.getBackBufferHeight()));
+                        deadline);
             }
         }
 
@@ -280,6 +295,31 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
                         "case application deadline expired before locale apply");
             }
             Locale.setDefault(locale);
+        }
+    }
+
+    /** Default window-command scheduler delegating to the real render-thread scheduler. */
+    private final class RealWindowCommandScheduler implements WindowCommandScheduler {
+        @Override
+        public void submit(MatrixWindow window, Runnable command, Deadline deadline) {
+            scheduler.submit(() -> {
+                        command.run();
+                        return null;
+                    },
+                    deadline)
+                    .toCompletableFuture().join();
+            while (!deadline.isExpired()
+                    && (Gdx.graphics.getBackBufferWidth() != window.width()
+                            || Gdx.graphics.getBackBufferHeight() != window.height())) {
+                LockSupport.parkNanos(1_000_000L);
+            }
+            if (Gdx.graphics.getBackBufferWidth() != window.width()
+                    || Gdx.graphics.getBackBufferHeight() != window.height()) {
+                throw new IllegalStateException("window resize did not complete: requested="
+                        + window + " observed=" + new MatrixWindow(
+                                Gdx.graphics.getBackBufferWidth(),
+                                Gdx.graphics.getBackBufferHeight()));
+            }
         }
     }
 
