@@ -1361,20 +1361,22 @@ final class Scene2dSnapshotGatingTest {
                     reservation.completeExceptionally(failure);
                 }
             });
-            assertTrue(supplierEntered.await(5, TimeUnit.SECONDS),
-                    "the reservation must enter the supplier");
             CompletableFuture<Void> closeDone = new CompletableFuture<>();
             CompletableFuture<ScenarioResult> terminalResult = new CompletableFuture<>();
-            workers.submit(() -> {
-                attemptingClose.countDown();
-                fixture.scenarios.close();
-                closeDone.complete(null);
-                lease.completion().whenComplete((value, failure) ->
-                        terminalResult.complete(value));
-            });
-            // releaseSupplier MUST be released on every path so the reserver can never hang
-            // the executor on a failed assertion or timed-out wait.
+            // releaseSupplier MUST be released on every path, so the try begins immediately
+            // after the reserver is submitted and EVERY wait/assertion (including
+            // supplierEntered) lives inside it; a failure can never strand the blocked
+            // supplier or hang the worker executor. The joins after the try are all bounded.
             try {
+                assertTrue(supplierEntered.await(5, TimeUnit.SECONDS),
+                        "the reservation must enter the supplier");
+                workers.submit(() -> {
+                    attemptingClose.countDown();
+                    fixture.scenarios.close();
+                    closeDone.complete(null);
+                    lease.completion().whenComplete((value, failure) ->
+                            terminalResult.complete(value));
+                });
                 assertTrue(attemptingClose.await(5, TimeUnit.SECONDS),
                         "the closer must signal before calling close()");
                 closeDone.get(5, TimeUnit.SECONDS); // the terminate command is now queued
@@ -1632,7 +1634,7 @@ final class Scene2dSnapshotGatingTest {
 }
 ```
 
-`firstStartRaceNeverLosesTheRunFirstObservation` coordinates launcher and owner with a `launched` latch and a `startedHolder` future, and the owner NEVER calls `Future.get` before draining: the owner awaits the launch barrier, decides the frame while the run is active-but-not-begun (begin is still queued), then drains — the queue order guarantees the run's first observation is exactly the decided frame. `lastTerminalReservationWinsDespiteConcurrentTerminal` is the actual concurrency test for the reservation token: the supplier signals entered and blocks WITHOUT holding the lifecycle lock, the closer signals `attemptingClose` before `close()`, the owner waits for `closeDone` (the terminate command is queued), drains so the terminal completes and the last run is removed from `active` WHILE the reservation is still in flight, and only then releases the supplier — the reserved delivery must still complete, which a non-token design (re-reading `active` after the supplier) would violate. `postTerminalFramesInvokeNoSupplier` is the sequential post-terminal gating check (not a race): after the terminal state, a frame decision returns false without ever invoking the supplier. The tests use latches, `closeDone`, and observable drains — no sleeps and no deadlock: the reserver blocks only on the owner's release latch, the owner waits on the closer's `attemptingClose`/`closeDone` signals which are independent of the blocked supplier, and the closer waits on nothing. The `CountingStage.getRoot()` override counts exactly the `stage.getRoot()` calls made by `Scene2dSnapshotter.snapshot(Stage, …)` (one per built snapshot); `Scene2dSession`, `ControlledStageClock`, `Scene2dContractSnapshotter`, and `Scene2dTypographyExtractor` constructors only store the Stage, so the count is 0 at fixture construction. `GdxNativesLoader`/`NoopBatch`/`WidgetStyles` are package-visible test utilities already used by `Scene2dSnapshotterTest` and `Scene2dNavigationRunnerTest`.
+`firstStartRaceNeverLosesTheRunFirstObservation` coordinates launcher and owner with a `launched` latch and a `startedHolder` future, and the owner NEVER calls `Future.get` before draining: the owner awaits the launch barrier, decides the frame while the run is active-but-not-begun (begin is still queued), then drains — the queue order guarantees the run's first observation is exactly the decided frame. `lastTerminalReservationWinsDespiteConcurrentTerminal` is the actual concurrency test for the reservation token: the supplier signals entered and blocks WITHOUT holding the lifecycle lock, the closer signals `attemptingClose` before `close()`, the owner waits for `closeDone` (the terminate command is queued), drains so the terminal completes and the last run is removed from `active` WHILE the reservation is still in flight, and only then releases the supplier — the reserved delivery must still complete, which a non-token design (re-reading `active` after the supplier) would violate. `postTerminalFramesInvokeNoSupplier` is the sequential post-terminal gating check (not a race): after the terminal state, a frame decision returns false without ever invoking the supplier. The tests use latches, `closeDone`, and observable drains — no sleeps and no deadlock: the reserver blocks only on the owner's release latch, the owner waits on the closer's `attemptingClose`/`closeDone` signals which are independent of the blocked supplier, and the closer waits on nothing. The `try`/`finally` begins immediately after the reserver is submitted and wraps EVERY wait and assertion (including `supplierEntered`), with `releaseSupplier.countDown()` in the `finally` and bounded joins afterward, so no failure path can strand the blocked supplier or hang the worker executor. The `CountingStage.getRoot()` override counts exactly the `stage.getRoot()` calls made by `Scene2dSnapshotter.snapshot(Stage, …)` (one per built snapshot); `Scene2dSession`, `ControlledStageClock`, `Scene2dContractSnapshotter`, and `Scene2dTypographyExtractor` constructors only store the Stage, so the count is 0 at fixture construction. `GdxNativesLoader`/`NoopBatch`/`WidgetStyles` are package-visible test utilities already used by `Scene2dSnapshotterTest` and `Scene2dNavigationRunnerTest`.
 
 - [ ] **Step 2: Run to verify failure**
 
