@@ -238,17 +238,17 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
         String mismatch = requestedMismatch(matrixCase, observed, scenario.profileId());
         if (mismatch != null) {
             // The case was applied but does not match the request: restore the original display
-            // state so the next case starts clean, then record the distinct terminal status.
-            applicator.restore();
-            results.add(new MatrixCaseResult(
-                    dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
-                    MatrixCaseStatus.MISAPPLIED,
-                    observed.window(), observed.uiScale(), observed.devicePixelRatio(),
-                    observed.hiDpiMode(), observed.locale(), observed.fontSetId(),
-                    observed.restartProfileId(),
-                    List.of(), List.of(), List.of(),
-                    bounded("requested state not applied: " + mismatch)));
-            return CompletableFuture.completedFuture(null);
+            // state so the next case starts clean, then record the distinct terminal status. A
+            // restore failure upgrades the terminal to FAILED with the restore evidence.
+            return terminalAfterRestore(matrixCase, observed, results,
+                    new MatrixCaseResult(
+                            dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
+                            MatrixCaseStatus.MISAPPLIED,
+                            observed.window(), observed.uiScale(), observed.devicePixelRatio(),
+                            observed.hiDpiMode(), observed.locale(), observed.fontSetId(),
+                            observed.restartProfileId(),
+                            List.of(), List.of(), List.of(),
+                            bounded("requested state not applied: " + mismatch)));
         }
         ScenarioRequest request = new ScenarioRequest(
                 dev.gdx.uiharness.core.scenario.ScenarioDefinition.SCHEMA_VERSION,
@@ -257,23 +257,93 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                 scenario.configuration(),
                 scenario.profileId(),
                 deadline);
-        return scenarios.acquire(request, scenario.applicationId(),
-                scenario.processId(), scenario.sessionId())
-                .thenCompose(lease -> runAssertions(matrixCase, lease, deadline, observed))
-                .handle((result, failure) -> {
-                    applicator.restore();
-                    if (failure != null) {
-                        results.add(new MatrixCaseResult(
-                                dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
-                                MatrixCaseStatus.FAILED,
-                                null, null, null, null, null, null, null,
-                                List.of(), List.of(), List.of(),
-                                bounded(rootMessage(failure))));
-                    } else {
-                        results.add(result);
-                    }
-                    return null;
-                });
+        CompletionStage<MatrixCaseResult> terminal;
+        try {
+            terminal = scenarios.acquire(request, scenario.applicationId(),
+                    scenario.processId(), scenario.sessionId())
+                    .thenCompose(lease -> runAssertions(matrixCase, lease, deadline, observed))
+                    .handle((result, failure) -> failure != null
+                            ? failureResult(matrixCase, observed, failure)
+                            : result);
+        } catch (RuntimeException acquireFailure) {
+            // acquire threw synchronously before returning a stage: the case never started.
+            terminal = CompletableFuture.completedFuture(
+                    failureResult(matrixCase, observed, acquireFailure));
+        }
+        return terminal.handle((result, failure) -> {
+            // Restore exactly once on every terminal path; a restore failure must never escape
+            // the handler or abort the report and the next case.
+            Throwable restoreFailure;
+            try {
+                applicator.restore();
+                restoreFailure = null;
+            } catch (RuntimeException restoration) {
+                restoreFailure = restoration;
+            }
+            MatrixCaseResult base = failure != null
+                    ? failureResult(matrixCase, observed, failure) : result;
+            results.add(restoreAware(base, restoreFailure));
+            return null;
+        });
+    }
+
+    /** Restores the display exactly once and records the terminal, upgrading on restore failure. */
+    private CompletionStage<Void> terminalAfterRestore(
+            MatrixCase matrixCase, DisplayObservation observed, List<MatrixCaseResult> results,
+            MatrixCaseResult base) {
+        Throwable restoreFailure;
+        try {
+            applicator.restore();
+            restoreFailure = null;
+        } catch (RuntimeException restoration) {
+            restoreFailure = restoration;
+        }
+        results.add(restoreAware(base, restoreFailure));
+        return CompletableFuture.completedFuture(null);
+    }
+
+    private static MatrixCaseResult failureResult(
+            MatrixCase matrixCase, DisplayObservation observed, Throwable failure) {
+        return new MatrixCaseResult(
+                dev.gdx.uiharness.core.matrix.MatrixCaseSummary.of(matrixCase),
+                MatrixCaseStatus.FAILED,
+                observed.window(), observed.uiScale(), observed.devicePixelRatio(),
+                observed.hiDpiMode(), observed.locale(), observed.fontSetId(),
+                observed.restartProfileId(),
+                List.of(), List.of(), List.of(),
+                bounded(rootMessage(failure)));
+    }
+
+    private static MatrixCaseResult restoreAware(MatrixCaseResult base, Throwable restoreFailure) {
+        if (restoreFailure == null) {
+            return base;
+        }
+        String restoreEvidence = "display restore failed: " + rootMessage(restoreFailure);
+        if (base.status() == MatrixCaseStatus.FAILED && !base.evidence().isEmpty()) {
+            // Aggregate the restore failure after the primary failure, retaining both within the
+            // evidence bound (established primary/suffix aggregation pattern).
+            return withStatusAndEvidence(base, MatrixCaseStatus.FAILED,
+                    composeWithSuffix(base.evidence(), " (" + restoreEvidence + ")"));
+        }
+        if (!base.evidence().isEmpty()) {
+            // A non-failed terminal (e.g. misapplied) with a restore failure: the restore failure
+            // becomes the primary failure; the prior classification is retained as suffix evidence.
+            return withStatusAndEvidence(base, MatrixCaseStatus.FAILED,
+                    composeWithSuffix(bounded(restoreEvidence), " (" + base.evidence() + ")"));
+        }
+        // An otherwise-passing case: the restore failure is the primary failure.
+        return withStatusAndEvidence(base, MatrixCaseStatus.FAILED, bounded(restoreEvidence));
+    }
+
+    private static MatrixCaseResult withStatusAndEvidence(
+            MatrixCaseResult base, MatrixCaseStatus status, String evidence) {
+        return new MatrixCaseResult(
+                base.caseSummary(), status,
+                base.observedWindow(), base.observedUiScale(), base.observedDevicePixelRatio(),
+                base.observedHiDpiMode(), base.observedLocale(), base.observedFontSetId(),
+                base.observedRestartProfileId(),
+                base.passedAssertions(), base.failedAssertions(), base.artifactReferences(),
+                evidence);
     }
 
     private static String requestedMismatch(
