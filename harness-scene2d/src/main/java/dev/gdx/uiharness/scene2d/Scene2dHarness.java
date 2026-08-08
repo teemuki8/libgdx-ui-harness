@@ -160,13 +160,13 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
     }
 
     /**
-     * Fails pending actions without closing application-owned Stage, session, or scheduler.
-     *
-     * <p>The first caller performs the cleanup; concurrent closers wait for it to finish and a
-     * reentrant close from the closing thread's own callbacks returns immediately. Every pending
-     * action is failed, every armed deadline signal is cancelled, and a legacy harness's owned
-     * scheduler is fully shut down even when an individual cleanup step fails. All callbacks and
-     * cancellations run outside the lifecycle monitor.
+     * Terminally fails every in-flight action without closing application-owned Stage, session,
+     * or scheduler. Real input already dispatched remains applied, but no result can wait for
+     * post-close frames: the first caller performs the cleanup, concurrent closers wait for it to
+     * finish, and a reentrant close from the closing thread's own callbacks returns immediately.
+     * Every armed deadline signal is cancelled, and a legacy harness's owned scheduler is fully
+     * shut down even when an individual cleanup step fails. All callbacks and cancellations run
+     * outside the lifecycle monitor.
      */
     @Override public void close() {
         boolean cleanup;
@@ -208,8 +208,7 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
             HarnessException closed = sessionClosed();
             for (ActionRequest request : pending) {
                 try {
-                    request.failBeforeDispatch(closed);
-                    request.cancelDeadline();
+                    request.fail(closed);
                 } catch (Throwable throwable) {
                     failure = aggregate(failure, throwable);
                 }
@@ -708,20 +707,6 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
             cleanup();
         }
 
-        void failBeforeDispatch(Throwable failure) {
-            boolean claimed;
-            synchronized (this) {
-                claimed = phase == RequestPhase.PENDING;
-                if (claimed) {
-                    phase = RequestPhase.TERMINAL;
-                }
-            }
-            if (claimed) {
-                super.completeExceptionally(normalize(failure));
-                cleanup();
-            }
-        }
-
         void fail(Throwable failure) {
             boolean claimed;
             synchronized (this) {
@@ -869,15 +854,34 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
 
         /**
          * Stops the worker promptly. Deadline signals are short monitor checks, so the bounded
-         * wait only covers a signal already running when the harness closes.
+         * wait only covers a signal already running when the harness closes. Throws a typed
+         * failure when the worker is still live after the bound so close never reports success
+         * with a leaked worker.
          */
         void shutdownNowAndAwait() {
             executor.shutdownNow();
             try {
-                executor.awaitTermination(SHUTDOWN_BOUND.toMillis(), TimeUnit.MILLISECONDS);
+                if (!executor.awaitTermination(
+                        SHUTDOWN_BOUND.toMillis(), TimeUnit.MILLISECONDS)) {
+                    throw new OwnedSchedulerShutdownTimeout(
+                            "owned scheduler worker did not stop within " + SHUTDOWN_BOUND);
+                }
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
+                throw new OwnedSchedulerShutdownTimeout(
+                        "interrupted while awaiting owned scheduler shutdown", exception);
             }
+        }
+    }
+
+    /** Signals that a legacy harness's owned scheduler worker outlived the shutdown bound. */
+    static final class OwnedSchedulerShutdownTimeout extends RuntimeException {
+        OwnedSchedulerShutdownTimeout(String message) {
+            super(message);
+        }
+
+        OwnedSchedulerShutdownTimeout(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 }

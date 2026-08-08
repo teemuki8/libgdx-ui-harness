@@ -655,11 +655,11 @@ final class Scene2dActionEndToEndTest {
             fixture.harness.close();
             assertTrue(fixture.deadlines.cancelled,
                     "closing the harness must cancel every armed deadline signal");
-            fixture.deadlines.expire(); // a late signal must not disturb the dispatched action
-            assertFalse(click.toCompletableFuture().isCompletedExceptionally());
-            fixture.nextFrame();
-            assertTrue(click.toCompletableFuture().join().afterRevision() > 0,
-                    "the dispatched action still completes through the post-action frame");
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(click).code(),
+                    "a dispatched action must not wait for post-close frames");
+            fixture.deadlines.expire(); // a late signal must not disturb the terminal outcome
+            fixture.nextFrame(); // a late completed frame must not override the terminal outcome
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(click).code());
         }
     }
 
@@ -693,7 +693,7 @@ final class Scene2dActionEndToEndTest {
         }
     }
 
-    @Test void legacyConstructorShutsOwnedSchedulerOnCloseAndFailsPendingAction() {
+    @Test void legacyConstructorShutsOwnedSchedulerOnCloseAndFailsInFlightActions() {
         try (Fixture fixture = Fixture.legacy()) {
             fixture.button("dispatched-legacy", "Dispatch", 100, 100);
             fixture.button("blocked-legacy", "Blocked", 400, 100);
@@ -721,9 +721,10 @@ final class Scene2dActionEndToEndTest {
             assertTrue(closeMillis < 5_000,
                     "closing with an armed deadline must stay bounded");
             assertEquals(ErrorCode.SESSION_CLOSED, failure(blocked).code());
-            fixture.nextFrame(); // a post-close frame completes the dispatched action
-            assertTrue(dispatched.toCompletableFuture().join().afterRevision() > 0,
-                    "a dispatched action still completes through the post-action frame");
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(dispatched).code(),
+                    "a dispatched action must not wait for post-close frames");
+            fixture.nextFrame(); // a late completed frame must not override the terminal outcome
+            assertEquals(ErrorCode.SESSION_CLOSED, failure(dispatched).code());
         }
     }
 
@@ -838,6 +839,76 @@ final class Scene2dActionEndToEndTest {
             assertEquals(ErrorCode.SESSION_CLOSED, failure(first).code());
             assertEquals(ErrorCode.SESSION_CLOSED, failure(second).code());
         } finally {
+            legacy.close();
+            session.close();
+            scheduler.close();
+            clock.close();
+            stage.dispose();
+        }
+    }
+
+    @Test void ownedSchedulerShutdownFailsBoundedWhenWorkerIsBlocked() throws Exception {
+        Object workerLock = new Object();
+        CountDownLatch workerBlocked = new CountDownLatch(1);
+        AtomicBoolean releaseWorker = new AtomicBoolean();
+        Stage stage = Scene2dTestSupport.stage();
+        ControlledStageClock clock = new ControlledStageClock(stage, Duration.ofMillis(16));
+        RenderThreadScheduler scheduler = new RenderThreadScheduler(64);
+        Scene2dSession session = new Scene2dSession(stage);
+        Scene2dHarness legacy = new Scene2dHarness(
+                stage, stage, session, scheduler, clock, clock::revision, clock::frame);
+        ScheduledThreadPoolExecutor owned = ownedScheduler(legacy);
+        assertNotNull(owned);
+        try {
+            TextButton button = new TextButton("Block", WidgetStyles.textButton());
+            button.setBounds(100, 100, 180, 50);
+            session.semantics().setTestId(button, "blocked-worker");
+            stage.addActor(button);
+            CompletionStage<ActionResult> click = legacy.click(
+                    Locator.testId("blocked-worker"),
+                    Deadline.after(System::nanoTime, Duration.ofMillis(100)));
+            click.whenComplete((ignored, failure) -> {
+                synchronized (workerLock) {
+                    workerBlocked.countDown();
+                    while (!releaseWorker.get()) {
+                        try {
+                            workerLock.wait();
+                        } catch (InterruptedException exception) {
+                            // shutdownNow interrupts the worker; stay blocked until released
+                        }
+                    }
+                }
+            });
+            clock.advance(Duration.ofMillis(16));
+            scheduler.drain();
+            clock.advance(Duration.ofMillis(16));
+            scheduler.drain();
+            assertTrue(workerBlocked.await(2, TimeUnit.SECONDS),
+                    "the deadline signal must block the owned scheduler worker");
+            synchronized (workerLock) {
+                long closeStarted = System.nanoTime();
+                Scene2dHarness.OwnedSchedulerShutdownTimeout shutdownFailure = assertThrows(
+                        Scene2dHarness.OwnedSchedulerShutdownTimeout.class, legacy::close);
+                long closeMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - closeStarted);
+                assertTrue(closeMillis >= 900,
+                        "close must wait the bounded shutdown window before failing");
+                assertTrue(closeMillis < 5_000,
+                        "close must stay bounded while the owned worker is blocked");
+                assertNotNull(shutdownFailure.getMessage());
+            }
+            assertEquals(ErrorCode.TIMEOUT, failure(click).code(),
+                    "the blocked worker was completing the deadline timeout");
+        } finally {
+            releaseWorker.set(true);
+            synchronized (workerLock) {
+                workerLock.notifyAll();
+            }
+            long terminationDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!owned.isTerminated() && System.nanoTime() < terminationDeadline) {
+                Thread.yield();
+            }
+            assertTrue(owned.isTerminated(),
+                    "releasing the worker must let the owned scheduler terminate");
             legacy.close();
             session.close();
             scheduler.close();
