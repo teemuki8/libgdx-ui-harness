@@ -62,7 +62,8 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
 
     /**
      * Retained released constructor: adapts the legacy scene2d deadline scheduler to the core
-     * {@link DeadlineScheduler} contract without changing scheduling semantics.
+     * {@link DeadlineScheduler} contract without changing scheduling semantics. This is the only
+     * constructor taking a functional scheduler, so released lambda call sites stay unambiguous.
      */
     public Scene2dScenarioRunner(
             ScenarioRegistry registry,
@@ -72,7 +73,16 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         this(registry, scheduler, clock, adapt(deadlineScheduler));
     }
 
-    public Scene2dScenarioRunner(
+    /** Creates a runner driven by the core deadline scheduler contract. */
+    public static Scene2dScenarioRunner withDeadlineScheduler(
+            ScenarioRegistry registry,
+            RenderThreadScheduler scheduler,
+            MonotonicClock clock,
+            DeadlineScheduler deadlineScheduler) {
+        return new Scene2dScenarioRunner(registry, scheduler, clock, deadlineScheduler);
+    }
+
+    private Scene2dScenarioRunner(
             ScenarioRegistry registry,
             RenderThreadScheduler scheduler,
             MonotonicClock clock,
@@ -145,6 +155,17 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             run.rejectBusy();
             return run;
         }
+        // Arm the deadline before any begin submission: while the deadline scheduler blocks
+        // (or a concurrent render drain runs), no accepted begin can transition QUEUED ->
+        // STARTING, so a rejecting arm can never leave hook execution behind.
+        try {
+            run.armDeadline();
+        } catch (RuntimeException failure) {
+            // The deadline scheduler rejected the arm: terminalize before any begin
+            // submission exists and propagate the original failure.
+            run.schedulingFailed();
+            throw failure;
+        }
         CompletionStage<?> submission;
         try {
             submission = scheduler.submit(() -> {
@@ -152,23 +173,13 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 return null;
             }, dispatchDeadline());
         } catch (RuntimeException failure) {
-            // The render scheduler rejected the launch submission synchronously after the
-            // run was admitted: roll the active owner back terminally and propagate the
-            // original failure so no orphaned exclusive run can block later acquisitions.
+            // The render scheduler rejected the begin submission after the deadline was armed:
+            // terminalize (which cancels the armed deadline outside the run monitor) and
+            // propagate the original failure.
             run.schedulingFailed();
             throw failure;
         }
         observeSubmission(run, submission);
-        try {
-            run.armDeadline();
-        } catch (RuntimeException failure) {
-            // The deadline scheduler rejected the arm after the begin submission was
-            // accepted: neutralize the accepted begin so it can never execute hooks, roll
-            // the active owner back terminally, and propagate the original failure.
-            run.schedulingFailed();
-            submission.toCompletableFuture().cancel(false);
-            throw failure;
-        }
         return run;
     }
 
@@ -279,7 +290,10 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     deadlineScheduler.schedule(delay, this::deadlineReached);
             boolean cancelNow;
             synchronized (this) {
-                cancelNow = phase == Phase.TERMINAL;
+                // A scheduler may invoke the signal inline during schedule (already-expired
+                // deadline): the run then leaves QUEUED before the token is stored, so the
+                // fresh token must be invalidated instead of retained.
+                cancelNow = phase != Phase.QUEUED;
                 if (!cancelNow) {
                     deadlineCancellation = scheduled;
                 }

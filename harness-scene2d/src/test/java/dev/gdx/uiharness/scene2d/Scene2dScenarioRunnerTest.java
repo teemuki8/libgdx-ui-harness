@@ -147,7 +147,7 @@ final class Scene2dScenarioRunnerTest {
             assertTrue(result.cleanupCompleted());
         }
     }
-    @Test void rejectingDeadlineScheduleRollsBackAdmittedRunAndNeutralizesAcceptedBegin() {
+    @Test void rejectingDeadlineArmTerminalizesBeforeAnyBeginSubmission() {
         java.util.concurrent.atomic.AtomicInteger schedules =
                 new java.util.concurrent.atomic.AtomicInteger();
         DeadlineScheduler rejecting = (delay, signal) -> {
@@ -164,11 +164,11 @@ final class Scene2dScenarioRunnerTest {
                     () -> fixture.start(Duration.ofSeconds(1)),
                     "the original scheduling failure must propagate synchronously");
 
-            // The begin submission was accepted before the deadline arm threw: draining must
-            // not execute the accepted begin for the failed launch.
+            // The deadline arm runs before any begin submission: draining must find nothing
+            // queued, so no hook can ever execute for the failed launch.
             fixture.scheduler.drain();
             assertTrue(hookThreads.isEmpty(),
-                    "an accepted begin must never execute after the deadline schedule throws");
+                    "no begin may be submitted, let alone execute, after the deadline arm throws");
 
             // The admitted run was rolled back terminally: the exclusive active slot is free
             // and a successor acquisition is admitted and completes normally.
@@ -228,6 +228,130 @@ final class Scene2dScenarioRunnerTest {
                     "the adapted deadline path cleans exactly once on the render thread");
             assertTrue(cancellations.get() >= 1,
                     "the adapted cancellation must reach the legacy scheduler");
+        }
+    }
+
+    @Test void releasedConstructorAcceptsUncastLegacyLambda() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready"));
+            // Compiles only while the released constructor is the sole public functional
+            // scheduler entry point: an uncast lambda would be ambiguous against a second
+            // public SAM overload with the same arity.
+            Scene2dScenarioRunner legacyRunner = new Scene2dScenarioRunner(
+                    fixture.registry, fixture.scheduler, fixture.clock,
+                    (delay, signal) -> () -> {});
+            CompletionStage<Scene2dScenarioRunner.Lease> acquired = legacyRunner.acquire(
+                    new ScenarioRequest(
+                            ScenarioDefinition.SCHEMA_VERSION,
+                            "login-ready",
+                            42L,
+                            Map.of("locale", "en", "account", "agent"),
+                            "desktop",
+                            Deadline.after(fixture.clock, Duration.ofSeconds(1))),
+                    "test-app",
+                    "process-1",
+                    "session-1");
+            fixture.scheduler.drain();
+            fixture.clock.advance(Duration.ofMillis(10));
+            legacyRunner.completedFrame(
+                    fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame()));
+            fixture.scheduler.drain();
+            Scene2dScenarioRunner.Lease lease = acquired.toCompletableFuture().join();
+            lease.release();
+            fixture.scheduler.drain();
+            assertTrue(lease.completion().toCompletableFuture().join().cleanupCompleted());
+        }
+    }
+
+    @Test void blockedRejectingDeadlineArmPreventsConcurrentBeginExecution() throws Exception {
+        java.util.concurrent.CountDownLatch scheduleEntered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch releaseSchedule = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        DeadlineScheduler blocking = (delay, signal) -> {
+            if (calls.getAndIncrement() == 0) {
+                scheduleEntered.countDown();
+                try {
+                    releaseSchedule.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("deadline arm probe interrupted", exception);
+                }
+                throw new IllegalStateException("deadline scheduler rejected");
+            }
+            return () -> {};
+        };
+        try (Fixture fixture = new Fixture(16, blocking)) {
+            List<Thread> hookThreads = new ArrayList<>();
+            fixture.register(new RecordingLifecycle(hookThreads, true, "ready"));
+
+            try (ExecutorService caller = Executors.newVirtualThreadPerTaskExecutor()) {
+                java.util.concurrent.CompletableFuture<RuntimeException> outcome =
+                        java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                            try {
+                                fixture.start(Duration.ofSeconds(1));
+                                return null;
+                            } catch (RuntimeException failure) {
+                                return failure;
+                            }
+                        }, caller);
+                assertTrue(scheduleEntered.await(5, TimeUnit.SECONDS),
+                        "the deadline arm must reach the blocking scheduler");
+                // While the arm is in flight, a concurrent render drain must have nothing to
+                // run: the begin submission happens only after the arm completes.
+                fixture.scheduler.drain();
+                releaseSchedule.countDown();
+                RuntimeException failure = outcome.join();
+                assertEquals("deadline scheduler rejected", failure.getMessage(),
+                        "the original scheduling failure must propagate");
+            }
+            assertTrue(hookThreads.isEmpty(),
+                    "no hook may execute while the deadline arm is in flight or after it rejects");
+            // The active owner slot was rolled back: a successor acquisition is admitted.
+            Scene2dScenarioRunner.Lease next = fixture.acquireReady(Duration.ofSeconds(1));
+            assertFalse(next.completion().toCompletableFuture().isDone());
+            next.release();
+            fixture.scheduler.drain();
+        }
+    }
+
+    @Test void synchronousDeadlineCallbackDuringArmTerminalizesBeforeAnyBegin() throws Exception {
+        DeadlineScheduler synchronous = (delay, signal) -> {
+            signal.run();
+            return () -> {};
+        };
+        try (Fixture fixture = new Fixture(16, synchronous)) {
+            java.util.concurrent.atomic.AtomicInteger cleanups =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            List<Thread> hookThreads = new ArrayList<>();
+            fixture.register(new RecordingLifecycle(hookThreads, true, "ready") {
+                @Override public void cleanup(ScenarioRequest request) {
+                    cleanups.incrementAndGet();
+                }
+            });
+
+            // An already-expired request deadline makes the inline signal terminal during arm.
+            Deadline expired = Deadline.after(fixture.clock, Duration.ofMillis(5));
+            fixture.clock.advance(Duration.ofMillis(10));
+            CompletionStage<ScenarioResult> started = fixture.runner.start(
+                    new ScenarioRequest(
+                            ScenarioDefinition.SCHEMA_VERSION,
+                            "login-ready",
+                            42L,
+                            Map.of("locale", "en", "account", "agent"),
+                            "desktop",
+                            expired),
+                    "test-app",
+                    "process-1",
+                    "session-1");
+
+            ScenarioResult result = started.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.READINESS_DEADLINE, result.failure().orElseThrow());
+            assertTrue(hookThreads.isEmpty(),
+                    "an inline terminal signal must prevent any begin hook from executing");
+            assertEquals(0, cleanups.get());
+            fixture.scheduler.drain();
+            assertEquals(1, cleanups.get(),
+                    "the terminalized run cleans exactly once on the render thread");
         }
     }
 
@@ -928,12 +1052,13 @@ final class Scene2dScenarioRunnerTest {
 
         Fixture(int schedulerCapacity) {
             scheduler = new RenderThreadScheduler(schedulerCapacity);
-            runner = new Scene2dScenarioRunner(registry, scheduler, clock, deadlines);
+            runner = Scene2dScenarioRunner.withDeadlineScheduler(registry, scheduler, clock, deadlines);
         }
 
         Fixture(int schedulerCapacity, DeadlineScheduler deadlineScheduler) {
             scheduler = new RenderThreadScheduler(schedulerCapacity);
-            runner = new Scene2dScenarioRunner(registry, scheduler, clock, deadlineScheduler);
+            runner = Scene2dScenarioRunner.withDeadlineScheduler(
+                    registry, scheduler, clock, deadlineScheduler);
         }
 
         void register(ScenarioLifecycle lifecycle) {

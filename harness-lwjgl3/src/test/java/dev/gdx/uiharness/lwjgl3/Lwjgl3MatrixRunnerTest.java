@@ -361,7 +361,7 @@ final class Lwjgl3MatrixRunnerTest {
                             return () -> {};
                         }
                     };
-            scenarios = new Scene2dScenarioRunner(
+            scenarios = Scene2dScenarioRunner.withDeadlineScheduler(
                     registry, scheduler, clock, scenarioDeadlines);
             StrictResolution locators = new StrictResolution();
             AssertionSnapshotSource assertionSnapshots = new AssertionSnapshotSource() {

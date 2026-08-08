@@ -297,8 +297,8 @@ final class Scene2dNavigationRunnerTest {
                 }
                 @Override public void cleanup(ScenarioRequest request) { cleanups.incrementAndGet(); }
             });
-            scenarios = new Scene2dScenarioRunner(registry, scheduler, clock, deadlines);
-            runner = new Scene2dNavigationRunner(
+            scenarios = Scene2dScenarioRunner.withDeadlineScheduler(registry, scheduler, clock, deadlines);
+            runner = Scene2dNavigationRunner.withDeadlineScheduler(
                     scenarios, session, new Scene2dInputDispatcher(stage, input), scheduler, clock,
                     deadlines, clock::revision, clock::frame,
                     new Scene2dNavigationRunner.Scenario("navigation", 7, Map.of(), "desktop",

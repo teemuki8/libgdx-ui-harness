@@ -234,9 +234,9 @@ public final class FixtureControl implements AutoCloseable {
                 "never-ready", APPLICATION_ID, Duration.ofMillis(100)), lifecycle);
         scenarios.register(scenario("incompatible-reference", "another-application"), lifecycle);
         scenarios.register(scenario("navigation", APPLICATION_ID), lifecycle);
-        scenarioRunner = new Scene2dScenarioRunner(
+        scenarioRunner = Scene2dScenarioRunner.withDeadlineScheduler(
                 scenarios, scheduler, clock, deadlineScheduler);
-        navigationRunner = new Scene2dNavigationRunner(
+        navigationRunner = Scene2dNavigationRunner.withDeadlineScheduler(
                 scenarioRunner, sceneSession,
                 new Scene2dInputDispatcher(stage, stage), scheduler, clock,
                 deadlineScheduler, clock::revision, clock::frame,

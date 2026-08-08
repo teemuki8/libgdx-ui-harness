@@ -65,7 +65,8 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
 
     /**
      * Retained released constructor: adapts the legacy scene2d deadline scheduler to the core
-     * {@link DeadlineScheduler} contract without changing scheduling semantics.
+     * {@link DeadlineScheduler} contract without changing scheduling semantics. This is the only
+     * constructor taking a functional scheduler, so released lambda call sites stay unambiguous.
      */
     public Scene2dNavigationRunner(
             Scene2dScenarioRunner scenarios,
@@ -82,7 +83,23 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
                 revision, frame, scenario, maxPending);
     }
 
-    public Scene2dNavigationRunner(
+    /** Creates a runner driven by the core deadline scheduler contract. */
+    public static Scene2dNavigationRunner withDeadlineScheduler(
+            Scene2dScenarioRunner scenarios,
+            Scene2dSession session,
+            Scene2dInputDispatcher input,
+            RenderThreadScheduler scheduler,
+            MonotonicClock clock,
+            DeadlineScheduler deadlines,
+            LongSupplier revision,
+            LongSupplier frame,
+            Scenario scenario,
+            int maxPending) {
+        return new Scene2dNavigationRunner(scenarios, session, input, scheduler, clock, deadlines,
+                revision, frame, scenario, maxPending);
+    }
+
+    private Scene2dNavigationRunner(
             Scene2dScenarioRunner scenarios,
             Scene2dSession session,
             Scene2dInputDispatcher input,
