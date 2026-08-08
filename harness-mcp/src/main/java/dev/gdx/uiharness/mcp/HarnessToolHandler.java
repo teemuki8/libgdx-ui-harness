@@ -31,7 +31,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -65,9 +64,8 @@ public final class HarnessToolHandler implements AutoCloseable {
     private final RequestAdmission admission;
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
     private final AtomicLong requestSequence = new AtomicLong();
-    private final Map<String, Integer> diagnosticAttempts = new ConcurrentHashMap<>();
-    private final Map<String, Integer> sessionRecoveryAttempts = new ConcurrentHashMap<>();
-    private final long startedNanos;
+    private final RecoveryAccounting diagnosticAccounting;
+    private final RecoveryAccounting sessionAccounting;
 
     /** Creates a handler that owns a Java 25 virtual-thread executor and default admission. */
     public HarnessToolHandler(
@@ -96,14 +94,22 @@ public final class HarnessToolHandler implements AutoCloseable {
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes, LongSupplier nanoClock) {
         this(withEmptyCaptures(protocol), artifacts, executor, artifactThresholdBytes, nanoClock,
-                RequestAdmission.serverDefaults());
+                RequestAdmission.serverDefaults(), RecoveryAccounting.MAX_ENTRIES);
+    }
+
+    /** Test constructor with an explicit recovery-accounting capacity. */
+    HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
+            ArtifactReference.Publisher artifacts, ExecutorService executor,
+            int artifactThresholdBytes, LongSupplier nanoClock, int recoveryCapacity) {
+        this(withEmptyCaptures(protocol), artifacts, executor, artifactThresholdBytes, nanoClock,
+                RequestAdmission.serverDefaults(), recoveryCapacity);
     }
 
     HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes, LongSupplier nanoClock, RequestAdmission admission) {
         this(withEmptyCaptures(protocol), artifacts, executor, artifactThresholdBytes, nanoClock,
-                admission);
+                admission, RecoveryAccounting.MAX_ENTRIES);
     }
 
     /**
@@ -137,12 +143,20 @@ public final class HarnessToolHandler implements AutoCloseable {
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes, LongSupplier nanoClock) {
         this(protocol, artifacts, executor, artifactThresholdBytes, nanoClock,
-                RequestAdmission.serverDefaults());
+                RequestAdmission.serverDefaults(), RecoveryAccounting.MAX_ENTRIES);
     }
 
     HarnessToolHandler(ExecutionSource protocol,
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes, LongSupplier nanoClock, RequestAdmission admission) {
+        this(protocol, artifacts, executor, artifactThresholdBytes, nanoClock, admission,
+                RecoveryAccounting.MAX_ENTRIES);
+    }
+
+    HarnessToolHandler(ExecutionSource protocol,
+            ArtifactReference.Publisher artifacts, ExecutorService executor,
+            int artifactThresholdBytes, LongSupplier nanoClock, RequestAdmission admission,
+            int recoveryCapacity) {
         this.protocol = Objects.requireNonNull(protocol, "protocol");
         this.artifacts = new VerifiedArtifactPublisher(
                 Objects.requireNonNull(artifacts, "artifacts"));
@@ -153,7 +167,10 @@ public final class HarnessToolHandler implements AutoCloseable {
         }
         this.artifactThresholdBytes = artifactThresholdBytes;
         this.admission = Objects.requireNonNull(admission, "admission");
-        startedNanos = nanoClock.getAsLong();
+        diagnosticAccounting = new RecoveryAccounting(nanoClock, recoveryCapacity,
+                RecoveryAccounting.TTL);
+        sessionAccounting = new RecoveryAccounting(nanoClock, recoveryCapacity,
+                RecoveryAccounting.TTL);
         scheduler = Schedulers.fromExecutorService(executor);
     }
 
@@ -319,8 +336,12 @@ public final class HarnessToolHandler implements AutoCloseable {
             long sequence,
             Map<String, Object> arguments) {
         if (response instanceof HarnessResponse.Failure failure) {
-            return protocolError(
+            McpSchema.CallToolResult result = protocolError(
                     failure.error(), operation, sequence, arguments);
+            if (failure.error().code() == ProtocolError.Code.SESSION_CLOSED) {
+                sessionAccounting.remove(sessionKey(arguments));
+            }
+            return result;
         }
         HarnessResponse.Success success = (HarnessResponse.Success) response;
         try {
@@ -328,13 +349,16 @@ public final class HarnessToolHandler implements AutoCloseable {
                     new LinkedHashMap<>(structured(success.result(), captures));
             content.put("progress", encodedProgress(
                     DiagnosticEnvelope.Progress.unavailable()));
+            RecoveryAccounting.Snapshot session =
+                    sessionAccounting.snapshot(sessionKey(arguments));
             content.put("recovery", encodedRecovery(new DiagnosticEnvelope.Recovery(
                     dev.gdx.uiharness.protocol.RecoveryPolicy.VERSION,
-                    sessionRecoveryAttempts.getOrDefault(sessionKey(arguments), 0),
+                    session.consumed(),
                     HarnessToolCatalog.recoveryPolicy().maxSchemaRecoveries(),
-                    Math.max(0, (nanoClock.getAsLong() - startedNanos) / 1_000_000),
+                    session.workflowElapsedMillis(),
                     HarnessToolCatalog.recoveryPolicy().maxWallTimeMillis(),
                     "success/v1")));
+            sessionAccounting.remove(sessionKey(arguments));
             return McpSchema.CallToolResult.builder()
                     .structuredContent(Map.copyOf(content))
                     .addTextContent(compactText(content))
@@ -1002,7 +1026,9 @@ public final class HarnessToolHandler implements AutoCloseable {
         DiagnosticCode code = switch (error.code()) {
             case NOT_FOUND -> DiagnosticCode.LOCATOR_NOT_FOUND;
             case STRICTNESS_VIOLATION -> DiagnosticCode.LOCATOR_AMBIGUOUS;
-            case TIMEOUT -> DiagnosticCode.DEADLINE_EXCEEDED;
+            // A frame deadline is a transient observable-state condition that an agent
+            // may retry; the terminal workflow ceiling is the recovery wall time.
+            case TIMEOUT -> DiagnosticCode.STATE_NOT_READY;
             case LIMIT_EXCEEDED -> DiagnosticCode.LIMIT_EXCEEDED;
             case PROTOCOL_VERSION_MISMATCH -> DiagnosticCode.SCHEMA_CONFLICT;
             case INTERNAL_ERROR, RENDER_THREAD_FAILURE ->
@@ -1057,16 +1083,20 @@ public final class HarnessToolHandler implements AutoCloseable {
         boolean transientDiagnostic = requestedCode.defaultDisposition()
                 == DiagnosticEnvelope.Disposition.TRANSIENT;
         int equivalentConsumed = transientDiagnostic
-                ? diagnosticAttempts.merge(fingerprint, 1, Integer::sum)
+                ? diagnosticAccounting.recordTransient(fingerprint).consumed()
                 : 0;
-        int consumed = transientDiagnostic
-                ? sessionRecoveryAttempts.merge(
-                        sessionKey(arguments), 1, Integer::sum)
-                : sessionRecoveryAttempts.getOrDefault(sessionKey(arguments), 0);
+        RecoveryAccounting.Snapshot session = transientDiagnostic
+                ? sessionAccounting.recordTransient(sessionKey(arguments))
+                : sessionAccounting.snapshot(sessionKey(arguments));
         int limit = HarnessToolCatalog.recoveryPolicy().maxSchemaRecoveries();
         DiagnosticCode code = requestedCode;
         String terminatingRule = recoveryRule(requestedCode);
-        if (transientDiagnostic && equivalentConsumed > limit) {
+        int consumed = session.consumed();
+        if (transientDiagnostic && !session.tracked()) {
+            code = DiagnosticCode.RECOVERY_BUDGET_EXHAUSTED;
+            terminatingRule = "accounting-capacity/v1";
+            consumed = limit; // terminal appearance: consumed == limit, remaining == 0
+        } else if (transientDiagnostic && equivalentConsumed > limit) {
             code = DiagnosticCode.LOOP_DETECTED;
             terminatingRule = "equivalent-diagnostic-budget/v1";
         } else if (transientDiagnostic && consumed > limit) {
@@ -1076,8 +1106,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                 == DiagnosticEnvelope.Disposition.TERMINAL) {
             terminatingRule = "terminal-code/v1";
         }
-        long elapsedMillis = Math.max(
-                0, (nanoClock.getAsLong() - startedNanos) / 1_000_000);
+        long elapsedMillis = session.workflowElapsedMillis();
         DiagnosticEnvelope envelope = DiagnosticEnvelope.create(
                 requestId, sequence, operation, code, message, problems,
                 locator, candidates, details, suggestions, operationElapsedMillis, traceId,
@@ -1092,6 +1121,9 @@ public final class HarnessToolHandler implements AutoCloseable {
         Map<String, Object> encoded = COMMAND_MAPPER.convertValue(envelope, Map.class);
         LinkedHashMap<String, Object> content = new LinkedHashMap<>(encoded);
         content.put("kind", "error");
+        if (code.defaultDisposition() == DiagnosticEnvelope.Disposition.TERMINAL) {
+            sessionAccounting.remove(sessionKey(arguments));
+        }
         return errorResult(content);
     }
 
@@ -1165,6 +1197,8 @@ public final class HarnessToolHandler implements AutoCloseable {
 
     /** Shuts down all virtual-thread dispatch owned by this handler. */
     @Override public void close() {
+        sessionAccounting.clear();
+        diagnosticAccounting.clear();
         admission.close();
         scheduler.dispose();
         executor.close();
