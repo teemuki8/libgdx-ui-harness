@@ -84,5 +84,10 @@ public record ArtifactReference(
         public ArtifactUnavailableException(String message) {
             super(message);
         }
+
+        /** Creates an unavailable-publisher failure from a delegate failure. */
+        public ArtifactUnavailableException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 }

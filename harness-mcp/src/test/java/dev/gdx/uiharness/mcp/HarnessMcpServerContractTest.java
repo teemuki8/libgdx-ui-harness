@@ -475,6 +475,97 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test void verifiedPublisherRejectsMismatchedReceiptDimensions() {
+        byte[] payload = new byte[] {1, 2, 3};
+        ArtifactReference.Publisher wrongLength = (mediaType, content) ->
+                new ArtifactReference("artifact:1", mediaType, content.length + 1,
+                        "0".repeat(64));
+        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                () -> new VerifiedArtifactPublisher(wrongLength).publish("image/png", payload));
+
+        ArtifactReference.Publisher wrongDigest = (mediaType, content) ->
+                new ArtifactReference("artifact:1", mediaType, content.length,
+                        "0".repeat(64));
+        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                () -> new VerifiedArtifactPublisher(wrongDigest).publish("image/png", payload));
+
+        ArtifactReference.Publisher wrongMedia = (mediaType, content) ->
+                new ArtifactReference("artifact:1", "application/octet-stream",
+                        content.length, sha256(content));
+        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                () -> new VerifiedArtifactPublisher(wrongMedia).publish("image/png", payload));
+
+        ArtifactReference.Publisher honest = (mediaType, content) ->
+                new ArtifactReference("artifact:1", mediaType, content.length,
+                        sha256(content));
+        ArtifactReference receipt = new VerifiedArtifactPublisher(honest)
+                .publish("image/png", payload);
+        assertEquals("artifact:1", receipt.reference());
+        assertEquals("image/png", receipt.mediaType());
+        assertEquals(payload.length, receipt.byteLength());
+    }
+
+    @Test void verifiedPublisherRejectsNullReceipt() {
+        byte[] payload = new byte[] {1, 2, 3};
+        ArtifactReference.Publisher nullReceipt = (mediaType, content) -> null;
+        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                () -> new VerifiedArtifactPublisher(nullReceipt)
+                        .publish("image/png", payload));
+    }
+
+    @Test void verifiedPublisherNormalizesDelegateFailuresToTheFixedMessage() {
+        String secret = "ghp_1234567890abcdef";
+        ArtifactReference.Publisher throwing = (mediaType, content) -> {
+            throw new ArtifactReference.ArtifactUnavailableException(
+                    "publisher token " + secret);
+        };
+        ArtifactReference.ArtifactUnavailableException failure =
+                assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                        () -> new VerifiedArtifactPublisher(throwing)
+                                .publish("image/png", new byte[] {1, 2, 3}));
+        assertEquals("Artifact publisher receipt is unavailable or invalid",
+                failure.getMessage());
+        assertFalse(failure.getMessage().contains(secret));
+        assertInstanceOf(ArtifactReference.ArtifactUnavailableException.class,
+                failure.getCause());
+
+        ArtifactReference.Publisher invalidReference = (mediaType, content) ->
+                new ArtifactReference("/tmp/leak.zip", mediaType, content.length,
+                        sha256(content));
+        ArtifactReference.ArtifactUnavailableException normalized =
+                assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                        () -> new VerifiedArtifactPublisher(invalidReference)
+                                .publish("image/png", new byte[] {1, 2, 3}));
+        assertEquals("Artifact publisher receipt is unavailable or invalid",
+                normalized.getMessage());
+        assertFalse(normalized.getMessage().contains("/tmp/leak.zip"));
+    }
+
+    @Test void verifiedPublisherRejectsUppercaseDigestReceipts() {
+        byte[] payload = new byte[] {1, 2, 3};
+        ArtifactReference.Publisher uppercase = (mediaType, content) ->
+                new ArtifactReference("artifact:1", mediaType, content.length,
+                        sha256(content).toUpperCase());
+        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                () -> new VerifiedArtifactPublisher(uppercase)
+                        .publish("image/png", payload));
+    }
+
+    @Test void mutatingPublisherCannotRedefineTheExpectedBytes() {
+        byte[] payload = new byte[] {1, 2, 3};
+        ArtifactReference.Publisher mutating = (mediaType, content) -> {
+            java.util.Arrays.fill(content, (byte) 0);
+            return new ArtifactReference("artifact:1", mediaType, content.length,
+                    sha256(content)); // receipt matches the MUTATED bytes
+        };
+
+        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                () -> new VerifiedArtifactPublisher(mutating)
+                        .publish("image/png", payload.clone()));
+        // the delegate's mutation must not be able to redefine what the receipt is
+        // verified against: the expectation is computed from the pre-call snapshot
+    }
+
     @Test void screenshotPublicationUsesTheInternalCaptureNotThePublicString() {
         // A deliberately invalid public base64 string cannot be decoded: successful publication
         // proves the artifact path uses the internal capture attachment, not the public String.
