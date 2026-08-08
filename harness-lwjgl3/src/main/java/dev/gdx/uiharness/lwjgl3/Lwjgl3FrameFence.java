@@ -204,20 +204,35 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
         }
         Throwable failure = null;
         try {
-            cancelAll(cancellations);
+            for (DeadlineScheduler.Cancellation cancellation : cancellations) {
+                try {
+                    cancellation.cancel();
+                } catch (Throwable throwable) {
+                    failure = aggregate(failure, throwable);
+                }
+            }
+            // The owned scheduler is shut down unconditionally so a legacy fence never leaks
+            // its worker, even when an earlier cleanup step failed.
             if (ownedScheduler != null) {
-                ownedScheduler.shutdownNowAndAwait();
+                try {
+                    ownedScheduler.shutdownNowAndAwait();
+                } catch (Throwable throwable) {
+                    failure = aggregate(failure, throwable);
+                }
             }
             HarnessException closed = closedFailure();
             for (Command<?> command : pending) {
                 command.completeExceptionally(closed);
             }
+            // Every listener is notified even when one throws; retention is cleared afterwards.
             for (FrameListener listener : listeners) {
-                listener.onClosed();
+                try {
+                    listener.onClosed();
+                } catch (Throwable throwable) {
+                    failure = aggregate(failure, throwable);
+                }
             }
             listeners.clear();
-        } catch (Throwable throwable) {
-            failure = throwable;
         } finally {
             synchronized (lifecycle) {
                 closingThread = null;
@@ -240,6 +255,18 @@ public final class Lwjgl3FrameFence implements FrameSignal, AutoCloseable {
     @SuppressWarnings("unchecked")
     private static <T extends Throwable> void rethrowUnchecked(Throwable failure) throws T {
         throw (T) failure;
+    }
+
+    /**
+     * Combines per-step cleanup failures, keeping the first as the primary failure and attaching
+     * later failures as suppressed so the caller observes one consistent close outcome.
+     */
+    private static Throwable aggregate(Throwable first, Throwable next) {
+        if (first == null) {
+            return next;
+        }
+        first.addSuppressed(next);
+        return first;
     }
 
     /**

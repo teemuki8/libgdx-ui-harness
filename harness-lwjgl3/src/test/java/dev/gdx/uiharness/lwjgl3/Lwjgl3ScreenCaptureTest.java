@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -31,6 +32,7 @@ import java.lang.reflect.Field;
 import java.time.Duration;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Collection;
 import java.util.HexFormat;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -40,6 +42,7 @@ import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -270,6 +273,139 @@ final class Lwjgl3ScreenCaptureTest {
                 () -> await(localFence.afterNextFrame(
                         frame -> "unreachable", fixture.deadline())));
         assertEquals(ErrorCode.SESSION_CLOSED, failure.code());
+    }
+
+    @Test void closeAggregatesCleanupFailuresYetCompletesEverything() {
+        DeadlineScheduler failingCancellations = (delay, signal) -> () -> {
+            throw new IllegalStateException("cancel-step");
+        };
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(failingCancellations, 2);
+        CompletionStage<String> first = localFence.afterNextFrame(
+                frame -> "first", fixture.deadline());
+        CompletionStage<String> second = localFence.afterNextFrame(
+                frame -> "second", fixture.deadline());
+        AtomicInteger closedNotifications = new AtomicInteger();
+        AtomicBoolean laterListenerReached = new AtomicBoolean();
+        localFence.subscribe(new FrameSignal.FrameListener() {
+            @Override public void onFrame(FrameSignal.Frame frame) { }
+
+            @Override public void onClosed() {
+                closedNotifications.incrementAndGet();
+                throw new IllegalStateException("listener-step");
+            }
+        });
+        localFence.subscribe(new FrameSignal.FrameListener() {
+            @Override public void onFrame(FrameSignal.Frame frame) { }
+
+            @Override public void onClosed() {
+                closedNotifications.incrementAndGet();
+                laterListenerReached.set(true);
+            }
+        });
+
+        IllegalStateException closeFailure = assertThrows(IllegalStateException.class,
+                localFence::close);
+
+        assertEquals("cancel-step", closeFailure.getMessage(),
+                "the first cleanup failure must be the primary close failure");
+        assertEquals(2, closeFailure.getSuppressed().length,
+                "later cleanup failures must be suppressed on the primary failure");
+        assertEquals(ErrorCode.SESSION_CLOSED,
+                assertThrows(HarnessException.class, () -> await(first)).code());
+        assertEquals(ErrorCode.SESSION_CLOSED,
+                assertThrows(HarnessException.class, () -> await(second)).code());
+        assertEquals(2, closedNotifications.get(),
+                "every listener must be notified even when one throws");
+        assertTrue(laterListenerReached.get(),
+                "a throwing listener must not prevent later listeners from being notified");
+        assertTrue(retainedListeners(localFence).isEmpty(),
+                "close must clear listener retention even when cleanup steps fail");
+    }
+
+    @Test void ownedSchedulerShutsDownEvenWhenListenerCleanupFails() {
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(1);
+        CompletionStage<String> pending = localFence.afterNextFrame(
+                frame -> "unreachable",
+                Deadline.after(Lwjgl3CaptureFixture.CLOCK, Duration.ofHours(1)));
+        ScheduledThreadPoolExecutor owned = ownedScheduler(localFence);
+        assertNotNull(owned);
+        localFence.subscribe(new FrameSignal.FrameListener() {
+            @Override public void onFrame(FrameSignal.Frame frame) { }
+
+            @Override public void onClosed() {
+                throw new IllegalStateException("listener-step");
+            }
+        });
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                localFence::close);
+
+        assertEquals("listener-step", failure.getMessage());
+        assertTrue(owned.isShutdown(),
+                "the owned scheduler must shut down even when a listener fails");
+        assertTrue(owned.isTerminated(),
+                "the owned scheduler must terminate even when a listener fails");
+        assertEquals(ErrorCode.SESSION_CLOSED,
+                assertThrows(HarnessException.class, () -> await(pending)).code());
+        assertTrue(retainedListeners(localFence).isEmpty(),
+                "close must clear listener retention even when a listener fails");
+    }
+
+    @Test void concurrentWaitersObserveTheSameCloseFailure() throws Exception {
+        Lwjgl3FrameFence localFence = new Lwjgl3FrameFence(noopDeadlines(), 1);
+        CountDownLatch listenerEntered = new CountDownLatch(1);
+        CountDownLatch releaseListener = new CountDownLatch(1);
+        localFence.subscribe(new FrameSignal.FrameListener() {
+            @Override public void onFrame(FrameSignal.Frame frame) { }
+
+            @Override public void onClosed() {
+                listenerEntered.countDown();
+                try {
+                    releaseListener.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("listener interrupted", exception);
+                }
+                throw new IllegalStateException("cleanup-failure");
+            }
+        });
+        AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+        AtomicReference<Throwable> secondFailure = new AtomicReference<>();
+        Thread firstCloser = new Thread(() -> {
+            try {
+                localFence.close();
+            } catch (Throwable failure) {
+                firstFailure.set(failure);
+            }
+        }, "first-fence-closer");
+        firstCloser.start();
+        assertTrue(listenerEntered.await(1, TimeUnit.SECONDS),
+                "the first close must reach its failing listener");
+        Thread secondCloser = new Thread(() -> {
+            try {
+                localFence.close();
+            } catch (Throwable failure) {
+                secondFailure.set(failure);
+            }
+        }, "second-fence-closer");
+        secondCloser.start();
+        long waitDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (secondCloser.getState() != Thread.State.WAITING
+                && System.nanoTime() < waitDeadline) {
+            Thread.yield();
+        }
+        assertEquals(Thread.State.WAITING, secondCloser.getState(),
+                "the second closer must block until the first cleanup finishes");
+        releaseListener.countDown();
+        firstCloser.join(1_000);
+        secondCloser.join(1_000);
+        assertFalse(firstCloser.isAlive());
+        assertFalse(secondCloser.isAlive());
+
+        assertNotNull(firstFailure.get(), "the first closer must surface the cleanup failure");
+        assertNotNull(secondFailure.get(), "a waiting closer must observe the same failure");
+        assertSame(firstFailure.get(), secondFailure.get(),
+                "the first close failure must propagate identically to concurrent waiters");
     }
 
     @Test void closingScreenCaptureImmediatelyFailsItsQueuedRequest() {
@@ -555,6 +691,20 @@ final class Lwjgl3ScreenCaptureTest {
         } catch (ReflectiveOperationException exception) {
             throw new AssertionError(
                     "the owned scheduler must be observable for lifecycle assertions", exception);
+        }
+    }
+
+    /**
+     * Returns the fence's live listener registrations so retention can be asserted after close.
+     */
+    private static Collection<?> retainedListeners(Lwjgl3FrameFence fence) {
+        try {
+            Field field = Lwjgl3FrameFence.class.getDeclaredField("listeners");
+            field.setAccessible(true);
+            return (Collection<?>) field.get(fence);
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError(
+                    "listeners must be observable for retention assertions", exception);
         }
     }
 
