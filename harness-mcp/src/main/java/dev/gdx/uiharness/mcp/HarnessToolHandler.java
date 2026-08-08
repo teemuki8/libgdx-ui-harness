@@ -1100,22 +1100,40 @@ public final class HarnessToolHandler implements AutoCloseable {
                 operation, arguments, requestedCode, problems);
         boolean transientDiagnostic = requestedCode.defaultDisposition()
                 == DiagnosticEnvelope.Disposition.TRANSIENT;
-        RecoveryAccounting.Snapshot session = transientDiagnostic
-                ? sessionAccounting.recordTransient(sessionKey(arguments))
-                : sessionAccounting.snapshot(sessionKey(arguments));
-        workflowToken[0] = session.token();
-        RecoveryAccounting.Snapshot fingerprintSnapshot =
-                transientDiagnostic && session.tracked()
-                        ? diagnosticAccounting.recordTransient(fingerprint)
-                        : new RecoveryAccounting.Snapshot(
-                                0, 0, false, RecoveryAccounting.NO_TOKEN);
+        RecoveryAccounting.Snapshot session;
+        RecoveryAccounting.Snapshot fingerprintSnapshot;
+        boolean capacityRejection;
+        // Recording, fingerprint registration, workflow release, and conditional
+        // session removal share one lock, so a fingerprint record/register can
+        // never interleave with an ending workflow's ownership check and delete.
+        synchronized (workflows) {
+            pruneExpiredWorkflows();
+            session = transientDiagnostic
+                    ? sessionAccounting.recordTransient(sessionKey(arguments))
+                    : sessionAccounting.snapshot(sessionKey(arguments));
+            fingerprintSnapshot = transientDiagnostic && session.tracked()
+                    ? diagnosticAccounting.recordTransient(fingerprint)
+                    : new RecoveryAccounting.Snapshot(
+                            0, 0, false, RecoveryAccounting.NO_TOKEN);
+            // Only a request that participates through a recorded transient attempt
+            // adopts the workflow generation; terminal and non-transient requests
+            // keep the token captured at request start, so a stale terminal can
+            // never end a newer workflow.
+            if (transientDiagnostic && session.tracked()) {
+                workflowToken[0] = session.token();
+                if (fingerprintSnapshot.tracked()) {
+                    registerFingerprint(session.token(), fingerprint);
+                }
+            }
+            capacityRejection = transientDiagnostic
+                    && (!session.tracked() || !fingerprintSnapshot.tracked());
+        }
         int equivalentConsumed = fingerprintSnapshot.consumed();
         int limit = HarnessToolCatalog.recoveryPolicy().maxSchemaRecoveries();
         DiagnosticCode code = requestedCode;
         String terminatingRule = recoveryRule(requestedCode);
         int consumed = session.consumed();
-        if (transientDiagnostic
-                && (!session.tracked() || !fingerprintSnapshot.tracked())) {
+        if (capacityRejection) {
             // Either store at capacity: fingerprint churn cannot bypass the bound.
             code = DiagnosticCode.RECOVERY_BUDGET_EXHAUSTED;
             terminatingRule = "accounting-capacity/v1";
@@ -1129,9 +1147,6 @@ public final class HarnessToolHandler implements AutoCloseable {
         } else if (requestedCode.defaultDisposition()
                 == DiagnosticEnvelope.Disposition.TERMINAL) {
             terminatingRule = "terminal-code/v1";
-        }
-        if (transientDiagnostic && session.tracked() && fingerprintSnapshot.tracked()) {
-            registerFingerprint(workflowToken[0], fingerprint);
         }
         long elapsedMillis = session.workflowElapsedMillis();
         DiagnosticEnvelope envelope = DiagnosticEnvelope.create(
@@ -1148,7 +1163,10 @@ public final class HarnessToolHandler implements AutoCloseable {
         Map<String, Object> encoded = COMMAND_MAPPER.convertValue(envelope, Map.class);
         LinkedHashMap<String, Object> content = new LinkedHashMap<>(encoded);
         content.put("kind", "error");
-        if (code.defaultDisposition() == DiagnosticEnvelope.Disposition.TERMINAL) {
+        // A capacity rejection must not clear the saturated store: retries stay
+        // fail-closed until the owning workflow terminates, expires, or closes.
+        if (code.defaultDisposition() == DiagnosticEnvelope.Disposition.TERMINAL
+                && !capacityRejection) {
             endWorkflow(sessionKey(arguments), workflowToken[0]);
         }
         return errorResult(content);
@@ -1176,30 +1194,36 @@ public final class HarnessToolHandler implements AutoCloseable {
     }
 
     /**
+     * Test seam: invoked between a fingerprint's ownership check and its release
+     * so interleaving tests can deterministically pause an ending workflow at the
+     * exact point a concurrent record would previously have been lost.
+     */
+    Runnable beforeFingerprintRelease = () -> {};
+
+    /**
      * Ends the workflow for the given session generation: releases the
      * fingerprint keys it recorded (only those not also owned by another live
      * workflow) and removes the session reservation, but only when that
      * reservation still belongs to this generation. A stale completion with an
-     * old token therefore never clears a newer workflow's state.
+     * old token therefore never clears a newer workflow's state. The ownership
+     * check, deletion, and conditional session removal are atomic with the
+     * record/register path under one lock.
      */
     private void endWorkflow(String sessionKey, long token) {
-        LinkedHashSet<String> owned;
         synchronized (workflows) {
             pruneExpiredWorkflows();
             WorkflowFingerprints workflow = workflows.remove(token);
-            owned = workflow == null ? null : workflow.keys;
-            if (owned != null) {
-                registeredFingerprints -= owned.size();
-            }
-        }
-        if (owned != null) {
-            for (String fingerprint : owned) {
-                if (!ownedByAnotherWorkflow(fingerprint)) {
-                    diagnosticAccounting.remove(fingerprint);
+            if (workflow != null) {
+                registeredFingerprints -= workflow.keys.size();
+                for (String fingerprint : workflow.keys) {
+                    if (!ownedByAnotherWorkflow(fingerprint)) {
+                        beforeFingerprintRelease.run();
+                        diagnosticAccounting.remove(fingerprint);
+                    }
                 }
             }
+            sessionAccounting.removeIfOwned(sessionKey, token);
         }
-        sessionAccounting.removeIfOwned(sessionKey, token);
     }
 
     /** Returns whether another live workflow generation still owns the fingerprint. */
@@ -1407,9 +1431,9 @@ public final class HarnessToolHandler implements AutoCloseable {
 
     /** Shuts down all virtual-thread dispatch owned by this handler. */
     @Override public void close() {
-        sessionAccounting.clear();
-        diagnosticAccounting.clear();
         synchronized (workflows) {
+            sessionAccounting.clear();
+            diagnosticAccounting.clear();
             workflows.clear();
             registeredFingerprints = 0;
         }

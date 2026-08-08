@@ -1123,6 +1123,159 @@ final class HarnessMcpServerContractTest {
             assertEquals("accounting-capacity/v1", recovery.get("terminatingRule"));
             assertEquals(3, ((Number) recovery.get("consumed")).intValue());
             assertEquals(0, ((Number) recovery.get("remaining")).intValue());
+
+            // Fail-closed: the saturated store is not cleared by the rejection, so a
+            // different new fingerprint remains terminally rejected on retry.
+            Map<String, Object> again = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game", "bogus-4", 4)))
+                    .block(Duration.ofSeconds(10)));
+            assertEquals("RECOVERY_BUDGET_EXHAUSTED", again.get("code"),
+                    "a capacity rejection must not clear the saturated store");
+
+            // The owning workflow's original counts remain intact: the session
+            // budget kept accumulating through the rejections (3 -> 6) and was
+            // never reset, and the owned fingerprint still resolves, so the
+            // rejection the owned request now hits is the session budget.
+            Map<String, Object> owned = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game", "bogus-0", 0)))
+                    .block(Duration.ofSeconds(10)));
+            assertEquals("RECOVERY_BUDGET_EXHAUSTED", owned.get("code"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> ownedRecovery = (Map<String, Object>) owned.get("recovery");
+            assertEquals("session-recovery-budget/v1",
+                    ownedRecovery.get("terminatingRule"));
+            assertEquals(6, ((Number) ownedRecovery.get("consumed")).intValue(),
+                    "capacity rejections must not reset an owned workflow's budget");
+        }
+    }
+
+    @Test void staleTerminalDoesNotClearNewerWorkflowState() throws Exception {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch staleAdmitted = new CountDownLatch(1);
+        CompletableFuture<HarnessResponse> staleGate = new CompletableFuture<>();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    int call = calls.incrementAndGet();
+                    if (call == 2) {
+                        staleAdmitted.countDown();
+                        return staleGate;
+                    }
+                    if (call == 3) {
+                        return CompletableFuture.completedFuture(new HarnessResponse.Success(
+                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                new HarnessResponse.Result.Sessions(List.of())));
+                    }
+                    return CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            new ProtocolError(ProtocolError.Code.TIMEOUT,
+                                    "frame deadline expired", request.requestId(),
+                                    request.sessionId(), null, 0, null, null,
+                                    List.of(), Map.of(), null, List.of())));
+                }, new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            // First transient failure creates workflow generation 1.
+            structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+
+            // The stale terminal starts while generation 1 is current and is held.
+            CompletableFuture<McpSchema.CallToolResult> stale = handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).toFuture();
+            assertTrue(staleAdmitted.await(10, TimeUnit.SECONDS));
+
+            // A success ends generation 1, clearing the session and its fingerprints.
+            Map<String, Object> success = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> successRecovery = (Map<String, Object>) success.get("recovery");
+            assertEquals(1, ((Number) successRecovery.get("consumed")).intValue());
+
+            // A transient failure starts generation 2 with a fresh budget.
+            Map<String, Object> fresh = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> freshRecovery = (Map<String, Object>) fresh.get("recovery");
+            assertEquals(1, ((Number) freshRecovery.get("consumed")).intValue());
+
+            // The stale terminal completes with a terminal protocol error. It must
+            // retain the generation-1 token captured at request start, so it can
+            // never end generation 2.
+            staleGate.complete(new HarnessResponse.Failure(
+                    ProtocolVersion.V1, "mcp-2", "game",
+                    new ProtocolError(ProtocolError.Code.LIMIT_EXCEEDED,
+                            "limit exceeded", "mcp-2", "game", null, 0, null, null,
+                            List.of(), Map.of(), null, List.of())));
+            Map<String, Object> staleResult = structured(stale.get(10, TimeUnit.SECONDS));
+            assertEquals("LIMIT_EXCEEDED", staleResult.get("code"));
+
+            // Generation 2's state and capacity remain intact.
+            Map<String, Object> continued = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> continuedRecovery =
+                    (Map<String, Object>) continued.get("recovery");
+            assertEquals(2, ((Number) continuedRecovery.get("consumed")).intValue(),
+                    "a stale terminal must never clear a newer workflow's state");
+        }
+    }
+
+    @Test void interleavedRecordAndReleaseNeverLoseNewerGenerationFingerprint()
+            throws Exception {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch releaseBlocked = new CountDownLatch(1);
+        CountDownLatch releaseGate = new CountDownLatch(1);
+        CompletableFuture<HarnessResponse> endingGate = new CompletableFuture<>();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    if (calls.incrementAndGet() == 1) {
+                        return endingGate;
+                    }
+                    return CompletableFuture.completedFuture(new HarnessResponse.Success(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            new HarnessResponse.Result.Sessions(List.of())));
+                }, new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            // Pause the ending workflow's release exactly between its ownership
+            // check and the accounting deletion.
+            handler.beforeFingerprintRelease = () -> {
+                releaseBlocked.countDown();
+                try {
+                    releaseGate.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            };
+
+            Map<String, Object> malformed = Map.of("sessionId", "game", "bogus", 1);
+            // Generation 1 owns the malformed fingerprint.
+            structured(handler.handle(call(
+                    "ui_snapshot", malformed)).block(Duration.ofSeconds(10)));
+
+            // The gated success will end generation 1 and is paused mid-release.
+            CompletableFuture<McpSchema.CallToolResult> ending = handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).toFuture();
+            endingGate.complete(new HarnessResponse.Success(
+                    ProtocolVersion.V1, "mcp-2", "game",
+                    new HarnessResponse.Result.Sessions(List.of())));
+            assertTrue(releaseBlocked.await(10, TimeUnit.SECONDS),
+                    "the ending workflow must be paused at its fingerprint release");
+
+            // A concurrent request records the same malformed fingerprint while the
+            // ending workflow is paused; its record and registration are atomic
+            // with the release, so the new generation's fingerprint survives.
+            CompletableFuture<McpSchema.CallToolResult> recording = handler.handle(call(
+                    "ui_snapshot", malformed)).toFuture();
+            releaseGate.countDown();
+            ending.get(10, TimeUnit.SECONDS);
+            structured(recording.get(10, TimeUnit.SECONDS));
+
+            Map<String, Object> continued = structured(handler.handle(call(
+                    "ui_snapshot", malformed)).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> continuedRecovery =
+                    (Map<String, Object>) continued.get("recovery");
+            assertEquals(2, ((Number) continuedRecovery.get("consumed")).intValue(),
+                    "an interleaved release must never delete the new generation's "
+                            + "just-recorded fingerprint");
         }
     }
 
