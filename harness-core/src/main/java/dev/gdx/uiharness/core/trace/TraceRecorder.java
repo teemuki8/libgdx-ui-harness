@@ -56,6 +56,7 @@ public final class TraceRecorder implements AutoCloseable {
     private Instant startedAt;
     private long eventCount;
     private long uncompressedBytes;
+    private MessageDigest eventDigest;
     private boolean active;
     private long generation;
     private TraceManifest lastManifest;
@@ -85,6 +86,7 @@ public final class TraceRecorder implements AutoCloseable {
         startedAt = clock.instant();
         eventCount = 0;
         uncompressedBytes = 0;
+        eventDigest = sha256();
         lastManifest = null;
         generation++;
         try {
@@ -131,6 +133,8 @@ public final class TraceRecorder implements AutoCloseable {
             interruptAfterFailure("event write failed", exception);
             throw failure(ErrorCode.INTERNAL_ERROR, "Unable to write trace event", exception);
         }
+        eventDigest.update(encoded);
+        eventDigest.update((byte) '\n');
         uncompressedBytes += added;
         eventCount++;
         return sequence;
@@ -257,8 +261,14 @@ public final class TraceRecorder implements AutoCloseable {
         }
         Path temporaryArchive = root.resolve(".trace-" + randomHex(16) + ".zip.tmp");
         Path archive = root.resolve("trace-" + randomHex(16) + ".zip");
+        LinkedHashMap<String, TraceManifest.ArtifactBinding> bindings = new LinkedHashMap<>();
+        for (Map.Entry<String, ArtifactInfo> entry : artifacts.entrySet()) {
+            bindings.put(entry.getKey(), new TraceManifest.ArtifactBinding(
+                    entry.getKey(), entry.getValue().size(), entry.getValue().mediaType()));
+        }
         TraceManifest manifest = new TraceManifest(archive, sessionId, startedAt, endedAt,
-                complete, reason, eventCount, artifacts.size(), uncompressedBytes);
+                complete, reason, eventCount, artifacts.size(), uncompressedBytes,
+                TraceManifest.V2, HexFormat.of().formatHex(eventDigest.digest()), bindings);
         try (ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(
                 Files.newOutputStream(temporaryArchive, StandardOpenOption.CREATE_NEW,
                         StandardOpenOption.WRITE)), StandardCharsets.UTF_8)) {

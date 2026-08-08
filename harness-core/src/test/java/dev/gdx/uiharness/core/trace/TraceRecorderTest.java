@@ -3,6 +3,8 @@ package dev.gdx.uiharness.core.trace;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -19,11 +21,13 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.Collection;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -67,6 +71,49 @@ final class TraceRecorderTest {
         assertTrue(replay.causality().isValid(), replay.causality().errors().toString());
         assertFalse(replay.partial());
         assertEquals(1, countZipEntries(manifest.archive(), "artifacts/" + firstHash));
+    }
+
+    @Test void finalizedManifestBindsEventDigestAndArtifactIdentities() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-bound", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-bound", "request-1", 1, snapshot(1, 1), Map.of()));
+        byte[] png = "png-bytes".getBytes(StandardCharsets.UTF_8);
+        String hash = recorder.addArtifact("image/png", new ByteArrayInputStream(png));
+        Path archive = recorder.stop().archive();
+
+        byte[] manifestJson;
+        byte[] eventsBytes;
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(archive.toFile())) {
+            manifestJson = zip.getInputStream(zip.getEntry("manifest.json")).readAllBytes();
+            eventsBytes = zip.getInputStream(zip.getEntry("events.ndjson")).readAllBytes();
+        }
+        TraceManifest manifest = TraceJson.decodeManifest(archive, manifestJson);
+
+        assertEquals(TraceManifest.V2, manifest.schemaVersion());
+        assertEquals(sha256(eventsBytes), manifest.eventsSha256());
+        TraceManifest.ArtifactBinding binding = manifest.artifacts().get(hash);
+        assertNotNull(binding);
+        assertEquals(hash, binding.sha256());
+        assertEquals(png.length, binding.size());
+        assertEquals("image/png", binding.mediaType());
+        assertEquals(eventsBytes.length, manifest.uncompressedBytes() - png.length);
+    }
+
+    @Test void legacyV1ManifestWithoutBindingsStillDecodes() throws Exception {
+        byte[] json = ("{\"sessionId\":\"session-a\",\"startedAt\":"
+                + "\"2026-07-28T00:00:00Z\",\"endedAt\":"
+                + "\"2026-07-28T00:00:01Z\",\"complete\":false,"
+                + "\"terminationReason\":\"interrupted\",\"eventCount\":1,"
+                + "\"artifactCount\":0,\"uncompressedBytes\":100}")
+                .getBytes(StandardCharsets.UTF_8);
+
+        TraceManifest manifest = TraceJson.decodeManifest(
+                temporaryDirectory.resolve("legacy.zip"), json);
+
+        assertEquals(TraceManifest.V1, manifest.schemaVersion());
+        assertNull(manifest.eventsSha256());
+        assertTrue(manifest.artifacts().isEmpty());
     }
 
     @Test void redactsCallerPathsBeforeWritingEvents() throws Exception {
@@ -304,6 +351,11 @@ final class TraceRecorderTest {
         try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(archive.toFile())) {
             return zip.stream().filter(entry -> entry.getName().equals(name)).count();
         }
+    }
+
+    private static String sha256(byte[] bytes) throws Exception {
+        return HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(bytes));
     }
 
     private static String readZipEntry(Path archive, String name) throws Exception {

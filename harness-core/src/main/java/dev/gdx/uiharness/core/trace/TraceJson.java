@@ -15,9 +15,16 @@ final class TraceJson {
     private static final Set<String> EVENT_FIELDS = Set.of(
             "sequence", "kind", "sessionId", "requestId", "logicalTime", "frame",
             "revision", "parentSequence", "evidence");
-    private static final Set<String> MANIFEST_FIELDS = Set.of(
+    private static final Set<String> MANIFEST_FIELDS_V1 = Set.of(
             "sessionId", "startedAt", "endedAt", "complete", "terminationReason",
             "eventCount", "artifactCount", "uncompressedBytes");
+    private static final Set<String> MANIFEST_FIELDS_V2 = Set.of(
+            "sessionId", "startedAt", "endedAt", "complete", "terminationReason",
+            "eventCount", "artifactCount", "uncompressedBytes", "version",
+            "eventsSha256", "artifacts");
+    private static final int MAX_MANIFEST_ARTIFACTS = 100_000;
+    private static final int MAX_EVENT_NESTING = 1;
+    private static final int MAX_MANIFEST_NESTING = 2;
 
     private TraceJson() {}
 
@@ -77,8 +84,12 @@ final class TraceJson {
     }
 
     static byte[] encodeManifest(TraceManifest manifest) {
-        StringBuilder json = new StringBuilder(384);
+        StringBuilder json = new StringBuilder(512);
         json.append('{');
+        if (manifest.schemaVersion().equals(TraceManifest.V2)) {
+            string(json, "version", manifest.schemaVersion());
+            comma(json);
+        }
         string(json, "sessionId", manifest.sessionId());
         comma(json);
         string(json, "startedAt", manifest.startedAt().toString());
@@ -94,15 +105,48 @@ final class TraceJson {
         number(json, "artifactCount", manifest.artifactCount());
         comma(json);
         number(json, "uncompressedBytes", manifest.uncompressedBytes());
+        if (manifest.schemaVersion().equals(TraceManifest.V2)) {
+            comma(json);
+            string(json, "eventsSha256", manifest.eventsSha256());
+            comma(json);
+            quoted(json, "artifacts");
+            json.append(":{");
+            boolean first = true;
+            for (Map.Entry<String, TraceManifest.ArtifactBinding> entry
+                    : manifest.artifacts().entrySet()) {
+                if (!first) {
+                    comma(json);
+                }
+                quoted(json, entry.getKey());
+                json.append(":{");
+                string(json, "sha256", entry.getValue().sha256());
+                comma(json);
+                number(json, "size", entry.getValue().size());
+                comma(json);
+                string(json, "mediaType", entry.getValue().mediaType());
+                json.append('}');
+                first = false;
+            }
+            json.append('}');
+        }
         json.append('}');
         return json.toString().getBytes(StandardCharsets.UTF_8);
     }
 
     static TraceManifest decodeManifest(java.nio.file.Path archive, byte[] bytes)
             throws IOException {
-        Map<String, Object> object = parse(bytes);
-        requireExactFields(object, MANIFEST_FIELDS, "manifest");
+        Map<String, Object> object = parse(bytes, MAX_MANIFEST_NESTING);
+        boolean v2 = object.containsKey("version");
+        requireExactFields(object,
+                v2 ? MANIFEST_FIELDS_V2 : MANIFEST_FIELDS_V1, "manifest");
         try {
+            String version = v2 ? requiredString(object, "version") : TraceManifest.V1;
+            if (v2 && !version.equals(TraceManifest.V2)) {
+                throw new IOException("unsupported manifest version: " + version);
+            }
+            String eventsSha256 = v2 ? requiredString(object, "eventsSha256") : null;
+            Map<String, TraceManifest.ArtifactBinding> artifacts =
+                    v2 ? artifactBindings(object) : Map.of();
             return new TraceManifest(
                     archive,
                     requiredString(object, "sessionId"),
@@ -112,13 +156,46 @@ final class TraceJson {
                     requiredString(object, "terminationReason"),
                     requiredLong(object, "eventCount"),
                     requiredLong(object, "artifactCount"),
-                    requiredLong(object, "uncompressedBytes"));
+                    requiredLong(object, "uncompressedBytes"),
+                    version,
+                    eventsSha256,
+                    artifacts);
         } catch (IllegalArgumentException | java.time.DateTimeException exception) {
             throw new IOException("invalid manifest fields", exception);
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private static Map<String, TraceManifest.ArtifactBinding> artifactBindings(
+            Map<String, Object> object) throws IOException {
+        Object raw = object.get("artifacts");
+        if (!(raw instanceof Map<?, ?> values) || values.size() > MAX_MANIFEST_ARTIFACTS) {
+            throw new IOException("manifest artifacts must be a bounded object");
+        }
+        LinkedHashMap<String, TraceManifest.ArtifactBinding> bindings =
+                new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : values.entrySet()) {
+            if (!(entry.getKey() instanceof String id)
+                    || !(entry.getValue() instanceof Map<?, ?> binding)) {
+                throw new IOException("invalid artifact binding");
+            }
+            try {
+                bindings.put(id, new TraceManifest.ArtifactBinding(
+                        requiredString((Map<String, Object>) binding, "sha256"),
+                        requiredLong((Map<String, Object>) binding, "size"),
+                        requiredString((Map<String, Object>) binding, "mediaType")));
+            } catch (ClassCastException exception) {
+                throw new IOException("invalid artifact binding", exception);
+            }
+        }
+        return Map.copyOf(bindings);
+    }
+
     private static Map<String, Object> parse(byte[] bytes) throws IOException {
+        return parse(bytes, MAX_EVENT_NESTING);
+    }
+
+    private static Map<String, Object> parse(byte[] bytes, int maxNesting) throws IOException {
         String json;
         try {
             json = StandardCharsets.UTF_8.newDecoder()
@@ -129,7 +206,7 @@ final class TraceJson {
         } catch (CharacterCodingException exception) {
             throw new IOException("trace JSON is not valid UTF-8", exception);
         }
-        Parser parser = new Parser(json);
+        Parser parser = new Parser(json, maxNesting);
         Map<String, Object> object = parser.object(0);
         parser.whitespace();
         if (!parser.finished()) {
@@ -281,14 +358,16 @@ final class TraceJson {
 
     private static final class Parser {
         private final String json;
+        private final int maxNesting;
         private int index;
 
-        private Parser(String json) {
+        private Parser(String json, int maxNesting) {
             this.json = json;
+            this.maxNesting = maxNesting;
         }
 
         private Map<String, Object> object(int depth) throws IOException {
-            if (depth > 1) {
+            if (depth > maxNesting) {
                 throw new IOException("trace JSON nesting is too deep");
             }
             expect('{');
