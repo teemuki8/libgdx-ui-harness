@@ -42,7 +42,7 @@ final class ReferenceCaseApplicatorTest {
                                 }
                             }
 
-                            @Override public void applyLocale(Locale locale) {
+                            @Override public void applyLocale(Locale locale, Deadline deadline) {
                                 Locale.setDefault(locale);
                             }
                         };
@@ -76,7 +76,7 @@ final class ReferenceCaseApplicatorTest {
                                 MatrixWindow window, Deadline deadline) {
                         }
 
-                        @Override public void applyLocale(Locale locale) {
+                        @Override public void applyLocale(Locale locale, Deadline deadline) {
                         }
                     };
             ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
@@ -104,7 +104,7 @@ final class ReferenceCaseApplicatorTest {
                             throw new IllegalStateException("window resize stuck");
                         }
 
-                        @Override public void applyLocale(Locale locale) {
+                        @Override public void applyLocale(Locale locale, Deadline deadline) {
                             Locale.setDefault(locale);
                         }
                     };
@@ -133,7 +133,7 @@ final class ReferenceCaseApplicatorTest {
                                 throw new IllegalStateException("window resize timed out");
                             }
 
-                            @Override public void applyLocale(Locale locale) {
+                            @Override public void applyLocale(Locale locale, Deadline deadline) {
                                 Locale.setDefault(locale);
                             }
                         };
@@ -176,7 +176,7 @@ final class ReferenceCaseApplicatorTest {
                                 throw new IllegalStateException("window resize stuck");
                             }
 
-                            @Override public void applyLocale(Locale locale) {
+                            @Override public void applyLocale(Locale locale, Deadline deadline) {
                                 appliedLocales.add(locale);
                                 Locale.setDefault(locale);
                             }
@@ -205,7 +205,7 @@ final class ReferenceCaseApplicatorTest {
                             throw new IllegalStateException("window resize stuck");
                         }
 
-                        @Override public void applyLocale(Locale locale) {
+                        @Override public void applyLocale(Locale locale, Deadline deadline) {
                             throw new IllegalStateException("locale not applied");
                         }
                     };
@@ -237,7 +237,7 @@ final class ReferenceCaseApplicatorTest {
                             appliedWindows.add(window);
                         }
 
-                        @Override public void applyLocale(Locale locale) {
+                        @Override public void applyLocale(Locale locale, Deadline deadline) {
                             appliedLocales.add(locale);
                         }
                     };
@@ -275,7 +275,7 @@ final class ReferenceCaseApplicatorTest {
                             now.addAndGet(31_000_000_000L);
                         }
 
-                        @Override public void applyLocale(Locale locale) {
+                        @Override public void applyLocale(Locale locale, Deadline deadline) {
                             appliedLocales.add(locale);
                         }
                     };
@@ -300,6 +300,46 @@ final class ReferenceCaseApplicatorTest {
     }
 
     @Test
+    void applyNeverReturnsAppliedWhenRunDeadlineExpiresDuringLocaleApply() {
+        AtomicLong now = new AtomicLong(0L);
+        MonotonicClock manual = now::get;
+        try (RenderThreadScheduler scheduler = new RenderThreadScheduler(16)) {
+            List<MatrixWindow> appliedWindows = new ArrayList<>();
+            List<Locale> appliedLocales = new ArrayList<>();
+            ReferenceCaseApplicator.CaseApplication expiringLocale =
+                    new ReferenceCaseApplicator.CaseApplication() {
+                        @Override public void applyWindow(
+                                MatrixWindow window, Deadline deadline) {
+                            appliedWindows.add(window);
+                        }
+
+                        @Override public void applyLocale(Locale locale, Deadline deadline) {
+                            appliedLocales.add(locale);
+                            now.addAndGet(31_000_000_000L);
+                        }
+                    };
+            ReferenceCaseApplicator applicator = new ReferenceCaseApplicator(
+                    scheduler, manual, "host-owned-profile", expiringLocale);
+            Deadline run = Deadline.after(manual, Duration.ofSeconds(30));
+            MatrixCase matrixCase = new MatrixCase(
+                    0, new MatrixWindow(1920, 1080), 1.0, 1.0, MatrixHiDpi.PIXELS,
+                    "en-US", "", 16.0 / 9.0, List.of());
+
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> applicator.apply(matrixCase, "host-owned-profile", run));
+            assertTrue(failure.getMessage().contains("deadline expired"),
+                    "expiry after the locale mutation must still fail the application: "
+                            + failure.getMessage());
+            assertEquals(List.of(new MatrixWindow(1920, 1080), new MatrixWindow(1280, 720)),
+                    appliedWindows,
+                    "the window apply and the bounded cleanup restore both run");
+            assertEquals(List.of(Locale.forLanguageTag("en-US"), Locale.getDefault()),
+                    appliedLocales,
+                    "the requested locale and the restored host locale are both applied");
+        }
+    }
+
+    @Test
     void restoreUsesSeparateBoundedCleanupDeadlineAfterRunExpiry() {
         AtomicLong now = new AtomicLong(0L);
         MonotonicClock manual = now::get;
@@ -315,7 +355,7 @@ final class ReferenceCaseApplicatorTest {
                             restoredWindows.add(window);
                         }
 
-                        @Override public void applyLocale(Locale locale) {
+                        @Override public void applyLocale(Locale locale, Deadline deadline) {
                             restoredLocales.add(locale);
                         }
                     };

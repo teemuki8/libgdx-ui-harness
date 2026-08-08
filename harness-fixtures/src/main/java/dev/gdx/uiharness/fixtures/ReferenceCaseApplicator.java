@@ -30,12 +30,17 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
     /**
      * One host-owned window/locale application seam; injectable for failure-path tests. The
      * window and locale steps are independent so a failed window restore cannot prevent the
-     * locale restore (and vice versa): restoration aggregates both before reporting.
+     * locale restore (and vice versa): restoration aggregates both before reporting. The run
+     * deadline is threaded into both steps: each real implementation checks expiration
+     * immediately before its actual mutation, and the applicator re-checks after each step
+     * returns. The bound is cooperative — a synchronous backend call issued before expiry may
+     * complete late (it cannot be preempted), but the late completion is detected after the
+     * call and triggers bounded cleanup through the applicator's restore path.
      */
     interface CaseApplication {
         void applyWindow(MatrixWindow window, Deadline deadline);
 
-        void applyLocale(Locale locale);
+        void applyLocale(Locale locale, Deadline deadline);
     }
 
     private final RenderThreadScheduler scheduler;
@@ -72,8 +77,11 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
             return new Lwjgl3MatrixRunner.ApplyResult.Unsupported(unsupported);
         }
         try {
-            // Application must never continue beyond the request bound: every mutation is
-            // gated on the run deadline and every window wait is bounded by its remaining time.
+            // Application must never continue beyond the request bound and must never return
+            // Applied after expiration: the deadline is checked immediately before each
+            // mutation (inside the backend step), after the window step returns, immediately
+            // before the locale step, and again after the locale step returns. Expiry after a
+            // mutation throws so the catch below performs bounded cleanup.
             if (deadline.isExpired()) {
                 throw new IllegalStateException("case application deadline expired");
             }
@@ -82,7 +90,11 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
                 throw new IllegalStateException(
                         "case application deadline expired after window apply");
             }
-            caseApplication.applyLocale(Locale.forLanguageTag(matrixCase.locale()));
+            caseApplication.applyLocale(Locale.forLanguageTag(matrixCase.locale()), deadline);
+            if (deadline.isExpired()) {
+                throw new IllegalStateException(
+                        "case application deadline expired after locale apply");
+            }
             return new Lwjgl3MatrixRunner.ApplyResult.Applied(observe(matrixCase));
         } catch (RuntimeException failure) {
             // The runner contract requires the original display state to be restored before
@@ -123,7 +135,7 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
         }
         RuntimeException localeFailure = null;
         try {
-            caseApplication.applyLocale(originalLocale);
+            caseApplication.applyLocale(originalLocale, deadline);
         } catch (RuntimeException failure) {
             localeFailure = failure;
         }
@@ -192,6 +204,12 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
     private final class RealApplication implements CaseApplication {
         @Override
         public void applyWindow(MatrixWindow window, Deadline deadline) {
+            // Check immediately before the actual mutation: the outer checks in apply() cannot
+            // close the race between the check and the synchronous backend call.
+            if (deadline.isExpired()) {
+                throw new IllegalStateException(
+                        "case application deadline expired before window apply");
+            }
             if (scheduler.isOwnerThread()) {
                 // The matrix runner's final restore can complete on the render thread inside a
                 // scheduler drain (via a completed-frame observation); submitting and joining here
@@ -221,7 +239,13 @@ public final class ReferenceCaseApplicator implements Lwjgl3MatrixRunner.MatrixC
         }
 
         @Override
-        public void applyLocale(Locale locale) {
+        public void applyLocale(Locale locale, Deadline deadline) {
+            // Check immediately before the actual mutation so a locale change cannot start
+            // after the deadline expired.
+            if (deadline.isExpired()) {
+                throw new IllegalStateException(
+                        "case application deadline expired before locale apply");
+            }
             Locale.setDefault(locale);
         }
     }

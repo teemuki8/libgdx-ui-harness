@@ -44,3 +44,9 @@ no-op. Every case application is bounded by the request's run deadline: the appl
 refuses to start once it is expired and bounds every window wait to the remaining time, so no
 application continues beyond the request bound; restoration remains mandatory after expiry
 under a separately bounded cleanup deadline and never reuses the expired request deadline.
+The deadline is threaded into every application step and checked immediately before each
+actual mutation, after the window step, and again after the locale step before any case is
+reported applied — `Applied` is never returned after expiration. The bound is cooperative: a
+synchronous backend call issued before expiry may complete late (it cannot be preempted), but
+the late completion is detected after the call and triggers bounded cleanup through the
+restore path.
