@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -539,6 +540,37 @@ final class HarnessMcpServerContractTest {
         assertEquals("Artifact publisher receipt is unavailable or invalid",
                 normalized.getMessage());
         assertFalse(normalized.getMessage().contains("/tmp/leak.zip"));
+    }
+
+    @Test void verifiedPublisherNormalizesDelegateErrorsToTheFixedMessage() {
+        ArtifactReference.Publisher throwing = (mediaType, content) -> {
+            throw new AssertionError("delegate invariant broken");
+        };
+        ArtifactReference.ArtifactUnavailableException failure =
+                assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                        () -> new VerifiedArtifactPublisher(throwing)
+                                .publish("image/png", new byte[] {1, 2, 3}));
+        assertEquals("Artifact publisher receipt is unavailable or invalid",
+                failure.getMessage());
+        assertInstanceOf(AssertionError.class, failure.getCause());
+    }
+
+    @Test void verifiedPublisherRethrowsFatalErrors() {
+        StackOverflowError fatal = new StackOverflowError("simulated");
+        ArtifactReference.Publisher overflowing = (mediaType, content) -> {
+            throw fatal;
+        };
+        assertSame(fatal, assertThrows(StackOverflowError.class,
+                () -> new VerifiedArtifactPublisher(overflowing)
+                        .publish("image/png", new byte[] {1, 2, 3})));
+
+        ThreadDeath death = new ThreadDeath();
+        ArtifactReference.Publisher dying = (mediaType, content) -> {
+            throw death;
+        };
+        assertSame(death, assertThrows(ThreadDeath.class,
+                () -> new VerifiedArtifactPublisher(dying)
+                        .publish("image/png", new byte[] {1, 2, 3})));
     }
 
     @Test void verifiedPublisherRejectsUppercaseDigestReceipts() {

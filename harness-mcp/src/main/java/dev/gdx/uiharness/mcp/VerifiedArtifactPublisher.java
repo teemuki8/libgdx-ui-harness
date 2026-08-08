@@ -13,9 +13,11 @@ import java.util.Objects;
  * expected receipt digest, length, and media type, so a mutating or lying
  * delegate cannot redefine those receipt claims. Opaque-reference storage and
  * readback integrity remain the publisher's responsibility. A delegate
- * failure, a null receipt, or a mismatched receipt all surface as one fixed
+ * failure — runtime exception or non-fatal error — a null receipt, or a
+ * mismatched receipt all surface as one fixed
  * {@link ArtifactReference.ArtifactUnavailableException} — the delegate's own
- * message never escapes the boundary.
+ * message never escapes the boundary. Fatal errors
+ * ({@link VirtualMachineError}, {@link ThreadDeath}) propagate unchanged.
  */
 public final class VerifiedArtifactPublisher implements ArtifactReference.Publisher {
     private static final String UNAVAILABLE_MESSAGE =
@@ -38,6 +40,13 @@ public final class VerifiedArtifactPublisher implements ArtifactReference.Publis
         try {
             receipt = delegate.publish(mediaType, snapshot);
         } catch (RuntimeException failure) {
+            throw new ArtifactReference.ArtifactUnavailableException(
+                    UNAVAILABLE_MESSAGE, failure);
+        } catch (Error failure) {
+            if (failure instanceof VirtualMachineError
+                    || failure instanceof ThreadDeath) {
+                throw failure;   // fatal errors are not a public diagnostic
+            }
             throw new ArtifactReference.ArtifactUnavailableException(
                     UNAVAILABLE_MESSAGE, failure);
         }
