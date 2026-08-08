@@ -392,6 +392,117 @@ final class Lwjgl3MatrixRunnerTest {
         }
     }
 
+    @Test void longRestoreFailureKeepsPrimaryEvidenceAfterAssertionFailure() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.saveAbsent = true;
+            fixture.mismatchedSnapshots = true;
+            fixture.restoreMessage = "display restore rejected " + "x".repeat(600);
+            fixture.restoreFailuresRemaining = 1;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            fixture.nowNanos[0] += Duration.ofSeconds(6).toNanos();
+            fixture.deadlines.expire();
+            for (int index = 0; index < 4 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            String evidence = result.evidence();
+            assertTrue(evidence.length() <= 512, "case evidence must stay bounded");
+            assertTrue(evidence.contains("does not match delivered frame"),
+                    "the primary assertion failure must never be replaced: " + evidence);
+            assertTrue(evidence.contains("display restore failed"),
+                    "the restore failure must still be represented: " + evidence);
+        }
+    }
+
+    @Test void longRestoreFailureKeepsPrimaryEvidenceAfterAcquisitionFailure() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.failReset = true;
+            fixture.restoreMessage = "display restore rejected " + "y".repeat(600);
+            fixture.restoreFailuresRemaining = 1;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 8 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            String evidence = result.evidence();
+            assertTrue(evidence.length() <= 512, "case evidence must stay bounded");
+            assertTrue(evidence.contains("scenario acquisition failed"),
+                    "the acquisition failure must never be replaced: " + evidence);
+            assertTrue(evidence.contains("display restore failed"),
+                    "the restore failure must still be represented: " + evidence);
+        }
+    }
+
+    @Test void longRestoreFailureAloneStaysBounded() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.restoreMessage = "display restore rejected " + "z".repeat(600);
+            fixture.restoreFailuresRemaining = 1;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            String evidence = result.evidence();
+            assertTrue(evidence.length() <= 512, "case evidence must stay bounded");
+            assertTrue(evidence.startsWith("display restore failed"),
+                    "the restore failure must remain the primary evidence: " + evidence);
+        }
+    }
+
     @Test void matrixProductLimitRejectsBeforeAnyCaseStarts() {
         try (Fixture fixture = new Fixture()) {
             MatrixDefinition definition = new MatrixDefinition(
@@ -642,6 +753,7 @@ final class Lwjgl3MatrixRunnerTest {
         boolean throwOnNextScenarioSchedule;
         boolean failReset;
         int restoreFailuresRemaining;
+        String restoreMessage = "display restore rejected";
         final Lwjgl3MatrixRunner.MatrixCaseApplicator applicator =
                 new Lwjgl3MatrixRunner.MatrixCaseApplicator() {
                     @Override public Lwjgl3MatrixRunner.ApplyResult apply(
@@ -674,7 +786,7 @@ final class Lwjgl3MatrixRunnerTest {
                         mismatchedSnapshots = false;
                         if (restoreFailuresRemaining > 0) {
                             restoreFailuresRemaining--;
-                            throw new IllegalStateException("display restore rejected");
+                            throw new IllegalStateException(restoreMessage);
                         }
                     }
                 };

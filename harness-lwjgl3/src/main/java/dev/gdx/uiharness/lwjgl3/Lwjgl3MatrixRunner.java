@@ -484,18 +484,20 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
     }
 
     /**
-     * Appends {@code suffix} to {@code primary} within {@link #MAX_EVIDENCE_LENGTH}, truncating
-     * the primary first so the suffix (e.g. cleanup classification) is always retained.
+     * Appends {@code suffix} to {@code primary} within {@link #MAX_EVIDENCE_LENGTH}. Short
+     * suffixes (bounded classifications such as cleanup) are always retained in full, truncating
+     * only the primary tail to make room. A suffix that alone nearly or fully exhausts the bound
+     * must never replace the primary: the primary prefix is kept and the longest suffix prefix
+     * that fits is appended, reserving at least half the bound for the primary.
      */
     private static String composeWithSuffix(String primary, String suffix) {
         if (primary.length() + suffix.length() <= MAX_EVIDENCE_LENGTH) {
             return primary + suffix;
         }
-        int primaryBudget = MAX_EVIDENCE_LENGTH - suffix.length();
-        if (primaryBudget <= 0) {
-            return bounded(suffix);
-        }
-        return primary.substring(0, primaryBudget) + suffix;
+        int suffixBudget = Math.min(suffix.length(), MAX_EVIDENCE_LENGTH / 2);
+        int primaryBudget = MAX_EVIDENCE_LENGTH - suffixBudget;
+        int primaryKeep = Math.min(primaryBudget, primary.length());
+        return primary.substring(0, primaryKeep) + suffix.substring(0, suffixBudget);
     }
 
     private static String bounded(String value) {
