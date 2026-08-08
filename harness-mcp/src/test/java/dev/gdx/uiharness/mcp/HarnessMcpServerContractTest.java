@@ -70,6 +70,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -1385,6 +1386,8 @@ final class HarnessMcpServerContractTest {
             // typed limit response once the gate opens.
             AtomicReference<JsonNode> busyResponse = new AtomicReference<>();
             CompletableFuture<Void> busySeen = new CompletableFuture<>();
+            CountDownLatch clientThreadsMayExit = new CountDownLatch(1);
+            try {
             readerExecutor.submit(() -> {
                 try {
                     while (true) {
@@ -1393,6 +1396,7 @@ final class HarnessMcpServerContractTest {
                                 == HarnessMcpServer.TRANSPORT_BUSY_ERROR_CODE) {
                             busyResponse.set(response);
                             busySeen.complete(null);
+                            clientThreadsMayExit.await();
                             return;
                         }
                     }
@@ -1400,33 +1404,45 @@ final class HarnessMcpServerContractTest {
                     busySeen.completeExceptionally(failure);
                 }
             });
-            CompletableFuture<Void> writeAll = CompletableFuture.runAsync(() -> {
+            CompletableFuture<Void> allWritesSent = new CompletableFuture<>();
+            CompletableFuture.runAsync(() -> {
                 try {
                     for (int id = 100; id < 120; id++) {
                         send(writer, actionCallJson(id));
                     }
+                    allWritesSent.complete(null);
+                    clientThreadsMayExit.await();
                 } catch (Exception failure) {
+                    allWritesSent.completeExceptionally(failure);
                     throw new IllegalStateException("writer failed", failure);
                 }
             }, writerExecutor);
 
-            firstAdmitted.get(5, TimeUnit.SECONDS);
-            assertEquals(1, protocolCalls.get(),
-                    "only the single running mutation may reach the protocol");
-            assertThrows(TimeoutException.class, () -> writeAll.get(1, TimeUnit.SECONDS),
-                    "the blocked output must backpressure the flood instead of dispatching it "
-                            + "unboundedly");
+                firstAdmitted.get(5, TimeUnit.SECONDS);
+                assertEquals(1, protocolCalls.get(),
+                        "only the single running mutation may reach the protocol");
+                assertThrows(TimeoutException.class,
+                        () -> allWritesSent.get(1, TimeUnit.SECONDS),
+                        "the blocked output must backpressure the flood instead of dispatching "
+                                + "it unboundedly");
 
-            gated.release();
-            busySeen.get(5, TimeUnit.SECONDS);
-            assertEquals(HarnessMcpServer.TRANSPORT_BUSY_ERROR_CODE,
-                    busyResponse.get().path("error").path("code").asInt(),
-                    "the typed limit response identifies the transport rejection");
-            assertFalse(busyResponse.get().path("error").path("message").asText().isBlank(),
-                    "the typed limit response carries a bounded message");
-            assertEquals(1, protocolCalls.get(),
-                    "the flood never grows protocol work beyond the admission bound while "
-                            + "the admitted mutations stay blocked");
+                gated.release();
+                busySeen.get(5, TimeUnit.SECONDS);
+                assertEquals(HarnessMcpServer.TRANSPORT_BUSY_ERROR_CODE,
+                        busyResponse.get().path("error").path("code").asInt(),
+                        "the typed limit response identifies the transport rejection");
+                assertFalse(busyResponse.get().path("error").path("message").asText().isBlank(),
+                        "the typed limit response carries a bounded message");
+                assertEquals(1, protocolCalls.get(),
+                        "the flood never grows protocol work beyond the admission bound while "
+                                + "the admitted mutations stay blocked");
+            } finally {
+                // PipedInputStream treats a dead last-reader or last-writer thread as a broken
+                // pipe even while both streams remain open. Keep both client threads alive
+                // through the assertion so a synthetic broken pipe cannot close the transport,
+                // cancel the first mutation, and legitimately advance the serialized lane.
+                clientThreadsMayExit.countDown();
+            }
         }
     }
 
