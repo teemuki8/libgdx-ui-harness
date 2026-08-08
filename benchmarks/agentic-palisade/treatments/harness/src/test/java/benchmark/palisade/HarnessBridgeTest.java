@@ -410,6 +410,7 @@ final class HarnessBridgeTest {
      */
     private static final class CloseOrderingApplication extends ApplicationAdapter {
         private static final String DEADLINE_THREAD_NAME = "palisade-harness-deadlines";
+        private static final long ARM_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(2);
         private final Path artifactRoot;
         private final AtomicReference<Throwable> failure = new AtomicReference<>();
         private Stage stage;
@@ -417,7 +418,7 @@ final class HarnessBridgeTest {
         private CompletableFuture<?> screenshot;
         private boolean warmupDone;
         private int warmupFrames;
-        private int threadPolls;
+        private long armedAtNanos;
         private boolean closeCompleted;
         private boolean screenshotReleasedByClose;
         private boolean noDeadlineThreadAfterClose;
@@ -474,6 +475,7 @@ final class HarnessBridgeTest {
                     bridge.afterRender();
                     if (++warmupFrames >= 3) {
                         warmupDone = true;
+                        armedAtNanos = System.nanoTime();
                         screenshot = bridge.call("ui_screenshot", Map.of(
                                 "sessionId", HarnessBridge.SESSION_ID,
                                 "maxWidth", 1280,
@@ -497,10 +499,12 @@ final class HarnessBridgeTest {
                     Gdx.app.exit();
                     return;
                 }
-                if (++threadPolls > 100_000) {
+                if (System.nanoTime() - armedAtNanos > ARM_TIMEOUT_NANOS) {
                     failure.compareAndSet(null, new AssertionError(
-                            "the real deadline worker thread never started for the pending capture"));
+                            "the real deadline worker thread never started within "
+                                    + ARM_TIMEOUT_NANOS / 1_000_000 + "ms for the pending capture"));
                     Gdx.app.exit();
+                    return;
                 }
             } catch (Throwable thrown) {
                 failure.compareAndSet(null, thrown);
@@ -539,7 +543,13 @@ final class HarnessBridgeTest {
 
         @Override public void dispose() {
             try {
-                if (bridge != null && !closeCompleted) bridge.close();
+                if (bridge != null && !closeCompleted) {
+                    CompletableFuture<Void> closing = CompletableFuture.runAsync(bridge::close);
+                    closing.get(2, TimeUnit.SECONDS);
+                }
+            } catch (TimeoutException timedOut) {
+                failure.compareAndSet(null, new AssertionError(
+                        "bridge cleanup must not hang after a fixture failure", timedOut));
             } catch (Throwable thrown) {
                 failure.compareAndSet(null, thrown);
             } finally {
