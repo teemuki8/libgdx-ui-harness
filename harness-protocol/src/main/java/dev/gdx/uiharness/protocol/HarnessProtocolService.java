@@ -1,6 +1,7 @@
 package dev.gdx.uiharness.protocol;
 
 import dev.gdx.uiharness.core.action.Harness;
+import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
 import dev.gdx.uiharness.core.contract.StateActionContract;
 import dev.gdx.uiharness.core.error.ErrorCode;
@@ -12,6 +13,7 @@ import dev.gdx.uiharness.core.scenario.ScenarioRequest;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.MonotonicClock;
+import dev.gdx.uiharness.core.visual.VisualHeatmap;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -381,8 +383,16 @@ public final class HarnessProtocolService {
             }
             return RoutedOperation.map(
                     comparison.execute(compare.toCore(), deadline),
-                    result -> RoutedValue.plain(
-                            HarnessResponse.Result.InspectCompare.fromCore(result)));
+                    result -> new RoutedValue(
+                            HarnessResponse.Result.InspectCompare.fromCore(result,
+                                    result.current() == null ? null
+                                            : result.current().image().pngView(),
+                                    result.heatmap() == null ? null
+                                            : result.heatmap().pngView()),
+                            captures(COMPARE_CURRENT_CAPTURE,
+                                    result.current() == null ? null
+                                            : result.current().image(),
+                                    COMPARE_HEATMAP_CAPTURE, result.heatmap())));
         }
         if (command instanceof Command.TypographyDiagnose typography) {
             TypographyDiagnosticService diagnostic =
@@ -395,8 +405,14 @@ public final class HarnessProtocolService {
             }
             return RoutedOperation.map(
                     diagnostic.execute(typography.toCore(), deadline),
-                    result -> RoutedValue.plain(
-                            HarnessResponse.Result.TypographyDiagnostic.fromCore(result)));
+                    result -> new RoutedValue(
+                            HarnessResponse.Result.TypographyDiagnostic.fromCore(result,
+                                    result.current() == null ? null
+                                            : result.current().pngView()),
+                            result.current() == null ? Map.of()
+                                    : Map.of(TYPOGRAPHY_CURRENT_CAPTURE,
+                                            BinaryAttachment.takeCaptured(
+                                                    result.current()))));
         }
         if (command instanceof Command.LayoutDiagnose layout) {
             LayoutDiagnosticService diagnostic = layoutDiagnostics.get(request.sessionId());
@@ -408,8 +424,14 @@ public final class HarnessProtocolService {
             }
             return RoutedOperation.map(
                     diagnostic.execute(layout.toCore(), deadline),
-                    result -> RoutedValue.plain(
-                            HarnessResponse.Result.LayoutDiagnostic.fromCore(result)));
+                    result -> new RoutedValue(
+                            HarnessResponse.Result.LayoutDiagnostic.fromCore(result,
+                                    result.current() == null ? null
+                                            : result.current().pngView()),
+                            result.current() == null ? Map.of()
+                                    : Map.of(LAYOUT_CURRENT_CAPTURE,
+                                            BinaryAttachment.takeCaptured(
+                                                    result.current()))));
         }
         if (command instanceof Command.TraceStart traceStart) {
             return RoutedOperation.map(session.traces().start(traceStart, deadline),
@@ -708,6 +730,19 @@ public final class HarnessProtocolService {
         static RoutedValue plain(HarnessResponse.Result result) {
             return new RoutedValue(result, Map.of());
         }
+    }
+
+    /** Internal: bounded two-owner capture map; null owners are skipped, never stored. */
+    private static Map<String, BinaryAttachment> captures(
+            String firstKey, CapturedImage first, String secondKey, VisualHeatmap second) {
+        LinkedHashMap<String, BinaryAttachment> captures = new LinkedHashMap<>();
+        if (first != null) {
+            captures.put(firstKey, BinaryAttachment.takeCaptured(first));
+        }
+        if (second != null) {
+            captures.put(secondKey, BinaryAttachment.takeCaptured(second));
+        }
+        return captures;
     }
 
     private record RoutedOperation<T>(

@@ -540,13 +540,25 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             }
 
             static InspectCompare fromCore(VisualComparisonResult result) {
+                return fromCore(result,
+                        result.current() == null ? null
+                                : result.current().image().pngView(),
+                        result.heatmap() == null ? null
+                                : result.heatmap().pngView());
+            }
+
+            /** Internal: encodes the wire Strings from the read-only views (no input copy). */
+            static InspectCompare fromCore(VisualComparisonResult result,
+                    ByteBuffer currentRaw, ByteBuffer heatmapRaw) {
                 Objects.requireNonNull(result, "result");
-                String png = result.current() == null ? null
-                        : Base64.getEncoder().encodeToString(
-                                result.current().image().pngBytes());
-                String heatmapPng = result.heatmap() == null ? null
-                        : Base64.getEncoder().encodeToString(
-                                result.heatmap().pngBytes());
+                String png = currentRaw == null ? null
+                        : StandardCharsets.US_ASCII.decode(
+                                Base64.getEncoder().encode(currentRaw.duplicate()))
+                                        .toString();
+                String heatmapPng = heatmapRaw == null ? null
+                        : StandardCharsets.US_ASCII.decode(
+                                Base64.getEncoder().encode(heatmapRaw.duplicate()))
+                                        .toString();
                 return new InspectCompare(
                         wire(result.status().name()), result.policy().wireName(),
                         result.reference() == null ? null
@@ -621,11 +633,18 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             }
 
             static TypographyDiagnostic fromCore(TypographyDiagnosticResult result) {
+                return fromCore(result,
+                        result.current() == null ? null : result.current().pngView());
+            }
+
+            /** Internal: encodes the wire String from the read-only view (no input copy). */
+            static TypographyDiagnostic fromCore(TypographyDiagnosticResult result,
+                    ByteBuffer currentRaw) {
                 Objects.requireNonNull(result, "result");
-                String png = result.current() == null
-                        ? null
-                        : Base64.getEncoder().encodeToString(
-                                result.current().pngBytes());
+                String png = currentRaw == null ? null
+                        : StandardCharsets.US_ASCII.decode(
+                                Base64.getEncoder().encode(currentRaw.duplicate()))
+                                        .toString();
                 return new TypographyDiagnostic(
                         wire(result.status().name()),
                         result.reference() == null
@@ -696,10 +715,18 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             }
 
             static LayoutDiagnostic fromCore(LayoutDiagnosticResult result) {
+                return fromCore(result,
+                        result.current() == null ? null : result.current().pngView());
+            }
+
+            /** Internal: encodes the wire String from the read-only view (no input copy). */
+            static LayoutDiagnostic fromCore(LayoutDiagnosticResult result,
+                    ByteBuffer currentRaw) {
                 Objects.requireNonNull(result, "result");
-                String png = result.current() == null
-                        ? null
-                        : Base64.getEncoder().encodeToString(result.current().pngBytes());
+                String png = currentRaw == null ? null
+                        : StandardCharsets.US_ASCII.decode(
+                                Base64.getEncoder().encode(currentRaw.duplicate()))
+                                        .toString();
                 return new LayoutDiagnostic(
                         wire(result.status().name()),
                         result.reference() == null

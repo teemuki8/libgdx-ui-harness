@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.gdx.uiharness.core.capture.CapturedImage;
+import dev.gdx.uiharness.core.visual.VisualHeatmap;
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ReadOnlyBufferException;
@@ -85,10 +86,49 @@ final class BinaryAttachmentTest {
         assertArrayEquals(new byte[] {1, 2, 3}, readAll(attachment));
     }
 
+    @Test void visualHeatmapViewIsReadOnlyFreshAndImmuneToCallerMutation() {
+        byte[] payload = {5, 6, 7};
+        VisualHeatmap heatmap = new VisualHeatmap(payload, sha256(payload), 2, 2);
+        ByteBuffer first = heatmap.pngView();
+        assertTrue(first.isReadOnly());
+        assertThrows(ReadOnlyBufferException.class, first::array,
+                "the read-only view must never expose the backing array");
+        assertThrows(ReadOnlyBufferException.class, () -> first.put((byte) 9));
+        payload[0] = 99; // mutating the source array after construction cannot affect the owner
+        assertArrayEquals(new byte[] {5, 6, 7}, readAll(heatmap.pngView()),
+                "the view must keep reflecting the owned bytes, immune to caller mutation");
+        assertArrayEquals(new byte[] {5, 6, 7}, heatmap.pngBytes(),
+                "the defensive accessor must still return the owned bytes");
+        byte[] exposed = heatmap.pngBytes();
+        exposed[0] = 100;
+        assertArrayEquals(new byte[] {5, 6, 7}, readAll(heatmap.pngView()),
+                "mutating an exposed accessor copy must not corrupt the owner");
+        assertArrayEquals(new byte[] {5, 6, 7}, readAll(first),
+                "each view must be fresh and independent");
+    }
+
+    @Test void takeCapturedHeatmapDigestIsTiedToTheImmutableOwner() {
+        byte[] payload = {5, 6, 7};
+        VisualHeatmap heatmap = new VisualHeatmap(payload, sha256(payload), 2, 2);
+        BinaryAttachment attachment = BinaryAttachment.takeCaptured(heatmap);
+        assertEquals(3, attachment.length());
+        assertEquals(sha256(payload), attachment.sha256());
+        assertArrayEquals(payload, readAll(attachment));
+        assertTrue(attachment.asByteBuffer().isReadOnly());
+        payload[0] = 99;
+        assertEquals(sha256(new byte[] {5, 6, 7}), attachment.sha256(),
+                "the digest must be tied to the immutable owner bytes, not the caller array");
+        assertArrayEquals(new byte[] {5, 6, 7}, readAll(attachment));
+    }
+
     private static byte[] readAll(BinaryAttachment attachment) {
-        ByteBuffer view = attachment.asByteBuffer();
-        byte[] bytes = new byte[view.remaining()];
-        view.get(bytes);
+        return readAll(attachment.asByteBuffer());
+    }
+
+    private static byte[] readAll(ByteBuffer view) {
+        ByteBuffer local = view.duplicate();
+        byte[] bytes = new byte[local.remaining()];
+        local.get(bytes);
         return bytes;
     }
 
