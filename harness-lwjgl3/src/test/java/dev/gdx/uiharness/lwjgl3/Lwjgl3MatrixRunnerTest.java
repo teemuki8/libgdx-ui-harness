@@ -673,6 +673,71 @@ final class Lwjgl3MatrixRunnerTest {
         }
     }
 
+    @Test void chainedContinuationCanStartNextRunImmediatelyAfterTerminal() {
+        try (Fixture fixture = new Fixture()) {
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> first = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            CompletionStage<String> chained = first.thenCompose(firstRunId -> {
+                assertTrue(fixture.runner.results(firstRunId).isPresent(),
+                        "the first report must be visible to a continuation");
+                return fixture.runner.run(
+                        definition, MatrixLimits.defaults(), fixture.deadline());
+            });
+            for (int index = 0; index < 32 && !chained.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String secondRunId = chained.toCompletableFuture().join();
+            assertEquals(MatrixCaseStatus.PASSED, fixture.runner.results(secondRunId)
+                    .orElseThrow().results().getFirst().status(),
+                    "a continuation starting the next run must not be rejected");
+            assertEquals(2, fixture.applied.get());
+            assertEquals(2, fixture.restored.get());
+        }
+    }
+
+    @Test void incompleteIdentityFromApplicatorIsRejectedBeforeAcquisition() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.incompleteIdentityObservation = true;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            String runId = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline())
+                    .toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            assertEquals(0, result.passedAssertions().size());
+            assertEquals(0, fixture.acquisitions.get(),
+                    "an observation without complete identity must be rejected before acquisition");
+            assertTrue(result.evidence().contains("case application failed"),
+                    result.evidence());
+            assertEquals(1, fixture.applied.get());
+        }
+    }
+
     @Test void matrixProductLimitRejectsBeforeAnyCaseStarts() {
         try (Fixture fixture = new Fixture()) {
             MatrixDefinition definition = new MatrixDefinition(
@@ -922,6 +987,7 @@ final class Lwjgl3MatrixRunnerTest {
         final String hostRestartProfile = "desktop";
         boolean throwOnNextScenarioSchedule;
         boolean failReset;
+        boolean incompleteIdentityObservation;
         int restoreFailuresRemaining;
         String restoreMessage = "display restore rejected";
         Deadline lastApplyDeadline;
@@ -936,6 +1002,13 @@ final class Lwjgl3MatrixRunnerTest {
                         if (unsupportedReason != null) {
                             return new Lwjgl3MatrixRunner.ApplyResult.Unsupported(
                                     unsupportedReason);
+                        }
+                        if (incompleteIdentityObservation) {
+                            return new Lwjgl3MatrixRunner.ApplyResult.Applied(
+                                    new Lwjgl3MatrixRunner.DisplayObservation(
+                                            matrixCase.window(), matrixCase.uiScale(),
+                                            matrixCase.devicePixelRatio(), matrixCase.hiDpiMode(),
+                                            null, null, null));
                         }
                         return new Lwjgl3MatrixRunner.ApplyResult.Applied(
                                 new Lwjgl3MatrixRunner.DisplayObservation(
