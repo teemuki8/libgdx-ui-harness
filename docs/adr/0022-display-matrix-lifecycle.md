@@ -21,3 +21,18 @@ The protocol session gains an optional `MatrixCoordinator` boundary with backwar
 ## Consequences
 
 CI can run one scenario and assertion set across a bounded display/locale/font matrix with deterministic order, exact provenance, and compact terminal reports. Adding a display dimension or changing bounds requires protocol golden updates, schema review, and the exact MCP catalog update.
+
+## Amendment (2026-08-08): application, observation, and restart coordination
+
+Every case is applied to the real application/window state before scenario acquisition and
+verified before any assertion runs. A host-owned allowlisted `MatrixCaseApplicator` applies
+and observes each requested dimension (window, UI scale, device pixel ratio, HiDPI mode,
+locale, font set, restart profile); a requested dimension that cannot be applied produces the
+closed `UNSUPPORTED` terminal status with bounded evidence, and a requested/observed mismatch
+produces the distinct `MISAPPLIED` terminal status with no passing assertion result. The
+observed restart profile comes from host-owned active state and is never echoed from the
+request; a request naming an unowned profile is rejected as `UNSUPPORTED`. Observed settings
+are captured for the same case and frame window as the assertions, the original display state
+is restored deterministically after every started case (including misapplied ones and
+application failures), and the Cartesian product remains preflight-bounded. `MatrixCaseResult`
+now carries observed locale, font-set, and restart-profile identities.

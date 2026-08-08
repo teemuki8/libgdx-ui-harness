@@ -81,8 +81,8 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
         Lwjgl3ApplicationConfiguration configuration = new Lwjgl3ApplicationConfiguration();
         configuration.setTitle("libGDX UI Harness Reference");
         configuration.setWindowedMode(WIDTH, HEIGHT);
-        configuration.setWindowSizeLimits(WIDTH, HEIGHT, WIDTH, HEIGHT);
-        configuration.setResizable(false);
+        configuration.setWindowSizeLimits(320, 240, 3840, 2160);
+        configuration.setResizable(true);
         configuration.setInitialVisible(false);
         configuration.setHdpiMode(HdpiMode.Pixels);
         configuration.useVsync(false);

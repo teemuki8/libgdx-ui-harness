@@ -293,8 +293,7 @@ public final class FixtureControl implements AutoCloseable {
                 assertionFrames, DeadlineWakeup.scheduledBy(scenarioDeadlines));
         matrixRunner = new Lwjgl3MatrixRunner(
                 scenarioRunner, waits,
-                matrixCase -> new Lwjgl3MatrixRunner.DisplayObservation(
-                        new MatrixWindow(1280, 720), 1.0, 1.0, MatrixHiDpi.LOGICAL),
+                new ReferenceCaseApplicator(scheduler, clock, RESTART_PROFILE.id()),
                 new Lwjgl3MatrixRunner.Scenario(
                         "navigation", 7, Map.of(), RESTART_PROFILE.id(), APPLICATION_ID,
                         PROCESS_ID, SESSION_ID));

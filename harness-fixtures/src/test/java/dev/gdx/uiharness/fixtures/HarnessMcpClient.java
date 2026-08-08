@@ -528,19 +528,26 @@ final class HarnessMcpClient implements Closeable {
     }
 
     String runMatrix(String sessionId, long deadlineMillis) throws Exception {
-        Map<String, Object> spec = Map.ofEntries(
+        return runMatrix(sessionId, new MatrixSpec(
+                List.of(Map.of("width", 1280, "height", 720)),
+                List.of(1.0), List.of(1.0), List.of("PIXELS"),
+                List.of("en-US"), List.of(), 1), deadlineMillis);
+    }
+
+    String runMatrix(String sessionId, MatrixSpec spec, long deadlineMillis) throws Exception {
+        Map<String, Object> matrixSpec = Map.ofEntries(
                 Map.entry("scenarioId", "navigation"),
-                Map.entry("windows", List.of(Map.of("width", 1280, "height", 720))),
-                Map.entry("uiScales", List.of(1.0)),
-                Map.entry("devicePixelRatios", List.of(1.0)),
-                Map.entry("hiDpiModes", List.of("LOGICAL")),
-                Map.entry("locales", List.of("en-US")),
-                Map.entry("fontSetIds", List.of()),
+                Map.entry("windows", spec.windows()),
+                Map.entry("uiScales", spec.uiScales()),
+                Map.entry("devicePixelRatios", spec.devicePixelRatios()),
+                Map.entry("hiDpiModes", spec.hiDpiModes()),
+                Map.entry("locales", spec.locales()),
+                Map.entry("fontSetIds", spec.fontSetIds()),
                 Map.entry("assertions", List.of()),
-                Map.entry("maxCases", 1),
-                Map.entry("maxDurationMillis", 5000));
+                Map.entry("maxCases", spec.maxCases()),
+                Map.entry("maxDurationMillis", deadlineMillis));
         JsonNode content = call("ui_matrix_run", Map.of(
-                "sessionId", sessionId, "spec", spec, "deadlineMillis", deadlineMillis));
+                "sessionId", sessionId, "spec", matrixSpec, "deadlineMillis", deadlineMillis));
         requireKind(content, "matrix-run-started");
         return content.path("runId").asText();
     }
@@ -793,4 +800,14 @@ final class HarnessMcpClient implements Closeable {
     record Wait(long revision, long frame, String text) {}
 
     record Trace(String reference, long events, long bytes) {}
+
+    /** One display-matrix request over the production MCP transport. */
+    record MatrixSpec(
+            List<Map<String, Integer>> windows,
+            List<Double> uiScales,
+            List<Double> devicePixelRatios,
+            List<String> hiDpiModes,
+            List<String> locales,
+            List<String> fontSetIds,
+            int maxCases) {}
 }
