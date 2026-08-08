@@ -210,7 +210,9 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                     }));
         }
         // Release the lease on every terminal path, including an exceptionally completed
-        // assertion stage, before producing the case terminal result.
+        // assertion stage, before producing the case terminal result. A release that completes
+        // normally with an unclean terminal result (cleanup failure) is treated as a release
+        // failure so a passing case cannot hide it.
         return chain.handle((ignored, assertionFailure) -> assertionFailure)
                 .thenCompose(assertionFailure -> {
                     CompletionStage<ScenarioResult> released;
@@ -220,10 +222,21 @@ public final class Lwjgl3MatrixRunner implements AutoCloseable {
                         return CompletableFuture.completedFuture(
                                 terminalCase(matrixCase, passed, failed, assertionFailure, failure));
                     }
-                    return released.handle((ignoredResult, releaseFailure) ->
-                            terminalCase(matrixCase, passed, failed,
-                                    assertionFailure, releaseFailure));
+                    return released.handle((releasedResult, releaseFailure) ->
+                            terminalCase(matrixCase, passed, failed, assertionFailure,
+                                    releaseFailure(releasedResult, releaseFailure)));
                 });
+    }
+
+    private static Throwable releaseFailure(ScenarioResult released, Throwable failure) {
+        if (failure != null) {
+            return failure;
+        }
+        if (released != null && released.failure().isPresent()) {
+            return new IllegalStateException(
+                    "scenario did not terminate cleanly: " + released.failure().orElseThrow());
+        }
+        return null;
     }
 
     private MatrixCaseResult terminalCase(

@@ -9,6 +9,7 @@ import dev.gdx.uiharness.core.assertion.AssertionSnapshotSource;
 import dev.gdx.uiharness.core.assertion.UiAssertion;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.StrictResolution;
+import dev.gdx.uiharness.core.matrix.MatrixCaseResult;
 import dev.gdx.uiharness.core.matrix.MatrixCaseStatus;
 import dev.gdx.uiharness.core.matrix.MatrixDefinition;
 import dev.gdx.uiharness.core.matrix.MatrixHiDpi;
@@ -196,6 +197,75 @@ final class Lwjgl3MatrixRunnerTest {
         }
     }
 
+    @Test void cleanupFailureOnReleaseFailsAnOtherwisePassingCaseWithCleanupEvidence() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.failCleanup = true;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            assertEquals(List.of(0), result.passedAssertions(),
+                    "the assertion itself passed");
+            assertTrue(result.evidence().contains("CLEANUP_FAILED"), result.evidence());
+            assertEquals(1, fixture.releases.get());
+            assertEquals(1, fixture.acquisitions.get());
+        }
+    }
+
+    @Test void cleanupFailureOnReleaseKeepsPrimaryAssertionFailureAndRetainsCleanupEvidence() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.saveAbsent = true;
+            fixture.mismatchedSnapshots = true;
+            fixture.failCleanup = true;
+            MatrixDefinition definition = new MatrixDefinition(
+                    1,
+                    "matrix",
+                    List.of(new MatrixWindow(1280, 720)),
+                    List.of(1.0),
+                    List.of(1.0),
+                    List.of(MatrixHiDpi.LOGICAL),
+                    List.of("en"),
+                    List.of(),
+                    List.of(new AssertionRequest(1, Locator.testId("save"),
+                            new UiAssertion.Visible(), fixture.deadline())));
+
+            CompletionStage<String> run = fixture.runner.run(
+                    definition, MatrixLimits.defaults(), fixture.deadline());
+            for (int index = 0; index < 16 && !run.toCompletableFuture().isDone(); index++) {
+                fixture.nextFrame();
+            }
+            String runId = run.toCompletableFuture().join();
+
+            MatrixReport report = fixture.runner.results(runId).orElseThrow();
+            MatrixCaseResult result = report.results().getFirst();
+            assertEquals(MatrixCaseStatus.FAILED, result.status());
+            String evidence = result.evidence();
+            assertTrue(evidence.contains("does not match delivered frame"),
+                    "the primary assertion failure must remain primary: " + evidence);
+            assertTrue(evidence.contains("CLEANUP_FAILED"),
+                    "the release cleanup failure must be retained: " + evidence);
+            assertEquals(1, fixture.releases.get());
+        }
+    }
+
     private static final class Fixture implements AutoCloseable {
         final Duration step = Duration.ofMillis(16);
         final long[] nowNanos = {0};
@@ -215,6 +285,7 @@ final class Lwjgl3MatrixRunnerTest {
         boolean visible = true;
         boolean saveAbsent;
         boolean mismatchedSnapshots;
+        boolean failCleanup;
 
         Fixture() {
             registry.register(new ScenarioDefinition(
@@ -235,6 +306,9 @@ final class Lwjgl3MatrixRunnerTest {
                         }
                         @Override public void cleanup(ScenarioRequest request) {
                             releases.incrementAndGet();
+                            if (failCleanup) {
+                                throw new IllegalStateException("cleanup rejected");
+                            }
                         }
                     });
             Scene2dScenarioDeadlineScheduler scenarioDeadlines =
