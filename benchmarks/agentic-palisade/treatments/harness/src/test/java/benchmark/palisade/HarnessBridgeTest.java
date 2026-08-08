@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -78,6 +79,35 @@ final class HarnessBridgeTest {
         assertEquals("desktop-1920x1080",
                 references.get("bottom-1920x1080").viewportId());
         assertEquals(1280, references.get("initial-1280x720").width());
+    }
+
+    @Test
+    void closeDoesNotAwaitAnOutstandingLongDelayedDeadline() throws Exception {
+        Path ownedArtifacts = temporary.resolve("close-ordering-artifacts");
+        CloseOrderingApplication application = new CloseOrderingApplication(ownedArtifacts);
+
+        Lwjgl3ApplicationConfiguration configuration = new Lwjgl3ApplicationConfiguration();
+        configuration.setTitle("Harness bridge close ordering");
+        configuration.setWindowedMode(1280, 720);
+        configuration.setInitialVisible(false);
+        configuration.setHdpiMode(HdpiMode.Pixels);
+        configuration.disableAudio(true);
+        configuration.useVsync(false);
+        configuration.setForegroundFPS(120);
+        configuration.setIdleFPS(120);
+        new Lwjgl3Application(application, configuration);
+
+        if (application.failure.get() != null) {
+            throw new AssertionError("close-ordering fixture failed", application.failure.get());
+        }
+        assertTrue(application.closeCompleted,
+                "close must complete despite an outstanding delayed deadline");
+        assertTrue(application.deadlineExecutorQuiescent,
+                "close must terminate the deadline executor with no queued tasks");
+        assertTrue(application.deadlineArmed,
+                "the capture must arm its long delayed deadline before close");
+        assertTrue(application.screenshotReleasedByClose,
+                "closing must release the pending capture");
     }
 
     @Test void fixedJsonCliExercisesOneApplicationOwnedSessionAndArtifacts() throws Exception {
@@ -364,6 +394,132 @@ final class HarnessBridgeTest {
                 }
                 if (bridge != null) bridge.close();
                 assertFalse(candidateDisposed);
+            } catch (Throwable thrown) {
+                failure.compareAndSet(null, thrown);
+            } finally {
+                if (stage != null) stage.dispose();
+            }
+        }
+    }
+
+    /**
+     * Queues one real capture with a 120s deadline, stops completing frames, and closes the
+     * bridge through a bounded future while the deadline signal is still armed.
+     */
+    private static final class CloseOrderingApplication extends ApplicationAdapter {
+        private final Path artifactRoot;
+        private final AtomicReference<Throwable> failure = new AtomicReference<>();
+        private Stage stage;
+        private HarnessBridge bridge;
+        private CompletableFuture<?> screenshot;
+        private boolean warmupDone;
+        private int warmupFrames;
+        private boolean deadlineArmed;
+        private boolean closeCompleted;
+        private boolean deadlineExecutorQuiescent;
+        private boolean screenshotReleasedByClose;
+
+        CloseOrderingApplication(Path artifactRoot) {
+            this.artifactRoot = artifactRoot;
+        }
+
+        @Override public void create() {
+            try {
+                stage = new Stage(new ScreenViewport());
+                stage.getViewport().update(1280, 720, true);
+                CandidateUi candidate = new CandidateUi() {
+                    @Override public Stage stage() {
+                        return stage;
+                    }
+
+                    @Override public void showInitial() {
+                    }
+
+                    @Override public CandidateState snapshotState() {
+                        return new CandidateState(Map.of(
+                                "stateAction", Map.of(
+                                        "schemaVersion", "state-action/v1.0",
+                                        "stateId", "fixture-state",
+                                        "revision", 1L,
+                                        "frame", 1L,
+                                        "controls", List.of(),
+                                        "focusOrder", List.of(),
+                                        "conditions", List.of(),
+                                        "viewports", List.of())));
+                    }
+
+                    @Override public void dispose() {
+                    }
+                };
+                Gdx.input.setInputProcessor(stage);
+                bridge = HarnessBridge.open(candidate, artifactRoot);
+            } catch (Throwable thrown) {
+                failure.compareAndSet(null, thrown);
+                Gdx.app.exit();
+            }
+        }
+
+        @Override public void render() {
+            if (failure.get() != null || bridge == null) return;
+            try {
+                if (!warmupDone) {
+                    bridge.beforeRender();
+                    stage.act(1f / 60f);
+                    Gdx.gl.glClearColor(0.1f, 0.2f, 0.3f, 1f);
+                    Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
+                    stage.draw();
+                    bridge.afterRender();
+                    if (++warmupFrames >= 3) {
+                        warmupDone = true;
+                        screenshot = bridge.call("ui_screenshot", Map.of(
+                                "sessionId", HarnessBridge.SESSION_ID,
+                                "maxWidth", 1280,
+                                "maxHeight", 720,
+                                "maxPixels", 921600,
+                                "maxPngBytes", 1048576,
+                                "deadlineMillis", 120_000L)).toCompletableFuture();
+                    }
+                    return;
+                }
+                if (!deadlineArmed) {
+                    if (bridge.pendingDeadlineTasks() > 0) {
+                        deadlineArmed = true;
+                        closeBridge();
+                        Gdx.app.exit();
+                        return;
+                    }
+                    if (screenshot != null && screenshot.isDone()) {
+                        failure.compareAndSet(null, new AssertionError(
+                                "capture completed before close released it"));
+                        Gdx.app.exit();
+                        return;
+                    }
+                    return; // no more frames: the queued capture stays pending
+                }
+            } catch (Throwable thrown) {
+                failure.compareAndSet(null, thrown);
+                Gdx.app.exit();
+            }
+        }
+
+        private void closeBridge() {
+            try {
+                CompletableFuture<Void> closing = CompletableFuture.runAsync(bridge::close);
+                closing.get(2, TimeUnit.SECONDS);
+                closeCompleted = true;
+                deadlineExecutorQuiescent = bridge.deadlineExecutorQuiescent();
+                screenshotReleasedByClose = screenshot.isDone();
+            } catch (TimeoutException timedOut) {
+                failure.compareAndSet(null, new AssertionError(
+                        "close must not await an outstanding delayed deadline", timedOut));
+            } catch (Throwable thrown) {
+                failure.compareAndSet(null, thrown);
+            }
+        }
+
+        @Override public void dispose() {
+            try {
+                if (bridge != null && !closeCompleted) bridge.close();
             } catch (Throwable thrown) {
                 failure.compareAndSet(null, thrown);
             } finally {
