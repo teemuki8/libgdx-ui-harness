@@ -13,8 +13,13 @@ import java.util.Objects;
 public final class SemanticBaselineCatalog {
     private final Map<String, SemanticBaseline> byId = new LinkedHashMap<>();
 
-    /** Registers one immutable baseline, validating its digest and rejecting conflicts. */
-    public void register(SemanticBaseline baseline) {
+    /**
+     * Registers one immutable baseline, validating its digest and rejecting conflicts. The
+     * check-then-insert is synchronized so concurrent registrations are deterministic:
+     * conflicting registrations under one identifier succeed exactly once, identical
+     * registrations are idempotent.
+     */
+    public synchronized void register(SemanticBaseline baseline) {
         Objects.requireNonNull(baseline, "baseline");
         if (!baseline.digest().equals(BaselineDigest.canonical(baseline))) {
             throw new IllegalArgumentException(
@@ -29,7 +34,7 @@ public final class SemanticBaselineCatalog {
     }
 
     /** Requires a registered baseline or throws with the missing identifier. */
-    public SemanticBaseline require(String id) {
+    public synchronized SemanticBaseline require(String id) {
         Objects.requireNonNull(id, "id");
         SemanticBaseline baseline = byId.get(id);
         if (baseline == null) {
@@ -39,7 +44,7 @@ public final class SemanticBaselineCatalog {
     }
 
     /** Returns whether the named baseline is registered. */
-    public boolean contains(String id) {
+    public synchronized boolean contains(String id) {
         return byId.containsKey(Objects.requireNonNull(id, "id"));
     }
 }
