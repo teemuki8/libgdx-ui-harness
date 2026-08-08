@@ -53,6 +53,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -235,23 +236,73 @@ final class Scene2dActionEndToEndTest {
         }
     }
 
-    @Test void dispatchThatWinsCannotBeCancelledOrClosedRetroactively() {
+    @Test void dispatchedInputIsNotUndoneByCancellationOrClose() {
         try (Fixture fixture = new Fixture()) {
             TextButton button = fixture.button("dispatch-wins", "Dispatch", 100, 100);
             CompletionStage<ActionResult> click = fixture.harness.click(
                     Locator.testId("dispatch-wins"), fixture.deadline());
-            fixture.nextFrame();
-            fixture.nextFrame();
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch completes; the confirmation frame is pending
 
             assertTrue(button.isChecked());
             assertFalse(click.toCompletableFuture().isDone());
-            assertFalse(click.toCompletableFuture().cancel(false));
+            assertTrue(click.toCompletableFuture().cancel(false),
+                    "post-dispatch cancellation claims the pending confirmation");
+            assertTrue(click.toCompletableFuture().isCancelled());
+            assertTrue(button.isChecked(), "cancellation must not undo the dispatched input");
             fixture.harness.close();
-            assertFalse(click.toCompletableFuture().isDone());
-            fixture.nextFrame();
+            fixture.nextFrame(); // a late completed frame must not override the cancellation
+            assertTrue(click.toCompletableFuture().isCancelled());
+            assertTrue(button.isChecked());
+        }
+    }
 
-            ActionResult result = click.toCompletableFuture().join();
-            assertTrue(result.afterRevision() > result.beforeRevision());
+    @Test void postDispatchCancellationCancelsTokenAndLateSignalNoOps() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.button("cancel-awaiting", "Cancel", 100, 100);
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("cancel-awaiting"), fixture.deadline());
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch completes and the deadline signal is armed
+
+            assertFalse(fixture.deadlines.cancelled,
+                    "the armed signal is live before cancellation");
+            assertTrue(click.toCompletableFuture().cancel(false));
+            assertTrue(fixture.deadlines.cancelled,
+                    "post-dispatch cancellation must cancel the armed deadline signal");
+            fixture.deadlines.expire(); // a late signal observes the terminal state
+            assertTrue(click.toCompletableFuture().isCancelled());
+            fixture.nextFrame(); // a late completed frame observes the terminal state
+            assertTrue(click.toCompletableFuture().isCancelled());
+            assertTrue(click.toCompletableFuture().isDone());
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    click.toCompletableFuture()::join);
+        }
+    }
+
+    @Test void inlineDeadlineSignalNeverCompletesTheFutureWhileHoldingTheRequestMonitor() {
+        ManualClock manual = new ManualClock();
+        try (Fixture fixture = new Fixture(
+                Scene2dTestSupport.stage(), null, new InlineDeadlineScheduler(manual))) {
+            fixture.button("inline", "Inline", 100, 100);
+            AtomicBoolean continuationRan = new AtomicBoolean();
+            AtomicReference<Boolean> continuationHeldMonitor = new AtomicReference<>();
+            CompletionStage<ActionResult> click = fixture.harness.click(
+                    Locator.testId("inline"), Deadline.after(manual, Duration.ofSeconds(1)));
+            click.whenComplete((ignored, failure) -> {
+                continuationRan.set(true);
+                continuationHeldMonitor.set(Thread.holdsLock(click.toCompletableFuture()));
+            });
+            fixture.nextFrame(); // first inspection establishes the stability baseline
+            fixture.nextFrame(); // dispatch arms the signal; the inline fake fires and claims
+
+            assertTrue(continuationRan.get(),
+                    "the inline zero-delay signal must complete the action");
+            assertTrue(click.toCompletableFuture().isCompletedExceptionally());
+            assertEquals(ErrorCode.TIMEOUT, failure(click).code());
+            assertFalse(continuationHeldMonitor.get(),
+                    "the completion continuation must never run while the request monitor "
+                            + "is retained");
         }
     }
 
@@ -605,6 +656,25 @@ final class Scene2dActionEndToEndTest {
     }
 
     /**
+     * Fires the signal inline inside {@link #schedule(Duration, Runnable)} with the delay
+     * already elapsed, simulating the worst-case zero-delay scheduler that invokes the signal
+     * on the scheduling thread.
+     */
+    private static final class InlineDeadlineScheduler implements DeadlineScheduler {
+        private final ManualClock clock;
+
+        InlineDeadlineScheduler(ManualClock clock) {
+            this.clock = clock;
+        }
+
+        @Override public Cancellation schedule(Duration delay, Runnable signal) {
+            clock.advance(delay);
+            signal.run();
+            return () -> {};
+        }
+    }
+
+    /**
      * Records one armed deadline signal. {@link #expire()} fires the signal even when a
      * cancellation raced it, mirroring a real executor whose signal was already dispatched.
      */
@@ -733,12 +803,17 @@ final class Scene2dActionEndToEndTest {
         }
 
         Fixture(Stage stage, InputProcessor input) {
+            this(stage, input, null);
+        }
+
+        Fixture(Stage stage, InputProcessor input, DeadlineScheduler harnessDeadlines) {
             this.stage = stage;
             this.clock = new ControlledStageClock(stage, step);
             this.session = new Scene2dSession(stage);
             harness = new Scene2dHarness(
                     stage, input == null ? stage : input, session, scheduler, clock,
-                    clock::revision, clock::frame, deadlines);
+                    clock::revision, clock::frame,
+                    harnessDeadlines == null ? deadlines : harnessDeadlines);
         }
 
         Deadline deadline() {

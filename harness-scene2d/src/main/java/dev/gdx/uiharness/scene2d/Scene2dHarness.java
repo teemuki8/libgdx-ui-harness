@@ -23,6 +23,7 @@ import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.DeadlineScheduler;
 import dev.gdx.uiharness.core.wait.FrameSignal;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -343,27 +344,38 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
             synchronized (this) {
                 if (phase == RequestPhase.DISPATCHING) {
                     phase = RequestPhase.AWAITING_FRAME;
-                    armDeadlineLocked();
                 }
             }
+            armDeadline();
         }
 
         /**
          * Arms one deadline signal for the dispatched action. Post-dispatch the action can only
          * complete through a rendered frame; the signal enforces the remaining deadline when no
-         * frame arrives. The claim happens under the request monitor so a racing completion,
-         * cancellation, or close observes a consistent terminal state.
+         * frame arrives. The scheduling call itself never runs under the request monitor: a
+         * zero-delay scheduler may invoke the signal inline, and the timeout claim completes the
+         * future (running caller continuations) only after the monitor has been released. The
+         * install-or-cancel reconcile under the monitor keeps a racing completion, cancellation,
+         * or close consistent with a single armed registration.
          */
-        private void armDeadlineLocked() {
-            if (deadlineCancellation != null) {
-                return;
+        private void armDeadline() {
+            Duration delay;
+            synchronized (this) {
+                if (deadlineCancellation != null || phase != RequestPhase.AWAITING_FRAME) {
+                    return;
+                }
+                delay = deadline.remaining();
             }
             DeadlineScheduler.Cancellation scheduled =
-                    deadlines.schedule(deadline.remaining(), this::deadlineReached);
-            if (phase == RequestPhase.TERMINAL) {
-                scheduled.cancel();
-            } else {
-                deadlineCancellation = scheduled;
+                    deadlines.schedule(delay, this::deadlineReached);
+            synchronized (this) {
+                if (phase == RequestPhase.TERMINAL) {
+                    scheduled.cancel();
+                } else if (deadlineCancellation == null) {
+                    deadlineCancellation = scheduled;
+                } else {
+                    scheduled.cancel();
+                }
             }
         }
 
@@ -602,7 +614,8 @@ public final class Scene2dHarness implements Harness, AutoCloseable {
         @Override public boolean cancel(boolean mayInterruptIfRunning) {
             boolean claimed;
             synchronized (this) {
-                claimed = phase == RequestPhase.PENDING;
+                claimed = phase == RequestPhase.PENDING
+                        || phase == RequestPhase.AWAITING_FRAME;
                 if (claimed) {
                     phase = RequestPhase.TERMINAL;
                 }
