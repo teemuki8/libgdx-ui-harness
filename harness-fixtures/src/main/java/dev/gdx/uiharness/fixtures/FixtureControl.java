@@ -339,6 +339,13 @@ public final class FixtureControl implements AutoCloseable {
         withholdAssertionFrames.set(true);
     }
 
+    /** Captures the pristine semantic baseline from the current stage for the dump mode. */
+    public SemanticBaseline pristineBaseline() {
+        SemanticSnapshot current = sceneSession.snapshot(clock.revision(), clock.frame());
+        return SemanticBaseline.registered(
+                1, 0, REFERENCE_ID, toBaselineNode(current.nodes(), current.rootId()), false);
+    }
+
 
     /** Starts the production MCP server over this process's stdio streams. */
     public void startMcp(InputStream input, OutputStream output) {
