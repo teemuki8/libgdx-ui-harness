@@ -17,7 +17,6 @@ import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.model.SemanticState;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
@@ -225,7 +224,7 @@ final class TraceRecorderTest {
         assertTrue(noTemporaryFiles(temporaryDirectory));
     }
 
-    @Test void traceRootMayHaveCanonicalizingParentSymlinks() throws Exception {
+    @Test void symlinkedAncestorIsRejected() throws Exception {
         Path physicalParent = temporaryDirectory.resolve("physical");
         Path aliasParent = temporaryDirectory.resolve("alias");
         Files.createDirectory(physicalParent);
@@ -235,14 +234,9 @@ final class TraceRecorderTest {
             org.junit.jupiter.api.Assumptions.assumeTrue(false,
                     "symbolic links are unavailable: " + exception.getMessage());
         }
-        TraceRecorder recorder =
-                new TraceRecorder(aliasParent.resolve("traces"), Clock.systemUTC());
 
-        recorder.start("session-canonical-parent", TraceRecorder.Limits.defaults());
-        TraceManifest manifest = recorder.stop();
-
-        assertTrue(manifest.complete());
-        assertTrue(Files.isRegularFile(manifest.archive()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new TraceRecorder(aliasParent.resolve("traces"), Clock.systemUTC()));
     }
 
     @Test void replacedStagingDirectoryCannotReachOutsideTraceRoot() throws Exception {
@@ -283,13 +277,11 @@ final class TraceRecorderTest {
         Files.writeString(outside, "victim-secret", StandardCharsets.UTF_8);
         try {
             TraceRecorder recorder = new TraceRecorder(temporaryDirectory,
-                    Clock.systemUTC(), path -> {
-                        Files.deleteIfExists(path);
-                        Files.createSymbolicLink(path, outside);
-                        try {
-                            return TraceRecorder.openNoFollow(path); // throws: final component is a link
-                        } finally {
+                    Clock.systemUTC(), (step, path) -> {
+                        if (step == TraceRecorder.FinalizationInterceptor.Step.OPEN_EVIDENCE
+                                && path.getFileName().toString().equals("events.ndjson")) {
                             Files.deleteIfExists(path);
+                            Files.createSymbolicLink(path, outside); // anchored open throws
                         }
                     });
             recorder.start("session-race", TraceRecorder.Limits.defaults());
@@ -300,7 +292,13 @@ final class TraceRecorderTest {
 
             assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
             assertEquals("victim-secret", Files.readString(outside, StandardCharsets.UTF_8));
-            assertTrue(noTemporaryFiles(temporaryDirectory));
+            try (var paths = Files.walk(temporaryDirectory)) {
+                Path swapped = paths
+                        .filter(path -> path.getFileName().toString().equals("events.ndjson"))
+                        .findFirst().orElseThrow();
+                assertTrue(Files.isSymbolicLink(swapped),
+                        "the substituted entry must be left untouched, not deleted through");
+            }
             assertNull(publishedArchives(temporaryDirectory),
                     "no archive may be published from tampered staging");
         } finally {
@@ -310,39 +308,27 @@ final class TraceRecorderTest {
 
     @Test void swapAndRestoreOfValidatedFileCannotDefeatHandleContentIdentity()
             throws Exception {
-        Path attacker = temporaryDirectory.resolveSibling(
-                temporaryDirectory.getFileName() + "-attacker");
-        try {
-            TraceRecorder recorder = new TraceRecorder(temporaryDirectory,
-                    Clock.systemUTC(), path -> {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory,
+                Clock.systemUTC(), (step, path) -> {
+                    if (step == TraceRecorder.FinalizationInterceptor.Step.OPEN_EVIDENCE
+                            && path.getFileName().toString().equals("events.ndjson")) {
                         byte[] original = Files.readAllBytes(path);
                         byte[] substituted = new byte[original.length];
                         java.util.Arrays.fill(substituted, (byte) 'A');
-                        Files.write(attacker, substituted);
-                        Files.deleteIfExists(path);
-                        Files.copy(attacker, path);       // same size, different content
-                        InputStream opened = TraceRecorder.openNoFollow(path); // regular file: opens
-                        Files.deleteIfExists(path);
-                        Files.write(path, original);      // restore the path before the check
-                        return opened;                    // handle still refers to the substituted inode
-                    });
-            recorder.start("session-restore", TraceRecorder.Limits.defaults());
-            recorder.record(TraceEvent.commandStarted(
-                    "session-restore", "request-1", 1, snapshot(1, 1), Map.of()));
+                        Files.write(path, substituted); // same size, different content
+                    }
+                });
+        recorder.start("session-restore", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-restore", "request-1", 1, snapshot(1, 1), Map.of()));
 
-            HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+        HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
 
-            assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
-            assertTrue(failure.getMessage().contains("digest"));
-            assertTrue(new String(Files.readAllBytes(attacker), StandardCharsets.UTF_8)
-                            .matches("A+"),
-                    "the substituted file must be untouched");
-            assertTrue(noTemporaryFiles(temporaryDirectory));
-            assertNull(publishedArchives(temporaryDirectory),
-                    "no archive may be published from substituted evidence");
-        } finally {
-            Files.deleteIfExists(attacker);
-        }
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("digest"));
+        assertTrue(noTemporaryFiles(temporaryDirectory));
+        assertNull(publishedArchives(temporaryDirectory),
+                "no archive may be published from substituted evidence");
     }
 
     @Test void symlinkSubstitutedForArtifactAtFinalizeIsRejected() throws Exception {
@@ -373,7 +359,8 @@ final class TraceRecorderTest {
             assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
             assertEquals("artifact-secret",
                     Files.readString(outside, StandardCharsets.UTF_8));
-            assertTrue(noTemporaryFiles(temporaryDirectory));
+            assertTrue(Files.isSymbolicLink(artifactFile),
+                    "the substituted artifact must be left untouched, not deleted through");
             assertNull(publishedArchives(temporaryDirectory),
                     "no archive may be published from tampered staging");
         } finally {
@@ -476,12 +463,12 @@ final class TraceRecorderTest {
         Files.writeString(victim, "attacker-chosen-archive-content", StandardCharsets.UTF_8);
         try {
             TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
-                    path -> {
-                        if (path.getFileName().toString().endsWith(".zip.tmp")) {
+                    (step, path) -> {
+                        if (step == TraceRecorder.FinalizationInterceptor.Step.VERIFY_ARCHIVE
+                                && path.getFileName().toString().endsWith(".zip.tmp")) {
                             Files.deleteIfExists(path);
                             Files.createLink(path, victim);
                         }
-                        return TraceRecorder.openNoFollow(path);
                     });
             recorder.start("session-archive-swap", TraceRecorder.Limits.defaults());
             recorder.record(TraceEvent.commandStarted(
@@ -493,7 +480,14 @@ final class TraceRecorderTest {
             assertEquals("attacker-chosen-archive-content",
                     Files.readString(victim, StandardCharsets.UTF_8),
                     "victim file must be untouched");
-            assertTrue(noTemporaryFiles(temporaryDirectory));
+            try (var paths = Files.walk(temporaryDirectory)) {
+                Path leftover = paths
+                        .filter(path -> path.getFileName().toString().endsWith(".zip.tmp"))
+                        .findFirst().orElseThrow();
+                assertEquals("attacker-chosen-archive-content",
+                        Files.readString(leftover, StandardCharsets.UTF_8),
+                        "the substituted temporary archive must be left untouched");
+            }
             assertNull(publishedArchives(temporaryDirectory),
                     "no archive may be published from a substituted temporary archive");
         } finally {
@@ -503,13 +497,13 @@ final class TraceRecorderTest {
 
     @Test void publishedArchiveReplacedBeforeFinalVerificationIsRejected() throws Exception {
         TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
-                path -> {
-                    if (path.getFileName().toString().endsWith(".zip")
+                (step, path) -> {
+                    if (step == TraceRecorder.FinalizationInterceptor.Step.VERIFY_ARCHIVE
+                            && path.getFileName().toString().endsWith(".zip")
                             && !path.getFileName().toString().endsWith(".zip.tmp")) {
                         Files.deleteIfExists(path);
                         Files.writeString(path, "tampered-archive", StandardCharsets.UTF_8);
                     }
-                    return TraceRecorder.openNoFollow(path);
                 });
         recorder.start("session-post-move", TraceRecorder.Limits.defaults());
         recorder.record(TraceEvent.commandStarted(
@@ -519,8 +513,91 @@ final class TraceRecorderTest {
 
         assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
         assertTrue(noTemporaryFiles(temporaryDirectory));
-        assertNull(publishedArchives(temporaryDirectory),
-                "a replaced archive must not survive final verification");
+        try (var paths = Files.walk(temporaryDirectory)) {
+            Path leftover = paths
+                    .filter(path -> path.getFileName().toString().endsWith(".zip")
+                            && !path.getFileName().toString().endsWith(".zip.tmp"))
+                    .findFirst().orElseThrow();
+            assertEquals("tampered-archive",
+                    Files.readString(leftover, StandardCharsets.UTF_8),
+                    "the replaced archive must be left untouched, not deleted");
+        }
+    }
+
+    @Test void destinationCollisionIsRejected() throws Exception {
+        Path[] collision = new Path[1];
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                (step, path) -> {
+                    if (step == TraceRecorder.FinalizationInterceptor.Step.CHECK_DESTINATION) {
+                        collision[0] = path;
+                        Files.writeString(path, "occupied", StandardCharsets.UTF_8);
+                    }
+                });
+        recorder.start("session-collision", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-collision", "request-1", 1, snapshot(1, 1), Map.of()));
+
+        HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("destination"));
+        assertEquals("occupied", Files.readString(collision[0], StandardCharsets.UTF_8),
+                "an occupied destination must never be overwritten");
+        assertTrue(noTemporaryFiles(temporaryDirectory));
+    }
+
+    @Test void afterFinalCheckReplacementIsRejectedByConsumer() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                (step, path) -> {
+                    if (step == TraceRecorder.FinalizationInterceptor.Step.AFTER_FINALIZE) {
+                        Files.writeString(path, "tampered-after-finalize",
+                                StandardCharsets.UTF_8);
+                    }
+                });
+        recorder.start("session-consumer", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-consumer", "request-1", 1, snapshot(1, 1), Map.of()));
+
+        TraceManifest manifest = recorder.stop(); // publication proof already completed
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(manifest.archive()));
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+    }
+
+    @Test void substitutedChildIsLeftUntouchedDuringCleanup() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                (step, path) -> {
+                    if (step == TraceRecorder.FinalizationInterceptor.Step.AFTER_FINALIZE
+                            && path.getFileName().toString().endsWith(".zip")) {
+                        Path events = temporaryDirectory.resolve("substituted-events.ndjson");
+                        try (var paths = Files.walk(temporaryDirectory)) {
+                            events = paths
+                                    .filter(p -> p.getFileName().toString()
+                                            .equals("events.ndjson"))
+                                    .findFirst().orElseThrow();
+                        }
+                        Files.delete(events);
+                        Files.writeString(events, "substituted", StandardCharsets.UTF_8);
+                    }
+                });
+        recorder.start("session-substitute", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-substitute", "request-1", 1, snapshot(1, 1), Map.of()));
+
+        HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+        assertEquals(ErrorCode.INTERNAL_ERROR, failure.code());
+        assertTrue(failure.getSuppressed().length > 0,
+                "cleanup identity-mismatch failures must be retained");
+        try (var paths = Files.walk(temporaryDirectory)) {
+            Path substituted = paths
+                    .filter(p -> p.getFileName().toString().equals("events.ndjson"))
+                    .findFirst().orElseThrow();
+            assertEquals("substituted",
+                    Files.readString(substituted, StandardCharsets.UTF_8),
+                    "the substituted child must remain untouched");
+        }
     }
 
     @Test void cleanupFailureAfterSuccessfulFinalizeIsTerminal() throws Exception {
@@ -556,11 +633,11 @@ final class TraceRecorderTest {
             org.junit.jupiter.api.Assumptions.assumeTrue(false, "posix permissions unavailable");
         }
         TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
-                path -> {
-                    if (path.getFileName().toString().equals("events.ndjson")) {
+                (step, path) -> {
+                    if (step == TraceRecorder.FinalizationInterceptor.Step.OPEN_EVIDENCE
+                            && path.getFileName().toString().equals("events.ndjson")) {
                         Files.writeString(path, "tampered-event", StandardCharsets.UTF_8);
                     }
-                    return TraceRecorder.openNoFollow(path);
                 });
         recorder.start("session-primary", TraceRecorder.Limits.defaults());
         recorder.record(TraceEvent.commandStarted(
@@ -581,6 +658,22 @@ final class TraceRecorderTest {
                     PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
                     PosixFilePermission.OWNER_EXECUTE));
         }
+    }
+
+    @Test void preExistingRootNotExactOwnerOnlyIsRejected() throws Exception {
+        if (!FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "posix permissions unavailable");
+        }
+        Path root = temporaryDirectory.resolve("loose-root");
+        Files.createDirectories(root);
+        Files.setPosixFilePermissions(root, Set.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE, PosixFilePermission.GROUP_READ,
+                PosixFilePermission.GROUP_EXECUTE, PosixFilePermission.OTHERS_READ,
+                PosixFilePermission.OTHERS_EXECUTE)); // 0755: owner-only write is not exact 0700
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new TraceRecorder(root, Clock.systemUTC()));
     }
 
     @Test void aclOwnerOnlyEnforcedWhereAclIsTheSecureView() throws Exception {
