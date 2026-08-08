@@ -70,6 +70,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -909,6 +910,104 @@ final class HarnessMcpServerContractTest {
             assertInvalidLocator(handler, deepLocator(HarnessToolHandler.MAX_LOCATOR_DEPTH + 1));
             assertInvalidLocator(handler, wideLocator(12));
             assertEquals(0, calls.get());
+        }
+    }
+
+    @Test
+    void requestAdmissionIsBoundedAndMutationsAreSerialized() throws Exception {
+        CompletableFuture<HarnessResponse> firstGate = new CompletableFuture<>();
+        CompletableFuture<HarnessResponse> secondGate = new CompletableFuture<>();
+        AtomicInteger protocolCalls = new AtomicInteger();
+        HarnessResponse capabilities = new HarnessResponse.Success(
+                ProtocolVersion.V1, "mcp-1", "game",
+                new HarnessResponse.Result.Capabilities(List.of("action")));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    protocolCalls.incrementAndGet();
+                    return protocolCalls.get() == 1 ? firstGate : secondGate;
+                }, new RecordingArtifacts(), executor, 1024, System::nanoTime,
+                new RequestAdmission(2, 4, 4))) {
+            CompletableFuture<McpSchema.CallToolResult> first = handler.handle(call(
+                    "ui_capabilities", Map.of("sessionId", "game"))).toFuture();
+            CompletableFuture<McpSchema.CallToolResult> second = handler.handle(call(
+                    "ui_capabilities", Map.of("sessionId", "game"))).toFuture();
+            for (int attempt = 0; attempt < 200 && protocolCalls.get() < 2; attempt++) {
+                Thread.sleep(5);
+            }
+            assertEquals(2, protocolCalls.get());
+
+            // The third concurrent request is rejected immediately with a stable
+            // LIMIT_EXCEEDED diagnostic and never reaches the protocol service.
+            CompletableFuture<McpSchema.CallToolResult> third = handler.handle(call(
+                    "ui_capabilities", Map.of("sessionId", "game"))).toFuture();
+            Map<String, Object> diagnostic = structured(third.get(5, TimeUnit.SECONDS));
+            assertEquals("LIMIT_EXCEEDED", diagnostic.get("code"));
+            assertEquals("terminal", diagnostic.get("disposition"));
+            assertEquals(Boolean.FALSE, diagnostic.get("retryable"));
+            assertEquals(2, protocolCalls.get());
+
+            firstGate.complete(capabilities);
+            secondGate.complete(capabilities);
+            assertEquals("capabilities-result",
+                    structured(first.get(5, TimeUnit.SECONDS)).get("kind"));
+            assertEquals("capabilities-result",
+                    structured(second.get(5, TimeUnit.SECONDS)).get("kind"));
+        }
+
+        CompletableFuture<HarnessResponse> mutationOne = new CompletableFuture<>();
+        CompletableFuture<HarnessResponse> mutationTwo = new CompletableFuture<>();
+        CompletableFuture<HarnessResponse> mutationThree = new CompletableFuture<>();
+        AtomicInteger actionCalls = new AtomicInteger();
+        HarnessResponse action = new HarnessResponse.Success(
+                ProtocolVersion.V1, "mcp-1", "game",
+                new HarnessResponse.Result.Action(1, 2, "clicked", Map.of()));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    actionCalls.incrementAndGet();
+                    return switch (actionCalls.get()) {
+                        case 1 -> mutationOne;
+                        case 2 -> mutationTwo;
+                        default -> mutationThree;
+                    };
+                }, new RecordingArtifacts(), executor, 1024, System::nanoTime,
+                new RequestAdmission(8, 4, 4))) {
+            Map<String, Object> arguments = Map.of(
+                    "sessionId", "game",
+                    "locator", Map.of("kind", "role", "role", "button"),
+                    "action", Map.of("kind", "click", "pointer", 0, "button", 0,
+                            "force", false));
+            CompletableFuture<McpSchema.CallToolResult> first = handler.handle(call(
+                    "ui_action", arguments)).toFuture();
+            for (int attempt = 0; attempt < 200 && actionCalls.get() < 1; attempt++) {
+                Thread.sleep(5);
+            }
+            assertEquals(1, actionCalls.get());
+            CompletableFuture<McpSchema.CallToolResult> second = handler.handle(call(
+                    "ui_action", arguments)).toFuture();
+            CompletableFuture<McpSchema.CallToolResult> third = handler.handle(call(
+                    "ui_action", arguments)).toFuture();
+            Thread.sleep(100);
+            // The queued mutations must not start while the first is still running.
+            assertEquals(1, actionCalls.get());
+            assertFalse(first.isDone());
+            assertFalse(second.isDone());
+            assertFalse(third.isDone());
+
+            mutationOne.complete(action);
+            assertEquals("action-result",
+                    structured(first.get(5, TimeUnit.SECONDS)).get("kind"));
+            assertEquals(2, actionCalls.get());
+            assertFalse(second.isDone());
+
+            mutationTwo.complete(action);
+            assertEquals("action-result",
+                    structured(second.get(5, TimeUnit.SECONDS)).get("kind"));
+            assertEquals(3, actionCalls.get());
+            assertFalse(third.isDone());
+
+            mutationThree.complete(action);
+            assertEquals("action-result",
+                    structured(third.get(5, TimeUnit.SECONDS)).get("kind"));
         }
     }
 

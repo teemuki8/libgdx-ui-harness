@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
@@ -54,29 +55,46 @@ public final class HarnessToolHandler implements AutoCloseable {
     private final Scheduler scheduler;
     private final int artifactThresholdBytes;
     private final LongSupplier nanoClock;
+    private final RequestAdmission admission;
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
     private final AtomicLong requestSequence = new AtomicLong();
     private final Map<String, Integer> diagnosticAttempts = new ConcurrentHashMap<>();
     private final Map<String, Integer> sessionRecoveryAttempts = new ConcurrentHashMap<>();
     private final long startedNanos;
 
-    /** Creates a handler that owns a Java 25 virtual-thread executor. */
+    /** Creates a handler that owns a Java 25 virtual-thread executor and default admission. */
     public HarnessToolHandler(
             HarnessProtocolService protocol, ArtifactReference.Publisher artifacts) {
         this(Objects.requireNonNull(protocol, "protocol")::execute, artifacts,
                 Executors.newVirtualThreadPerTaskExecutor(), DEFAULT_ARTIFACT_THRESHOLD_BYTES,
-                System::nanoTime);
+                System::nanoTime, RequestAdmission.serverDefaults());
+    }
+
+    /** Creates a handler for the server with the server-scoped admission. */
+    HarnessToolHandler(HarnessProtocolService protocol, ArtifactReference.Publisher artifacts,
+            RequestAdmission admission) {
+        this(Objects.requireNonNull(protocol, "protocol")::execute, artifacts,
+                Executors.newVirtualThreadPerTaskExecutor(), DEFAULT_ARTIFACT_THRESHOLD_BYTES,
+                System::nanoTime, admission);
     }
 
     HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes) {
-        this(protocol, artifacts, executor, artifactThresholdBytes, System::nanoTime);
+        this(protocol, artifacts, executor, artifactThresholdBytes, System::nanoTime,
+                RequestAdmission.serverDefaults());
     }
 
     HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes, LongSupplier nanoClock) {
+        this(protocol, artifacts, executor, artifactThresholdBytes, nanoClock,
+                RequestAdmission.serverDefaults());
+    }
+
+    HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
+            ArtifactReference.Publisher artifacts, ExecutorService executor,
+            int artifactThresholdBytes, LongSupplier nanoClock, RequestAdmission admission) {
         this.protocol = Objects.requireNonNull(protocol, "protocol");
         this.artifacts = Objects.requireNonNull(artifacts, "artifacts");
         this.executor = Objects.requireNonNull(executor, "executor");
@@ -85,6 +103,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             throw new IllegalArgumentException("artifactThresholdBytes must be positive");
         }
         this.artifactThresholdBytes = artifactThresholdBytes;
+        this.admission = Objects.requireNonNull(admission, "admission");
         startedNanos = nanoClock.getAsLong();
         scheduler = Schedulers.fromExecutorService(executor);
     }
@@ -145,24 +164,59 @@ public final class HarnessToolHandler implements AutoCloseable {
                         List.of(), null));
             }
 
-            CompletionStage<HarnessResponse> stage;
-            try {
-                stage = Objects.requireNonNull(protocol.apply(request), "protocol stage");
-            } catch (RuntimeException failure) {
-                return Mono.just(diagnostic(
-                        requestId, sequence, call.name(), arguments,
-                        DiagnosticCode.INTERNAL_ERROR,
-                        "Protocol invocation failed", List.of(), null));
-            }
-            return Mono.fromFuture(stage.toCompletableFuture())
-                    .map(response -> toMcpResult(
-                            response, call.name(), sequence, arguments))
-                    .onErrorResume(failure -> Mono.just(
-                            diagnostic(
-                                    requestId, sequence, call.name(), arguments,
-                                    DiagnosticCode.INTERNAL_ERROR,
-                                    "Protocol invocation failed", List.of(), null)));
+            // Bound admission before protocol dispatch: excess work is rejected immediately
+            // with a stable LIMIT_EXCEEDED diagnostic and never reaches the protocol service.
+            HarnessToolCatalog.AccessMode mode = catalog.accessMode(call.name());
+            CompletionStage<McpSchema.CallToolResult> admitted = admission.submit(
+                    sessionKey(arguments), mode,
+                    () -> execute(request, call.name(), sequence, arguments));
+            return Mono.fromFuture(admitted.toCompletableFuture())
+                    .onErrorResume(RequestAdmission.LimitExceededException.class,
+                            failure -> Mono.just(limitExceeded(
+                                    request, sequence, call.name(), arguments, failure)));
         }).subscribeOn(scheduler);
+    }
+
+    /**
+     * Dispatches one admitted request to the protocol service and translates its response.
+     * The returned stage reaches a terminal state only after translation and output
+     * accounting, so the admission permit is held across the full output lifecycle.
+     */
+    private CompletionStage<McpSchema.CallToolResult> execute(
+            HarnessRequest request,
+            String operation,
+            long sequence,
+            Map<String, Object> arguments) {
+        CompletionStage<HarnessResponse> stage;
+        try {
+            stage = Objects.requireNonNull(protocol.apply(request), "protocol stage");
+        } catch (RuntimeException failure) {
+            return CompletableFuture.completedFuture(diagnostic(
+                    request.requestId(), sequence, operation, arguments,
+                    DiagnosticCode.INTERNAL_ERROR,
+                    "Protocol invocation failed", List.of(), null));
+        }
+        return Mono.fromFuture(stage.toCompletableFuture())
+                .map(response -> toMcpResult(
+                        response, operation, sequence, arguments))
+                .onErrorResume(failure -> Mono.just(
+                        diagnostic(
+                                request.requestId(), sequence, operation, arguments,
+                                DiagnosticCode.INTERNAL_ERROR,
+                                "Protocol invocation failed", List.of(), null)))
+                .toFuture();
+    }
+
+    private McpSchema.CallToolResult limitExceeded(
+            HarnessRequest request,
+            long sequence,
+            String operation,
+            Map<String, Object> arguments,
+            RequestAdmission.LimitExceededException failure) {
+        return diagnostic(
+                request.requestId(), sequence, operation, arguments,
+                DiagnosticCode.LIMIT_EXCEEDED,
+                failure.getMessage(), List.of(), null);
     }
 
     private HarnessRequest toProtocolRequest(
@@ -1021,6 +1075,7 @@ public final class HarnessToolHandler implements AutoCloseable {
 
     /** Shuts down all virtual-thread dispatch owned by this handler. */
     @Override public void close() {
+        admission.close();
         scheduler.dispose();
         executor.close();
     }

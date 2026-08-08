@@ -43,7 +43,10 @@ public final class HarnessMcpServer implements AutoCloseable {
     private HarnessMcpServer(HarnessProtocolService protocol,
             ArtifactReference.Publisher artifacts, InputStream input, OutputStream output) {
         transport = new VirtualStdioProvider(input, output);
-        handler = new HarnessToolHandler(protocol, artifacts);
+        // The server owns one admission and wires it into the handler so every tool call is
+        // bounded before protocol dispatch.
+        handler = new HarnessToolHandler(
+                protocol, artifacts, RequestAdmission.serverDefaults());
         HarnessToolCatalog catalog = new HarnessToolCatalog();
         McpServer.AsyncSpecification<?> specification = McpServer.async(transport)
                 .serverInfo("libgdx-ui-harness", "1.0.0")
