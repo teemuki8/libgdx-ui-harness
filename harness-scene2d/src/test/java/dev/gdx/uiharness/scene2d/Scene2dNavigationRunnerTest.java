@@ -259,6 +259,54 @@ final class Scene2dNavigationRunnerTest {
         }
     }
 
+    /**
+     * Task 6 (#22): the navigation runner's supplier overload is gated on active runs — idle
+     * decisions invoke no supplier, an active traversal consumes exactly one supplier frame
+     * per decision, and post-completion decisions invoke no supplier. Fails to compile until
+     * the runner gains {@code completedFrame(Supplier<SemanticSnapshot>, long, long)}.
+     */
+    @Test void navigationSupplierFramesAreGatedOnActiveRuns() {
+        try (Fixture f = new Fixture()) {
+            AtomicInteger supplierCalls = new AtomicInteger();
+            f.clock.advance(f.step);
+            assertFalse(f.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return f.session.snapshot(f.clock.revision(), f.clock.frame());
+            }, f.clock.revision(), f.clock.frame()));
+            assertEquals(0, supplierCalls.get(),
+                    "idle navigation runs must not build snapshots");
+
+            f.route(Keys.TAB, f.second);
+            CompletionStage<NavigationResult> run = f.inspect(
+                    f.request(List.of(NavigationInput.TAB)));
+            f.readyFrame(); // scenario acquire observes the first completed frame
+
+            f.clock.advance(f.step);
+            long revision = f.clock.revision();
+            long frame = f.clock.frame();
+            assertTrue(f.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return f.session.snapshot(revision, frame);
+            }, revision, frame),
+                    "an active navigation run must consume the supplier frame");
+            f.scheduler.drain();
+            assertEquals(1, supplierCalls.get(),
+                    "one supplier frame must serve the active traversal exactly once");
+            NavigationResult result = run.toCompletableFuture().join();
+            assertEquals("test-id:second", result.path().steps().get(0).afterIdentity());
+
+            int before = supplierCalls.get();
+            f.clock.advance(f.step);
+            assertFalse(f.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return f.session.snapshot(f.clock.revision(), f.clock.frame());
+            }, f.clock.revision(), f.clock.frame()),
+                    "after the last run finishes, completed frames build no snapshot");
+            assertEquals(before, supplierCalls.get(),
+                    "post-terminal navigation frames must invoke no supplier");
+        }
+    }
+
     private static final class Fixture implements AutoCloseable {
         final Duration step = Duration.ofMillis(16);
         final Stage stage = Scene2dTestSupport.stage();

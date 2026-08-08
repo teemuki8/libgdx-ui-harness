@@ -8,7 +8,11 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.badlogic.gdx.scenes.scene2d.Stage;
+import dev.gdx.uiharness.core.model.Bounds;
+import dev.gdx.uiharness.core.model.Role;
+import dev.gdx.uiharness.core.model.SemanticNode;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
+import dev.gdx.uiharness.core.model.SemanticState;
 import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
 import dev.gdx.uiharness.core.scenario.ScenarioFailure;
 import dev.gdx.uiharness.core.scenario.ScenarioLifecycle;
@@ -21,14 +25,17 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
@@ -982,6 +989,254 @@ final class Scene2dScenarioRunnerTest {
             assertTrue(nextResult.failure().isEmpty(),
                     "a new acquisition succeeds after the owner cleanup drains");
         }
+    }
+
+    /**
+     * Task 6 (#22): a completed frame decided with no active run must neither invoke the
+     * snapshot supplier nor report consumption. Fails to compile until the runner gains the
+     * {@code completedFrame(Supplier<SemanticSnapshot>, long, long)} overload.
+     */
+    @Test void idleSupplierFramesInvokeNoSupplierAndReturnFalse() {
+        try (Fixture fixture = new Fixture()) {
+            AtomicInteger supplierCalls = new AtomicInteger();
+            boolean consumed = fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(1, 1);
+            }, 1, 1);
+            assertFalse(consumed, "an idle runner must not consume a completed frame");
+            assertEquals(0, supplierCalls.get(),
+                    "idle frames must not build runner snapshots");
+            boolean again = fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(1, 1);
+            }, 1, 1);
+            assertFalse(again);
+            assertEquals(0, supplierCalls.get());
+        }
+    }
+
+    /**
+     * Task 6 (#22): a run admitted to {@code active} before the frame decision receives that
+     * frame; the supplier runs at most once per completed frame.
+     */
+    @Test void startingARunEnablesSupplierFramesThroughItsFirstObservation() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain();
+
+            AtomicInteger supplierCalls = new AtomicInteger();
+            fixture.clock.advance(Fixture.STEP);
+            boolean first = fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(
+                        fixture.clock.revision(), fixture.clock.frame());
+            }, fixture.clock.revision(), fixture.clock.frame());
+            fixture.scheduler.drain();
+            assertTrue(first, "the first frame after start must reach the waiting run");
+            assertEquals(1, supplierCalls.get(),
+                    "the supplier must run exactly once for the active run");
+
+            fixture.clock.advance(Fixture.STEP);
+            boolean second = fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(
+                        fixture.clock.revision(), fixture.clock.frame());
+            }, fixture.clock.revision(), fixture.clock.frame());
+            fixture.scheduler.drain();
+            assertTrue(second);
+            assertEquals(2, supplierCalls.get());
+            assertFalse(started.toCompletableFuture().isDone());
+        }
+    }
+
+    /**
+     * Task 6 (#22): once the last run reaches its terminal state, completed frames stop
+     * invoking the supplier even though the session keeps deciding frames.
+     */
+    @Test void cancellingTheLastRunReturnsTheRunnerToIdleSupplierGating() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain();
+
+            AtomicInteger supplierCalls = new AtomicInteger();
+            fixture.clock.advance(Fixture.STEP);
+            assertTrue(fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(
+                        fixture.clock.revision(), fixture.clock.frame());
+            }, fixture.clock.revision(), fixture.clock.frame()));
+            assertEquals(1, supplierCalls.get());
+
+            assertTrue(started.toCompletableFuture().cancel(false));
+            fixture.scheduler.drain();
+            fixture.clock.advance(Fixture.STEP);
+            boolean consumed = fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(
+                        fixture.clock.revision(), fixture.clock.frame());
+            }, fixture.clock.revision(), fixture.clock.frame());
+            assertFalse(consumed, "terminal runs must stop the per-frame snapshot stream");
+            assertEquals(1, supplierCalls.get(),
+                    "a frame decided after the last run's terminal state must not build");
+        }
+    }
+
+    /**
+     * Task 6 (#22): a frame decided while a run is active-but-not-begun is that run's first
+     * observation. The launch barrier proves the run is in {@code active} before the owner
+     * decides the frame; the queue order guarantees the decided frame is the first delivery.
+     */
+    @Test void firstStartRaceNeverLosesTheRunFirstObservation() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService launcher = Executors.newVirtualThreadPerTaskExecutor()) {
+            CountDownLatch launched = new CountDownLatch(1);
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready"));
+            CompletableFuture<CompletionStage<ScenarioResult>> startedHolder =
+                    new CompletableFuture<>();
+            launcher.submit(() -> {
+                // The run is added to `active` synchronously at launch; begin() is queued.
+                startedHolder.complete(fixture.start(Duration.ofSeconds(2)));
+                launched.countDown();
+            });
+
+            // Owner thread: wait for the launch barrier (run active, begin still queued),
+            // then decide the frame BEFORE any drain runs begin().
+            assertTrue(launched.await(5, TimeUnit.SECONDS), "launch must reach the barrier");
+            AtomicInteger supplierCalls = new AtomicInteger();
+            fixture.clock.advance(Fixture.STEP);
+            boolean consumed = fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(
+                        fixture.clock.revision(), fixture.clock.frame());
+            }, fixture.clock.revision(), fixture.clock.frame());
+            fixture.scheduler.drain();
+            assertTrue(consumed);
+            ScenarioResult result = startedHolder.join().toCompletableFuture().join();
+            assertTrue(result.startFrame() > 0,
+                    "the run must observe the frame decided while it was active");
+            assertEquals(1, supplierCalls.get());
+        }
+    }
+
+    /**
+     * Task 6 (#22): the reservation-token gate. A reserver runs {@code completedFrame} whose
+     * supplier signals entered and then blocks (the lifecycle lock is NOT held during the
+     * supplier). A closer signals attemptingClose immediately before {@code close()}; the
+     * owner then DRAINS so the terminal completes and the last run is REMOVED from
+     * {@code active} WHILE the reservation is still in flight; only then does the owner
+     * release the supplier. The reserved delivery must still complete — this fails against a
+     * non-token design that re-reads {@code active} after the supplier.
+     */
+    @Test void lastTerminalReservationWinsDespiteConcurrentTerminal() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready"));
+            Scene2dScenarioRunner.Lease lease = fixture.acquireReady(Duration.ofSeconds(2));
+            assertFalse(lease.completion().toCompletableFuture().isDone(),
+                    "a READY lease is still an active run");
+
+            CountDownLatch supplierEntered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier = new CountDownLatch(1);
+            CountDownLatch attemptingClose = new CountDownLatch(1);
+            AtomicInteger supplierCalls = new AtomicInteger();
+            SemanticSnapshot snapshot = rootOnlySnapshot(1, 1);
+            CompletableFuture<Boolean> reservation = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    reservation.complete(fixture.runner.completedFrame(() -> {
+                        supplierCalls.incrementAndGet();
+                        supplierEntered.countDown();
+                        try {
+                            releaseSupplier.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        return snapshot;
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    reservation.completeExceptionally(failure);
+                }
+            });
+            CompletableFuture<Void> closeDone = new CompletableFuture<>();
+            CompletableFuture<ScenarioResult> terminalResult = new CompletableFuture<>();
+            // releaseSupplier MUST be released on every path, so the try begins immediately
+            // after the reserver is submitted and EVERY wait/assertion (including
+            // supplierEntered) lives inside it; a failure can never strand the blocked
+            // supplier or hang the worker executor. The joins after the try are all bounded.
+            try {
+                assertTrue(supplierEntered.await(5, TimeUnit.SECONDS),
+                        "the reservation must enter the supplier");
+                workers.submit(() -> {
+                    attemptingClose.countDown();
+                    fixture.runner.close();
+                    closeDone.complete(null);
+                    lease.completion().whenComplete((value, failure) ->
+                            terminalResult.complete(value));
+                });
+                assertTrue(attemptingClose.await(5, TimeUnit.SECONDS),
+                        "the closer must signal before calling close()");
+                closeDone.get(5, TimeUnit.SECONDS); // the terminate command is now queued
+                fixture.scheduler.drain(); // terminal executes; active empties DURING the reservation
+            } finally {
+                releaseSupplier.countDown();
+            }
+            assertTrue(reservation.get(5, TimeUnit.SECONDS),
+                    "the reserved frame must be delivered even though the terminal removed the"
+                            + " consumer before the enqueue");
+            assertEquals(1, supplierCalls.get());
+            assertEquals(ScenarioFailure.CANCELLED, terminalResult.get(5, TimeUnit.SECONDS)
+                    .failure().orElseThrow(), "the lease must reach the terminal CANCELLED state");
+
+            // Post-terminal gating: subsequent frames invoke no supplier.
+            assertFalse(fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return snapshot;
+            }, 2, 2));
+            assertEquals(1, supplierCalls.get(),
+                    "a frame decided after the last run's terminal state must not build");
+        }
+    }
+
+    /**
+     * Task 6 (#22): sequential post-terminal gating (not a race): release, drain, then
+     * decide — the frame must never invoke the supplier.
+     */
+    @Test void postTerminalSupplierFramesInvokeNoSupplier() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready"));
+            Scene2dScenarioRunner.Lease lease = fixture.acquireReady(Duration.ofSeconds(2));
+
+            CompletionStage<ScenarioResult> released = lease.release();
+            fixture.scheduler.drain();
+            released.toCompletableFuture().join();
+
+            AtomicInteger supplierCalls = new AtomicInteger();
+            boolean consumed = fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(1, 1);
+            }, 1, 1);
+            assertFalse(consumed);
+            assertEquals(0, supplierCalls.get(),
+                    "a post-terminal frame decision must never invoke the snapshot supplier");
+        }
+    }
+
+    /**
+     * Minimal valid semantic graph with a single root node, following the model test
+     * convention (TraceRecorderTest/TraceReplayerTest): the snapshot constructor validates
+     * that {@code rootId} references a node, so an empty node map is rejected.
+     */
+    private static SemanticSnapshot rootOnlySnapshot(long revision, long frame) {
+        Bounds bounds = new Bounds(0, 0, 100, 100);
+        SemanticState state = new SemanticState(
+                true, true, Optional.of(true), Optional.empty(), Optional.empty(),
+                Optional.empty(), Optional.empty(), false, false, 1.0, false, true, true);
+        SemanticNode root = new SemanticNode("root", null, List.of(), Role.GROUP, "root", "",
+                null, null, null, null, state, bounds, bounds, bounds, 0, Map.of());
+        return new SemanticSnapshot(revision, frame, "root", Map.of("root", root));
     }
 
     private static class RecordingLifecycle implements ScenarioLifecycle {

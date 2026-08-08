@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.List;
+import java.util.function.Supplier;
 import dev.gdx.uiharness.core.typography.TypographyObservation;
 
 /** Non-owning semantic extraction session attached to one Scene2D stage. */
@@ -67,10 +68,14 @@ public final class Scene2dSession implements AutoCloseable {
             throw new IllegalStateException(
                     "completed scenario frames must be captured on the owning render thread");
         }
-        Objects.requireNonNull(runner, "runner").completedFrame(snapshot(revision, frame));
+        Objects.requireNonNull(runner, "runner").completedFrame(
+                () -> snapshot(revision, frame), revision, frame);
     }
 
-    /** Captures and publishes one completed semantic frame to scenario and navigation runners. */
+    /**
+     * Captures and publishes one shared completed semantic frame while either runner has active
+     * runs; the snapshot is built at most once per frame and only when a runner consumed it.
+     */
     public void completedFrame(
             Scene2dScenarioRunner scenarioRunner,
             Scene2dNavigationRunner navigationRunner,
@@ -80,9 +85,17 @@ public final class Scene2dSession implements AutoCloseable {
             throw new IllegalStateException(
                     "completed navigation frames must be captured on the owning render thread");
         }
-        SemanticSnapshot snapshot = snapshot(revision, frame);
-        Objects.requireNonNull(scenarioRunner, "scenarioRunner").completedFrame(snapshot);
-        Objects.requireNonNull(navigationRunner, "navigationRunner").completedFrame(snapshot);
+        SemanticSnapshot[] shared = new SemanticSnapshot[1];
+        Supplier<SemanticSnapshot> snapshots = () -> {
+            if (shared[0] == null) {
+                shared[0] = snapshot(revision, frame);
+            }
+            return shared[0];
+        };
+        Objects.requireNonNull(scenarioRunner, "scenarioRunner").completedFrame(
+                snapshots, revision, frame);
+        Objects.requireNonNull(navigationRunner, "navigationRunner").completedFrame(
+                snapshots, revision, frame);
     }
 
     /** Captures the evaluator-complete contract after a completed frame. */

@@ -23,6 +23,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.function.Supplier;
 
 /** Runs application-registered scenario hooks against completed Scene2D frames. */
 public final class Scene2dScenarioRunner implements AutoCloseable {
@@ -59,6 +60,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
     private final ArrayList<Run> active = new ArrayList<>();
     private final Map<InputIdentity, String> startStateIdentities = new LinkedHashMap<>();
     private boolean open = true;
+    private int pendingFrameReservations;
 
     /**
      * Retained released constructor: adapts the legacy scene2d deadline scheduler to the core
@@ -195,6 +197,42 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 run.observe(snapshot);
                 return null;
             }, dispatchDeadline()));
+        }
+    }
+
+    /**
+     * Atomically reserves this completed frame for every run active at the call: the recipient
+     * snapshot and a reservation counter are taken under the lifecycle lock, the snapshot supplier
+     * runs OUTSIDE the lock (at most once per call), and the delivery consumes the reservation even
+     * if a terminal transition occurs meanwhile — a terminal cannot invalidate an already-reserved
+     * frame, and a run starting after the reservation observes the next frame.
+     *
+     * @return true when at least one active run consumed the frame
+     */
+    public boolean completedFrame(
+            Supplier<SemanticSnapshot> snapshots, long revision, long frame) {
+        Objects.requireNonNull(snapshots, "snapshots");
+        Run[] runs;
+        synchronized (lifecycle) {
+            if (active.isEmpty()) {
+                return false;
+            }
+            runs = active.toArray(Run[]::new);
+            pendingFrameReservations++;
+        }
+        try {
+            SemanticSnapshot snapshot = snapshots.get();
+            for (Run run : runs) {
+                observeSubmission(run, scheduler.submit(() -> {
+                    run.observe(snapshot);
+                    return null;
+                }, dispatchDeadline()));
+            }
+            return true;
+        } finally {
+            synchronized (lifecycle) {
+                pendingFrameReservations--;
+            }
         }
     }
 
