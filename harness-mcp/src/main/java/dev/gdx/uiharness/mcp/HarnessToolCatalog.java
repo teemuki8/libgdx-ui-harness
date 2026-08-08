@@ -651,9 +651,9 @@ public final class HarnessToolCatalog {
         resultProperties.put("observedDevicePixelRatio", nullableNumber());
         resultProperties.put("observedHiDpiMode", nullableEnum(
                 "LOGICAL", "PIXELS"));
-        resultProperties.put("observedLocale", nullableString());
-        resultProperties.put("observedFontSetId", nullableString());
-        resultProperties.put("observedRestartProfileId", nullableString());
+        resultProperties.put("observedLocale", nullableIdentifier(1));
+        resultProperties.put("observedFontSetId", nullableIdentifier(0));
+        resultProperties.put("observedRestartProfileId", nullableIdentifier(1));
         resultProperties.put("passedAssertions", array(integer(0, 255), 256));
         resultProperties.put("failedAssertions", array(integer(0, 255), 256));
         resultProperties.put("artifactReferences", array(
@@ -676,6 +676,16 @@ public final class HarnessToolCatalog {
     private static Map<String, Object> nullableEnum(String... values) {
         return Map.of("oneOf", List.of(
                 enumString(values), Map.of("type", "null")));
+    }
+
+    /**
+     * Nullable identifier-sized string mirroring the core model bound of
+     * {@link #MAX_IDENTIFIER} characters; {@code minimum} is the length of the
+     * non-null variant.
+     */
+    private static Map<String, Object> nullableIdentifier(int minimum) {
+        return Map.of("oneOf", List.of(
+                string(minimum, MAX_IDENTIFIER), Map.of("type", "null")));
     }
 
     private static Map<String, Object> nullableObject(

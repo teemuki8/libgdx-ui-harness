@@ -7093,8 +7093,13 @@
                   } ]
                 },
                 "observedFontSetId" : {
-                  "maxLength" : 16384,
-                  "type" : [ "string", "null" ]
+                  "oneOf" : [ {
+                    "maxLength" : 256,
+                    "minLength" : 0,
+                    "type" : "string"
+                  }, {
+                    "type" : "null"
+                  } ]
                 },
                 "observedHiDpiMode" : {
                   "oneOf" : [ {
@@ -7105,12 +7110,22 @@
                   } ]
                 },
                 "observedLocale" : {
-                  "maxLength" : 16384,
-                  "type" : [ "string", "null" ]
+                  "oneOf" : [ {
+                    "maxLength" : 256,
+                    "minLength" : 1,
+                    "type" : "string"
+                  }, {
+                    "type" : "null"
+                  } ]
                 },
                 "observedRestartProfileId" : {
-                  "maxLength" : 16384,
-                  "type" : [ "string", "null" ]
+                  "oneOf" : [ {
+                    "maxLength" : 256,
+                    "minLength" : 1,
+                    "type" : "string"
+                  }, {
+                    "type" : "null"
+                  } ]
                 },
                 "observedUiScale" : {
                   "oneOf" : [ {

@@ -146,6 +146,27 @@ final class HarnessToolCatalogTest {
         }
     }
 
+    @Test void matrixReportObservedIdentitySchemaBindsToTheCoreModelLimits() {
+        JsonNode output = ProtocolJson.mapper().valueToTree(
+                catalog.tool("ui_matrix_results").outputSchema());
+        JsonNode items = output.at("/properties/report/properties/results/items");
+        assertNotNull(items.get("properties"), "matrix-report results items must declare properties");
+        assertMatrixObservedIdentityField(items, "observedLocale", 1);
+        assertMatrixObservedIdentityField(items, "observedFontSetId", 0);
+        assertMatrixObservedIdentityField(items, "observedRestartProfileId", 1);
+    }
+
+    private static void assertMatrixObservedIdentityField(
+            JsonNode items, String field, int minimum) {
+        JsonNode schema = items.at("/properties/" + field);
+        assertEquals("string", schema.at("/oneOf/0/type").asText(), field + " string variant");
+        assertEquals(minimum, schema.at("/oneOf/0/minLength").asInt(),
+                field + " non-null minimum length");
+        assertEquals(256, schema.at("/oneOf/0/maxLength").asInt(),
+                field + " must cap at the core model bound of 256");
+        assertEquals("null", schema.at("/oneOf/1/type").asText(), field + " null variant");
+    }
+
     @Test void everyAdvertisedExampleValidatesAgainstItsInputSchema() {
         for (Map<String, Object> operation : catalog.operationCatalog()) {
             String name = (String) operation.get("name");

@@ -95,6 +95,30 @@ final class MatrixProtocolTest {
         assertEquals(MatrixCaseStatus.PASSED, data.results().getFirst().status());
     }
 
+    @Test void observedIdentityFieldsBindToTheWireSchemaDeclaredLimits() {
+        assertThrows(IllegalArgumentException.class, () -> result("", "", null));
+        assertThrows(IllegalArgumentException.class, () -> result("   ", "", null));
+        assertThrows(IllegalArgumentException.class, () -> result("x".repeat(257), "", null));
+        assertThrows(IllegalArgumentException.class, () -> result("en", "", ""));
+        assertThrows(IllegalArgumentException.class, () -> result("en", "", "x".repeat(257)));
+        assertEquals("en", result("en", "font", "profile").observedLocale());
+        assertEquals("", result("en", "", null).observedFontSetId());
+        assertEquals("profile", result("en", "", "profile").observedRestartProfileId());
+        result("x".repeat(256), "x".repeat(256), "x".repeat(256));
+    }
+
+    private static MatrixCaseResult result(
+            String observedLocale, String observedFontSetId, String observedRestartProfileId) {
+        return new MatrixCaseResult(
+                new dev.gdx.uiharness.core.matrix.MatrixCaseSummary(
+                        0, new MatrixWindow(1280, 720), 1.0, 1.0,
+                        MatrixHiDpi.LOGICAL, "en", "", 16.0 / 9.0),
+                MatrixCaseStatus.PASSED,
+                new MatrixWindow(1280, 720), 1.0, 1.0, MatrixHiDpi.LOGICAL,
+                observedLocale, observedFontSetId, observedRestartProfileId,
+                List.of(), List.of(), List.of(), "");
+    }
+
     @Test void matrixReportCarriesAppliedAndRejectedCaseEvidence() throws Exception {
         MatrixReport report = new MatrixReport("run-1", "matrix", List.of(
                 new MatrixCaseResult(
