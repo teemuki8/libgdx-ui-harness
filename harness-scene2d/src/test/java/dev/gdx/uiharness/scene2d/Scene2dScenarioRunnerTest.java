@@ -1121,21 +1121,21 @@ final class Scene2dScenarioRunnerTest {
     }
 
     /**
-     * Task 6 (#22): the reservation-token gate. A reserver runs {@code completedFrame} whose
+     * Task 6 (#22): the reservation-token barrier. A reserver runs {@code completedFrame} whose
      * supplier signals entered and then blocks (the lifecycle lock is NOT held during the
      * supplier). A closer signals attemptingClose immediately before {@code close()}; the
-     * owner then DRAINS so the terminal completes and the last run is REMOVED from
-     * {@code active} WHILE the reservation is still in flight; only then does the owner
-     * release the supplier. The reserved delivery must still complete — this fails against a
-     * non-token design that re-reads {@code active} after the supplier.
+     * terminal transition must WAIT (releasing the lifecycle monitor) until the reservation has
+     * delivered — close cannot complete, and the run cannot terminalize, while the supplier is
+     * blocked. Once the owner releases the supplier and drains, the reserved frame is observed
+     * by the still-waiting run (its startFrame/startRevision prove the reserved snapshot was
+     * incorporated) and only then does the terminal complete.
      */
     @Test void lastTerminalReservationWinsDespiteConcurrentTerminal() throws Exception {
         try (Fixture fixture = new Fixture();
                 ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
-            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready"));
-            Scene2dScenarioRunner.Lease lease = fixture.acquireReady(Duration.ofSeconds(2));
-            assertFalse(lease.completion().toCompletableFuture().isDone(),
-                    "a READY lease is still an active run");
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain(); // begin: the run waits for its first frame
 
             CountDownLatch supplierEntered = new CountDownLatch(1);
             CountDownLatch releaseSupplier = new CountDownLatch(1);
@@ -1163,9 +1163,8 @@ final class Scene2dScenarioRunnerTest {
             CompletableFuture<Void> closeDone = new CompletableFuture<>();
             CompletableFuture<ScenarioResult> terminalResult = new CompletableFuture<>();
             // releaseSupplier MUST be released on every path, so the try begins immediately
-            // after the reserver is submitted and EVERY wait/assertion (including
-            // supplierEntered) lives inside it; a failure can never strand the blocked
-            // supplier or hang the worker executor. The joins after the try are all bounded.
+            // after the reserver is submitted and EVERY wait/assertion lives inside it; a
+            // failure can never strand the blocked supplier or hang the worker executor.
             try {
                 assertTrue(supplierEntered.await(5, TimeUnit.SECONDS),
                         "the reservation must enter the supplier");
@@ -1173,22 +1172,33 @@ final class Scene2dScenarioRunnerTest {
                     attemptingClose.countDown();
                     fixture.runner.close();
                     closeDone.complete(null);
-                    lease.completion().whenComplete((value, failure) ->
+                    started.toCompletableFuture().whenComplete((value, failure) ->
                             terminalResult.complete(value));
                 });
                 assertTrue(attemptingClose.await(5, TimeUnit.SECONDS),
                         "the closer must signal before calling close()");
-                closeDone.get(5, TimeUnit.SECONDS); // the terminate command is now queued
-                fixture.scheduler.drain(); // terminal executes; active empties DURING the reservation
+                assertFalse(closeDone.isDone(),
+                        "the terminal must wait for the in-flight reservation: close cannot"
+                                + " complete while the supplier is blocked");
+                assertFalse(started.toCompletableFuture().isDone(),
+                        "the run must not terminalize while the reservation is in flight");
             } finally {
                 releaseSupplier.countDown();
             }
             assertTrue(reservation.get(5, TimeUnit.SECONDS),
-                    "the reserved frame must be delivered even though the terminal removed the"
-                            + " consumer before the enqueue");
+                    "the reserved frame must be delivered even though the closer waits");
             assertEquals(1, supplierCalls.get());
-            assertEquals(ScenarioFailure.CANCELLED, terminalResult.get(5, TimeUnit.SECONDS)
-                    .failure().orElseThrow(), "the lease must reach the terminal CANCELLED state");
+            fixture.scheduler.drain(); // the reserved delivery reaches the still-waiting run
+            assertTrue(closeDone.get(5, TimeUnit.SECONDS) != null,
+                    "close must complete only once the reservation has delivered");
+            fixture.scheduler.drain(); // the terminal executes after the delivery drained
+            ScenarioResult result = terminalResult.get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.CANCELLED, result.failure().orElseThrow(),
+                    "the lease must reach the terminal CANCELLED state");
+            assertEquals(1, result.startFrame(),
+                    "the reserved snapshot must be incorporated into the run's first observation");
+            assertEquals(1, result.startRevision(),
+                    "the reserved snapshot must be incorporated into the run's first observation");
 
             // Post-terminal gating: subsequent frames invoke no supplier.
             assertFalse(fixture.runner.completedFrame(() -> {
@@ -1197,6 +1207,75 @@ final class Scene2dScenarioRunnerTest {
             }, 2, 2));
             assertEquals(1, supplierCalls.get(),
                     "a frame decided after the last run's terminal state must not build");
+        }
+    }
+
+    /**
+     * Task 6 (#22): a supplier failure releases the terminal barrier with defined failure
+     * semantics. While the supplier is blocked (about to throw), close() must wait; once the
+     * supplier fails, the reservation reports the failure, the terminal proceeds, and no
+     * snapshot is incorporated into the run.
+     */
+    @Test void failingSupplierReleasesTheTerminalBarrier() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain();
+
+            CountDownLatch supplierEntered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier = new CountDownLatch(1);
+            AtomicInteger supplierCalls = new AtomicInteger();
+            CompletableFuture<Boolean> reservation = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    reservation.complete(fixture.runner.completedFrame(() -> {
+                        supplierCalls.incrementAndGet();
+                        supplierEntered.countDown();
+                        try {
+                            releaseSupplier.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        throw new IllegalStateException("snapshot build failed");
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    reservation.completeExceptionally(failure);
+                }
+            });
+            CompletableFuture<Void> closeDone = new CompletableFuture<>();
+            CompletableFuture<ScenarioResult> terminalResult = new CompletableFuture<>();
+            try {
+                assertTrue(supplierEntered.await(5, TimeUnit.SECONDS),
+                        "the reservation must enter the supplier");
+                workers.submit(() -> {
+                    fixture.runner.close();
+                    closeDone.complete(null);
+                    started.toCompletableFuture().whenComplete((value, failure) ->
+                            terminalResult.complete(value));
+                });
+                assertFalse(closeDone.isDone(),
+                        "close must wait while the reservation is in flight");
+            } finally {
+                releaseSupplier.countDown();
+            }
+            try {
+                reservation.get(5, TimeUnit.SECONDS);
+                throw new AssertionError("a failing supplier must fail the reservation");
+            } catch (ExecutionException expected) {
+                assertEquals("snapshot build failed", expected.getCause().getMessage());
+            }
+            assertEquals(1, supplierCalls.get());
+            assertTrue(closeDone.get(5, TimeUnit.SECONDS) == null,
+                    "a failed reservation must release the terminal barrier");
+            fixture.scheduler.drain();
+            ScenarioResult result = terminalResult.get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.CANCELLED, result.failure().orElseThrow());
+            assertEquals(0, result.startFrame(),
+                    "a failed reservation delivers no snapshot to the run");
+            assertEquals(0, result.startRevision(),
+                    "a failed reservation delivers no snapshot to the run");
         }
     }
 

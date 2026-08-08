@@ -60,7 +60,6 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
     private final ArrayList<Run> active = new ArrayList<>();
     private final Map<InputIdentity, String> startStateIdentities = new LinkedHashMap<>();
     private boolean open = true;
-    private int pendingFrameReservations;
 
     /**
      * Retained released constructor: adapts the legacy scene2d deadline scheduler to the core
@@ -202,10 +201,11 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
 
     /**
      * Atomically reserves this completed frame for every run active at the call: the recipient
-     * snapshot and a reservation counter are taken under the lifecycle lock, the snapshot supplier
-     * runs OUTSIDE the lock (at most once per call), and the delivery consumes the reservation even
-     * if a terminal transition occurs meanwhile — a terminal cannot invalidate an already-reserved
-     * frame, and a run starting after the reservation observes the next frame.
+     * snapshot and a per-run reservation counter are taken under the lifecycle lock, the snapshot
+     * supplier runs OUTSIDE the lock (at most once per call), and every terminal transition of a
+     * reserved recipient waits (releasing the lifecycle monitor) until the reservation has
+     * delivered or failed — a terminal cannot invalidate an already-reserved frame, and a run
+     * starting after the reservation observes the next frame.
      *
      * @return true when at least one active run consumed the frame
      */
@@ -218,21 +218,78 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 return false;
             }
             runs = active.toArray(Run[]::new);
-            pendingFrameReservations++;
+            for (Run run : runs) {
+                run.pendingFrameDeliveries++;
+            }
         }
         try {
             SemanticSnapshot snapshot = snapshots.get();
             for (Run run : runs) {
-                observeSubmission(run, scheduler.submit(() -> {
-                    run.observe(snapshot);
-                    return null;
-                }, dispatchDeadline()));
+                deliverFrame(run, snapshot);
             }
             return true;
-        } finally {
+        } catch (RuntimeException failure) {
+            // The supplier or a delivery enqueue failed: release every reserved recipient so
+            // terminal transitions blocked on the barrier can proceed, and propagate the
+            // original failure (the frame is delivered to no recipient).
             synchronized (lifecycle) {
-                pendingFrameReservations--;
+                for (Run run : runs) {
+                    run.pendingFrameDeliveries = 0;
+                }
+                lifecycle.notifyAll();
             }
+            throw failure;
+        }
+    }
+
+    /**
+     * Enqueues one reserved frame delivery and releases the run's reservation when the delivery
+     * completes or fails, waking any terminal transition blocked on the barrier. The submission
+     * future completes exactly once — the observe ran, the queue rejected it, or the dispatch
+     * deadline expired — so the decrement runs exactly once per delivery.
+     */
+    private void deliverFrame(Run run, SemanticSnapshot snapshot) {
+        CompletionStage<?> submission = scheduler.submit(() -> {
+            run.observe(snapshot);
+            return null;
+        }, dispatchDeadline());
+        submission.whenComplete((ignored, failure) -> {
+            synchronized (lifecycle) {
+                if (run.pendingFrameDeliveries > 0) {
+                    run.pendingFrameDeliveries--;
+                }
+                lifecycle.notifyAll();
+            }
+            if (failure != null) {
+                run.dispatchFailed();
+            }
+        });
+    }
+
+    /**
+     * Blocks a terminalizing transition until every in-flight frame reservation for the run has
+     * delivered or failed, releasing the lifecycle monitor while waiting. The render thread
+     * itself executes the deliveries, so it never waits here — waiting on it would deadlock.
+     * An interrupt aborts the wait and preserves the interrupt status; the terminal transition
+     * then proceeds without the delivery.
+     */
+    private void awaitPendingFrameDeliveries(Run run) {
+        if (scheduler.isOwnerThread()) {
+            return;
+        }
+        boolean interrupted = false;
+        synchronized (lifecycle) {
+            while (run.pendingFrameDeliveries > 0) {
+                try {
+                    lifecycle.wait();
+                } catch (InterruptedException failure) {
+                    interrupted = true;
+                    break;
+                }
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -293,6 +350,8 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         private long readyRevision;
         private int setupAttempts;
         private String stateIdentity = "unavailable";
+        /** In-flight reserved frame deliveries awaiting completion, guarded by the lifecycle monitor. */
+        private int pendingFrameDeliveries;
 
         private DeadlineScheduler.Cancellation deadlineCancellation;
         Run(
@@ -495,6 +554,15 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
                     return false;
                 }
+            }
+            // A caller-thread cancellation must not terminalize a run while its reserved
+            // frame deliveries are still in flight: the deliveries drain on the render
+            // thread, so the wait releases the lifecycle monitor instead of holding it.
+            awaitPendingFrameDeliveries(this);
+            synchronized (this) {
+                if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
+                    return false;
+                }
                 phase = Phase.CANCELLING;
             }
             observeSubmission(this, scheduler.submit(() -> {
@@ -509,6 +577,18 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         }
 
         @Override public CompletionStage<ScenarioResult> release() {
+            synchronized (this) {
+                if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
+                    return result;
+                }
+                if (phase != Phase.READY) {
+                    throw new IllegalStateException("scenario lease is not ready");
+                }
+            }
+            // A caller-thread release must not terminalize the lease while its reserved
+            // frame deliveries are still in flight; on the render thread the deliveries
+            // cannot drain while we wait, so the barrier is skipped there.
+            awaitPendingFrameDeliveries(this);
             synchronized (this) {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
                     return result;
@@ -537,6 +617,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         }
         private void dispatchFailed() {
             boolean publish = false;
+            awaitPendingFrameDeliveries(this);
             synchronized (this) {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
                     // A terminal or cleaning run is released only by its own terminal path or
@@ -560,6 +641,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
          */
         void schedulingFailed() {
             boolean publish;
+            awaitPendingFrameDeliveries(this);
             synchronized (this) {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
                     return;
