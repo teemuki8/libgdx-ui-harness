@@ -314,12 +314,13 @@ final class Scene2dNavigationRunnerTest {
     }
 
     /**
-     * Task 6 (#22): the reservation-token barrier on the navigation runner. The reserved
-     * snapshot is captured on the owning thread BEFORE the reservation (the supplier itself
-     * only blocks and must never touch the session off-owner). A closer calls close() while
-     * the supplier is blocked; the terminal transition must wait, and once the delivery
-     * drains the navigation step carries the reserved frame — proving the reserved snapshot
-     * was incorporated rather than merely reported consumed.
+     * Task 6 (#22): the reservation protocol on the navigation runner with a deferred terminal
+     * transition. The reserved snapshot is captured on the owning thread BEFORE the reservation
+     * (the supplier itself only blocks and must never touch the session off-owner). A closer
+     * calls close() while the supplier is blocked: the terminal REQUEST never blocks (close
+     * returns immediately with the transition deferred), the run does not terminalize until the
+     * delivery drains, and the first reserved intent (close) wins over the observation's own
+     * completion — the run cancels and the scenario lease cleans exactly once.
      */
     @Test void lastTerminalReservationWinsDespiteConcurrentTerminal() throws Exception {
         try (Fixture f = new Fixture();
@@ -364,8 +365,10 @@ final class Scene2dNavigationRunnerTest {
                     f.runner.close();
                     closeDone.complete(null);
                 });
-                assertFalse(closeDone.isDone(),
-                        "close must wait while a navigation reservation is in flight");
+                // The terminal REQUEST never blocks, even while the supplier is blocked.
+                closeDone.get(5, TimeUnit.SECONDS);
+                assertFalse(run.toCompletableFuture().isDone(),
+                        "the run must not terminalize while the reservation is in flight");
             } finally {
                 releaseSupplier.countDown();
             }
@@ -373,21 +376,79 @@ final class Scene2dNavigationRunnerTest {
                     "the reserved navigation frame must be delivered");
             assertEquals(1, supplierCalls.get());
             f.scheduler.drain(); // the reserved frame reaches the waiting navigation step
-            assertTrue(closeDone.get(5, TimeUnit.SECONDS) == null,
-                    "close must complete once the reservation has delivered");
+            f.scheduler.drain(); // the deferred terminal applies; the scenario lease cleans up
+            assertTrue(run.toCompletableFuture().isCancelled(),
+                    "the first terminal intent (close) wins over the observation's own completion");
+            assertEquals(1, f.cleanups.get(),
+                    "the scenario lease cleans exactly once after the terminal");
+        }
+    }
+
+    /**
+     * Task 6 (#22): when no terminal request races the reservation, the reserved frame itself
+     * completes the traversal — the observation's completion transition is deferred past the
+     * delivery and applies after it, and the navigation step carries the reserved frame.
+     */
+    @Test void navigationReservedFrameIsIncorporatedBeforeTheCompletionApplies() throws Exception {
+        try (Fixture f = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            f.route(Keys.TAB, f.second);
+            CompletionStage<NavigationResult> run = f.inspect(
+                    f.request(List.of(NavigationInput.TAB)));
+            f.readyFrame();
+
+            f.clock.advance(f.step);
+            long revision = f.clock.revision();
+            long frame = f.clock.frame();
+            SemanticSnapshot reserved = f.session.snapshot(revision, frame);
+
+            CountDownLatch supplierEntered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier = new CountDownLatch(1);
+            AtomicInteger supplierCalls = new AtomicInteger();
+            CompletableFuture<Boolean> reservation = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    reservation.complete(f.runner.completedFrame(() -> {
+                        supplierCalls.incrementAndGet();
+                        supplierEntered.countDown();
+                        try {
+                            releaseSupplier.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        return reserved;
+                    }, revision, frame));
+                } catch (Throwable failure) {
+                    reservation.completeExceptionally(failure);
+                }
+            });
+            try {
+                assertTrue(supplierEntered.await(5, TimeUnit.SECONDS),
+                        "the reservation must enter the supplier");
+            } finally {
+                releaseSupplier.countDown();
+            }
+            assertTrue(reservation.get(5, TimeUnit.SECONDS),
+                    "the reserved navigation frame must be delivered");
+            assertEquals(1, supplierCalls.get());
+            f.scheduler.drain(); // the reserved frame completes the traversal
             NavigationResult result = run.toCompletableFuture().join();
             assertEquals(1, result.path().steps().size());
             assertEquals(frame, result.path().steps().get(0).afterFrame(),
                     "the reserved snapshot must be incorporated into the navigation step");
             assertEquals(revision, result.path().steps().get(0).afterRevision(),
                     "the reserved snapshot must be incorporated into the navigation step");
+            assertEquals(1, f.cleanups.get(),
+                    "the completing traversal cleans its scenario lease exactly once");
         }
     }
 
     /**
-     * Task 6 (#22): a navigation supplier failure releases the terminal barrier with defined
-     * failure semantics — the reservation reports the failure, close() proceeds, and the run
-     * terminalizes without observing any frame.
+     * Task 6 (#22): a navigation supplier failure releases the deferred terminal with defined
+     * failure semantics — the reservation reports the failure, the close() REQUEST already
+     * returned immediately, the run terminalizes without observing any frame, and the scenario
+     * lease cleans exactly once.
      */
     @Test void failingNavigationSupplierReleasesTheTerminalBarrier() throws Exception {
         try (Fixture f = new Fixture();
@@ -427,8 +488,7 @@ final class Scene2dNavigationRunnerTest {
                     f.runner.close();
                     closeDone.complete(null);
                 });
-                assertFalse(closeDone.isDone(),
-                        "close must wait while the reservation is in flight");
+                closeDone.get(5, TimeUnit.SECONDS); // the terminal REQUEST never blocks
             } finally {
                 releaseSupplier.countDown();
             }
@@ -439,11 +499,9 @@ final class Scene2dNavigationRunnerTest {
                 assertEquals("snapshot build failed", expected.getCause().getMessage());
             }
             assertEquals(1, supplierCalls.get());
-            assertTrue(closeDone.get(5, TimeUnit.SECONDS) == null,
-                    "a failed reservation must release the navigation terminal barrier");
-            f.scheduler.drain();
+            f.scheduler.drain(); // the deferred terminal applies; the scenario lease cleans up
             assertTrue(run.toCompletableFuture().isCancelled(),
-                    "the navigation run must terminalize once the barrier releases");
+                    "the navigation run must terminalize once the reservation has failed");
             assertEquals(1, f.cleanups.get(),
                     "the scenario lease cleans exactly once after the terminal");
         }

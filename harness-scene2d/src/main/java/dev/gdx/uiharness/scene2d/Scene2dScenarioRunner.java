@@ -229,67 +229,61 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             }
             return true;
         } catch (RuntimeException failure) {
-            // The supplier or a delivery enqueue failed: release every reserved recipient so
-            // terminal transitions blocked on the barrier can proceed, and propagate the
-            // original failure (the frame is delivered to no recipient).
+            // The supplier or a delivery enqueue failed: no reserved frame can ever be
+            // delivered, so release every recipient and apply any deferred terminal
+            // transition. The CANCELLED, RELEASED, DISPATCH_FAILED, and deadline transitions
+            // are thread-agnostic (hook work is routed through their own submissions); a
+            // deferred terminate routes its cleanup to the render thread. The original
+            // failure propagates.
             synchronized (lifecycle) {
                 for (Run run : runs) {
                     run.pendingFrameDeliveries = 0;
                 }
-                lifecycle.notifyAll();
+            }
+            for (Run run : runs) {
+                applyDeferredTerminal(run);
             }
             throw failure;
         }
     }
 
     /**
-     * Enqueues one reserved frame delivery and releases the run's reservation when the delivery
-     * completes or fails, waking any terminal transition blocked on the barrier. The submission
-     * future completes exactly once — the observe ran, the queue rejected it, or the dispatch
-     * deadline expired — so the decrement runs exactly once per delivery.
+     * Enqueues one reserved frame delivery. The submission future completes exactly once — the
+     * observe ran, the queue rejected it, or the dispatch deadline expired — and its completion
+     * observes the frame, releases the reservation, and applies any deferred terminal transition.
      */
     private void deliverFrame(Run run, SemanticSnapshot snapshot) {
         CompletionStage<?> submission = scheduler.submit(() -> {
             run.observe(snapshot);
             return null;
         }, dispatchDeadline());
-        submission.whenComplete((ignored, failure) -> {
-            synchronized (lifecycle) {
-                if (run.pendingFrameDeliveries > 0) {
-                    run.pendingFrameDeliveries--;
-                }
-                lifecycle.notifyAll();
-            }
-            if (failure != null) {
-                run.dispatchFailed();
-            }
-        });
+        submission.whenComplete((ignored, failure) ->
+                deliveryCompleted(run, failure != null));
     }
 
     /**
-     * Blocks a terminalizing transition until every in-flight frame reservation for the run has
-     * delivered or failed, releasing the lifecycle monitor while waiting. The render thread
-     * itself executes the deliveries, so it never waits here — waiting on it would deadlock.
-     * An interrupt aborts the wait and preserves the interrupt status; the terminal transition
-     * then proceeds without the delivery.
+     * Runs when a reserved frame delivery completes (or fails): releases the run's reservation
+     * and, once every in-flight reservation has drained, applies the first-wins deferred terminal
+     * transition on the delivering thread (the render thread during a drain). A failed delivery
+     * then reports the dispatch failure, which no-ops when the deferred transition already
+     * terminalized the run.
      */
-    private void awaitPendingFrameDeliveries(Run run) {
-        if (scheduler.isOwnerThread()) {
-            return;
-        }
-        boolean interrupted = false;
+    private void deliveryCompleted(Run run, boolean failed) {
+        Runnable deferred = null;
         synchronized (lifecycle) {
-            while (run.pendingFrameDeliveries > 0) {
-                try {
-                    lifecycle.wait();
-                } catch (InterruptedException failure) {
-                    interrupted = true;
-                    break;
-                }
+            if (run.pendingFrameDeliveries > 0) {
+                run.pendingFrameDeliveries--;
+            }
+            if (run.pendingFrameDeliveries == 0 && run.deferredTerminal != null) {
+                deferred = run.deferredTerminal;
+                run.deferredTerminal = null;
             }
         }
-        if (interrupted) {
-            Thread.currentThread().interrupt();
+        if (deferred != null) {
+            deferred.run();
+        }
+        if (failed) {
+            run.dispatchFailed();
         }
     }
 
@@ -352,6 +346,45 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         private String stateIdentity = "unavailable";
         /** In-flight reserved frame deliveries awaiting completion, guarded by the lifecycle monitor. */
         private int pendingFrameDeliveries;
+        /** First-wins deferred terminal transition, guarded by the lifecycle monitor. */
+        private Runnable deferredTerminal;
+
+        /**
+         * Reserves this terminal transition first-wins under the lifecycle monitor. While frame
+         * deliveries are in flight the transition is deferred: the run keeps observing reserved
+         * frames, and the last delivery completion (or a supplier/enqueue failure) applies the
+         * transition. Never blocks — the render thread must stay free to drain the queued
+         * deliveries, so a terminal request on any thread returns immediately.
+         *
+         * @return true when this caller's transition was reserved; false when the run already
+         *         terminalized or another terminal transition won the reservation first
+         */
+        private boolean reserveTerminal(Runnable transition) {
+            boolean applyNow;
+            synchronized (lifecycle) {
+                if (deferredTerminal != null) {
+                    return false;
+                }
+                deferredTerminal = transition;
+                applyNow = pendingFrameDeliveries == 0;
+            }
+            if (applyNow) {
+                applyDeferredTerminal();
+            }
+            return true;
+        }
+
+        /** Applies and clears the reserved terminal transition, if any. */
+        private void applyDeferredTerminal() {
+            Runnable transition;
+            synchronized (lifecycle) {
+                transition = deferredTerminal;
+                deferredTerminal = null;
+            }
+            if (transition != null) {
+                transition.run();
+            }
+        }
 
         private DeadlineScheduler.Cancellation deadlineCancellation;
         Run(
@@ -404,7 +437,6 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         }
 
         private void deadlineReached() {
-            boolean publish;
             synchronized (this) {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
                     return;
@@ -412,27 +444,41 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 if (!expired()) {
                     return;
                 }
-                // The deadline thread atomically publishes the terminal result so a paused or
-                // stopped render loop can never leave the call hanging; the run keeps owning
-                // the active slot and hook cleanup is deferred to the render thread.
-                phase = Phase.CLEANING;
-                publish = true;
             }
-            if (publish) {
-                publishTerminal(ScenarioFailure.READINESS_DEADLINE, false);
-                // The deferred cleanup submission is the only failure path that may release
-                // the active owner: unrelated rejected submissions during the terminal window
-                // must not admit a successor before the accepted cleanup mutates the Stage.
-                CompletionStage<?> cleanup = scheduler.submit(() -> {
-                    deferredCleanup();
-                    return null;
-                }, dispatchDeadline());
-                cleanup.whenComplete((ignored, failure) -> {
-                    if (failure != null) {
-                        cleanupFailed();
+            // The deadline transition participates in the reservation protocol: while frame
+            // deliveries are in flight it defers, so the reserved frames are observed before
+            // the run terminalizes; otherwise it publishes atomically on this thread.
+            reserveTerminal(() -> {
+                boolean publish;
+                synchronized (this) {
+                    if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
+                        return;
                     }
-                });
-            }
+                    if (!expired()) {
+                        return;
+                    }
+                    // The deadline thread atomically publishes the terminal result so a paused
+                    // or stopped render loop can never leave the call hanging; the run keeps
+                    // owning the active slot and hook cleanup is deferred to the render thread.
+                    phase = Phase.CLEANING;
+                    publish = true;
+                }
+                if (publish) {
+                    publishTerminal(ScenarioFailure.READINESS_DEADLINE, false);
+                    // The deferred cleanup submission is the only failure path that may release
+                    // the active owner: unrelated rejected submissions during the terminal window
+                    // must not admit a successor before the accepted cleanup mutates the Stage.
+                    CompletionStage<?> cleanup = scheduler.submit(() -> {
+                        deferredCleanup();
+                        return null;
+                    }, dispatchDeadline());
+                    cleanup.whenComplete((ignored, failure) -> {
+                        if (failure != null) {
+                            cleanupFailed();
+                        }
+                    });
+                }
+            });
         }
 
         /**
@@ -453,13 +499,15 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
 
         /** Terminates a competing acquisition without scheduling any hook execution. */
         void rejectBusy() {
-            synchronized (this) {
-                if (phase != Phase.QUEUED) {
-                    return;
+            reserveTerminal(() -> {
+                synchronized (this) {
+                    if (phase != Phase.QUEUED) {
+                        return;
+                    }
+                    phase = Phase.TERMINAL;
                 }
-                phase = Phase.TERMINAL;
-            }
-            completeTerminal(ScenarioFailure.SESSION_BUSY, false);
+                completeTerminal(ScenarioFailure.SESSION_BUSY, false);
+            });
         }
 
         void begin() {
@@ -555,21 +603,21 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     return false;
                 }
             }
-            // A caller-thread cancellation must not terminalize a run while its reserved
-            // frame deliveries are still in flight: the deliveries drain on the render
-            // thread, so the wait releases the lifecycle monitor instead of holding it.
-            awaitPendingFrameDeliveries(this);
-            synchronized (this) {
-                if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
-                    return false;
+            // Caller-thread cancellations never block: while reserved frame deliveries are in
+            // flight the CANCELLED transition is deferred until the last delivery completes,
+            // so the reserved frames are observed before the run terminalizes.
+            return reserveTerminal(() -> {
+                synchronized (this) {
+                    if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
+                        return;
+                    }
+                    phase = Phase.CANCELLING;
                 }
-                phase = Phase.CANCELLING;
-            }
-            observeSubmission(this, scheduler.submit(() -> {
-                terminate(ScenarioFailure.CANCELLED);
-                return null;
-            }, dispatchDeadline()));
-            return true;
+                observeSubmission(this, scheduler.submit(() -> {
+                    terminate(ScenarioFailure.CANCELLED);
+                    return null;
+                }, dispatchDeadline()));
+            });
         }
 
         @Override public CompletionStage<ScenarioResult> completion() {
@@ -585,29 +633,29 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     throw new IllegalStateException("scenario lease is not ready");
                 }
             }
-            // A caller-thread release must not terminalize the lease while its reserved
-            // frame deliveries are still in flight; on the render thread the deliveries
-            // cannot drain while we wait, so the barrier is skipped there.
-            awaitPendingFrameDeliveries(this);
-            synchronized (this) {
-                if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
-                    return result;
+            // A caller-thread release never blocks: reserved frame deliveries are observed
+            // first, and the CANCELLING transition applies when the last one completes.
+            reserveTerminal(() -> {
+                synchronized (this) {
+                    if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
+                        return;
+                    }
+                    if (phase != Phase.READY) {
+                        throw new IllegalStateException("scenario lease is not ready");
+                    }
+                    phase = Phase.CANCELLING;
                 }
-                if (phase != Phase.READY) {
-                    throw new IllegalStateException("scenario lease is not ready");
-                }
-                phase = Phase.CANCELLING;
-            }
-            if (scheduler.isDraining()) {
-                // Already on the render thread inside a drain: cleanup runs inline so the
-                // releasing call site observes the terminal result without another frame.
-                terminate(null);
-            } else {
-                observeSubmission(this, scheduler.submit(() -> {
+                if (scheduler.isDraining()) {
+                    // Already on the render thread inside a drain: cleanup runs inline so the
+                    // releasing call site observes the terminal result without another frame.
                     terminate(null);
-                    return null;
-                }, dispatchDeadline()));
-            }
+                } else {
+                    observeSubmission(this, scheduler.submit(() -> {
+                        terminate(null);
+                        return null;
+                    }, dispatchDeadline()));
+                }
+            });
             return result;
         }
 
@@ -616,8 +664,6 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     || elapsed().compareTo(definition.maxDuration()) >= 0;
         }
         private void dispatchFailed() {
-            boolean publish = false;
-            awaitPendingFrameDeliveries(this);
             synchronized (this) {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
                     // A terminal or cleaning run is released only by its own terminal path or
@@ -625,12 +671,16 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     // never release the active owner while accepted cleanup is still queued.
                     return;
                 }
-                phase = Phase.TERMINAL;
-                publish = true;
             }
-            if (publish) {
+            reserveTerminal(() -> {
+                synchronized (this) {
+                    if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
+                        return;
+                    }
+                    phase = Phase.TERMINAL;
+                }
                 completeTerminal(ScenarioFailure.DISPATCH_FAILED, false);
-            }
+            });
         }
 
         /**
@@ -640,18 +690,20 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
          * left pending. The original failure still propagates to the synchronous launch caller.
          */
         void schedulingFailed() {
-            boolean publish;
-            awaitPendingFrameDeliveries(this);
             synchronized (this) {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
                     return;
                 }
-                phase = Phase.TERMINAL;
-                publish = true;
             }
-            if (publish) {
+            reserveTerminal(() -> {
+                synchronized (this) {
+                    if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
+                        return;
+                    }
+                    phase = Phase.TERMINAL;
+                }
                 completeTerminal(ScenarioFailure.DISPATCH_FAILED, false);
-            }
+            });
         }
 
         /**
@@ -665,6 +717,20 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
 
 
         private void terminate(ScenarioFailure failure) {
+            reserveTerminal(() -> applyTerminate(failure));
+        }
+
+        private void applyTerminate(ScenarioFailure failure) {
+            if (!scheduler.isOwnerThread()) {
+                // Cleanup hooks must run on the render thread: a deferred application from an
+                // off-thread release (a supplier/enqueue failure or a rejected delivery) routes
+                // the termination to the owner instead of running the hooks here.
+                observeSubmission(this, scheduler.submit(() -> {
+                    applyTerminate(failure);
+                    return null;
+                }, dispatchDeadline()));
+                return;
+            }
             synchronized (this) {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
                     return;
