@@ -83,3 +83,28 @@ schema diagnostics, every advertised example, one-step screenshot correction,
 request/process/key-order churn, exact schema/state/build/launch/deadline
 boundaries, semantic progress, safe reuse and invalidation, and durable
 digest-verified terminal retention.
+
+## Amendment 2026-08-08: Bounded MCP Recovery Accounting
+
+The MCP adapter's recovery accounting is globally bounded: session and
+fingerprint keys live in access-ordered stores capped at 4,096 entries each
+with a 10-minute monotonic TTL. A new key in either store at capacity is
+deterministically terminally rejected with `accounting-capacity/v1`
+(`RECOVERY_BUDGET_EXHAUSTED`, consumed equals the limit, remaining zero) and
+never inserted, so an active key is never evicted, a rejected key stays
+terminal across repeated attempts, and flooding can never reset any tracked
+budget. `elapsedMillis` is measured from the first transient attempt of the
+current workflow, never from server construction, so an immediate success
+reports zero elapsed and never exceeds `maxWallTimeMillis`. Successful
+operations, terminal termination, session close, and server close remove the
+session's state and release the fingerprint keys its workflow recorded (only
+those not also owned by another live workflow), so a later workflow starts
+fresh. Each session reservation carries a generation token: a stale completion
+can only ever release the workflow it participated in, never a newer
+generation's state. A capacity rejection does not clear the saturated store:
+the rejected key is never inserted and retries stay fail-closed until the
+owning workflow terminates, expires, or closes. Recording and registration are
+atomic with an ending workflow's ownership check and deletion under one lock,
+so a just-recorded fingerprint can never be deleted mid-flight. The fixed
+schema/state/build/launch/deadline ceilings and the digest-bound terminal
+record are unchanged.

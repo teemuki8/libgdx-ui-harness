@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -68,8 +69,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Base64;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -91,7 +92,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
+@org.junit.jupiter.api.parallel.Isolated
 final class HarnessMcpServerContractTest {
     private static final MonotonicClock CLOCK = System::nanoTime;
     private static final SemanticSnapshot SNAPSHOT = snapshot();
@@ -474,6 +477,155 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test void verifiedPublisherRejectsMismatchedReceiptDimensions() {
+        byte[] payload = new byte[] {1, 2, 3};
+        ArtifactReference.Publisher wrongLength = (mediaType, content) ->
+                new ArtifactReference("artifact:1", mediaType, content.length + 1,
+                        "0".repeat(64));
+        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                () -> new VerifiedArtifactPublisher(wrongLength).publish("image/png", payload));
+
+        ArtifactReference.Publisher wrongDigest = (mediaType, content) ->
+                new ArtifactReference("artifact:1", mediaType, content.length,
+                        "0".repeat(64));
+        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                () -> new VerifiedArtifactPublisher(wrongDigest).publish("image/png", payload));
+
+        ArtifactReference.Publisher wrongMedia = (mediaType, content) ->
+                new ArtifactReference("artifact:1", "application/octet-stream",
+                        content.length, sha256Hex(content));
+        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                () -> new VerifiedArtifactPublisher(wrongMedia).publish("image/png", payload));
+
+        ArtifactReference.Publisher honest = (mediaType, content) ->
+                new ArtifactReference("artifact:1", mediaType, content.length,
+                        sha256Hex(content));
+        ArtifactReference receipt = new VerifiedArtifactPublisher(honest)
+                .publish("image/png", payload);
+        assertEquals("artifact:1", receipt.reference());
+        assertEquals("image/png", receipt.mediaType());
+        assertEquals(payload.length, receipt.byteLength());
+    }
+
+    @Test void verifiedPublisherRejectsNullReceipt() {
+        byte[] payload = new byte[] {1, 2, 3};
+        ArtifactReference.Publisher nullReceipt = (mediaType, content) -> null;
+        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                () -> new VerifiedArtifactPublisher(nullReceipt)
+                        .publish("image/png", payload));
+    }
+
+    @Test void verifiedPublisherNormalizesDelegateFailuresToTheFixedMessage() {
+        String secret = "ghp_1234567890abcdef";
+        ArtifactReference.Publisher throwing = (mediaType, content) -> {
+            throw new ArtifactReference.ArtifactUnavailableException(
+                    "publisher token " + secret);
+        };
+        ArtifactReference.ArtifactUnavailableException failure =
+                assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                        () -> new VerifiedArtifactPublisher(throwing)
+                                .publish("image/png", new byte[] {1, 2, 3}));
+        assertEquals("Artifact publisher receipt is unavailable or invalid",
+                failure.getMessage());
+        assertFalse(failure.getMessage().contains(secret));
+        assertInstanceOf(ArtifactReference.ArtifactUnavailableException.class,
+                failure.getCause());
+
+        ArtifactReference.Publisher invalidReference = (mediaType, content) ->
+                new ArtifactReference("/tmp/leak.zip", mediaType, content.length,
+                        sha256Hex(content));
+        ArtifactReference.ArtifactUnavailableException normalized =
+                assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                        () -> new VerifiedArtifactPublisher(invalidReference)
+                                .publish("image/png", new byte[] {1, 2, 3}));
+        assertEquals("Artifact publisher receipt is unavailable or invalid",
+                normalized.getMessage());
+        assertFalse(normalized.getMessage().contains("/tmp/leak.zip"));
+    }
+
+    @Test void verifiedPublisherNormalizesDelegateErrorsToTheFixedMessage() {
+        ArtifactReference.Publisher throwing = (mediaType, content) -> {
+            throw new AssertionError("delegate invariant broken");
+        };
+        ArtifactReference.ArtifactUnavailableException failure =
+                assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                        () -> new VerifiedArtifactPublisher(throwing)
+                                .publish("image/png", new byte[] {1, 2, 3}));
+        assertEquals("Artifact publisher receipt is unavailable or invalid",
+                failure.getMessage());
+        assertInstanceOf(AssertionError.class, failure.getCause());
+    }
+
+    @Test void verifiedPublisherNormalizesSneakyCheckedFailures() {
+        String secret = "checked-exception-leak";
+        ArtifactReference.Publisher sneaky = (mediaType, content) ->
+                sneakyThrow(new java.io.IOException(secret));
+        ArtifactReference.ArtifactUnavailableException failure =
+                assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                        () -> new VerifiedArtifactPublisher(sneaky)
+                                .publish("image/png", new byte[] {1, 2, 3}));
+        assertEquals("Artifact publisher receipt is unavailable or invalid",
+                failure.getMessage());
+        assertFalse(failure.getMessage().contains(secret));
+        assertInstanceOf(java.io.IOException.class, failure.getCause());
+    }
+
+    @Test void verifiedPublisherNormalizesLinkageErrors() {
+        ArtifactReference.Publisher linkage = (mediaType, content) -> {
+            throw new LinkageError("delegate linkage failure");
+        };
+        ArtifactReference.ArtifactUnavailableException failure =
+                assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                        () -> new VerifiedArtifactPublisher(linkage)
+                                .publish("image/png", new byte[] {1, 2, 3}));
+        assertEquals("Artifact publisher receipt is unavailable or invalid",
+                failure.getMessage());
+        assertInstanceOf(LinkageError.class, failure.getCause());
+    }
+
+    @Test void verifiedPublisherRethrowsFatalErrors() {
+        StackOverflowError fatal = new StackOverflowError("simulated");
+        ArtifactReference.Publisher overflowing = (mediaType, content) -> {
+            throw fatal;
+        };
+        assertSame(fatal, assertThrows(StackOverflowError.class,
+                () -> new VerifiedArtifactPublisher(overflowing)
+                        .publish("image/png", new byte[] {1, 2, 3})));
+
+        ThreadDeath death = new ThreadDeath();
+        ArtifactReference.Publisher dying = (mediaType, content) -> {
+            throw death;
+        };
+        assertSame(death, assertThrows(ThreadDeath.class,
+                () -> new VerifiedArtifactPublisher(dying)
+                        .publish("image/png", new byte[] {1, 2, 3})));
+    }
+
+    @Test void verifiedPublisherRejectsUppercaseDigestReceipts() {
+        byte[] payload = new byte[] {1, 2, 3};
+        ArtifactReference.Publisher uppercase = (mediaType, content) ->
+                new ArtifactReference("artifact:1", mediaType, content.length,
+                        sha256Hex(content).toUpperCase());
+        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                () -> new VerifiedArtifactPublisher(uppercase)
+                        .publish("image/png", payload));
+    }
+
+    @Test void mutatingPublisherCannotRedefineTheExpectedBytes() {
+        byte[] payload = new byte[] {1, 2, 3};
+        ArtifactReference.Publisher mutating = (mediaType, content) -> {
+            java.util.Arrays.fill(content, (byte) 0);
+            return new ArtifactReference("artifact:1", mediaType, content.length,
+                    sha256Hex(content)); // receipt matches the MUTATED bytes
+        };
+
+        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                () -> new VerifiedArtifactPublisher(mutating)
+                        .publish("image/png", payload.clone()));
+        // the delegate's mutation must not be able to redefine what the receipt is
+        // verified against: the expectation is computed from the pre-call snapshot
+    }
+
     @Test void screenshotPublicationUsesTheInternalCaptureNotThePublicString() {
         // A deliberately invalid public base64 string cannot be decoded: successful publication
         // proves the artifact path uses the internal capture attachment, not the public String.
@@ -826,6 +978,505 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test void immediateSuccessReportsZeroElapsedOnALongLivedServer() {
+        AtomicLong nanos = new AtomicLong(999_000_000_000L);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request ->
+                                CompletableFuture.completedFuture(
+                                new HarnessResponse.Success(ProtocolVersion.V1,
+                                        "mcp-1", "game",
+                                        new HarnessResponse.Result.Sessions(List.of()))),
+                        new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            Map<String, Object> content = structured(handler.handle(call(
+                    "ui_sessions", Map.of())).block(Duration.ofSeconds(10)));
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery = (Map<String, Object>) content.get("recovery");
+            assertEquals(0, ((Number) recovery.get("consumed")).intValue());
+            assertEquals(0, ((Number) recovery.get("elapsedMillis")).intValue());
+            assertTrue(((Number) recovery.get("elapsedMillis")).longValue()
+                    <= ((Number) recovery.get("maxWallTimeMillis")).longValue());
+        }
+    }
+
+    @Test void floodedNewSessionsAreTerminallyRejectedWithoutResettingBudgets() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        AtomicInteger calls = new AtomicInteger();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                    calls.incrementAndGet();
+                    return CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            new ProtocolError(ProtocolError.Code.NOT_FOUND,
+                                    "locator resolved to no actors", request.requestId(),
+                                    request.sessionId(), null, 0, null, null,
+                                    List.of(), Map.of(), null, List.of())));
+                }, new RecordingArtifacts(), executor, 1024, nanos::get, 2)) {
+            Map<String, Object> first = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "session-a")))
+                    .block(Duration.ofSeconds(10)));
+            Map<String, Object> second = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "session-b")))
+                    .block(Duration.ofSeconds(10)));
+            assertTrue(first.containsKey("code"));
+            assertTrue(second.containsKey("code"));
+
+            Map<String, Object> rejected = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "overflow")))
+                    .block(Duration.ofSeconds(10)));
+            assertEquals("RECOVERY_BUDGET_EXHAUSTED", rejected.get("code"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery = (Map<String, Object>) rejected.get("recovery");
+            assertEquals("accounting-capacity/v1", recovery.get("terminatingRule"));
+            assertEquals(3, ((Number) recovery.get("consumed")).intValue());
+            assertEquals(0, ((Number) recovery.get("remaining")).intValue());
+
+            Map<String, Object> again = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "overflow")))
+                    .block(Duration.ofSeconds(10)));
+            assertEquals("RECOVERY_BUDGET_EXHAUSTED", again.get("code"),
+                    "a rejected key must stay terminal and never reset any budget");
+
+            Map<String, Object> tracked = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "session-a")))
+                    .block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> trackedRecovery = (Map<String, Object>) tracked.get("recovery");
+            assertEquals(2, ((Number) trackedRecovery.get("consumed")).intValue(),
+                    "flooding must not reset an existing key's budget");
+        }
+    }
+
+    @Test void successAfterTransientReportsConsumedThenStartsFresh() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        AtomicInteger calls = new AtomicInteger();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
+                    calls.incrementAndGet();
+                    if (calls.get() == 1) {
+                        // NOT_FOUND maps to the transient LOCATOR_NOT_FOUND diagnostic
+                        return CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                new ProtocolError(ProtocolError.Code.NOT_FOUND,
+                                        "locator resolved to no actors", request.requestId(),
+                                        request.sessionId(), null, 0, null, null,
+                                        List.of(), Map.of(), null, List.of())));
+                    }
+                    return CompletableFuture.completedFuture(new HarnessResponse.Success(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            new HarnessResponse.Result.Sessions(List.of())));
+                }, new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            Map<String, Object> first = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            assertTrue(first.containsKey("code"),
+                    "first call must produce a transient diagnostic");
+
+            Map<String, Object> success = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery = (Map<String, Object>) success.get("recovery");
+            assertEquals(1, ((Number) recovery.get("consumed")).intValue());
+
+            Map<String, Object> third = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> thirdRecovery = (Map<String, Object>) third.get("recovery");
+            assertEquals(0, ((Number) thirdRecovery.get("consumed")).intValue(),
+                    "success must remove the session's recovery state");
+        }
+    }
+
+    @Test void sessionCloseFailureEvictsRecoveryState() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        AtomicInteger calls = new AtomicInteger();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
+                    calls.incrementAndGet();
+                    if (calls.get() == 1) {
+                        return CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                new ProtocolError(ProtocolError.Code.NOT_FOUND,
+                                        "locator resolved to no actors", request.requestId(),
+                                        request.sessionId(), null, 0, null, null,
+                                        List.of(), Map.of(), null, List.of())));
+                    }
+                    if (calls.get() == 2) {
+                        return CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                new ProtocolError(ProtocolError.Code.SESSION_CLOSED,
+                                        "session closed", request.requestId(),
+                                        request.sessionId(), null, 0, null, null,
+                                        List.of(), Map.of(), null, List.of())));
+                    }
+                    return CompletableFuture.completedFuture(new HarnessResponse.Success(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            new HarnessResponse.Result.Sessions(List.of())));
+                }, new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            Map<String, Object> arguments = Map.of("sessionId", "game");
+            assertTrue(structured(handler.handle(call(
+                    "ui_snapshot", arguments)).block(Duration.ofSeconds(10))).containsKey("code"));
+            assertTrue(structured(handler.handle(call(
+                    "ui_snapshot", arguments)).block(Duration.ofSeconds(10))).containsKey("code"));
+
+            Map<String, Object> success = structured(handler.handle(call(
+                    "ui_snapshot", arguments)).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery = (Map<String, Object>) success.get("recovery");
+            assertEquals(0, ((Number) recovery.get("consumed")).intValue(),
+                    "session close must evict the session's recovery state");
+        }
+    }
+
+    @Test void fingerprintStoreCapacityTerminallyRejectsNewFingerprints() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        request -> CompletableFuture.failedFuture(new AssertionError()),
+                        new RecordingArtifacts(), executor, 1024, nanos::get, 3)) {
+            for (int index = 0; index < 3; index++) {
+                Map<String, Object> diagnostic = structured(handler.handle(call(
+                        "ui_snapshot", Map.of("sessionId", "game", "bogus-" + index, index)))
+                        .block(Duration.ofSeconds(10)));
+                assertEquals("UNKNOWN_ARGUMENT", diagnostic.get("code"));
+            }
+            Map<String, Object> rejected = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game", "bogus-3", 3)))
+                    .block(Duration.ofSeconds(10)));
+            assertEquals("RECOVERY_BUDGET_EXHAUSTED", rejected.get("code"),
+                    "fingerprint churn must not bypass the accounting bound");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery = (Map<String, Object>) rejected.get("recovery");
+            assertEquals("accounting-capacity/v1", recovery.get("terminatingRule"));
+            assertEquals(3, ((Number) recovery.get("consumed")).intValue());
+            assertEquals(0, ((Number) recovery.get("remaining")).intValue());
+
+            // Fail-closed: the saturated store is not cleared by the rejection, so a
+            // different new fingerprint remains terminally rejected on retry.
+            Map<String, Object> again = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game", "bogus-4", 4)))
+                    .block(Duration.ofSeconds(10)));
+            assertEquals("RECOVERY_BUDGET_EXHAUSTED", again.get("code"),
+                    "a capacity rejection must not clear the saturated store");
+
+            // The owning workflow's original counts remain intact: the session
+            // budget kept accumulating through the rejections (3 -> 6) and was
+            // never reset, and the owned fingerprint still resolves, so the
+            // rejection the owned request now hits is the session budget.
+            Map<String, Object> owned = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game", "bogus-0", 0)))
+                    .block(Duration.ofSeconds(10)));
+            assertEquals("RECOVERY_BUDGET_EXHAUSTED", owned.get("code"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> ownedRecovery = (Map<String, Object>) owned.get("recovery");
+            assertEquals("session-recovery-budget/v1",
+                    ownedRecovery.get("terminatingRule"));
+            assertEquals(6, ((Number) ownedRecovery.get("consumed")).intValue(),
+                    "capacity rejections must not reset an owned workflow's budget");
+        }
+    }
+
+    @Test void staleTerminalDoesNotClearNewerWorkflowState() throws Exception {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch staleAdmitted = new CountDownLatch(1);
+        CompletableFuture<HarnessResponse> staleGate = new CompletableFuture<>();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
+                    int call = calls.incrementAndGet();
+                    if (call == 2) {
+                        staleAdmitted.countDown();
+                        return staleGate;
+                    }
+                    if (call == 3) {
+                        return CompletableFuture.completedFuture(new HarnessResponse.Success(
+                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                new HarnessResponse.Result.Sessions(List.of())));
+                    }
+                    return CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            new ProtocolError(ProtocolError.Code.NOT_FOUND,
+                                    "locator resolved to no actors", request.requestId(),
+                                    request.sessionId(), null, 0, null, null,
+                                    List.of(), Map.of(), null, List.of())));
+                }, new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            // First transient failure creates workflow generation 1.
+            structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+
+            // The stale terminal starts while generation 1 is current and is held.
+            CompletableFuture<McpSchema.CallToolResult> stale = handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).toFuture();
+            assertTrue(staleAdmitted.await(10, TimeUnit.SECONDS));
+
+            // A success ends generation 1, clearing the session and its fingerprints.
+            Map<String, Object> success = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> successRecovery = (Map<String, Object>) success.get("recovery");
+            assertEquals(1, ((Number) successRecovery.get("consumed")).intValue());
+
+            // A transient failure starts generation 2 with a fresh budget.
+            Map<String, Object> fresh = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> freshRecovery = (Map<String, Object>) fresh.get("recovery");
+            assertEquals(1, ((Number) freshRecovery.get("consumed")).intValue());
+
+            // The stale terminal completes with a terminal protocol error. It must
+            // retain the generation-1 token captured at request start, so it can
+            // never end generation 2.
+            staleGate.complete(new HarnessResponse.Failure(
+                    ProtocolVersion.V1, "mcp-2", "game",
+                    new ProtocolError(ProtocolError.Code.LIMIT_EXCEEDED,
+                            "limit exceeded", "mcp-2", "game", null, 0, null, null,
+                            List.of(), Map.of(), null, List.of())));
+            Map<String, Object> staleResult = structured(stale.get(10, TimeUnit.SECONDS));
+            assertEquals("LIMIT_EXCEEDED", staleResult.get("code"));
+
+            // Generation 2's state and capacity remain intact.
+            Map<String, Object> continued = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> continuedRecovery =
+                    (Map<String, Object>) continued.get("recovery");
+            assertEquals(2, ((Number) continuedRecovery.get("consumed")).intValue(),
+                    "a stale terminal must never clear a newer workflow's state");
+        }
+    }
+
+    @Test void interleavedRecordAndReleaseNeverLoseNewerGenerationFingerprint()
+            throws Exception {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch releaseBlocked = new CountDownLatch(1);
+        CountDownLatch releaseGate = new CountDownLatch(1);
+        CompletableFuture<HarnessResponse> endingGate = new CompletableFuture<>();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
+                    if (calls.incrementAndGet() == 1) {
+                        return endingGate;
+                    }
+                    return CompletableFuture.completedFuture(new HarnessResponse.Success(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            new HarnessResponse.Result.Sessions(List.of())));
+                }, new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            // Pause the ending workflow's release exactly between its ownership
+            // check and the accounting deletion.
+            handler.beforeFingerprintRelease = () -> {
+                releaseBlocked.countDown();
+                try {
+                    releaseGate.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            };
+
+            Map<String, Object> malformed = Map.of("sessionId", "game", "bogus", 1);
+            // Generation 1 owns the malformed fingerprint.
+            structured(handler.handle(call(
+                    "ui_snapshot", malformed)).block(Duration.ofSeconds(10)));
+
+            // The gated success will end generation 1 and is paused mid-release.
+            CompletableFuture<McpSchema.CallToolResult> ending = handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).toFuture();
+            endingGate.complete(new HarnessResponse.Success(
+                    ProtocolVersion.V1, "mcp-2", "game",
+                    new HarnessResponse.Result.Sessions(List.of())));
+            assertTrue(releaseBlocked.await(10, TimeUnit.SECONDS),
+                    "the ending workflow must be paused at its fingerprint release");
+
+            // A concurrent request records the same malformed fingerprint while the
+            // ending workflow is paused; its record and registration are atomic
+            // with the release, so the new generation's fingerprint survives.
+            CompletableFuture<McpSchema.CallToolResult> recording = handler.handle(call(
+                    "ui_snapshot", malformed)).toFuture();
+            releaseGate.countDown();
+            ending.get(10, TimeUnit.SECONDS);
+            structured(recording.get(10, TimeUnit.SECONDS));
+
+            Map<String, Object> continued = structured(handler.handle(call(
+                    "ui_snapshot", malformed)).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> continuedRecovery =
+                    (Map<String, Object>) continued.get("recovery");
+            assertEquals(2, ((Number) continuedRecovery.get("consumed")).intValue(),
+                    "an interleaved release must never delete the new generation's "
+                            + "just-recorded fingerprint");
+        }
+    }
+
+    @Test void successClearsFingerprintsSoSameMalformedRequestStartsFresh() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        AtomicInteger calls = new AtomicInteger();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
+                    calls.incrementAndGet();
+                    return CompletableFuture.completedFuture(new HarnessResponse.Success(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            new HarnessResponse.Result.Sessions(List.of())));
+                }, new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            Map<String, Object> malformed = Map.of("sessionId", "game", "bogus", 1);
+            Map<String, Object> first = structured(handler.handle(call(
+                    "ui_snapshot", malformed)).block(Duration.ofSeconds(10)));
+            assertEquals("UNKNOWN_ARGUMENT", first.get("code"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> firstRecovery = (Map<String, Object>) first.get("recovery");
+            assertEquals(1, ((Number) firstRecovery.get("consumed")).intValue());
+
+            Map<String, Object> success = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> successRecovery = (Map<String, Object>) success.get("recovery");
+            assertEquals(1, ((Number) successRecovery.get("consumed")).intValue());
+
+            Map<String, Object> again = structured(handler.handle(call(
+                    "ui_snapshot", malformed)).block(Duration.ofSeconds(10)));
+            assertEquals("UNKNOWN_ARGUMENT", again.get("code"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> againRecovery = (Map<String, Object>) again.get("recovery");
+            assertEquals(1, ((Number) againRecovery.get("consumed")).intValue(),
+                    "success must clear the workflow's fingerprints so the same malformed "
+                            + "request starts a fresh budget at one");
+        }
+    }
+
+    @Test void staleCompletionDoesNotClearNewerWorkflowState() throws Exception {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch staleAdmitted = new CountDownLatch(1);
+        CompletableFuture<HarnessResponse> staleGate = new CompletableFuture<>();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
+                    if (calls.incrementAndGet() == 1) {
+                        staleAdmitted.countDown();
+                        return staleGate;
+                    }
+                    return CompletableFuture.completedFuture(new HarnessResponse.Success(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            new HarnessResponse.Result.Sessions(List.of())));
+                }, new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            Map<String, Object> malformed = Map.of("sessionId", "game", "bogus", 1);
+
+            // First transient failure creates workflow generation 1.
+            structured(handler.handle(call(
+                    "ui_snapshot", malformed)).block(Duration.ofSeconds(10)));
+
+            // The stale success starts while generation 1 is current and is held on a gate.
+            CompletableFuture<McpSchema.CallToolResult> stale = handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).toFuture();
+            assertTrue(staleAdmitted.await(10, TimeUnit.SECONDS));
+
+            // A success ends generation 1, clearing the session and its fingerprints.
+            Map<String, Object> success = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> successRecovery = (Map<String, Object>) success.get("recovery");
+            assertEquals(1, ((Number) successRecovery.get("consumed")).intValue());
+
+            // A new transient failure starts generation 2 with a fresh budget.
+            Map<String, Object> fresh = structured(handler.handle(call(
+                    "ui_snapshot", malformed)).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> freshRecovery = (Map<String, Object>) fresh.get("recovery");
+            assertEquals(1, ((Number) freshRecovery.get("consumed")).intValue());
+
+            // Releasing the stale completion must not clear generation 2's state.
+            staleGate.complete(new HarnessResponse.Success(
+                    ProtocolVersion.V1, "mcp-2", "game",
+                    new HarnessResponse.Result.Sessions(List.of())));
+            Map<String, Object> staleResult = structured(stale.get(10, TimeUnit.SECONDS));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> staleRecovery = (Map<String, Object>) staleResult.get("recovery");
+            assertEquals(1, ((Number) staleRecovery.get("consumed")).intValue());
+
+            // The same malformed request now reports two: generation 2 was not cleared.
+            Map<String, Object> continued = structured(handler.handle(call(
+                    "ui_snapshot", malformed)).block(Duration.ofSeconds(10)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> continuedRecovery =
+                    (Map<String, Object>) continued.get("recovery");
+            assertEquals(2, ((Number) continuedRecovery.get("consumed")).intValue(),
+                    "a stale completion must never clear a newer workflow's state");
+        }
+    }
+
+    @Test void handlerCloseClearsRecoveryStateAndRemainsIdempotent() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+        HarnessToolHandler handler = new HarnessToolHandler(
+                request -> CompletableFuture.failedFuture(new AssertionError()),
+                new RecordingArtifacts(), executor, 1024, nanos::get, 2);
+        try {
+            // Populate the session store, the fingerprint store, and the workflow index.
+            structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game", "bogus-a", 1)))
+                    .block(Duration.ofSeconds(10)));
+            structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game", "bogus-b", 2)))
+                    .block(Duration.ofSeconds(10)));
+        } finally {
+            handler.close();
+            handler.close(); // idempotent
+        }
+        assertTrue(executor.isShutdown());
+    }
+
+    @Test void timeoutProtocolErrorsRemainTerminalDeadlineExceeded() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request ->
+                                CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                new ProtocolError(ProtocolError.Code.TIMEOUT,
+                                        "frame deadline expired", request.requestId(),
+                                        request.sessionId(), null, 0, null, null,
+                                        List.of(), Map.of(), null, List.of()))),
+                        new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            Map<String, Object> diagnostic = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            assertEquals("DEADLINE_EXCEEDED", diagnostic.get("code"),
+                    "a protocol timeout must keep the terminal DEADLINE_EXCEEDED contract");
+            assertEquals("terminal", diagnostic.get("disposition"));
+            assertEquals(Boolean.FALSE, diagnostic.get("retryable"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery = (Map<String, Object>) diagnostic.get("recovery");
+            assertEquals("terminal-code/v1", recovery.get("terminatingRule"));
+        }
+    }
+
+    @Test void notFoundProtocolErrorsRecordTransientLocatorNotFoundRecovery() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request ->
+                                CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                new ProtocolError(ProtocolError.Code.NOT_FOUND,
+                                        "locator resolved to no actors", request.requestId(),
+                                        request.sessionId(), null, 0, null, null,
+                                        List.of(), Map.of(), null, List.of()))),
+                        new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            Map<String, Object> diagnostic = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            assertEquals("LOCATOR_NOT_FOUND", diagnostic.get("code"));
+            assertEquals("transient", diagnostic.get("disposition"));
+            assertEquals(Boolean.TRUE, diagnostic.get("retryable"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery = (Map<String, Object>) diagnostic.get("recovery");
+            assertEquals("wait-for-matching-locator/v1", recovery.get("terminatingRule"));
+            assertEquals(1, ((Number) recovery.get("consumed")).intValue(),
+                    "a transient protocol error must record a recovery attempt");
+        }
+    }
+
     @Test void diagnosticOverflowFailsClosedWithoutSilentFieldTruncation() {
         LinkedHashMap<String, Object> arguments = new LinkedHashMap<>();
         arguments.put("sessionId", "game");
@@ -1085,6 +1736,338 @@ final class HarnessMcpServerContractTest {
                     .block(Duration.ofSeconds(10));
             assertTrue(result.isError());
             assertEquals("INTERNAL_ERROR", structured(result).get("code"));
+        }
+    }
+
+    @Test void traceStopRejectsDigestLessReceipt() {
+        // The released four-arg TraceStopped (legacy constructor without the verified
+        // archive digest) must never surface as a successful MCP result: the
+        // ui_trace_stop output schema requires archiveSha256, so the handler must
+        // fail closed with INTERNAL_ERROR instead of emitting a digest-less receipt.
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.TraceStopped(
+                                "trace-1", "artifact:trace-1", 2, 128)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> response, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_trace_stop", Map.of("sessionId", "game")))
+                    .block(Duration.ofSeconds(10));
+            assertTrue(result.isError());
+            Map<String, Object> content = structured(result);
+            assertEquals("INTERNAL_ERROR", content.get("code"));
+            assertFalse(content.containsKey("archiveSha256"));
+        }
+    }
+
+    @Test void traceStopStructuredReceiptCarriesVerifiedArchiveDigest() {
+        String digest = "ab".repeat(32);
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.TraceStopped(
+                                "trace-1", "artifact:trace-1", 2, 128, digest)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> response, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_trace_stop", Map.of("sessionId", "game")))
+                    .block(Duration.ofSeconds(10));
+
+            assertFalse(result.isError());
+            Map<String, Object> content = structured(result);
+            assertEquals("trace-stopped", content.get("kind"));
+            assertEquals("trace-1", content.get("traceId"));
+            assertEquals("artifact:trace-1", content.get("traceReference"));
+            assertEquals(2L, content.get("eventCount"));
+            assertEquals(128L, content.get("bytes"));
+            assertEquals(digest, content.get("archiveSha256"));
+        }
+    }
+
+    @Test void publisherFailureSecretsNeverReachMcpOutput() {
+        String secret = "ghp_1234567890abcdef";
+        ArtifactReference.Publisher leaking = (mediaType, content) -> {
+            throw new ArtifactReference.ArtifactUnavailableException(
+                    "publisher token " + secret + " at /home/private/key.pem");
+        };
+        byte[] png = "fake-png".getBytes(StandardCharsets.UTF_8);
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.Screenshot(
+                                Base64.getEncoder().encodeToString(png),
+                                "0".repeat(64), 1, 1, 1, 1, 1.0, 1.0)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        executionWithCapture(response, png), leaking, executor, 1024,
+                        System::nanoTime)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_screenshot", Map.of(
+                            "sessionId", "game",
+                            "maxWidth", 10, "maxHeight", 10,
+                            "maxPixels", 100, "maxPngBytes", 1024)))
+                    .block(Duration.ofSeconds(10));
+            String text = result.content().stream()
+                    .filter(McpSchema.TextContent.class::isInstance)
+                    .map(McpSchema.TextContent.class::cast)
+                    .map(McpSchema.TextContent::text)
+                    .reduce("", (a, b) -> a + b);
+
+            assertTrue(result.isError());
+            assertFalse(text.contains(secret));
+            assertFalse(text.contains("/home/private"));
+            assertTrue(text.contains("artifact-unavailable"));
+            Map<String, Object> content = structured(result);
+            assertFalse(String.valueOf(content).contains(secret));
+            assertEquals("INTERNAL_ERROR", content.get("code"));
+            String traceId = (String) content.get("traceId");
+            assertNotNull(traceId);
+            assertTrue(traceId.matches("internal-[0-9a-f]{32}"));
+        }
+    }
+
+    @Test void invalidArtifactReferenceTextIsRedacted() {
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.TraceStopped(
+                                "trace-1", "/tmp/trace.zip", 1, 32)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> response, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_trace_stop", Map.of("sessionId", "game")))
+                    .block(Duration.ofSeconds(10));
+
+            assertTrue(result.isError());
+            String text = result.content().stream()
+                    .filter(McpSchema.TextContent.class::isInstance)
+                    .map(McpSchema.TextContent.class::cast)
+                    .map(McpSchema.TextContent::text)
+                    .reduce("", (a, b) -> a + b);
+            assertFalse(text.contains("/tmp/trace.zip"));
+            assertTrue(text.contains("invalid-artifact-reference"));
+        }
+    }
+
+    @Test void publisherRuntimeFailuresAreRedactedToArtifactUnavailable() {
+        String secret = "runtime_ghp_1234567890abcdef";
+        ArtifactReference.Publisher throwing = (mediaType, content) -> {
+            throw new IllegalStateException(
+                    "runtime token " + secret + " at /opt/private/key.pem");
+        };
+        byte[] png = "fake-png".getBytes(StandardCharsets.UTF_8);
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.Screenshot(
+                                Base64.getEncoder().encodeToString(png),
+                                "0".repeat(64), 1, 1, 1, 1, 1.0, 1.0)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        executionWithCapture(response, png), throwing, executor, 1024,
+                        System::nanoTime)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_screenshot", Map.of(
+                            "sessionId", "game",
+                            "maxWidth", 10, "maxHeight", 10,
+                            "maxPixels", 100, "maxPngBytes", 1024)))
+                    .block(Duration.ofSeconds(10));
+            String text = text(result);
+            assertTrue(result.isError());
+            assertFalse(text.contains(secret));
+            assertFalse(text.contains("/opt/private"));
+            assertTrue(text.contains("artifact-unavailable"));
+            Map<String, Object> content = structured(result);
+            assertEquals("INTERNAL_ERROR", content.get("code"));
+            assertFalse(String.valueOf(content).contains(secret));
+            assertInternalTraceId(content);
+        }
+    }
+
+    @Test void publisherAssertionErrorsAreRedactedToArtifactUnavailable() {
+        String secret = "assert_ghp_1234567890abcdef";
+        ArtifactReference.Publisher throwing = (mediaType, content) -> {
+            throw new AssertionError(
+                    "assert token " + secret + " at /etc/private/key.pem");
+        };
+        byte[] png = "fake-png".getBytes(StandardCharsets.UTF_8);
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.Screenshot(
+                                Base64.getEncoder().encodeToString(png),
+                                "0".repeat(64), 1, 1, 1, 1, 1.0, 1.0)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        executionWithCapture(response, png), throwing, executor, 1024,
+                        System::nanoTime)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_screenshot", Map.of(
+                            "sessionId", "game",
+                            "maxWidth", 10, "maxHeight", 10,
+                            "maxPixels", 100, "maxPngBytes", 1024)))
+                    .block(Duration.ofSeconds(10));
+            String text = text(result);
+            assertTrue(result.isError());
+            assertFalse(text.contains(secret));
+            assertFalse(text.contains("/etc/private"));
+            assertTrue(text.contains("artifact-unavailable"));
+            Map<String, Object> content = structured(result);
+            assertEquals("INTERNAL_ERROR", content.get("code"));
+            assertInternalTraceId(content);
+        }
+    }
+
+    @Test void publisherNullReceiptsAreRedactedToArtifactUnavailable() {
+        ArtifactReference.Publisher nullReceipt = (mediaType, content) -> null;
+        byte[] png = "fake-png".getBytes(StandardCharsets.UTF_8);
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.Screenshot(
+                                Base64.getEncoder().encodeToString(png),
+                                "0".repeat(64), 1, 1, 1, 1, 1.0, 1.0)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        executionWithCapture(response, png), nullReceipt, executor, 1024,
+                        System::nanoTime)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_screenshot", Map.of(
+                            "sessionId", "game",
+                            "maxWidth", 10, "maxHeight", 10,
+                            "maxPixels", 100, "maxPngBytes", 1024)))
+                    .block(Duration.ofSeconds(10));
+            String text = text(result);
+            assertTrue(result.isError());
+            assertTrue(text.contains("artifact-unavailable"));
+            Map<String, Object> content = structured(result);
+            assertEquals("INTERNAL_ERROR", content.get("code"));
+            assertInternalTraceId(content);
+        }
+    }
+
+    @Test void asyncPublisherFailuresAreUnwrappedAndRedacted() {
+        String secret = "async_ghp_1234567890abcdef";
+        CompletableFuture<HarnessResponse> unavailable = CompletableFuture.failedFuture(
+                new java.util.concurrent.CompletionException(
+                        new ArtifactReference.ArtifactUnavailableException(
+                                "async token " + secret + " at /tmp/async.pem")));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> unavailable, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_screenshot", Map.of(
+                            "sessionId", "game",
+                            "maxWidth", 10, "maxHeight", 10,
+                            "maxPixels", 100, "maxPngBytes", 1024)))
+                    .block(Duration.ofSeconds(10));
+            String text = text(result);
+            assertTrue(result.isError());
+            assertFalse(text.contains(secret));
+            assertFalse(text.contains("/tmp/async.pem"));
+            assertTrue(text.contains("artifact-unavailable"));
+            Map<String, Object> content = structured(result);
+            assertEquals("INTERNAL_ERROR", content.get("code"));
+            assertFalse(String.valueOf(content).contains(secret));
+            assertInternalTraceId(content);
+        }
+
+        CompletableFuture<HarnessResponse> invalid = CompletableFuture.failedFuture(
+                new java.util.concurrent.CompletionException(
+                        new ArtifactReference.InvalidArtifactReferenceException(
+                                "reference /etc/passwd")));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> invalid, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_trace_stop", Map.of("sessionId", "game")))
+                    .block(Duration.ofSeconds(10));
+            assertTrue(result.isError());
+            String text = text(result);
+            assertFalse(text.contains("/etc/passwd"));
+            assertTrue(text.contains("invalid-artifact-reference"));
+            assertInternalTraceId(structured(result));
+        }
+    }
+
+    @ResourceLock("java.util.logging")
+    @Test void artifactFailureLogsAreSafeAndCorrelated() {
+        String secret = "log_ghp_1234567890abcdef";
+        java.util.logging.Logger artifactLogger = java.util.logging.Logger.getLogger(
+                "dev.gdx.uiharness.mcp.ArtifactPublisher");
+        java.util.logging.Level previousLevel = artifactLogger.getLevel();
+        boolean previousUseParentHandlers = artifactLogger.getUseParentHandlers();
+        java.util.logging.Filter previousFilter = artifactLogger.getFilter();
+        java.util.logging.Handler[] previousHandlers = artifactLogger.getHandlers();
+        List<String> records = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.logging.Handler capture = new java.util.logging.Handler() {
+            @Override public void publish(java.util.logging.LogRecord record) {
+                StringBuilder formatted = new StringBuilder(record.getMessage());
+                if (record.getThrown() != null) {
+                    formatted.append(" thrown=")
+                            .append(record.getThrown().getClass().getName());
+                }
+                records.add(formatted.toString());
+            }
+
+            @Override public void flush() {}
+
+            @Override public void close() {}
+        };
+        // Isolate the artifact logger: never mutate the root logger, do not propagate
+        // records to parent handlers, and detach any pre-existing handlers so the
+        // capture list sees only this logger's records (CopyOnWriteArrayList is
+        // thread-safe for concurrent JUL delivery).
+        capture.setLevel(java.util.logging.Level.ALL);
+        artifactLogger.setLevel(java.util.logging.Level.ALL);
+        artifactLogger.setUseParentHandlers(false);
+        for (java.util.logging.Handler handler : previousHandlers) {
+            artifactLogger.removeHandler(handler);
+        }
+        artifactLogger.addHandler(capture);
+        try {
+            ArtifactReference.Publisher leaking = (mediaType, content) -> {
+                throw new ArtifactReference.ArtifactUnavailableException(
+                        "publisher token " + secret + " at /home/private/key.pem");
+            };
+            byte[] png = "fake-png".getBytes(StandardCharsets.UTF_8);
+            CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                    new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                            new HarnessResponse.Result.Screenshot(
+                                    Base64.getEncoder().encodeToString(png),
+                                    "0".repeat(64), 1, 1, 1, 1, 1.0, 1.0)));
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                    HarnessToolHandler handler = new HarnessToolHandler(
+                            ignored -> response, leaking, executor, 1024)) {
+                McpSchema.CallToolResult result = handler.handle(call(
+                        "ui_screenshot", Map.of(
+                                "sessionId", "game",
+                                "maxWidth", 10, "maxHeight", 10,
+                                "maxPixels", 100, "maxPngBytes", 1024)))
+                        .block(Duration.ofSeconds(10));
+                Map<String, Object> content = structured(result);
+                String traceId = (String) content.get("traceId");
+                assertNotNull(traceId);
+                assertTrue(traceId.matches("internal-[0-9a-f]{32}"));
+
+                List<String> boundaryRecords = records.stream()
+                        .filter(record -> record.contains("internal-"))
+                        .toList();
+                assertFalse(boundaryRecords.isEmpty());
+                assertTrue(boundaryRecords.stream()
+                        .anyMatch(record -> record.contains(traceId)));
+                for (String record : boundaryRecords) {
+                    assertFalse(record.contains(secret));
+                    assertFalse(record.contains("/home/private"));
+                    assertFalse(record.contains("ArtifactUnavailableException"));
+                    assertFalse(record.contains("thrown="));
+                }
+            }
+        } finally {
+            artifactLogger.removeHandler(capture);
+            for (java.util.logging.Handler handler : previousHandlers) {
+                artifactLogger.addHandler(handler);
+            }
+            artifactLogger.setLevel(previousLevel);
+            artifactLogger.setUseParentHandlers(previousUseParentHandlers);
+            artifactLogger.setFilter(previousFilter);
         }
     }
 
@@ -1863,6 +2846,20 @@ final class HarnessMcpServerContractTest {
         return (Map<String, Object>) result.structuredContent();
     }
 
+    private static String text(McpSchema.CallToolResult result) {
+        return result.content().stream()
+                .filter(McpSchema.TextContent.class::isInstance)
+                .map(McpSchema.TextContent.class::cast)
+                .map(McpSchema.TextContent::text)
+                .reduce("", (a, b) -> a + b);
+    }
+
+    private static void assertInternalTraceId(Map<String, Object> content) {
+        String traceId = (String) content.get("traceId");
+        assertNotNull(traceId);
+        assertTrue(traceId.matches("internal-[0-9a-f]{32}"));
+    }
+
     @SuppressWarnings("unchecked")
     private static List<String> problemPaths(Map<String, Object> diagnostic) {
         return ((List<Map<String, Object>>) diagnostic.get("problems")).stream()
@@ -1898,9 +2895,6 @@ final class HarnessMcpServerContractTest {
         }
     }
 
-    private static String text(McpSchema.CallToolResult result) {
-        return ((McpSchema.TextContent) result.content().getFirst()).text();
-    }
 
     private static Map<String, String> largeEvidence() {
         LinkedHashMap<String, String> evidence = new LinkedHashMap<>();
@@ -2008,6 +3002,14 @@ final class HarnessMcpServerContractTest {
                 java.util.Optional.of(coordinator));
         return new HarnessProtocolService(
                 Map.of("game", session), CLOCK, Runnable::run);
+    }
+
+    private static HarnessToolHandler.ExecutionSource executionWithCapture(
+            CompletionStage<HarnessResponse> response, byte[] png) {
+        BinaryAttachment capture = BinaryAttachment.of(png);
+        return ignored -> response.thenApply(result ->
+                new HarnessProtocolService.Execution(result,
+                        Map.of(HarnessProtocolService.SCREENSHOT_CAPTURE, capture)));
     }
 
     private static HarnessProtocolService service(RecordingHarness harness) {
@@ -2295,5 +3297,12 @@ final class HarnessMcpServerContractTest {
             content.get(copy);
             return publish(mediaType, copy);
         }
+    }
+
+    /** Sneaky-throws a checked failure through an unchecked signature. */
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> ArtifactReference sneakyThrow(Throwable failure)
+            throws T {
+        throw (T) failure;
     }
 }

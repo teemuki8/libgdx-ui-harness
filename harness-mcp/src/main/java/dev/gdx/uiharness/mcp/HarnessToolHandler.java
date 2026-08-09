@@ -21,17 +21,21 @@ import dev.gdx.uiharness.core.typography.GlyphRunObservation;
 import dev.gdx.uiharness.core.typography.TypographyDiagnostic;
 import dev.gdx.uiharness.core.typography.TypographyReport;
 import io.modelcontextprotocol.spec.McpSchema;
+import java.security.SecureRandom;
 import java.util.ArrayDeque;
 import java.util.Collections;
+import java.util.HexFormat;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -49,6 +53,8 @@ public final class HarnessToolHandler implements AutoCloseable {
     static final int MAX_LOCATOR_DEPTH = ProtocolJson.MAX_NESTING_DEPTH / 2;
     static final int MAX_LOCATOR_NODES = ProtocolJson.MAX_REQUEST_BYTES / 256;
     private static final ObjectMapper COMMAND_MAPPER = ProtocolJson.mapper();
+    private static final java.util.logging.Logger ARTIFACT_LOGGER =
+            java.util.logging.Logger.getLogger("dev.gdx.uiharness.mcp.ArtifactPublisher");
 
     /** Internal protocol source carrying raw capture attachments for direct publication. */
     @FunctionalInterface
@@ -65,9 +71,18 @@ public final class HarnessToolHandler implements AutoCloseable {
     private final RequestAdmission admission;
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
     private final AtomicLong requestSequence = new AtomicLong();
-    private final Map<String, Integer> diagnosticAttempts = new ConcurrentHashMap<>();
-    private final Map<String, Integer> sessionRecoveryAttempts = new ConcurrentHashMap<>();
-    private final long startedNanos;
+    private final RecoveryAccounting diagnosticAccounting;
+    private final RecoveryAccounting sessionAccounting;
+    /**
+     * Bounded per-workflow fingerprint index: session workflow generation token
+     * to the distinct fingerprint keys it recorded. Total registered keys are
+     * capped by {@link RecoveryAccounting#MAX_ENTRIES} and idle workflows
+     * expire against the same TTL clock as the accounting stores, so a stale
+     * completion can only ever release the fingerprints it recorded.
+     * Guarded by {@code workflows}.
+     */
+    private final Map<Long, WorkflowFingerprints> workflows = new HashMap<>();
+    private int registeredFingerprints;
 
     /** Creates a handler that owns a Java 25 virtual-thread executor and default admission. */
     public HarnessToolHandler(
@@ -96,14 +111,22 @@ public final class HarnessToolHandler implements AutoCloseable {
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes, LongSupplier nanoClock) {
         this(withEmptyCaptures(protocol), artifacts, executor, artifactThresholdBytes, nanoClock,
-                RequestAdmission.serverDefaults());
+                RequestAdmission.serverDefaults(), RecoveryAccounting.MAX_ENTRIES);
+    }
+
+    /** Test constructor with an explicit recovery-accounting capacity. */
+    HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
+            ArtifactReference.Publisher artifacts, ExecutorService executor,
+            int artifactThresholdBytes, LongSupplier nanoClock, int recoveryCapacity) {
+        this(withEmptyCaptures(protocol), artifacts, executor, artifactThresholdBytes, nanoClock,
+                RequestAdmission.serverDefaults(), recoveryCapacity);
     }
 
     HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes, LongSupplier nanoClock, RequestAdmission admission) {
         this(withEmptyCaptures(protocol), artifacts, executor, artifactThresholdBytes, nanoClock,
-                admission);
+                admission, RecoveryAccounting.MAX_ENTRIES);
     }
 
     /**
@@ -137,14 +160,23 @@ public final class HarnessToolHandler implements AutoCloseable {
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes, LongSupplier nanoClock) {
         this(protocol, artifacts, executor, artifactThresholdBytes, nanoClock,
-                RequestAdmission.serverDefaults());
+                RequestAdmission.serverDefaults(), RecoveryAccounting.MAX_ENTRIES);
     }
 
     HarnessToolHandler(ExecutionSource protocol,
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes, LongSupplier nanoClock, RequestAdmission admission) {
+        this(protocol, artifacts, executor, artifactThresholdBytes, nanoClock, admission,
+                RecoveryAccounting.MAX_ENTRIES);
+    }
+
+    HarnessToolHandler(ExecutionSource protocol,
+            ArtifactReference.Publisher artifacts, ExecutorService executor,
+            int artifactThresholdBytes, LongSupplier nanoClock, RequestAdmission admission,
+            int recoveryCapacity) {
         this.protocol = Objects.requireNonNull(protocol, "protocol");
-        this.artifacts = Objects.requireNonNull(artifacts, "artifacts");
+        this.artifacts = new VerifiedArtifactPublisher(
+                Objects.requireNonNull(artifacts, "artifacts"));
         this.executor = Objects.requireNonNull(executor, "executor");
         this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
         if (artifactThresholdBytes <= 0) {
@@ -152,7 +184,10 @@ public final class HarnessToolHandler implements AutoCloseable {
         }
         this.artifactThresholdBytes = artifactThresholdBytes;
         this.admission = Objects.requireNonNull(admission, "admission");
-        startedNanos = nanoClock.getAsLong();
+        diagnosticAccounting = new RecoveryAccounting(nanoClock, recoveryCapacity,
+                RecoveryAccounting.TTL);
+        sessionAccounting = new RecoveryAccounting(nanoClock, recoveryCapacity,
+                RecoveryAccounting.TTL);
         scheduler = Schedulers.fromExecutorService(executor);
     }
 
@@ -163,6 +198,10 @@ public final class HarnessToolHandler implements AutoCloseable {
             long sequence = requestSequence.incrementAndGet();
             String requestId = "mcp-" + Long.toUnsignedString(sequence);
             Map<String, Object> arguments = call.arguments() == null ? Map.of() : call.arguments();
+            // The workflow generation is captured at request start so a stale completion
+            // can only ever release the workflow it actually participated in.
+            long[] workflowToken = {
+                    sessionAccounting.tokenOf(sessionKey(arguments)) };
             McpSchema.Tool tool;
             try {
                 tool = catalog.tool(call.name());
@@ -181,14 +220,14 @@ public final class HarnessToolHandler implements AutoCloseable {
                                         null, null, null, null, null, false),
                                 catalog.toolNames().stream().sorted().toList(),
                                 Map.of())),
-                        null));
+                        null, workflowToken));
             }
             if (!locatorShapeWithinLimits(arguments)) {
                 return Mono.just(diagnostic(
                         requestId, sequence, call.name(), arguments,
                         DiagnosticCode.SCHEMA_CONFLICT,
                         "Locator exceeds adapter complexity limits",
-                        List.of(), null));
+                        List.of(), null, workflowToken));
             }
             List<DiagnosticEnvelope.FieldProblem> problems = SchemaDiagnostics.validate(
                     tool.inputSchema(), arguments,
@@ -198,7 +237,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                         requestId, sequence, call.name(), arguments,
                         problems.getFirst().code(),
                         "One or more arguments do not match the operation schema",
-                        problems, null));
+                        problems, null, workflowToken));
             }
 
             HarnessRequest request;
@@ -209,7 +248,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                         requestId, sequence, call.name(), arguments,
                         DiagnosticCode.SCHEMA_CONFLICT,
                         "Arguments could not be decoded",
-                        List.of(), null));
+                        List.of(), null, workflowToken));
             }
 
             // Bound admission before protocol dispatch: excess work is rejected immediately
@@ -217,11 +256,12 @@ public final class HarnessToolHandler implements AutoCloseable {
             HarnessToolCatalog.AccessMode mode = catalog.accessMode(call.name());
             CompletionStage<McpSchema.CallToolResult> admitted = admission.submit(
                     admissionKey(arguments), mode,
-                    () -> execute(request, call.name(), sequence, arguments));
+                    () -> execute(request, call.name(), sequence, arguments, workflowToken));
             return Mono.fromFuture(admitted.toCompletableFuture())
                     .onErrorResume(RequestAdmission.LimitExceededException.class,
                             failure -> Mono.just(limitExceeded(
-                                    request, sequence, call.name(), arguments, failure)));
+                                    request, sequence, call.name(), arguments, failure,
+                                    workflowToken)));
         }).subscribeOn(scheduler);
     }
 
@@ -234,25 +274,23 @@ public final class HarnessToolHandler implements AutoCloseable {
             HarnessRequest request,
             String operation,
             long sequence,
-            Map<String, Object> arguments) {
+            Map<String, Object> arguments,
+            long[] workflowToken) {
         CompletionStage<HarnessProtocolService.Execution> stage;
         try {
             stage = Objects.requireNonNull(protocol.apply(request), "protocol stage");
-        } catch (RuntimeException failure) {
-            return CompletableFuture.completedFuture(diagnostic(
-                    request.requestId(), sequence, operation, arguments,
-                    DiagnosticCode.INTERNAL_ERROR,
-                    "Protocol invocation failed", List.of(), null));
+        } catch (RuntimeException | Error failure) {
+            return CompletableFuture.completedFuture(classifyBoundaryFailure(
+                    failure, operation, sequence, arguments,
+                    "Protocol invocation failed", workflowToken));
         }
         return Mono.fromFuture(stage.toCompletableFuture())
                 .map(execution -> toMcpResult(
                         execution.response(), execution.captures(),
-                        operation, sequence, arguments))
-                .onErrorResume(failure -> Mono.just(
-                        diagnostic(
-                                request.requestId(), sequence, operation, arguments,
-                                DiagnosticCode.INTERNAL_ERROR,
-                                "Protocol invocation failed", List.of(), null)))
+                        operation, sequence, arguments, workflowToken))
+                .onErrorResume(failure -> Mono.just(classifyBoundaryFailure(
+                        failure, operation, sequence, arguments,
+                        "Protocol invocation failed", workflowToken)))
                 .toFuture();
     }
 
@@ -261,11 +299,12 @@ public final class HarnessToolHandler implements AutoCloseable {
             long sequence,
             String operation,
             Map<String, Object> arguments,
-            RequestAdmission.LimitExceededException failure) {
+            RequestAdmission.LimitExceededException failure,
+            long[] workflowToken) {
         return diagnostic(
                 request.requestId(), sequence, operation, arguments,
                 DiagnosticCode.LIMIT_EXCEEDED,
-                failure.getMessage(), List.of(), null);
+                failure.getMessage(), List.of(), null, workflowToken);
     }
 
     private HarnessRequest toProtocolRequest(
@@ -316,10 +355,15 @@ public final class HarnessToolHandler implements AutoCloseable {
             Map<String, BinaryAttachment> captures,
             String operation,
             long sequence,
-            Map<String, Object> arguments) {
+            Map<String, Object> arguments,
+            long[] workflowToken) {
         if (response instanceof HarnessResponse.Failure failure) {
-            return protocolError(
-                    failure.error(), operation, sequence, arguments);
+            McpSchema.CallToolResult result = protocolError(
+                    failure.error(), operation, sequence, arguments, workflowToken);
+            if (failure.error().code() == ProtocolError.Code.SESSION_CLOSED) {
+                endWorkflow(sessionKey(arguments), workflowToken[0]);
+            }
+            return result;
         }
         HarnessResponse.Success success = (HarnessResponse.Success) response;
         try {
@@ -327,30 +371,25 @@ public final class HarnessToolHandler implements AutoCloseable {
                     new LinkedHashMap<>(structured(success.result(), captures));
             content.put("progress", encodedProgress(
                     DiagnosticEnvelope.Progress.unavailable()));
+            RecoveryAccounting.Snapshot session =
+                    sessionAccounting.snapshot(sessionKey(arguments));
             content.put("recovery", encodedRecovery(new DiagnosticEnvelope.Recovery(
                     dev.gdx.uiharness.protocol.RecoveryPolicy.VERSION,
-                    sessionRecoveryAttempts.getOrDefault(sessionKey(arguments), 0),
+                    session.consumed(),
                     HarnessToolCatalog.recoveryPolicy().maxSchemaRecoveries(),
-                    Math.max(0, (nanoClock.getAsLong() - startedNanos) / 1_000_000),
+                    session.workflowElapsedMillis(),
                     HarnessToolCatalog.recoveryPolicy().maxWallTimeMillis(),
                     "success/v1")));
+            endWorkflow(sessionKey(arguments), workflowToken[0]);
             return McpSchema.CallToolResult.builder()
                     .structuredContent(Map.copyOf(content))
                     .addTextContent(compactText(content))
                     .isError(false)
                     .build();
-        } catch (ArtifactReference.InvalidArtifactReferenceException failure) {
-            return localError(
-                    operation, sequence, arguments,
-                    "invalid-artifact-reference", failure.getMessage());
-        } catch (ArtifactReference.ArtifactUnavailableException failure) {
-            return localError(
-                    operation, sequence, arguments,
-                    "artifact-unavailable", failure.getMessage());
-        } catch (RuntimeException failure) {
-            return localError(
-                    operation, sequence, arguments,
-                    "internal-error", "Result translation failed");
+        } catch (RuntimeException | Error failure) {
+            return classifyBoundaryFailure(
+                    failure, operation, sequence, arguments,
+                    "Result translation failed", workflowToken);
         }
     }
 
@@ -514,7 +553,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("heatmapArtifact", artifactMap(heatmap));
             }
             ArtifactReference evidence = artifacts.publish(
-                    "application/json", encoded.clone());
+                    "application/json", encoded);
             content.put("evidenceArtifact", artifactMap(evidence));
             return Map.copyOf(content);
         }
@@ -550,7 +589,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("sha256", typography.current().sha256());
             }
             ArtifactReference evidence = artifacts.publish(
-                    "application/json", encoded.clone());
+                    "application/json", encoded);
             content.put("evidenceArtifact", artifactMap(evidence));
             return Map.copyOf(content);
         }
@@ -604,7 +643,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("sha256", layout.current().sha256());
             }
             ArtifactReference evidence = artifacts.publish(
-                    "application/json", encoded.clone());
+                    "application/json", encoded);
             content.put("evidenceArtifact", artifactMap(evidence));
             return Map.copyOf(content);
         }
@@ -683,6 +722,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                     stopped.traceReference()));
             content.put("eventCount", stopped.eventCount());
             content.put("bytes", stopped.bytes());
+            content.put("archiveSha256", requireArchiveDigest(stopped.archiveSha256()));
             return Map.copyOf(content);
         }
         throw new AssertionError("Unhandled protocol result " + result.getClass().getName());
@@ -918,12 +958,21 @@ public final class HarnessToolHandler implements AutoCloseable {
 
     private record LocatorFrame(Object value, int depth) {}
 
+    private ArtifactReference publishCapture(byte[] png, String claimedSha256) {
+        ArtifactReference reference = artifacts.publish("image/png", png);
+        if (!claimedSha256.equals(reference.sha256())) {
+            throw new ArtifactReference.ArtifactUnavailableException(
+                    "Capture digest does not match the published bytes");
+        }
+        return reference;
+    }
+
     private void offloadLarge(LinkedHashMap<String, Object> content, byte[] encoded,
             String mediaType, String... bulkyFields) {
         if (encoded.length <= artifactThresholdBytes) {
             return;
         }
-        ArtifactReference reference = artifacts.publish(mediaType, encoded.clone());
+        ArtifactReference reference = artifacts.publish(mediaType, encoded);
         for (String field : bulkyFields) {
             content.remove(field);
         }
@@ -950,6 +999,20 @@ public final class HarnessToolHandler implements AutoCloseable {
         if (value != null) {
             destination.put(key, value);
         }
+    }
+
+    /**
+     * Fail-closed guard for the {@code ui_trace_stop} receipt: the catalog output
+     * schema requires {@code archiveSha256}, so a controller that omits the verified
+     * digest (or supplies a non-canonical one) must surface as an INTERNAL_ERROR
+     * instead of a successful digest-less result.
+     */
+    private static String requireArchiveDigest(String digest) {
+        if (digest == null || !digest.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException(
+                    "archiveSha256 must be a lowercase 64-character hexadecimal digest");
+        }
+        return digest;
     }
 
     private static Map<String, Object> artifactMap(ArtifactReference reference) {
@@ -988,7 +1051,8 @@ public final class HarnessToolHandler implements AutoCloseable {
             ProtocolError error,
             String operation,
             long sequence,
-            Map<String, Object> arguments) {
+            Map<String, Object> arguments,
+            long[] workflowToken) {
         DiagnosticCode code = switch (error.code()) {
             case NOT_FOUND -> DiagnosticCode.LOCATOR_NOT_FOUND;
             case STRICTNESS_VIOLATION -> DiagnosticCode.LOCATOR_AMBIGUOUS;
@@ -1008,7 +1072,8 @@ public final class HarnessToolHandler implements AutoCloseable {
                 new DiagnosticEnvelope.StateIdentity(
                         null, error.sessionId(), error.lastSnapshotRevision(), null),
                 error.traceReference() == null
-                        ? List.of() : List.of(error.traceReference()));
+                        ? List.of() : List.of(error.traceReference()),
+                workflowToken);
     }
 
     private McpSchema.CallToolResult diagnostic(
@@ -1019,11 +1084,12 @@ public final class HarnessToolHandler implements AutoCloseable {
             DiagnosticCode requestedCode,
             String message,
             List<DiagnosticEnvelope.FieldProblem> problems,
-            DiagnosticEnvelope.StateIdentity stateIdentity) {
+            DiagnosticEnvelope.StateIdentity stateIdentity,
+            long[] workflowToken) {
         return diagnostic(
                 requestId, sequence, operation, arguments, requestedCode,
                 message, problems, null, List.of(), Map.of(), List.of(), null, null,
-                stateIdentity, List.of());
+                stateIdentity, List.of(), workflowToken);
     }
 
     private McpSchema.CallToolResult diagnostic(
@@ -1041,22 +1107,51 @@ public final class HarnessToolHandler implements AutoCloseable {
             Long operationElapsedMillis,
             String traceId,
             DiagnosticEnvelope.StateIdentity stateIdentity,
-            List<String> evidenceRefs) {
+            List<String> evidenceRefs,
+            long[] workflowToken) {
         String fingerprint = diagnosticFingerprint(
                 operation, arguments, requestedCode, problems);
         boolean transientDiagnostic = requestedCode.defaultDisposition()
                 == DiagnosticEnvelope.Disposition.TRANSIENT;
-        int equivalentConsumed = transientDiagnostic
-                ? diagnosticAttempts.merge(fingerprint, 1, Integer::sum)
-                : 0;
-        int consumed = transientDiagnostic
-                ? sessionRecoveryAttempts.merge(
-                        sessionKey(arguments), 1, Integer::sum)
-                : sessionRecoveryAttempts.getOrDefault(sessionKey(arguments), 0);
+        RecoveryAccounting.Snapshot session;
+        RecoveryAccounting.Snapshot fingerprintSnapshot;
+        boolean capacityRejection;
+        // Recording, fingerprint registration, workflow release, and conditional
+        // session removal share one lock, so a fingerprint record/register can
+        // never interleave with an ending workflow's ownership check and delete.
+        synchronized (workflows) {
+            pruneExpiredWorkflows();
+            session = transientDiagnostic
+                    ? sessionAccounting.recordTransient(sessionKey(arguments))
+                    : sessionAccounting.snapshot(sessionKey(arguments));
+            fingerprintSnapshot = transientDiagnostic && session.tracked()
+                    ? diagnosticAccounting.recordTransient(fingerprint)
+                    : new RecoveryAccounting.Snapshot(
+                            0, 0, false, RecoveryAccounting.NO_TOKEN);
+            // Only a request that participates through a recorded transient attempt
+            // adopts the workflow generation; terminal and non-transient requests
+            // keep the token captured at request start, so a stale terminal can
+            // never end a newer workflow.
+            if (transientDiagnostic && session.tracked()) {
+                workflowToken[0] = session.token();
+                if (fingerprintSnapshot.tracked()) {
+                    registerFingerprint(session.token(), fingerprint);
+                }
+            }
+            capacityRejection = transientDiagnostic
+                    && (!session.tracked() || !fingerprintSnapshot.tracked());
+        }
+        int equivalentConsumed = fingerprintSnapshot.consumed();
         int limit = HarnessToolCatalog.recoveryPolicy().maxSchemaRecoveries();
         DiagnosticCode code = requestedCode;
         String terminatingRule = recoveryRule(requestedCode);
-        if (transientDiagnostic && equivalentConsumed > limit) {
+        int consumed = session.consumed();
+        if (capacityRejection) {
+            // Either store at capacity: fingerprint churn cannot bypass the bound.
+            code = DiagnosticCode.RECOVERY_BUDGET_EXHAUSTED;
+            terminatingRule = "accounting-capacity/v1";
+            consumed = limit; // terminal appearance: consumed == limit, remaining == 0
+        } else if (transientDiagnostic && equivalentConsumed > limit) {
             code = DiagnosticCode.LOOP_DETECTED;
             terminatingRule = "equivalent-diagnostic-budget/v1";
         } else if (transientDiagnostic && consumed > limit) {
@@ -1066,8 +1161,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                 == DiagnosticEnvelope.Disposition.TERMINAL) {
             terminatingRule = "terminal-code/v1";
         }
-        long elapsedMillis = Math.max(
-                0, (nanoClock.getAsLong() - startedNanos) / 1_000_000);
+        long elapsedMillis = session.workflowElapsedMillis();
         DiagnosticEnvelope envelope = DiagnosticEnvelope.create(
                 requestId, sequence, operation, code, message, problems,
                 locator, candidates, details, suggestions, operationElapsedMillis, traceId,
@@ -1082,7 +1176,109 @@ public final class HarnessToolHandler implements AutoCloseable {
         Map<String, Object> encoded = COMMAND_MAPPER.convertValue(envelope, Map.class);
         LinkedHashMap<String, Object> content = new LinkedHashMap<>(encoded);
         content.put("kind", "error");
+        // A capacity rejection must not clear the saturated store: retries stay
+        // fail-closed until the owning workflow terminates, expires, or closes.
+        if (code.defaultDisposition() == DiagnosticEnvelope.Disposition.TERMINAL
+                && !capacityRejection) {
+            endWorkflow(sessionKey(arguments), workflowToken[0]);
+        }
         return errorResult(content);
+    }
+
+    /**
+     * Registers one accepted fingerprint under the session's current workflow
+     * generation so it can be released when that workflow ends. The reverse
+     * index is bounded by the same cardinality cap as the accounting stores;
+     * at cap a registration is skipped and the fingerprint is simply
+     * TTL-expired by its store instead.
+     */
+    private void registerFingerprint(long token, String fingerprint) {
+        synchronized (workflows) {
+            pruneExpiredWorkflows();
+            if (registeredFingerprints >= RecoveryAccounting.MAX_ENTRIES) {
+                return;
+            }
+            WorkflowFingerprints workflow = workflows.computeIfAbsent(token,
+                    ignored -> new WorkflowFingerprints(nanoClock.getAsLong()));
+            if (workflow.keys.add(fingerprint)) {
+                registeredFingerprints++;
+            }
+        }
+    }
+
+    /**
+     * Test seam: invoked between a fingerprint's ownership check and its release
+     * so interleaving tests can deterministically pause an ending workflow at the
+     * exact point a concurrent record would previously have been lost.
+     */
+    Runnable beforeFingerprintRelease = () -> {};
+
+    /**
+     * Ends the workflow for the given session generation: releases the
+     * fingerprint keys it recorded (only those not also owned by another live
+     * workflow) and removes the session reservation, but only when that
+     * reservation still belongs to this generation. A stale completion with an
+     * old token therefore never clears a newer workflow's state. The ownership
+     * check, deletion, and conditional session removal are atomic with the
+     * record/register path under one lock.
+     */
+    private void endWorkflow(String sessionKey, long token) {
+        synchronized (workflows) {
+            pruneExpiredWorkflows();
+            WorkflowFingerprints workflow = workflows.remove(token);
+            if (workflow != null) {
+                registeredFingerprints -= workflow.keys.size();
+                for (String fingerprint : workflow.keys) {
+                    if (!ownedByAnotherWorkflow(fingerprint)) {
+                        beforeFingerprintRelease.run();
+                        diagnosticAccounting.remove(fingerprint);
+                    }
+                }
+            }
+            sessionAccounting.removeIfOwned(sessionKey, token);
+        }
+    }
+
+    /** Returns whether another live workflow generation still owns the fingerprint. */
+    private boolean ownedByAnotherWorkflow(String fingerprint) {
+        synchronized (workflows) {
+            for (WorkflowFingerprints workflow : workflows.values()) {
+                if (workflow.keys.contains(fingerprint)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Drops workflows idle past the accounting TTL and releases their fingerprints. */
+    private void pruneExpiredWorkflows() {
+        long now = nanoClock.getAsLong();
+        long ttlNanos = RecoveryAccounting.TTL.toNanos();
+        Iterator<Map.Entry<Long, WorkflowFingerprints>> iterator =
+                workflows.entrySet().iterator();
+        while (iterator.hasNext()) {
+            WorkflowFingerprints workflow = iterator.next().getValue();
+            if (now - workflow.startedNanos > ttlNanos) {
+                registeredFingerprints -= workflow.keys.size();
+                for (String fingerprint : workflow.keys) {
+                    if (!ownedByAnotherWorkflow(fingerprint)) {
+                        diagnosticAccounting.remove(fingerprint);
+                    }
+                }
+                iterator.remove();
+            }
+        }
+    }
+
+    /** One workflow generation's registered fingerprint keys and its TTL start. */
+    private static final class WorkflowFingerprints {
+        final long startedNanos;
+        final LinkedHashSet<String> keys = new LinkedHashSet<>();
+
+        WorkflowFingerprints(long startedNanos) {
+            this.startedNanos = startedNanos;
+        }
     }
 
     private static String sessionKey(Map<String, Object> arguments) {
@@ -1128,12 +1324,96 @@ public final class HarnessToolHandler implements AutoCloseable {
                         .toList();
     }
 
+    private static final SecureRandom TRACE_ID_SOURCE = new SecureRandom();
+
+    /**
+     * Derives an opaque, random correlation ID for one boundary failure. The ID is
+     * 128 bits of {@link SecureRandom} entropy formatted as {@code internal-} plus 32
+     * lowercase hex digits, so it carries no exception class, sequence, or payload
+     * information and cannot be predicted or correlated across handler instances.
+     * The same ID is emitted in the MCP response and in the safe log record so an
+     * operator can match the restricted {@code dev.gdx.uiharness.mcp.ArtifactPublisher}
+     * log line to the boundary response without exposing the raw failure.
+     */
+    private static String internalTraceId() {
+        byte[] random = new byte[16];
+        TRACE_ID_SOURCE.nextBytes(random);
+        return "internal-" + HexFormat.of().formatHex(random);
+    }
+
+    /**
+     * Unwraps transport and reactive wrappers so a publisher failure that surfaced
+     * asynchronously (e.g. {@link java.util.concurrent.CompletionException} from a
+     * failed future or a reactor wrapper) is classified by its real cause.
+     */
+    private static Throwable unwrapBoundaryFailure(Throwable failure) {
+        Throwable current = failure;
+        while (current instanceof java.util.concurrent.CompletionException
+                || current instanceof java.util.concurrent.ExecutionException) {
+            Throwable cause = current.getCause();
+            if (cause == null) {
+                return current;
+            }
+            current = cause;
+        }
+        return reactor.core.Exceptions.unwrap(current);
+    }
+
+    /**
+     * Classifies a failure that crossed the publisher boundary into a stable,
+     * secret-free diagnostic. {@link ArtifactReference.InvalidArtifactReferenceException}
+     * keeps its distinct {@code invalid-artifact-reference} sub-code; every other
+     * publisher-boundary outcome maps to {@code artifact-unavailable} with an opaque
+     * trace ID. Fatal JVM errors ({@link VirtualMachineError}, {@link ThreadDeath})
+     * are rethrown — they are never converted into a public diagnostic. The raw
+     * failure is deliberately NOT passed to the logger: the {@code ARTIFACT_LOGGER}
+     * record carries only a fixed message and the trace ID, so a custom exception
+     * message, path, or secret can never reach any JUL handler. The raw failure
+     * remains reachable in-process (it is the exception currently being handled) for
+     * debugger inspection.
+     */
+    private McpSchema.CallToolResult classifyBoundaryFailure(
+            Throwable failure,
+            String operation,
+            long sequence,
+            Map<String, Object> arguments,
+            String genericMessage,
+            long[] workflowToken) {
+        Throwable root = unwrapBoundaryFailure(failure);
+        if (root instanceof ArtifactReference.InvalidArtifactReferenceException) {
+            String traceId = internalTraceId();
+            ARTIFACT_LOGGER.log(java.util.logging.Level.FINE,
+                    "invalid artifact reference " + traceId, (Throwable) null);
+            return localError(operation, sequence, arguments, "invalid-artifact-reference",
+                    "Artifact reference is not transport-safe", traceId, workflowToken);
+        }
+        if (root instanceof ArtifactReference.ArtifactUnavailableException) {
+            String traceId = internalTraceId();
+            ARTIFACT_LOGGER.log(java.util.logging.Level.FINE,
+                    "artifact publisher unavailable or unverified " + traceId,
+                    (Throwable) null);
+            return localError(operation, sequence, arguments, "artifact-unavailable",
+                    "Artifact persistence is unavailable or rejected the payload",
+                    traceId, workflowToken);
+        }
+        if (root instanceof VirtualMachineError || root instanceof ThreadDeath) {
+            throw (Error) root;
+        }
+        String traceId = internalTraceId();
+        ARTIFACT_LOGGER.log(java.util.logging.Level.FINE,
+                "boundary failure " + traceId, (Throwable) null);
+        return localError(operation, sequence, arguments, "internal-error",
+                genericMessage, traceId, workflowToken);
+    }
+
     private McpSchema.CallToolResult localError(
             String operation,
             long sequence,
             Map<String, Object> arguments,
             String code,
-            String message) {
+            String message,
+            String traceId,
+            long[] workflowToken) {
         return diagnostic(
                 "mcp-" + Long.toUnsignedString(sequence),
                 sequence,
@@ -1142,7 +1422,16 @@ public final class HarnessToolHandler implements AutoCloseable {
                 DiagnosticCode.INTERNAL_ERROR,
                 message + " (" + code + ")",
                 List.of(),
-                null);
+                null,
+                List.of(),
+                Map.of(),
+                List.of(),
+                null,
+                traceId,
+                new DiagnosticEnvelope.StateIdentity(
+                        null, sessionKey(arguments), null, null),
+                List.of(),
+                workflowToken);
     }
 
     private static McpSchema.CallToolResult errorResult(Map<String, Object> content) {
@@ -1155,6 +1444,12 @@ public final class HarnessToolHandler implements AutoCloseable {
 
     /** Shuts down all virtual-thread dispatch owned by this handler. */
     @Override public void close() {
+        synchronized (workflows) {
+            sessionAccounting.clear();
+            diagnosticAccounting.clear();
+            workflows.clear();
+            registeredFingerprints = 0;
+        }
         admission.close();
         scheduler.dispose();
         executor.close();

@@ -5040,6 +5040,11 @@
   "outputSchema" : {
     "additionalProperties" : false,
     "properties" : {
+      "archiveSha256" : {
+        "maxLength" : 64,
+        "minLength" : 64,
+        "type" : "string"
+      },
       "bytes" : {
         "maximum" : 67108864,
         "minimum" : 0,
@@ -5141,7 +5146,7 @@
         "type" : "string"
       }
     },
-    "required" : [ "kind", "progress", "recovery", "traceId", "traceReference", "eventCount", "bytes" ],
+    "required" : [ "kind", "progress", "recovery", "traceId", "traceReference", "eventCount", "bytes", "archiveSha256" ],
     "type" : "object"
   }
 }, {

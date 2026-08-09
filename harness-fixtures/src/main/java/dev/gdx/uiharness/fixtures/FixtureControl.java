@@ -808,12 +808,51 @@ public final class FixtureControl implements AutoCloseable {
 
     private void createOwnedDirectories() {
         try {
-            Files.createDirectories(processRoot);
-            Files.createDirectory(artifactRoot);
-            Files.createDirectory(traceRoot);
-            Files.createDirectory(proofRoot);
+            createOwnerOnlyDirectory(processRoot);
+            createOwnerOnlyDirectory(artifactRoot);
+            createOwnerOnlyDirectory(traceRoot);
+            createOwnerOnlyDirectory(proofRoot);
         } catch (IOException failure) {
             throw new IllegalArgumentException("Unable to create fixture directories", failure);
+        }
+    }
+
+    /**
+     * Creates (or verifies) one fixture-owned directory with exact owner-only
+     * permissions so recorder roots satisfy the owner-only storage contract.
+     */
+    private static void createOwnerOnlyDirectory(Path directory) throws IOException {
+        Files.createDirectories(directory);
+        if (java.nio.file.FileSystems.getDefault()
+                .supportedFileAttributeViews().contains("posix")) {
+            Set<java.nio.file.attribute.PosixFilePermission> ownerOnly = Set.of(
+                    java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE);
+            Files.setPosixFilePermissions(directory, ownerOnly);
+            if (!Files.getPosixFilePermissions(directory).equals(ownerOnly)) {
+                throw new IOException("fixture directory is not owner-only: " + directory);
+            }
+        } else if (java.nio.file.FileSystems.getDefault()
+                .supportedFileAttributeViews().contains("acl")) {
+            java.nio.file.attribute.AclFileAttributeView view = Files.getFileAttributeView(
+                    directory, java.nio.file.attribute.AclFileAttributeView.class);
+            if (view == null) {
+                throw new IOException("acl view unavailable for fixture directory: "
+                        + directory);
+            }
+            java.nio.file.attribute.UserPrincipal owner = view.getOwner();
+            view.setAcl(java.util.List.of(java.nio.file.attribute.AclEntry.newBuilder()
+                    .setType(java.nio.file.attribute.AclEntryType.ALLOW)
+                    .setPrincipal(owner)
+                    .setPermissions(java.util.EnumSet.allOf(
+                            java.nio.file.attribute.AclEntryPermission.class))
+                    .build()));
+            java.util.List<java.nio.file.attribute.AclEntry> acl = view.getAcl();
+            if (acl.size() != 1 || !acl.get(0).principal().equals(owner)) {
+                throw new IOException("fixture directory ACL is not owner-only: "
+                        + directory);
+            }
         }
     }
 
@@ -1253,17 +1292,18 @@ public final class FixtureControl implements AutoCloseable {
                     Map.of("event", "trace-stop")));
             TraceManifest manifest = recorder.stop();
             active = false;
-            try {
-                byte[] archive = Files.readAllBytes(manifest.archive());
-                ArtifactReference reference = publisher.publish("application/zip", archive);
-                Files.delete(manifest.archive());
-                return CompletableFuture.completedFuture(
-                        new HarnessResponse.Result.TraceStopped(traceId, reference.reference(),
-                                manifest.eventCount(), reference.byteLength()));
-            } catch (IOException failure) {
-                return CompletableFuture.failedFuture(
-                        new IllegalStateException("Unable to publish trace archive", failure));
+            byte[] archive = recorder.consumeArchive(manifest);
+            ArtifactReference reference = publisher.publish("application/zip", archive);
+            if (!reference.mediaType().equals("application/zip")
+                    || reference.byteLength() != archive.length
+                    || !reference.sha256().equals(manifest.archiveSha256())) {
+                return CompletableFuture.failedFuture(new IllegalStateException(
+                        "Artifact publisher receipt does not match verified trace archive"));
             }
+            return CompletableFuture.completedFuture(
+                    new HarnessResponse.Result.TraceStopped(traceId, reference.reference(),
+                            manifest.eventCount(), reference.byteLength(),
+                            manifest.archiveSha256()));
         }
 
         synchronized TraceSpan commandStarted(String operation, SemanticSnapshot before) {

@@ -2,6 +2,7 @@ package dev.gdx.uiharness.fixtures;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -23,11 +24,15 @@ import dev.gdx.uiharness.core.trace.TraceReplay;
 import dev.gdx.uiharness.core.trace.TraceReplayer;
 import dev.gdx.uiharness.mcp.ArtifactReference;
 import dev.gdx.uiharness.protocol.Command;
+import dev.gdx.uiharness.protocol.HarnessResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -153,6 +158,50 @@ final class FixtureTracingLifecycleTest {
                     evidence.lifecycle("screenshot"));
             assertEquals(1, evidence.completedCausalChains("screenshot"));
             assertReplayable(root, archive);
+        }
+    }
+
+    @Test void stopReceiptCarriesVerifiedFinalizedArchiveDigest(@TempDir Path root)
+            throws Exception {
+        MutableClock clock = new MutableClock();
+        ArchivePublisher publisher = new ArchivePublisher();
+        try (FixtureControl.ReferenceTraceController traces = traces(root, publisher, clock)) {
+            ControlledCapture delegate = new ControlledCapture();
+            FixtureControl.TracingCapture capture =
+                    new FixtureControl.TracingCapture(delegate, traces);
+            CompletableFuture<CapturedImage> result = capture.capture(
+                    CaptureRequest.fullWindow(), deadline(clock)).toCompletableFuture();
+            CapturedImage expected = image();
+
+            delegate.result.complete(expected);
+            assertSame(expected, result.join());
+
+            clock.set(4 * STEP_NANOS);
+            HarnessResponse.Result.TraceStopped stopped = traces.stop(deadline(clock))
+                    .toCompletableFuture().join();
+
+            byte[] archive = publisher.archive.get();
+            assertNotNull(archive);
+            assertEquals(sha256(archive), stopped.archiveSha256());
+            assertTrue(stopped.archiveSha256().matches("[0-9a-f]{64}"));
+        }
+    }
+
+    @Test void stopRejectsPublisherReceiptThatDoesNotMatchVerifiedArchive(@TempDir Path root) {
+        MutableClock clock = new MutableClock();
+        ArtifactReference.Publisher mismatched = (mediaType, content) ->
+                new ArtifactReference("artifact:mismatch", mediaType, content.length + 1L,
+                        sha256(content));
+        try (FixtureControl.ReferenceTraceController traces =
+                new FixtureControl.ReferenceTraceController(root, mismatched)) {
+            traces.start(new Command.TraceStart(30_000, 4L * 1_024 * 1_024), deadline(clock))
+                    .toCompletableFuture().join();
+
+            CompletionException failure = org.junit.jupiter.api.Assertions.assertThrows(
+                    CompletionException.class,
+                    () -> traces.stop(deadline(clock)).toCompletableFuture().join());
+
+            assertTrue(failure.getCause().getMessage().contains("publisher receipt"));
         }
     }
 
@@ -290,6 +339,15 @@ final class FixtureTracingLifecycleTest {
         return publisher.archive.get();
     }
 
+    private static String sha256(byte[] content) {
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(content));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError("SHA-256 is unavailable", impossible);
+        }
+    }
+
     private static void assertReplayable(Path root, byte[] archive) throws Exception {
         Path file = root.resolve("replay.zip");
         Files.write(file, archive);
@@ -337,7 +395,7 @@ final class FixtureTracingLifecycleTest {
         @Override public ArtifactReference publish(String mediaType, byte[] content) {
             archive.set(content.clone());
             return new ArtifactReference("artifact:fixture-trace", mediaType, content.length,
-                    "0".repeat(64));
+                    sha256(content));
         }
     }
 
