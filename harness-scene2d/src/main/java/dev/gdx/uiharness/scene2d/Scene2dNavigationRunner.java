@@ -200,35 +200,49 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
                 run.pendingFrameDeliveries++;
             }
         }
+        SemanticSnapshot snapshot;
         try {
-            SemanticSnapshot snapshot = snapshots.get();
-            for (Run run : runs) {
-                deliverFrame(run, snapshot);
-            }
-            return true;
+            snapshot = snapshots.get();
         } catch (RuntimeException failure) {
-            // The supplier or a delivery enqueue failed: no reserved frame can ever be
-            // delivered, so release every recipient and apply any deferred terminal
-            // transition now. The transition itself never blocks — hook work stays on the
-            // render thread through its own submissions. The original failure propagates.
-            synchronized (lifecycle) {
-                for (Run run : runs) {
-                    run.pendingFrameDeliveries = 0;
-                }
-            }
+            // The supplier failed before any delivery was enqueued: release exactly ONE
+            // reservation per recipient. Reservations made by other concurrent completedFrame
+            // calls, and deliveries already enqueued by them, are untouched; the deferred
+            // terminal (if any) applies only when the last reservation drains. The original
+            // failure propagates.
             for (Run run : runs) {
-                run.applyDeferredTerminal();
+                releaseOneReservation(run);
             }
             throw failure;
         }
+        for (int index = 0; index < runs.length; index++) {
+            try {
+                deliverFrame(runs[index], snapshot);
+            } catch (RuntimeException failure) {
+                // The enqueue for runs[index] failed: recipients before it were already
+                // enqueued and keep their reservations until their delivery callbacks release
+                // them; this recipient and the ones after were reserved but never delivered,
+                // so release exactly ONE reservation for each. The original failure propagates.
+                for (int i = index; i < runs.length; i++) {
+                    releaseOneReservation(runs[i]);
+                }
+                throw failure;
+            }
+        }
+        return true;
     }
+
+    /** Package-private test seam: runs before each frame delivery enqueue; a throwing probe simulates an enqueue rejection. */
+    Runnable frameEnqueueProbe = () -> {};
+    /** Package-private test seam: pauses a deferred terminal transition after take, before commit. */
+    Runnable terminalApplyProbe = () -> {};
 
     /**
      * Enqueues one reserved frame delivery. The submission future completes exactly once — the
      * observe ran, the queue rejected it, or the dispatch deadline expired — and its completion
-     * observes the frame, releases the reservation, and applies any deferred terminal transition.
+     * releases the reservation and applies any deferred terminal transition.
      */
     private void deliverFrame(Run run, SemanticSnapshot snapshot) {
+        frameEnqueueProbe.run();
         CompletionStage<?> submission = scheduler.submit(() -> {
             run.observe(snapshot);
             return null;
@@ -240,26 +254,31 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
     /**
      * Runs when a reserved frame delivery completes (or fails): releases the run's reservation
      * and, once every in-flight reservation has drained, applies the first-wins deferred terminal
-     * transition on the delivering thread (the render thread during a drain). A failed delivery
-     * then reports the failure, which no-ops when the deferred transition already terminalized
-     * the run.
+     * transition. A failed delivery then reports the failure, which no-ops when the deferred
+     * transition already terminalized the run.
      */
     private void deliveryCompleted(Run run, Throwable failure) {
-        Runnable deferred = null;
+        releaseOneReservation(run);
+        if (failure != null) {
+            run.fail(failure);
+        }
+    }
+
+    /**
+     * Releases exactly one in-flight frame reservation for the recipient. When the last
+     * reservation drains, the first-wins deferred terminal transition is applied outside the
+     * lifecycle lock (claimed through execution, so a later terminal request cannot overtake).
+     */
+    private void releaseOneReservation(Run run) {
+        boolean applyDeferred;
         synchronized (lifecycle) {
             if (run.pendingFrameDeliveries > 0) {
                 run.pendingFrameDeliveries--;
             }
-            if (run.pendingFrameDeliveries == 0 && run.deferredTerminal != null) {
-                deferred = run.deferredTerminal;
-                run.deferredTerminal = null;
-            }
+            applyDeferred = run.pendingFrameDeliveries == 0;
         }
-        if (deferred != null) {
-            deferred.run();
-        }
-        if (failure != null) {
-            run.fail(failure);
+        if (applyDeferred) {
+            run.applyDeferredTerminal();
         }
     }
 
@@ -320,8 +339,10 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         private boolean terminal;
         /** In-flight reserved frame deliveries awaiting completion, guarded by the lifecycle monitor. */
         private int pendingFrameDeliveries;
-        /** First-wins deferred terminal transition, guarded by the lifecycle monitor. */
+        /** First-wins deferred terminal transition, guarded by the lifecycle monitor; stays non-null while claimed/applying. */
         private Runnable deferredTerminal;
+        /** Exclusive take marker for the deferred transition, guarded by the lifecycle monitor. */
+        private boolean deferredApplying;
 
         /**
          * Reserves this terminal transition first-wins under the lifecycle monitor. While frame
@@ -348,15 +369,32 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
             return true;
         }
 
-        /** Applies and clears the reserved terminal transition, if any. */
+        /**
+         * Takes and applies the first-wins deferred terminal transition, keeping it claimed
+         * (non-null) through execution so a concurrent terminal request is rejected first-wins
+         * and cannot overtake the outcome. The transition is cleared in a finally only when it
+         * is still the same intent after the transition returns.
+         */
         private void applyDeferredTerminal() {
             Runnable transition;
             synchronized (lifecycle) {
+                if (deferredApplying || deferredTerminal == null) {
+                    return;
+                }
+                deferredApplying = true;
                 transition = deferredTerminal;
-                deferredTerminal = null;
             }
-            if (transition != null) {
+            // Test seam: the transition stays claimed (non-null) while paused here.
+            Scene2dNavigationRunner.this.terminalApplyProbe.run();
+            try {
                 transition.run();
+            } finally {
+                synchronized (lifecycle) {
+                    deferredApplying = false;
+                    if (deferredTerminal == transition) {
+                        deferredTerminal = null;
+                    }
+                }
             }
         }
 

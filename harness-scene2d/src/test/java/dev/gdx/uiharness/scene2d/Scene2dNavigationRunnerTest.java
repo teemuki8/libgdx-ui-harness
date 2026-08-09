@@ -507,6 +507,87 @@ final class Scene2dNavigationRunnerTest {
         }
     }
 
+    /**
+     * Task 6 (#22): exact reservation accounting under a rejected delivery enqueue on the
+     * navigation runner (injected through the package-private frame-enqueue seam). The failing
+     * call releases exactly ONE reservation — its own — while the earlier, still-blocked
+     * reservation stays in flight; the terminal request defers to it and the scenario lease
+     * cleans exactly once after the surviving delivery drains.
+     */
+    @Test void navigationFailedEnqueueKeepsTheSurvivingReservationAlive() throws Exception {
+        try (Fixture f = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            f.route(Keys.TAB, f.second);
+            CompletionStage<NavigationResult> run = f.inspect(
+                    f.request(List.of(NavigationInput.TAB)));
+            f.readyFrame();
+            assertFalse(run.toCompletableFuture().isDone());
+
+            f.clock.advance(f.step);
+            long revision = f.clock.revision();
+            long frame = f.clock.frame();
+            SemanticSnapshot reserved = f.session.snapshot(revision, frame);
+
+            AtomicInteger enqueues = new AtomicInteger();
+            f.runner.frameEnqueueProbe = () -> {
+                if (enqueues.incrementAndGet() == 1) {
+                    throw new IllegalStateException("enqueue rejected");
+                }
+            };
+            CountDownLatch firstEntered = new CountDownLatch(1);
+            CountDownLatch releaseFirst = new CountDownLatch(1);
+            CompletableFuture<Boolean> first = new CompletableFuture<>();
+            CompletableFuture<Boolean> second = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    first.complete(f.runner.completedFrame(() -> {
+                        firstEntered.countDown();
+                        try {
+                            releaseFirst.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        return reserved;
+                    }, revision, frame));
+                } catch (Throwable failure) {
+                    first.completeExceptionally(failure);
+                }
+            });
+            try {
+                assertTrue(firstEntered.await(5, TimeUnit.SECONDS),
+                        "the surviving reservation must enter its supplier");
+                workers.submit(() -> {
+                    try {
+                        second.complete(f.runner.completedFrame(
+                                () -> reserved, revision, frame));
+                    } catch (Throwable failure) {
+                        second.completeExceptionally(failure);
+                    }
+                });
+                try {
+                    second.get(5, TimeUnit.SECONDS);
+                    throw new AssertionError("the rejected enqueue must fail the sibling reservation");
+                } catch (ExecutionException expected) {
+                    assertEquals("enqueue rejected", expected.getCause().getMessage());
+                }
+                // Terminal request while the surviving reservation is still in flight.
+                f.runner.close();
+                assertFalse(run.toCompletableFuture().isDone(),
+                        "the terminal must defer to the surviving reservation");
+            } finally {
+                releaseFirst.countDown();
+            }
+            assertTrue(first.get(5, TimeUnit.SECONDS),
+                    "the surviving reservation must deliver");
+            f.scheduler.drain(); // the reserved frame reaches the waiting navigation step
+            f.scheduler.drain(); // the deferred terminal applies; the scenario lease cleans up
+            assertTrue(run.toCompletableFuture().isCancelled(),
+                    "the run terminalizes once the surviving reservation has drained");
+            assertEquals(1, f.cleanups.get(), "the scenario lease cleans exactly once");
+        }
+    }
+
     private static final class Fixture implements AutoCloseable {
         final Duration step = Duration.ofMillis(16);
         final Stage stage = Scene2dTestSupport.stage();
