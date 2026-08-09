@@ -545,6 +545,10 @@ final class TraceRecorderTest {
         assertEquals("occupied", Files.readString(collision[0], StandardCharsets.UTF_8),
                 "an occupied destination must never be overwritten");
         assertTrue(noTemporaryFiles(temporaryDirectory));
+        assertTrue(java.util.Arrays.stream(failure.getSuppressed())
+                        .map(Throwable::getMessage)
+                        .anyMatch(message -> message.contains("identity unknown")),
+                "an occupied destination without a recorded identity must be reported as residual");
     }
 
     @Test void afterFinalCheckReplacementIsRejectedByConsumer() throws Exception {
@@ -801,6 +805,58 @@ final class TraceRecorderTest {
                 "events cleanup failure must be retained: " + messages);
         assertTrue(messages.stream().anyMatch(message -> !message.contains("events.ndjson")),
                 "artifact cleanup failure must be retained: " + messages);
+    }
+
+    @Test void substitutedArtifactDirectorySymlinkIsLeftWithResidualFailure()
+            throws Exception {
+        Path outside = temporaryDirectory.resolveSibling(
+                temporaryDirectory.getFileName() + "-dir-secret");
+        Files.writeString(outside, "dir-secret", StandardCharsets.UTF_8);
+        try {
+            TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+            recorder.start("session-dir-swap", TraceRecorder.Limits.defaults());
+            recorder.record(TraceEvent.commandStarted(
+                    "session-dir-swap", "request-1", 1, snapshot(1, 1), Map.of()));
+            Path artifactDirectory = artifactDirectory(temporaryDirectory);
+            Path moved = temporaryDirectory.resolve("moved-artifacts");
+            Files.move(artifactDirectory, moved);
+            Files.createSymbolicLink(artifactDirectory, outside);
+
+            HarnessException failure = assertThrows(HarnessException.class, recorder::close);
+
+            assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+            assertTrue(Files.isSymbolicLink(artifactDirectory),
+                    "the substituted artifact directory symlink must never be unlinked");
+            assertEquals("dir-secret", Files.readString(outside, StandardCharsets.UTF_8));
+            assertTrue(java.util.Arrays.stream(failure.getSuppressed())
+                            .map(Throwable::getMessage)
+                            .anyMatch(message -> message.contains("symbolic link")),
+                    "residual risk must be reported for the substituted symlink");
+        } finally {
+            Files.deleteIfExists(outside);
+        }
+    }
+
+    @Test void cleanupWithUnknownEntryIdentityLeavesEntryAndReportsResidual()
+            throws Exception {
+        // White-box contract guard: an existing entry without a recorded identity
+        // must be left untouched and reported as residual, never silently skipped.
+        Path directory = Files.createTempDirectory("identity");
+        Path entry = directory.resolve("events.ndjson");
+        Files.writeString(entry, "content", StandardCharsets.UTF_8);
+        java.util.List<Throwable> failures = new java.util.ArrayList<>();
+        try (java.nio.file.SecureDirectoryStream<Path> stream =
+                (java.nio.file.SecureDirectoryStream<Path>) Files.newDirectoryStream(directory)) {
+            java.lang.reflect.Method method = TraceRecorder.class.getDeclaredMethod(
+                    "deleteChildChecked", java.nio.file.SecureDirectoryStream.class,
+                    String.class, Object.class, boolean.class, java.util.List.class);
+            method.setAccessible(true);
+            method.invoke(null, stream, "events.ndjson", null, true, failures);
+        }
+        assertEquals("content", Files.readString(entry, StandardCharsets.UTF_8),
+                "an entry with unknown identity must be left untouched");
+        assertFalse(failures.isEmpty(), "a residual cleanup failure must be reported");
+        assertTrue(failures.get(0).getMessage().contains("identity unknown"));
     }
 
     @Test void coreTraceRuntimeRemainsJdkOnly() {

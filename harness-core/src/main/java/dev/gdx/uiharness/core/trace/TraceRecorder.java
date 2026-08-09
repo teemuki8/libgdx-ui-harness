@@ -524,41 +524,33 @@ public final class TraceRecorder implements AutoCloseable {
                     BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
                     .readAttributes().fileKey();
         } catch (HarnessException failure) {
-            deleteOwnedTempOrFail(reservation);
+            List<Throwable> cleanupFailures = new ArrayList<>();
+            deleteReservationTemp(reservation, cleanupFailures);
+            cleanupFailures.forEach(failure::addSuppressed);
             throw failure;
         } catch (UnsupportedOperationException exception) {
-            deleteOwnedTempOrFail(reservation);
+            List<Throwable> cleanupFailures = new ArrayList<>();
+            deleteReservationTemp(reservation, cleanupFailures);
             interruptAfterFailure("artifact atomic publish unsupported", exception);
-            throw failure(ErrorCode.INTERNAL_ERROR,
-                    "Artifact storage does not support atomic publication", exception);
-        } catch (IOException exception) {
-            deleteOwnedTempOrFail(reservation);
-            interruptAfterFailure("artifact publish failed", exception);
-            throw failure(ErrorCode.INTERNAL_ERROR,
-                    "Unable to publish trace artifact", exception);
-        }
-    }
-
-    /** Deletes one reservation temporary file through the artifact handle, failing on error. */
-    private void deleteOwnedTempOrFail(ArtifactReservation reservation) {
-        if (reservation.temporaryFileKey() == null) {
-            return;
-        }
-        List<Throwable> failures = new ArrayList<>();
-        deleteReservationTemp(reservation, failures);
-        if (!failures.isEmpty()) {
             HarnessException failure = failure(ErrorCode.INTERNAL_ERROR,
-                    "Unable to remove trace staging entry", null);
-            failures.forEach(failure::addSuppressed);
+                    "Artifact storage does not support atomic publication", exception);
+            cleanupFailures.forEach(failure::addSuppressed);
+            throw failure;
+        } catch (IOException exception) {
+            List<Throwable> cleanupFailures = new ArrayList<>();
+            deleteReservationTemp(reservation, cleanupFailures);
+            interruptAfterFailure("artifact publish failed", exception);
+            HarnessException failure = failure(ErrorCode.INTERNAL_ERROR,
+                    "Unable to publish trace artifact", exception);
+            cleanupFailures.forEach(failure::addSuppressed);
             throw failure;
         }
     }
 
     private void deleteReservationTemp(ArtifactReservation reservation,
             List<Throwable> failures) {
-        if (reservation.temporaryFileKey() == null) {
-            return;
-        }
+        // A null expected key after creation is not silent: deleteChildChecked
+        // reports a residual failure and leaves the entry when one exists.
         try (SecureDirectoryStream<Path> artifactStream = openSecureStreamOrFail(
                 reservation.artifactDirectory(), reservation.artifactFileKey(),
                 "trace artifact staging")) {
@@ -723,19 +715,23 @@ public final class TraceRecorder implements AutoCloseable {
         return manifest;
     }
 
-    /** Key-checked deletion of the temporary, reservation, and published archive names. */
+    /**
+     * Key-checked deletion of the temporary, reservation, and published archive
+     * names. Every possibly-created name is attempted unconditionally: an absent
+     * entry is fine, and an existing entry whose expected key is unknown or
+     * mismatched is left with a residual failure.
+     */
     private void deleteArchiveEntries(String tempName, String archiveName,
             Object tempArchiveFileKey, Object destinationReservationKey,
             boolean archivePublished, List<Throwable> failures) {
         try (SecureDirectoryStream<Path> rootStream = openRootStream()) {
             if (archivePublished) {
                 deleteChildChecked(rootStream, archiveName, tempArchiveFileKey, true, failures);
-            } else if (destinationReservationKey != null) {
-                deleteChildChecked(rootStream, archiveName, destinationReservationKey, true, failures);
+            } else {
+                deleteChildChecked(rootStream, archiveName, destinationReservationKey,
+                        true, failures);
             }
-            if (tempArchiveFileKey != null) {
-                deleteChildChecked(rootStream, tempName, tempArchiveFileKey, true, failures);
-            }
+            deleteChildChecked(rootStream, tempName, tempArchiveFileKey, true, failures);
         } catch (IOException exception) {
             failures.add(exception);
         }
@@ -998,11 +994,11 @@ public final class TraceRecorder implements AutoCloseable {
                     failures.add(exception);
                 }
             } else if (artifactDirectory != null && Files.isSymbolicLink(artifactDirectory)) {
-                try {
-                    stagingStream.deleteFile(Path.of("artifacts")); // removes the link only
-                } catch (IOException | RuntimeException exception) {
-                    failures.add(exception);
-                }
+                // A substituted symbolic link is never unlinked: deleting the name
+                // would remove an entry we cannot prove we own. Report residual risk.
+                failures.add(new IOException(
+                        "artifact directory was replaced by a symbolic link; "
+                                + "leaving it untouched: " + artifactDirectory));
             } else if (artifactDirectory != null) {
                 failures.add(new IOException(
                         "artifact directory identity lost; residual evidence may remain under "
