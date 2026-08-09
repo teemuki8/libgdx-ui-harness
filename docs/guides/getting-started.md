@@ -60,7 +60,7 @@ Create one `Scene2dSession` for each application-owned `Stage`, on the owning re
 
 Two snapshot consumers sit next to each other in the same wiring block but take different functional shapes, and one of them runs on the caller's thread:
 
-- `WaitEngine` takes a no-arg `Supplier<SemanticSnapshot>`. Its supplier is invoked on the **calling** thread: over MCP that is the virtual thread that runs `ui_wait` (`HarnessProtocolService` routes waits onto the blocking executor). A supplier that reads the Stage directly is a silent render-thread confinement violation with no error.
+- `WaitEngine` takes a no-arg `Supplier<SemanticSnapshot>`. Its supplier is invoked on the **calling** thread: over MCP that is the virtual thread that runs `ui_wait` (`HarnessProtocolService` routes waits onto the blocking executor). A supplier that reads the Stage directly now fails immediately with a typed `render-thread-violation` error carrying the operation, owner thread, and caller thread; route Stage access through the scheduler.
 - `Lwjgl3ScreenCapture` takes a `SnapshotSource` whose method is `snapshot(long revision, long frame)`. A method reference shaped for one consumer does not compile for the other.
 
 Route the wait supplier through the same `RenderThreadScheduler` the application already owns, blocking the calling virtual thread on the render-thread hop:
@@ -77,6 +77,8 @@ WaitEngine waits = new WaitEngine(
 `session` is the `Scene2dSession`, `scheduler` the `RenderThreadScheduler`, `revisions` and `frameNumbers` the monotonic revision and frame-number suppliers, `locators` a `LocatorEngine`, `clock` the monotonic clock, and `fence` the `Lwjgl3FrameFence`.
 
 Complete the frame fence after every rendered frame, regardless of application state. `Lwjgl3FrameFence.completedFrame(revision, frame)` dispatches render-thread work and wakes the wait engine; an application that skips it while paused or on the title screen stalls `ui_wait` and `ui_screenshot` until their monotonic deadline with no diagnostic. Advance the fence on frames where the application draws nothing new as well, so the render-thread scheduler and wait engine keep draining.
+
+`Scene2dSession.completedFrame(scenarioRunner, navigationRunner, revision, frame)` builds the per-frame semantic snapshot only while a scenario or navigation runner has active runs; an idle session skips that per-frame work while frame fences, captures, and on-demand `session.snapshot(...)` calls keep advancing. Invoke every `Scene2dSession` Stage-reading method from the owning render thread (the thread that constructed the session) or through `RenderThreadScheduler`.
 
 Publish the session in a fixed `HarnessProtocolService.Session` registry before accepting MCP requests. Use stable, non-secret session IDs. Route MCP over its default stdio transport; do not expose an unauthenticated network listener. All queued requests include queue time in their deadline and each session serializes Stage work.
 

@@ -6,6 +6,8 @@ A `Scene2dSession` extracts an immutable semantic snapshot from one application-
 
 Obtain the session-owned facade on the render thread:
 
+`session.semantics()`, `session.adapters()`, and every Stage-reading session method (`snapshot`, `stateActionContract`, `typography`, `layout`, `completedFrame`) reject calls from any other thread with the typed `render-thread-violation` error; caller-thread work must be routed through `RenderThreadScheduler`.
+
 ```java
 Scene2dSession session = new Scene2dSession(stage);
 Semantics semantics = session.semantics();
