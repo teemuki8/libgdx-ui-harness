@@ -18,15 +18,20 @@ import java.io.ByteArrayOutputStream;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -356,75 +361,6 @@ final class TraceReplayerTest {
                 1_000_000, 100, 1_048_576, 1_000_000, 2)).load(archive));
     }
 
-    @Test void centralDirectoryAliasEntryIsRejected() throws Exception {
-        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
-                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
-                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
-                + "\"parentSequence\":null,\"evidence\":{}}\n")
-                .getBytes(StandardCharsets.UTF_8);
-        byte[] events = concat(line, line, line);
-        Path archive = temporaryDirectory.resolve("alias.zip");
-        Files.write(archive, renameCentralEntry(
-                zipBytes("events.ndjson", events, "manifest.json",
-                        v1ManifestBytes(3, events.length)),
-                "manifest.json", "other-13.json"));
-
-        HarnessException failure = assertThrows(HarnessException.class,
-                () -> new TraceReplayer(new TraceReplayer.Limits(
-                        1_000_000, 100, 1_048_576, 1_000_000, 1_000))
-                        .load(archive));
-
-        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
-        assertTrue(failure.getMessage().contains("does not match"));
-    }
-
-    @Test void centralDirectoryDuplicateEntryIsRejected() throws Exception {
-        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
-                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
-                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
-                + "\"parentSequence\":null,\"evidence\":{}}\n")
-                .getBytes(StandardCharsets.UTF_8);
-        byte[] events = concat(line, line, line);
-        Path archive = temporaryDirectory.resolve("duplicate.zip");
-        Files.write(archive, renameCentralEntry(
-                zipBytes("events.ndjson", events, "manifest.json",
-                        v1ManifestBytes(3, events.length)),
-                "manifest.json", "events.ndjson"));
-
-        HarnessException failure = assertThrows(HarnessException.class,
-                () -> new TraceReplayer(new TraceReplayer.Limits(
-                        1_000_000, 100, 1_048_576, 1_000_000, 1_000))
-                        .load(archive));
-
-        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
-        assertTrue(failure.getMessage().contains("duplicate"));
-    }
-
-    @Test void centralDirectorySwappedOffsetsFailIdentityVerification() throws Exception {
-        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
-                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
-                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
-                + "\"parentSequence\":null,\"evidence\":{}}\n")
-                .getBytes(StandardCharsets.UTF_8);
-        byte[] events = concat(line, line, line);
-        Path archive = temporaryDirectory.resolve("swapped.zip");
-        Files.write(archive, swapCentralEntryOffsets(
-                zipBytes("events.ndjson", events, "manifest.json",
-                        v1ManifestBytes(3, events.length)),
-                "events.ndjson", "manifest.json"));
-
-        // The central directory still names exactly events.ndjson and manifest.json,
-        // but points each name at the other local header: the SHA-256 identity the
-        // prepass recorded for manifest.json must not match the swapped content.
-        HarnessException failure = assertThrows(HarnessException.class,
-                () -> new TraceReplayer(new TraceReplayer.Limits(
-                        1_000_000, 100, 1_048_576, 1_000_000, 1_000))
-                        .load(archive));
-
-        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
-        assertTrue(failure.getMessage().contains("content"));
-    }
-
     @Test void recordedArchiveReportsVerifiedIntegrityAndExactArchiveDigest()
             throws Exception {
         TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
@@ -584,7 +520,7 @@ final class TraceReplayerTest {
         assertTrue(failure.getMessage().contains("malformed"));
     }
 
-    @Test void sourceReplacementAfterSnapshotCannotAffectVerifiedReplay() throws Exception {
+    @Test void sourceReplacementAfterCaptureCannotAffectVerifiedReplay() throws Exception {
         TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
         recorder.start("session-snapshot", TraceRecorder.Limits.defaults());
         recorder.record(TraceEvent.commandStarted(
@@ -593,7 +529,8 @@ final class TraceReplayerTest {
         String originalDigest = sha256(Files.readAllBytes(archive));
 
         TraceReplayer replayer = new TraceReplayer(TraceReplayer.Limits.defaults(),
-                () -> replaceQuietly(archive, "replacement".getBytes(StandardCharsets.UTF_8)));
+                snapshotPath -> replaceQuietly(archive,
+                        "replacement".getBytes(StandardCharsets.UTF_8)));
 
         TraceReplay replay = replayer.load(archive);
 
@@ -602,7 +539,7 @@ final class TraceReplayerTest {
         assertEquals("session-snapshot", replay.manifest().sessionId());
     }
 
-    @Test void oversizedSourceReplacementAfterSnapshotCannotAffectReplay() throws Exception {
+    @Test void oversizedSourceReplacementAfterCaptureCannotAffectReplay() throws Exception {
         TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
         recorder.start("session-snapshot", TraceRecorder.Limits.defaults());
         recorder.record(TraceEvent.commandStarted(
@@ -613,7 +550,7 @@ final class TraceReplayerTest {
         TraceReplayer replayer = new TraceReplayer(
                 new TraceReplayer.Limits(200_000, 100, TraceEvent.MAX_ENCODED_BYTES,
                         1_000_000, 100),
-                () -> replaceQuietly(archive, new byte[1_000_000]));
+                snapshotPath -> replaceQuietly(archive, new byte[1_000_000]));
 
         TraceReplay replay = replayer.load(archive);
 
@@ -729,6 +666,212 @@ final class TraceReplayerTest {
                 () -> new TraceReplayer().load(archive, null, -2));
     }
 
+    @Test void releasedThreeArgConstructorAcceptsClockAndSnapshotDirectory()
+            throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-three-arg", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-three-arg", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path archive = recorder.stop().archive();
+        Path snapshotDirectory = Files.createDirectories(
+                temporaryDirectory.resolve("snapshots"));
+
+        TraceReplay replay = new TraceReplayer(TraceReplayer.Limits.defaults(),
+                Clock.systemUTC(), snapshotDirectory).load(archive);
+
+        assertEquals(TraceReplay.Integrity.VERIFIED, replay.integrity());
+        try (var paths = Files.list(snapshotDirectory)) {
+            assertEquals(0, paths.count());
+        }
+    }
+
+    @Test void confusingManifestVersionIsRejected() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        Path archive = temporaryDirectory.resolve("confusing-version.zip");
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive),
+                StandardCharsets.UTF_8)) {
+            zip.putNextEntry(new ZipEntry("events.ndjson"));
+            zip.write(line);
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry("manifest.json"));
+            zip.write(("{\"version\":\"trace-manifest/v9\",\"sessionId\":\"session-a\","
+                    + "\"startedAt\":\"2026-07-28T00:00:00Z\",\"endedAt\":"
+                    + "\"2026-07-28T00:00:01Z\",\"complete\":true,"
+                    + "\"terminationReason\":\"completed\",\"eventCount\":1,"
+                    + "\"artifactCount\":0,\"uncompressedBytes\":" + line.length + ","
+                    + "\"eventsSha256\":\"" + sha256(line) + "\",\"artifacts\":{}}")
+                    .getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(archive));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+    }
+
+    @Test void v1ArchiveWithExtraEntriesKeepsLegacyCompatibility() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        Path archive = v1Archive(temporaryDirectory.resolve("legacy-extra.zip"),
+                concat(line, line, line), 3);
+        Path withExtra = rewrittenWithAddedEntry(archive, "payload.bin",
+                "extra".getBytes(StandardCharsets.UTF_8));
+
+        TraceReplay replay = new TraceReplayer().load(withExtra);
+
+        assertEquals(TraceReplay.Integrity.UNVERIFIED, replay.integrity());
+    }
+
+    @Test void sourceReplacementWithDifferentValidTraceCannotMixContents() throws Exception {
+        TraceRecorder first = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        first.start("session-original", TraceRecorder.Limits.defaults());
+        first.record(TraceEvent.commandStarted(
+                "session-original", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path archive = first.stop().archive();
+        String originalDigest = sha256(Files.readAllBytes(archive));
+
+        Path otherDirectory = privateDirectory(temporaryDirectory, "other");
+        TraceRecorder second = new TraceRecorder(otherDirectory, Clock.systemUTC());
+        second.start("session-other", TraceRecorder.Limits.defaults());
+        second.record(TraceEvent.commandStarted(
+                "session-other", "request-2", 1, snapshot(1, 1), Map.of()));
+        byte[] otherBytes = Files.readAllBytes(second.stop().archive());
+
+        TraceReplayer replayer = new TraceReplayer(TraceReplayer.Limits.defaults(),
+                snapshotPath -> replaceQuietly(archive, otherBytes));
+
+        TraceReplay replay = replayer.load(archive);
+
+        assertEquals("session-original", replay.manifest().sessionId());
+        assertEquals(originalDigest, replay.archiveSha256());
+        assertEquals(TraceReplay.Integrity.VERIFIED, replay.integrity());
+    }
+
+    @Test void centralOnlyExtraEntryIsRejected() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(line, line, line);
+        Path archive = temporaryDirectory.resolve("central-only.zip");
+        Files.write(archive, addCentralOnlyEntry(
+                zipBytes("events.ndjson", events, "manifest.json",
+                        v1ManifestBytes(3, events.length)),
+                "payload.bin"));
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(archive));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("central"));
+    }
+
+    @Test void localOnlyEntriesAreRejectedAgainstEmptyCentralDirectory() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(line, line, line);
+        Path archive = temporaryDirectory.resolve("local-only.zip");
+        Files.write(archive, localOnlyArchive(List.of("events.ndjson", "manifest.json"),
+                List.of(events, v1ManifestBytes(3, events.length))));
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(archive));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("central"));
+    }
+
+    @Test void receiptBoundLoadRejectsDifferentValidTraceAtSamePath() throws Exception {
+        TraceRecorder first = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        first.start("session-first", TraceRecorder.Limits.defaults());
+        first.record(TraceEvent.commandStarted(
+                "session-first", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path archive = first.stop().archive();
+        String firstDigest = sha256(Files.readAllBytes(archive));
+        long firstSize = Files.size(archive);
+
+        Path otherDirectory = privateDirectory(temporaryDirectory, "other-receipt");
+        TraceRecorder second = new TraceRecorder(otherDirectory, Clock.systemUTC());
+        second.start("session-second", TraceRecorder.Limits.defaults());
+        second.record(TraceEvent.commandStarted(
+                "session-second", "request-2", 1, snapshot(1, 1), Map.of()));
+        Path otherArchive = second.stop().archive();
+        Files.copy(otherArchive, archive, StandardCopyOption.REPLACE_EXISTING);
+
+        TraceReplay unbound = new TraceReplayer().load(archive);
+        assertEquals(TraceReplay.Integrity.VERIFIED, unbound.integrity());
+        assertEquals("session-second", unbound.manifest().sessionId());
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(archive, firstDigest, firstSize));
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("receipt"));
+    }
+
+    @Test void deflateRatioBoundaryIsInclusiveAndOneOverRejects() throws Exception {
+        byte[] inflated = "ABCDEFGHIJ".repeat(2_000).getBytes(StandardCharsets.UTF_8);
+        Path archive = temporaryDirectory.resolve("ratio-boundary.zip");
+        Files.write(archive, zipBytes("events.ndjson", inflated, "manifest.json",
+                v1ManifestBytes(1, inflated.length)));
+        // the honest central directory records the actual deflated byte count
+        long actualCompressed = centralEntryCompressedSize(
+                Files.readAllBytes(archive), "events.ndjson");
+        assertTrue(actualCompressed > 0);
+        long acceptRatio = (inflated.length + actualCompressed - 1) / actualCompressed;
+
+        assertDoesNotThrow(() -> new TraceReplayer(new TraceReplayer.Limits(
+                1_000_000, 100, 1_048_576, 1_000_000, (int) acceptRatio)).load(archive));
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer(new TraceReplayer.Limits(
+                        1_000_000, 100, 1_048_576, 1_000_000, (int) acceptRatio - 1))
+                        .load(archive));
+        assertEquals(ErrorCode.LIMIT_EXCEEDED, failure.code());
+        assertTrue(failure.getMessage().contains("compression ratio"));
+    }
+
+    @Test void aggregateBudgetCoversManifestEventsAndArtifactsExactly() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-budget", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-budget", "request-1", 1, snapshot(1, 1), Map.of()));
+        recorder.addArtifact("image/png",
+                new ByteArrayInputStream("original".getBytes(StandardCharsets.UTF_8)));
+        Path archive = recorder.stop().archive();
+
+        long manifestBytes;
+        long eventsBytes;
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(archive.toFile())) {
+            manifestBytes = zip.getInputStream(zip.getEntry("manifest.json"))
+                    .readAllBytes().length;
+            eventsBytes = zip.getInputStream(zip.getEntry("events.ndjson"))
+                    .readAllBytes().length;
+        }
+        long exact = manifestBytes + eventsBytes
+                + "original".getBytes(StandardCharsets.UTF_8).length;
+
+        assertDoesNotThrow(() -> new TraceReplayer(new TraceReplayer.Limits(
+                1_000_000, 100, 1_048_576, exact, 1_000)).load(archive));
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer(new TraceReplayer.Limits(
+                        1_000_000, 100, 1_048_576, exact - 1, 1_000)).load(archive));
+        assertEquals(ErrorCode.LIMIT_EXCEEDED, failure.code());
+        assertTrue(failure.getMessage().contains("cumulative"));
+    }
+
     private static Path rewrittenWithReplacedEntry(Path source, String entryName,
             byte[] replacement) throws Exception {
         Path rewritten = source.resolveSibling(source.getFileName() + ".rewritten.zip");
@@ -785,6 +928,19 @@ final class TraceReplayerTest {
         return rewritten;
     }
 
+    private static Path privateDirectory(Path root, String name) throws Exception {
+        Path directory = Files.createDirectories(root.resolve(name));
+        Files.setPosixFilePermissions(directory, Set.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE));
+        return directory;
+    }
+
+    private static long centralEntryCompressedSize(byte[] zip, String name) {
+        int cursor = findCentralEntry(zip, name);
+        return littleEndianInt(zip, cursor + 20);
+    }
+
     private static byte[] zipBytes(String firstName, byte[] firstContent,
             String secondName, byte[] secondContent) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -800,35 +956,87 @@ final class TraceReplayerTest {
         return out.toByteArray();
     }
 
+    private static byte[] addCentralOnlyEntry(byte[] zip, String name) {
+        int eocd = endOfCentralDirectory(zip);
+        byte[] nameBytes = name.getBytes(StandardCharsets.UTF_8);
+        int headerLength = 46 + nameBytes.length;
+        byte[] forged = new byte[zip.length + headerLength];
+        System.arraycopy(zip, 0, forged, 0, eocd);
+        ByteBuffer header = ByteBuffer.wrap(forged, eocd, headerLength)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        header.putInt(0x02014b50)
+                .putShort((short) 20)
+                .putShort((short) 20)
+                .putShort((short) 0x0800)
+                .putShort((short) ZipEntry.STORED)
+                .putShort((short) 0)
+                .putShort((short) 0)
+                .putInt(0)
+                .putInt(0)
+                .putInt(0)
+                .putShort((short) nameBytes.length)
+                .putShort((short) 0)
+                .putShort((short) 0)
+                .putShort((short) 0)
+                .putShort((short) 0)
+                .putInt(0)
+                .putInt(0)
+                .put(nameBytes);
+        System.arraycopy(zip, eocd, forged, eocd + headerLength, zip.length - eocd);
+        int newEocd = eocd + headerLength;
+        putLittleEndianShort(forged, newEocd + 8,
+                (short) (littleEndianShort(zip, eocd + 8) + 1));
+        putLittleEndianShort(forged, newEocd + 10,
+                (short) (littleEndianShort(zip, eocd + 10) + 1));
+        putLittleEndianInt(forged, newEocd + 12,
+                littleEndianInt(zip, eocd + 12) + headerLength);
+        return forged;
+    }
+
+    private static byte[] localOnlyArchive(List<String> names, List<byte[]> contents)
+            throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        for (int index = 0; index < names.size(); index++) {
+            byte[] nameBytes = names.get(index).getBytes(StandardCharsets.UTF_8);
+            byte[] content = contents.get(index);
+            CRC32 crc = new CRC32();
+            crc.update(content);
+            ByteBuffer local = ByteBuffer.allocate(30 + nameBytes.length)
+                    .order(ByteOrder.LITTLE_ENDIAN);
+            local.putInt(0x04034b50)
+                    .putShort((short) 20)
+                    .putShort((short) 0x0800)
+                    .putShort((short) ZipEntry.STORED)
+                    .putShort((short) 0)
+                    .putShort((short) 0)
+                    .putInt((int) crc.getValue())
+                    .putInt(content.length)
+                    .putInt(content.length)
+                    .putShort((short) nameBytes.length)
+                    .putShort((short) 0)
+                    .put(nameBytes);
+            out.write(local.array());
+            out.write(content);
+        }
+        ByteBuffer eocd = ByteBuffer.allocate(22).order(ByteOrder.LITTLE_ENDIAN);
+        eocd.putInt(0x06054b50)
+                .putShort((short) 0)
+                .putShort((short) 0)
+                .putShort((short) 0)
+                .putShort((short) 0)
+                .putInt(0)
+                .putInt(out.size())
+                .putShort((short) 0);
+        out.write(eocd.array());
+        return out.toByteArray();
+    }
+
     private static byte[] forgeCentralDirectorySizes(byte[] zip, String entryName,
             long compressedSize, long uncompressedSize) {
         byte[] forged = zip.clone();
         int cursor = findCentralEntry(forged, entryName);
         putLittleEndianInt(forged, cursor + 20, compressedSize);
         putLittleEndianInt(forged, cursor + 24, uncompressedSize);
-        return forged;
-    }
-
-    private static byte[] renameCentralEntry(byte[] zip, String oldName, String newName) {
-        if (oldName.length() != newName.length()) {
-            throw new IllegalArgumentException("central rename must keep the name length");
-        }
-        byte[] forged = zip.clone();
-        int cursor = findCentralEntry(forged, oldName);
-        byte[] nameBytes = newName.getBytes(StandardCharsets.UTF_8);
-        System.arraycopy(nameBytes, 0, forged, cursor + 46, nameBytes.length);
-        return forged;
-    }
-
-    private static byte[] swapCentralEntryOffsets(byte[] zip, String firstName,
-            String secondName) {
-        byte[] forged = zip.clone();
-        int first = findCentralEntry(forged, firstName);
-        int second = findCentralEntry(forged, secondName);
-        int firstOffset = littleEndianInt(forged, first + 42);
-        int secondOffset = littleEndianInt(forged, second + 42);
-        putLittleEndianInt(forged, first + 42, secondOffset);
-        putLittleEndianInt(forged, second + 42, firstOffset);
         return forged;
     }
 
@@ -879,6 +1087,11 @@ final class TraceReplayerTest {
         bytes[offset + 1] = (byte) (value >>> 8);
         bytes[offset + 2] = (byte) (value >>> 16);
         bytes[offset + 3] = (byte) (value >>> 24);
+    }
+
+    private static void putLittleEndianShort(byte[] bytes, int offset, short value) {
+        bytes[offset] = (byte) value;
+        bytes[offset + 1] = (byte) (value >>> 8);
     }
 
     private static byte[] v1ManifestBytes(long eventCount, long uncompressedBytes) {
