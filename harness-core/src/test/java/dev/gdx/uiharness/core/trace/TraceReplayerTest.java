@@ -813,7 +813,124 @@ final class TraceReplayerTest {
                 () -> new TraceReplayer().load(archive));
 
         assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
-        assertTrue(failure.getMessage().contains("offset"));
+        assertTrue(failure.getMessage().contains("local"));
+    }
+
+    @Test void truncatedCentralNameLengthIsTypedInvalidRequest() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(line, line, line);
+        Path archive = temporaryDirectory.resolve("truncated-central.zip");
+        Files.write(archive, forgeCentralNameLength(
+                zipBytes("events.ndjson", events, "manifest.json",
+                        v1ManifestBytes(3, events.length)),
+                "events.ndjson", 60_000));
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(archive));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("central"));
+    }
+
+    @Test void truncatedLocalNameLengthIsTypedInvalidRequest() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(line, line, line);
+        byte[] forged = zipBytes("events.ndjson", events, "manifest.json",
+                v1ManifestBytes(3, events.length));
+        putLittleEndianShort(forged, 26, (short) 60_000);
+        byte[] truncated = new byte[forged.length - 100];
+        System.arraycopy(forged, 0, truncated, 0, truncated.length);
+        Path archive = temporaryDirectory.resolve("truncated-local.zip");
+        Files.write(archive, truncated);
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(archive));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+    }
+
+    @Test void fakeLocalHeaderEmbeddedInExtraCannotRedirectCentralOffset() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(line, line, line);
+        byte[] manifest = v1ManifestBytes(3, events.length);
+        // a syntactically valid fake local header named events.ndjson hidden inside
+        // the real events entry's extra field; the central directory points the
+        // events name at that fake header, which a ZipFile-based consumer would
+        // resolve to the fake payload while the sequential parse validates the
+        // honest events content
+        byte[] fakeName = "events.ndjson".getBytes(StandardCharsets.UTF_8);
+        byte[] fakePayload = "fake-events-content".getBytes(StandardCharsets.UTF_8);
+        CRC32 fakeCrc = new CRC32();
+        fakeCrc.update(fakePayload);
+        ByteBuffer fakeLoc = ByteBuffer.allocate(30 + fakeName.length)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        fakeLoc.putInt(0x04034b50)
+                .putShort((short) 20)
+                .putShort((short) 0x0800)
+                .putShort((short) ZipEntry.STORED)
+                .putShort((short) 0)
+                .putShort((short) 0)
+                .putInt((int) fakeCrc.getValue())
+                .putInt(fakePayload.length)
+                .putInt(fakePayload.length)
+                .putShort((short) fakeName.length)
+                .putShort((short) 0)
+                .put(fakeName);
+        byte[] fakeLocBytes = fakeLoc.array();
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        int fakeOffset = 30 + fakeName.length;
+        out.write(localHeader("events.ndjson", events, fakeLocBytes));
+        out.write(events);
+        int manifestOffset = out.size();
+        out.write(localHeader("manifest.json", manifest, null));
+        out.write(manifest);
+        int centralOffset = out.size();
+        out.write(centralHeader("events.ndjson", events.length, events.length,
+                crc32(events), fakeOffset));
+        out.write(centralHeader("manifest.json", manifest.length, manifest.length,
+                crc32(manifest), manifestOffset));
+        out.write(eocd(2, centralOffset, out.size() - centralOffset));
+        Path archive = temporaryDirectory.resolve("fake-loc.zip");
+        Files.write(archive, out.toByteArray());
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(archive));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("local"));
+    }
+
+    @Test void centralCrcMismatchIsRejected() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(line, line, line);
+        Path archive = temporaryDirectory.resolve("crc-mismatch.zip");
+        Files.write(archive, forgeCentralCrc(
+                zipBytes("events.ndjson", events, "manifest.json",
+                        v1ManifestBytes(3, events.length)),
+                "events.ndjson", 0x12345678));
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(archive));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("CRC"));
     }
 
     @Test void receiptBoundLoadRejectsDifferentValidTraceAtSamePath() throws Exception {
@@ -1016,6 +1133,75 @@ final class TraceReplayerTest {
         return forged;
     }
 
+    private static byte[] localHeader(String name, byte[] content, byte[] extra)
+            throws Exception {
+        byte[] nameBytes = name.getBytes(StandardCharsets.UTF_8);
+        int extraLength = extra == null ? 0 : extra.length;
+        ByteBuffer local = ByteBuffer.allocate(30 + nameBytes.length + extraLength)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        local.putInt(0x04034b50)
+                .putShort((short) 20)
+                .putShort((short) 0x0800)
+                .putShort((short) ZipEntry.STORED)
+                .putShort((short) 0)
+                .putShort((short) 0)
+                .putInt((int) crc32(content))
+                .putInt(content.length)
+                .putInt(content.length)
+                .putShort((short) nameBytes.length)
+                .putShort((short) extraLength)
+                .put(nameBytes);
+        if (extra != null) {
+            local.put(extra);
+        }
+        return local.array();
+    }
+
+    private static byte[] centralHeader(String name, int compressed, int uncompressed,
+            long crc, int localOffset) {
+        byte[] nameBytes = name.getBytes(StandardCharsets.UTF_8);
+        ByteBuffer central = ByteBuffer.allocate(46 + nameBytes.length)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        central.putInt(0x02014b50)
+                .putShort((short) 20)
+                .putShort((short) 20)
+                .putShort((short) 0x0800)
+                .putShort((short) ZipEntry.STORED)
+                .putShort((short) 0)
+                .putShort((short) 0)
+                .putInt((int) crc)
+                .putInt(compressed)
+                .putInt(uncompressed)
+                .putShort((short) nameBytes.length)
+                .putShort((short) 0)
+                .putShort((short) 0)
+                .putShort((short) 0)
+                .putShort((short) 0)
+                .putInt(0)
+                .putInt(localOffset)
+                .put(nameBytes);
+        return central.array();
+    }
+
+    private static byte[] eocd(int entries, int centralOffset, int centralSize) {
+        ByteBuffer eocd = ByteBuffer.allocate(22).order(ByteOrder.LITTLE_ENDIAN);
+        eocd.putInt(0x06054b50)
+                .putShort((short) 0)
+                .putShort((short) 0)
+                .putShort((short) entries)
+                .putShort((short) entries)
+                .putInt(centralSize)
+                .putInt(centralOffset)
+                .putShort((short) 0);
+        return eocd.array();
+    }
+
+    private static long crc32(byte[] content) {
+        CRC32 crc = new CRC32();
+        crc.update(content);
+        return crc.getValue();
+    }
+
     private static byte[] localOnlyArchive(List<String> names, List<byte[]> contents)
             throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -1052,6 +1238,21 @@ final class TraceReplayerTest {
                 .putShort((short) 0);
         out.write(eocd.array());
         return out.toByteArray();
+    }
+
+    private static byte[] forgeCentralNameLength(byte[] zip, String entryName,
+            int nameLength) {
+        byte[] forged = zip.clone();
+        int cursor = findCentralEntry(forged, entryName);
+        putLittleEndianShort(forged, cursor + 28, (short) nameLength);
+        return forged;
+    }
+
+    private static byte[] forgeCentralCrc(byte[] zip, String entryName, long crc) {
+        byte[] forged = zip.clone();
+        int cursor = findCentralEntry(forged, entryName);
+        putLittleEndianInt(forged, cursor + 16, crc);
+        return forged;
     }
 
     private static byte[] forgeCentralDirectorySizes(byte[] zip, String entryName,
