@@ -2240,7 +2240,7 @@ final class HarnessMcpServerContractTest {
             return record(mediaType, content);
         }
 
-        @Override public ArtifactReference publish(String mediaType, ByteBuffer content) {
+        @Override public ArtifactReference publishBuffer(String mediaType, ByteBuffer content) {
             byte[] copy = new byte[content.remaining()];
             content.get(copy);
             return record(mediaType, copy);
@@ -2271,7 +2271,7 @@ final class HarnessMcpServerContractTest {
                     "screenshot publication must publish through the ByteBuffer overload");
         }
 
-        @Override public ArtifactReference publish(String mediaType, ByteBuffer content) {
+        @Override public ArtifactReference publishBuffer(String mediaType, ByteBuffer content) {
             byteBufferCalls.incrementAndGet();
             byte[] copy = new byte[content.remaining()];
             content.get(copy);
@@ -2290,7 +2290,7 @@ final class HarnessMcpServerContractTest {
                     "artifact:" + count, mediaType, content.length + 1, "0".repeat(64));
         }
 
-        @Override public ArtifactReference publish(String mediaType, ByteBuffer content) {
+        @Override public ArtifactReference publishBuffer(String mediaType, ByteBuffer content) {
             byte[] copy = new byte[content.remaining()];
             content.get(copy);
             return publish(mediaType, copy);

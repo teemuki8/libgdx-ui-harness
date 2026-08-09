@@ -11,7 +11,7 @@ import java.util.HexFormat;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
-/** Contract for the read-only {@link ByteBuffer} overload of {@link ArtifactReference.Publisher}. */
+/** Contract for the read-only {@link ByteBuffer} {@code publishBuffer} method of {@link ArtifactReference.Publisher}. */
 final class ArtifactReferencePublisherContractTest {
 
     @Test void defaultByteBufferOverloadCopiesExactlyTheRemainingRegion() {
@@ -20,7 +20,7 @@ final class ArtifactReferencePublisherContractTest {
         buffer.position(2);
         buffer.limit(6);
 
-        ArtifactReference reference = publisher.publish("image/png", buffer);
+        ArtifactReference reference = publisher.publishBuffer("image/png", buffer);
 
         assertArrayEquals(new byte[] {2, 3, 4, 5}, publisher.lastBytes,
                 "only the remaining region must be copied into the byte[] overload");
@@ -37,14 +37,14 @@ final class ArtifactReferencePublisherContractTest {
         Recording publisher = new Recording();
         byte[] heapBytes = {1, 2, 3, 4};
 
-        publisher.publish("image/png", ByteBuffer.wrap(heapBytes).asReadOnlyBuffer());
+        publisher.publishBuffer("image/png", ByteBuffer.wrap(heapBytes).asReadOnlyBuffer());
         assertArrayEquals(heapBytes, publisher.lastBytes,
                 "a read-only heap view must publish its full content");
 
         ByteBuffer direct = ByteBuffer.allocateDirect(3);
         direct.put(new byte[] {5, 6, 7});
         direct.flip();
-        publisher.publish("image/png", direct);
+        publisher.publishBuffer("image/png", direct);
         assertArrayEquals(new byte[] {5, 6, 7}, publisher.lastBytes,
                 "a direct buffer must publish its full content");
     }
@@ -54,14 +54,14 @@ final class ArtifactReferencePublisherContractTest {
         ByteBuffer empty = ByteBuffer.allocate(4);
         empty.position(4);
 
-        ArtifactReference reference = publisher.publish("image/png", empty);
+        ArtifactReference reference = publisher.publishBuffer("image/png", empty);
 
         assertArrayEquals(new byte[0], publisher.lastBytes,
                 "an exhausted buffer must publish an empty payload");
         assertEquals(0L, reference.byteLength());
     }
 
-    @Test void byteBufferOverloadCanBeOverriddenAndStaysACompatibleFunctionalInterface() {
+    @Test void publishBufferOverloadCanBeOverriddenAndStaysACompatibleFunctionalInterface() {
         AtomicInteger byteArrayCalls = new AtomicInteger();
         AtomicInteger byteBufferCalls = new AtomicInteger();
         // A lambda still satisfies the single abstract method, so the default ByteBuffer
@@ -78,7 +78,7 @@ final class ArtifactReferencePublisherContractTest {
                         "override", mediaType, content.length, "0".repeat(64));
             }
 
-            @Override public ArtifactReference publish(String mediaType, ByteBuffer content) {
+            @Override public ArtifactReference publishBuffer(String mediaType, ByteBuffer content) {
                 byteBufferCalls.incrementAndGet();
                 byte[] copy = new byte[content.remaining()];
                 content.get(copy);
@@ -86,16 +86,16 @@ final class ArtifactReferencePublisherContractTest {
             }
         };
 
-        ArtifactReference fromLambda = lambda.publish("image/png",
+        ArtifactReference fromLambda = lambda.publishBuffer("image/png",
                 ByteBuffer.wrap(new byte[] {1, 2, 3}));
         assertEquals(1, byteArrayCalls.get(),
-                "the default ByteBuffer overload must delegate to the byte[] SAM");
+                "the default publishBuffer overload must delegate to the byte[] SAM");
         assertEquals(3L, fromLambda.byteLength());
 
-        ArtifactReference fromOverride = overriding.publish("image/png",
+        ArtifactReference fromOverride = overriding.publishBuffer("image/png",
                 ByteBuffer.wrap(new byte[] {4, 5, 6}));
         assertEquals(1, byteBufferCalls.get(),
-                "the overridden ByteBuffer overload must be invoked for its publisher");
+                "the overridden publishBuffer overload must be invoked for its publisher");
         assertEquals(1, byteArrayCalls.get(),
                 "the override must not fall back to the byte[] SAM");
         assertEquals(3L, fromOverride.byteLength());

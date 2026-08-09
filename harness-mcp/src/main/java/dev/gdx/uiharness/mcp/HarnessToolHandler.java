@@ -455,7 +455,7 @@ public final class HarnessToolHandler implements AutoCloseable {
         }
         if (result instanceof HarnessResponse.Result.Screenshot screenshot) {
             BinaryAttachment png = requireCapture(captures, HarnessProtocolService.SCREENSHOT_CAPTURE);
-            ArtifactReference reference = artifacts.publish("image/png", png.asByteBuffer());
+            ArtifactReference reference = artifacts.publishBuffer("image/png", png.asByteBuffer());
             requireReceiptMatches(reference, "image/png", png.length(), png.sha256());
             LinkedHashMap<String, Object> content = content("screenshot-result");
             content.put("artifact", artifactMap(reference));
@@ -492,7 +492,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             if (comparison.current() != null) {
                 BinaryAttachment currentCapture = requireCapture(captures,
                         HarnessProtocolService.COMPARE_CURRENT_CAPTURE);
-                ArtifactReference current = artifacts.publish(
+                ArtifactReference current = artifacts.publishBuffer(
                         "image/png", currentCapture.asByteBuffer());
                 requireReceiptMatches(current, "image/png",
                         currentCapture.length(), currentCapture.sha256());
@@ -508,7 +508,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             if (comparison.heatmap() != null) {
                 BinaryAttachment heatmapCapture = requireCapture(captures,
                         HarnessProtocolService.COMPARE_HEATMAP_CAPTURE);
-                ArtifactReference heatmap = artifacts.publish(
+                ArtifactReference heatmap = artifacts.publishBuffer(
                         "image/png", heatmapCapture.asByteBuffer());
                 requireReceiptMatches(heatmap, "image/png",
                         heatmapCapture.length(), heatmapCapture.sha256());
@@ -537,7 +537,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             if (typography.current() != null) {
                 BinaryAttachment currentCapture = requireCapture(captures,
                         HarnessProtocolService.TYPOGRAPHY_CURRENT_CAPTURE);
-                ArtifactReference current = artifacts.publish(
+                ArtifactReference current = artifacts.publishBuffer(
                         "image/png", currentCapture.asByteBuffer());
                 requireReceiptMatches(current, "image/png",
                         currentCapture.length(), currentCapture.sha256());
@@ -591,7 +591,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             if (layout.current() != null) {
                 BinaryAttachment currentCapture = requireCapture(captures,
                         HarnessProtocolService.LAYOUT_CURRENT_CAPTURE);
-                ArtifactReference current = artifacts.publish(
+                ArtifactReference current = artifacts.publishBuffer(
                         "image/png", currentCapture.asByteBuffer());
                 requireReceiptMatches(current, "image/png",
                         currentCapture.length(), currentCapture.sha256());

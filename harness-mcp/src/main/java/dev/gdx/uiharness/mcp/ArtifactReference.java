@@ -50,8 +50,10 @@ public record ArtifactReference(
          * Publishes one immutable payload from a read-only buffer. The default implementation
          * copies once into {@link #publish(String, byte[])}; publishers may override for
          * zero-copy streaming. Implementations must not retain the buffer beyond the call.
+         * The distinct name keeps {@link #publish(String, byte[])} call sites with a null
+         * payload unambiguous, so the byte[] SAM stays source-compatible for released callers.
          */
-        default ArtifactReference publish(String mediaType, ByteBuffer content) {
+        default ArtifactReference publishBuffer(String mediaType, ByteBuffer content) {
             byte[] copy = new byte[content.remaining()];
             content.get(copy);
             return publish(mediaType, copy);
