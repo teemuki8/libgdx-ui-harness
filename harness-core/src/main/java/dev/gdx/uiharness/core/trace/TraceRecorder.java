@@ -68,6 +68,7 @@ public final class TraceRecorder implements AutoCloseable {
     private final UserPrincipal trustedPrincipal;
     private final Clock clock;
     private final FinalizationInterceptor interceptor;
+    private final ChildAttributeReader childAttributeReader;
     private final Map<String, ArtifactInfo> artifacts = new LinkedHashMap<>();
     private OutputStream eventOutput;
     private Path stagingDirectory;
@@ -80,6 +81,7 @@ public final class TraceRecorder implements AutoCloseable {
     private Limits limits;
     private Instant startedAt;
     private long eventCount;
+    private long eventsFileSize;
     private long uncompressedBytes;
     private MessageDigest eventDigest;
     private boolean active;
@@ -110,6 +112,28 @@ public final class TraceRecorder implements AutoCloseable {
         }
     }
 
+    /**
+     * Test-only seam that reads one child's nofollow attributes through a verified
+     * parent handle. The production default reads real attributes; the inode-reuse
+     * regressions override the reported fileKey to deterministically simulate a
+     * delete/recreate collision without depending on filesystem allocation behavior.
+     */
+    @FunctionalInterface
+    interface ChildAttributeReader {
+        /**
+         * Reads the nofollow attributes of {@code name} under {@code parent}.
+         * {@code expectedFileKey} is the identity the caller recorded at creation
+         * and is offered so a simulation can report a reused key.
+         */
+        BasicFileAttributes read(SecureDirectoryStream<Path> parent, String name,
+                Object expectedFileKey) throws IOException;
+    }
+
+    private static final ChildAttributeReader REAL_CHILD_ATTRIBUTES =
+            (parent, name, expectedFileKey) -> parent.getFileAttributeView(
+                    Path.of(name), BasicFileAttributeView.class,
+                    LinkOption.NOFOLLOW_LINKS).readAttributes();
+
     /** Creates a recorder rooted below one non-symbolic-link server-owned directory. */
     public TraceRecorder(Path root, Clock clock) {
         this(root, clock, (step, path) -> { });
@@ -117,8 +141,16 @@ public final class TraceRecorder implements AutoCloseable {
 
     /** Test-only constructor injecting the finalization interceptor. */
     TraceRecorder(Path root, Clock clock, FinalizationInterceptor interceptor) {
+        this(root, clock, interceptor, REAL_CHILD_ATTRIBUTES);
+    }
+
+    /** Test-only constructor injecting the finalization interceptor and attribute seam. */
+    TraceRecorder(Path root, Clock clock, FinalizationInterceptor interceptor,
+            ChildAttributeReader childAttributeReader) {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.interceptor = Objects.requireNonNull(interceptor, "interceptor");
+        this.childAttributeReader =
+                Objects.requireNonNull(childAttributeReader, "childAttributeReader");
         Objects.requireNonNull(root, "root");
         this.permissionMode = detectPermissionMode(root.getFileSystem());
         this.root = initializeRoot(root, permissionMode);
@@ -164,7 +196,7 @@ public final class TraceRecorder implements AutoCloseable {
             probeChannel.close();
         }
         List<Throwable> failures = new ArrayList<>();
-        deleteChildChecked(rootStream, probe, probeKey, true, failures);
+        deleteChildChecked(rootStream, probe, probeKey, null, true, failures);
         if (!failures.isEmpty()) {
             IOException failure = new IOException("unable to remove principal probe");
             failures.forEach(failure::addSuppressed);
@@ -302,6 +334,7 @@ public final class TraceRecorder implements AutoCloseable {
         limits = newLimits;
         startedAt = clock.instant();
         eventCount = 0;
+        eventsFileSize = 0;
         uncompressedBytes = 0;
         eventDigest = sha256();
         lastManifest = null;
@@ -346,7 +379,7 @@ public final class TraceRecorder implements AutoCloseable {
             }
             active = true;
         } catch (IOException | HarnessException exception) {
-            List<Throwable> cleanupFailures = cleanupStaging();
+            List<Throwable> cleanupFailures = cleanupStaging(emptyContentEvidence());
             if (exception instanceof HarnessException harnessException) {
                 cleanupFailures.forEach(harnessException::addSuppressed);
                 throw harnessException;
@@ -400,6 +433,7 @@ public final class TraceRecorder implements AutoCloseable {
         eventDigest.update(encoded);
         eventDigest.update((byte) '\n');
         uncompressedBytes += added;
+        eventsFileSize += added;
         eventCount++;
         return sequence;
     }
@@ -459,17 +493,22 @@ public final class TraceRecorder implements AutoCloseable {
                 size += read;
             }
         } catch (ArtifactLimitException exception) {
-            return failStreamedArtifact(reservation, "byte limit exceeded", exception, true);
+            return failStreamedArtifact(reservation, "byte limit exceeded", exception, true,
+                    new ContentEvidence(HexFormat.of().formatHex(digest.digest()), size));
         } catch (IOException exception) {
-            return failStreamedArtifact(reservation, "artifact write failed", exception, false);
+            return failStreamedArtifact(reservation, "artifact write failed", exception, false,
+                    new ContentEvidence(HexFormat.of().formatHex(digest.digest()), size));
         } catch (RuntimeException exception) {
-            return failStreamedArtifact(reservation, "artifact callback failed", exception, false);
+            return failStreamedArtifact(reservation, "artifact callback failed", exception, false,
+                    new ContentEvidence(HexFormat.of().formatHex(digest.digest()), size));
         }
 
         String hash = HexFormat.of().formatHex(digest.digest());
+        ContentEvidence streamedEvidence = new ContentEvidence(hash, size);
         synchronized (this) {
             if (!matchesActiveReservation(reservation)) {
-                List<Throwable> cleanupFailures = cleanupDetachedReservation(reservation);
+                List<Throwable> cleanupFailures =
+                        cleanupDetachedReservation(reservation, streamedEvidence);
                 HarnessException failure = failure(ErrorCode.SESSION_CLOSED,
                         "Trace closed while artifact evidence was streaming", null);
                 cleanupFailures.forEach(failure::addSuppressed);
@@ -478,7 +517,7 @@ public final class TraceRecorder implements AutoCloseable {
             Duration elapsed = Duration.between(startedAt, clock.instant());
             if (elapsed.isNegative() || elapsed.compareTo(limits.maxDuration()) >= 0) {
                 List<Throwable> cleanupFailures = new ArrayList<>();
-                deleteReservationTemp(reservation, cleanupFailures);
+                deleteReservationTemp(reservation, streamedEvidence, cleanupFailures);
                 HarnessException failure = failLimit("duration limit exceeded");
                 cleanupFailures.forEach(failure::addSuppressed);
                 throw failure;
@@ -486,7 +525,7 @@ public final class TraceRecorder implements AutoCloseable {
             ArtifactInfo existing = artifacts.get(hash);
             if (existing != null) {
                 List<Throwable> cleanupFailures = new ArrayList<>();
-                deleteReservationTemp(reservation, cleanupFailures);
+                deleteReservationTemp(reservation, streamedEvidence, cleanupFailures);
                 if (!cleanupFailures.isEmpty()) {
                     HarnessException failure = failure(ErrorCode.INTERNAL_ERROR,
                             "Unable to remove duplicate artifact staging", null);
@@ -497,24 +536,39 @@ public final class TraceRecorder implements AutoCloseable {
             }
             if (uncompressedBytes > limits.maxUncompressedBytes() - size) {
                 List<Throwable> cleanupFailures = new ArrayList<>();
-                deleteReservationTemp(reservation, cleanupFailures);
+                deleteReservationTemp(reservation, streamedEvidence, cleanupFailures);
                 HarnessException failure = failLimit("byte limit exceeded");
                 cleanupFailures.forEach(failure::addSuppressed);
                 throw failure;
             }
             Path published = reservation.artifactDirectory().resolve(hash);
-            Object publishedFileKey = publishArtifact(reservation, published);
+            Object publishedFileKey = publishArtifact(reservation, published, streamedEvidence);
             artifacts.put(hash, new ArtifactInfo(published, mediaType, size, publishedFileKey));
             uncompressedBytes += size;
             return hash;
         }
     }
 
-    /** Atomically publishes one artifact through the verified artifact directory handle. */
-    private Object publishArtifact(ArtifactReservation reservation, Path published) {
+    /**
+     * Atomically publishes one artifact through the verified artifact directory
+     * handle. The staged entry is re-proven (nofollow regular file, recorded
+     * fileKey, exact content) before the move so a replacement can never be moved
+     * into the published name, even when a reused fileKey collides.
+     */
+    private Object publishArtifact(ArtifactReservation reservation, Path published,
+            ContentEvidence evidence) {
         try (SecureDirectoryStream<Path> artifactsStream = openSecureStreamOrFail(
                 reservation.artifactDirectory(), reservation.artifactFileKey(),
                 "trace artifact staging")) {
+            String temporaryName = reservation.temporary().getFileName().toString();
+            BasicFileAttributes current = childAttributeReader.read(
+                    artifactsStream, temporaryName, reservation.temporaryFileKey());
+            if (!current.isRegularFile()
+                    || !Objects.equals(current.fileKey(), reservation.temporaryFileKey())
+                    || !matchesContent(artifactsStream, temporaryName, evidence)) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace artifact staging changed unexpectedly", null);
+            }
             artifactsStream.move(reservation.temporary().getFileName(),
                     artifactsStream, Path.of(published.getFileName().toString()));
             requireOwnerOnlyChild(artifactsStream,
@@ -525,12 +579,12 @@ public final class TraceRecorder implements AutoCloseable {
                     .readAttributes().fileKey();
         } catch (HarnessException failure) {
             List<Throwable> cleanupFailures = new ArrayList<>();
-            deleteReservationTemp(reservation, cleanupFailures);
+            deleteReservationTemp(reservation, evidence, cleanupFailures);
             cleanupFailures.forEach(failure::addSuppressed);
             throw failure;
         } catch (UnsupportedOperationException exception) {
             List<Throwable> cleanupFailures = new ArrayList<>();
-            deleteReservationTemp(reservation, cleanupFailures);
+            deleteReservationTemp(reservation, evidence, cleanupFailures);
             interruptAfterFailure("artifact atomic publish unsupported", exception);
             HarnessException failure = failure(ErrorCode.INTERNAL_ERROR,
                     "Artifact storage does not support atomic publication", exception);
@@ -538,7 +592,7 @@ public final class TraceRecorder implements AutoCloseable {
             throw failure;
         } catch (IOException exception) {
             List<Throwable> cleanupFailures = new ArrayList<>();
-            deleteReservationTemp(reservation, cleanupFailures);
+            deleteReservationTemp(reservation, evidence, cleanupFailures);
             interruptAfterFailure("artifact publish failed", exception);
             HarnessException failure = failure(ErrorCode.INTERNAL_ERROR,
                     "Unable to publish trace artifact", exception);
@@ -548,7 +602,7 @@ public final class TraceRecorder implements AutoCloseable {
     }
 
     private void deleteReservationTemp(ArtifactReservation reservation,
-            List<Throwable> failures) {
+            ContentEvidence evidence, List<Throwable> failures) {
         // A null expected key after creation is not silent: deleteChildChecked
         // reports a residual failure and leaves the entry when one exists.
         try (SecureDirectoryStream<Path> artifactStream = openSecureStreamOrFail(
@@ -556,7 +610,7 @@ public final class TraceRecorder implements AutoCloseable {
                 "trace artifact staging")) {
             deleteChildChecked(artifactStream,
                     reservation.temporary().getFileName().toString(),
-                    reservation.temporaryFileKey(), true, failures);
+                    reservation.temporaryFileKey(), evidence, true, failures);
         } catch (IOException exception) {
             failures.add(exception);
         }
@@ -584,11 +638,15 @@ public final class TraceRecorder implements AutoCloseable {
     private TraceManifest finalizeTrace(boolean complete, String reason) {
         active = false;
         closeEventOutput();
+        // The events file is complete once the stream is closed; its immutable
+        // content evidence binds every later cleanup deletion of the entry.
+        String eventsSha256 = HexFormat.of().formatHex(eventDigest.digest());
+        ContentEvidence eventsEvidence = new ContentEvidence(eventsSha256, eventsFileSize);
         try {
             verifyRoot();
             verifyStaging();
         } catch (HarnessException exception) {
-            List<Throwable> cleanupFailures = cleanupStaging();
+            List<Throwable> cleanupFailures = cleanupStaging(eventsEvidence);
             cleanupFailures.forEach(exception::addSuppressed);
             throw exception;
         }
@@ -603,7 +661,6 @@ public final class TraceRecorder implements AutoCloseable {
         Object tempArchiveFileKey = null;
         Object destinationReservationKey = null;
         boolean archivePublished = false;
-        String eventsSha256 = HexFormat.of().formatHex(eventDigest.digest());
         LinkedHashMap<String, TraceManifest.ArtifactBinding> bindings = new LinkedHashMap<>();
         for (Map.Entry<String, ArtifactInfo> entry : artifacts.entrySet()) {
             bindings.put(entry.getKey(), new TraceManifest.ArtifactBinding(
@@ -629,11 +686,12 @@ public final class TraceRecorder implements AutoCloseable {
                             new BufferedOutputStream(new DigestOutputStream(raw, archiveDigest)),
                             StandardCharsets.UTF_8)) {
                 copyEntry(zip, "events.ndjson", eventFile, stagingFileKey,
-                        "events.ndjson", eventFileKey, eventsSha256);
+                        "events.ndjson", eventFileKey, eventsSha256, eventsFileSize);
                 for (Map.Entry<String, ArtifactInfo> entry : artifacts.entrySet()) {
                     copyEntry(zip, "artifacts/" + entry.getKey(),
                             entry.getValue().path(), artifactFileKey,
-                            entry.getKey(), entry.getValue().fileKey(), entry.getKey());
+                            entry.getKey(), entry.getValue().fileKey(), entry.getKey(),
+                            entry.getValue().size());
                 }
                 zip.putNextEntry(new ZipEntry("manifest.json"));
                 zip.write(archiveManifest.toJson());
@@ -687,8 +745,11 @@ public final class TraceRecorder implements AutoCloseable {
         } catch (IOException exception) {
             List<Throwable> cleanupFailures = new ArrayList<>();
             deleteArchiveEntries(tempName, archiveName, tempArchiveFileKey,
-                    destinationReservationKey, archivePublished, cleanupFailures);
-            cleanupFailures.addAll(cleanupStaging());
+                    destinationReservationKey, archivePublished,
+                    archiveSha256 == null ? null
+                            : new ContentEvidence(archiveSha256, archiveSize),
+                    cleanupFailures);
+            cleanupFailures.addAll(cleanupStaging(eventsEvidence));
             HarnessException failure = failure(ErrorCode.INTERNAL_ERROR,
                     "Unable to finalize trace archive", exception);
             cleanupFailures.forEach(failure::addSuppressed);
@@ -696,8 +757,11 @@ public final class TraceRecorder implements AutoCloseable {
         } catch (RuntimeException failure) {
             List<Throwable> cleanupFailures = new ArrayList<>();
             deleteArchiveEntries(tempName, archiveName, tempArchiveFileKey,
-                    destinationReservationKey, archivePublished, cleanupFailures);
-            cleanupFailures.addAll(cleanupStaging());
+                    destinationReservationKey, archivePublished,
+                    archiveSha256 == null ? null
+                            : new ContentEvidence(archiveSha256, archiveSize),
+                    cleanupFailures);
+            cleanupFailures.addAll(cleanupStaging(eventsEvidence));
             cleanupFailures.forEach(failure::addSuppressed);
             throw failure;
         }
@@ -705,7 +769,7 @@ public final class TraceRecorder implements AutoCloseable {
                 complete, reason, eventCount, artifacts.size(), uncompressedBytes,
                 TraceManifest.V2, eventsSha256, bindings, archiveSha256, archiveSize);
         lastManifest = manifest;
-        List<Throwable> cleanupFailures = cleanupStaging();
+        List<Throwable> cleanupFailures = cleanupStaging(eventsEvidence);
         if (!cleanupFailures.isEmpty()) {
             HarnessException failure = failure(ErrorCode.INTERNAL_ERROR,
                     "Trace archive published but staging cleanup failed", null);
@@ -723,15 +787,18 @@ public final class TraceRecorder implements AutoCloseable {
      */
     private void deleteArchiveEntries(String tempName, String archiveName,
             Object tempArchiveFileKey, Object destinationReservationKey,
-            boolean archivePublished, List<Throwable> failures) {
+            boolean archivePublished, ContentEvidence archiveEvidence,
+            List<Throwable> failures) {
         try (SecureDirectoryStream<Path> rootStream = openRootStream()) {
             if (archivePublished) {
-                deleteChildChecked(rootStream, archiveName, tempArchiveFileKey, true, failures);
+                deleteChildChecked(rootStream, archiveName, tempArchiveFileKey,
+                        archiveEvidence, true, failures);
             } else {
                 deleteChildChecked(rootStream, archiveName, destinationReservationKey,
-                        true, failures);
+                        null, true, failures);
             }
-            deleteChildChecked(rootStream, tempName, tempArchiveFileKey, true, failures);
+            deleteChildChecked(rootStream, tempName, tempArchiveFileKey,
+                    archiveEvidence, true, failures);
         } catch (IOException exception) {
             failures.add(exception);
         }
@@ -745,15 +812,18 @@ public final class TraceRecorder implements AutoCloseable {
      */
     private void copyEntry(ZipOutputStream zip, String entryName, Path source,
             Object parentFileKey, String childName, Object expectedFileKey,
-            String expectedSha256) throws IOException {
+            String expectedSha256, long expectedSize) throws IOException {
         verifyOwnedRegularFile(source); // read-only fast-fail defense in depth
         interceptor.before(FinalizationInterceptor.Step.OPEN_EVIDENCE, source);
         try (SecureDirectoryStream<Path> parentStream = openSecureStreamOrFail(
                 source.getParent(), parentFileKey, "trace evidence parent")) {
-            Object currentKey = parentStream.getFileAttributeView(Path.of(childName),
-                    BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
-                    .readAttributes().fileKey();
-            if (!Objects.equals(currentKey, expectedFileKey)) {
+            BasicFileAttributes current = childAttributeReader.read(
+                    parentStream, childName, expectedFileKey);
+            if (!current.isRegularFile()) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace evidence file is not a regular file", null);
+            }
+            if (!Objects.equals(current.fileKey(), expectedFileKey)) {
                 throw failure(ErrorCode.INVALID_REQUEST,
                         "Trace evidence file changed unexpectedly", null);
             }
@@ -762,14 +832,18 @@ public final class TraceRecorder implements AutoCloseable {
                     InputStream input = Channels.newInputStream(channel)) {
                 zip.putNextEntry(new ZipEntry(entryName));
                 MessageDigest copyDigest = sha256();
+                long copied = 0;
                 byte[] buffer = new byte[COPY_BUFFER_SIZE];
                 int read;
                 while ((read = input.read(buffer)) != -1) {
                     copyDigest.update(buffer, 0, read);
+                    copied += read;
                     zip.write(buffer, 0, read);
                 }
                 zip.closeEntry();
-                if (!HexFormat.of().formatHex(copyDigest.digest()).equals(expectedSha256)) {
+                if (copied != expectedSize
+                        || !HexFormat.of().formatHex(copyDigest.digest())
+                                .equals(expectedSha256)) {
                     throw failure(ErrorCode.INVALID_REQUEST,
                             "Trace evidence content does not match its recorded digest", null);
                 }
@@ -785,10 +859,13 @@ public final class TraceRecorder implements AutoCloseable {
             Path fullPath, Object expectedFileKey, String expectedDigest,
             long expectedSize) throws IOException {
         interceptor.before(FinalizationInterceptor.Step.VERIFY_ARCHIVE, fullPath);
-        Object currentKey = rootStream.getFileAttributeView(Path.of(name),
-                BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
-                .readAttributes().fileKey();
-        if (!Objects.equals(currentKey, expectedFileKey)) {
+        BasicFileAttributes current = childAttributeReader.read(
+                rootStream, name, expectedFileKey);
+        if (!current.isRegularFile()) {
+            throw failure(ErrorCode.INVALID_REQUEST,
+                    "Trace archive is not a regular file", null);
+        }
+        if (!Objects.equals(current.fileKey(), expectedFileKey)) {
             throw failure(ErrorCode.INVALID_REQUEST,
                     "Trace archive storage changed unexpectedly", null);
         }
@@ -815,12 +892,14 @@ public final class TraceRecorder implements AutoCloseable {
             ArtifactReservation reservation,
             String reason,
             Exception originalFailure,
-            boolean limitFailure) {
+            boolean limitFailure,
+            ContentEvidence streamedEvidence) {
         List<Throwable> cleanupFailures = new ArrayList<>();
-        deleteReservationTemp(reservation, cleanupFailures);
+        deleteReservationTemp(reservation, streamedEvidence, cleanupFailures);
         synchronized (this) {
             if (!matchesActiveReservation(reservation)) {
-                cleanupFailures.addAll(cleanupDetachedReservation(reservation));
+                cleanupFailures.addAll(
+                        cleanupDetachedReservation(reservation, streamedEvidence));
                 HarnessException failure = failure(ErrorCode.SESSION_CLOSED,
                         "Trace closed while artifact evidence was streaming",
                         originalFailure);
@@ -848,25 +927,29 @@ public final class TraceRecorder implements AutoCloseable {
     }
 
     /** Cleans a reservation whose trace closed while the artifact was streaming. */
-    private List<Throwable> cleanupDetachedReservation(ArtifactReservation reservation) {
+    private List<Throwable> cleanupDetachedReservation(ArtifactReservation reservation,
+            ContentEvidence streamedEvidence) {
         List<Throwable> failures = new ArrayList<>();
-        deleteReservationTemp(reservation, failures);
+        deleteReservationTemp(reservation, streamedEvidence, failures);
         if (isUntamperedDirectory(
                 reservation.artifactDirectory(), reservation.artifactFileKey())) {
             try (SecureDirectoryStream<Path> stagingStream = openSecureStreamOrFail(
                     reservation.stagingDirectory(), reservation.stagingFileKey(),
                     "trace staging")) {
                 deleteChildChecked(stagingStream, "artifacts",
-                        reservation.artifactFileKey(), false, failures);
+                        reservation.artifactFileKey(), null, false, failures);
+                // The events binding of a detached trace is not recoverable, and the
+                // events entry was already deleted by the finalization cleanup; a
+                // same-key substitute is still rejected by type and key checks.
                 deleteChildChecked(stagingStream, "events.ndjson",
-                        reservation.eventFileKey(), true, failures);
+                        reservation.eventFileKey(), null, true, failures);
             } catch (IOException exception) {
                 failures.add(exception);
             }
             try (SecureDirectoryStream<Path> rootStream = openRootStream()) {
                 deleteChildChecked(rootStream,
                         reservation.stagingDirectory().getFileName().toString(),
-                        reservation.stagingFileKey(), false, failures);
+                        reservation.stagingFileKey(), null, false, failures);
             } catch (IOException exception) {
                 failures.add(exception);
             }
@@ -875,7 +958,7 @@ public final class TraceRecorder implements AutoCloseable {
             try (SecureDirectoryStream<Path> rootStream = openRootStream()) {
                 deleteChildChecked(rootStream,
                         reservation.stagingDirectory().getFileName().toString(),
-                        reservation.stagingFileKey(), false, failures);
+                        reservation.stagingFileKey(), null, false, failures);
             } catch (IOException exception) {
                 failures.add(exception);
             }
@@ -929,7 +1012,9 @@ public final class TraceRecorder implements AutoCloseable {
         try {
             eventOutput.close();
         } catch (IOException exception) {
-            List<Throwable> cleanupFailures = cleanupStaging();
+            List<Throwable> cleanupFailures = cleanupStaging(
+                    new ContentEvidence(HexFormat.of().formatHex(eventDigest.digest()),
+                            eventsFileSize));
             HarnessException failure = failure(ErrorCode.INTERNAL_ERROR,
                     "Unable to close trace event stream", exception);
             cleanupFailures.forEach(failure::addSuppressed);
@@ -946,7 +1031,7 @@ public final class TraceRecorder implements AutoCloseable {
      * failure so callers can suppress them onto the primary outcome or turn a
      * nominal finalize into a terminal failure.
      */
-    private List<Throwable> cleanupStaging() {
+    private List<Throwable> cleanupStaging(ContentEvidence eventsEvidence) {
         List<Throwable> failures = new ArrayList<>();
         closeEventOutputCollecting(failures);
         eventOutput = null;
@@ -968,8 +1053,9 @@ public final class TraceRecorder implements AutoCloseable {
                 try (SecureDirectoryStream<Path> artifactsStream = openSecureStreamOrFail(
                         artifactDirectory, artifactFileKey, "trace artifact staging")) {
                     for (String hash : artifacts.keySet()) {
-                        deleteChildChecked(artifactsStream, hash,
-                                artifacts.get(hash).fileKey(), true, failures);
+                        ArtifactInfo info = artifacts.get(hash);
+                        deleteChildChecked(artifactsStream, hash, info.fileKey(),
+                                new ContentEvidence(hash, info.size()), true, failures);
                     }
                 } catch (IOException exception) {
                     failures.add(exception);
@@ -977,7 +1063,7 @@ public final class TraceRecorder implements AutoCloseable {
                 try {
                     switch (artifactCleanupState(artifactDirectory)) {
                         case EMPTY -> deleteChildChecked(stagingStream, "artifacts",
-                                artifactFileKey, false, failures);
+                                artifactFileKey, null, false, failures);
                         case IN_FLIGHT_TEMPS -> {
                             // In-flight reservation streams own these temporary files; the
                             // detached-reservation cleanup removes them when streaming
@@ -1004,7 +1090,8 @@ public final class TraceRecorder implements AutoCloseable {
                         "artifact directory identity lost; residual evidence may remain under "
                                 + artifactDirectory));
             }
-            deleteChildChecked(stagingStream, "events.ndjson", eventFileKey, true, failures);
+            deleteChildChecked(stagingStream, "events.ndjson", eventFileKey,
+                    eventsEvidence, true, failures);
         } catch (IOException exception) {
             failures.add(exception);
         }
@@ -1012,7 +1099,7 @@ public final class TraceRecorder implements AutoCloseable {
             try (SecureDirectoryStream<Path> rootStream = openRootStream()) {
                 deleteChildChecked(rootStream,
                         stagingDirectory.getFileName().toString(),
-                        stagingFileKey, false, failures);
+                        stagingFileKey, null, false, failures);
             } catch (IOException exception) {
                 failures.add(exception);
             }
@@ -1052,12 +1139,15 @@ public final class TraceRecorder implements AutoCloseable {
     }
 
     /**
-     * Deletes one child entry by name through a verified parent handle, comparing
-     * the expected fileKey first. A mismatch or any failure leaves the entry
-     * untouched and records the failure. Deletion never follows a swapped entry.
+     * Deletes one child entry by name through a verified parent handle after
+     * proving nofollow type, expected fileKey, and (for regular files with
+     * recorded evidence) exact content. A mismatch or any failure leaves the
+     * entry untouched and records the failure. Deletion never follows a swapped
+     * entry and never unlinks a replacement that only collides on fileKey.
      */
-    private static void deleteChildChecked(SecureDirectoryStream<Path> parentStream,
-            String name, Object expectedFileKey, boolean file, List<Throwable> failures) {
+    private void deleteChildChecked(SecureDirectoryStream<Path> parentStream,
+            String name, Object expectedFileKey, ContentEvidence expectedContent,
+            boolean file, List<Throwable> failures) {
         if (expectedFileKey == null) {
             // Creation succeeded but no identity was captured: an existing entry
             // cannot be proven owned, so it is left and reported as residual.
@@ -1074,12 +1164,30 @@ public final class TraceRecorder implements AutoCloseable {
             return;
         }
         try {
-            BasicFileAttributes attributes = parentStream.getFileAttributeView(
-                    Path.of(name), BasicFileAttributeView.class,
-                    LinkOption.NOFOLLOW_LINKS).readAttributes();
+            BasicFileAttributes attributes = childAttributeReader.read(
+                    parentStream, name, expectedFileKey);
+            if (file && !attributes.isRegularFile()) {
+                failures.add(new IOException(
+                        "cleanup entry is not a regular file; leaving entry untouched: "
+                                + name));
+                return;
+            }
+            if (!file && !attributes.isDirectory()) {
+                failures.add(new IOException(
+                        "cleanup entry is not a directory; leaving entry untouched: "
+                                + name));
+                return;
+            }
             if (!Objects.equals(attributes.fileKey(), expectedFileKey)) {
                 failures.add(new IOException(
                         "cleanup identity mismatch; leaving entry untouched: " + name));
+                return;
+            }
+            if (expectedContent != null && !matchesContent(parentStream, name,
+                    expectedContent)) {
+                failures.add(new IOException(
+                        "cleanup content does not match recorded evidence; "
+                                + "leaving entry untouched: " + name));
                 return;
             }
             if (file) {
@@ -1091,6 +1199,29 @@ public final class TraceRecorder implements AutoCloseable {
             // already gone: nothing to do
         } catch (IOException | RuntimeException exception) {
             failures.add(exception);
+        }
+    }
+
+    /**
+     * Hashes one child's current bytes through the verified parent handle and
+     * compares them against the recorded immutable evidence. Never follows a
+     * substituted link; a swapped entry fails the anchored open.
+     */
+    private static boolean matchesContent(SecureDirectoryStream<Path> parentStream,
+            String name, ContentEvidence expected) throws IOException {
+        try (SeekableByteChannel channel = parentStream.newByteChannel(Path.of(name),
+                Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
+                InputStream input = Channels.newInputStream(channel)) {
+            MessageDigest digest = sha256();
+            long size = 0;
+            byte[] buffer = new byte[COPY_BUFFER_SIZE];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                digest.update(buffer, 0, read);
+                size += read;
+            }
+            return size == expected.size()
+                    && HexFormat.of().formatHex(digest.digest()).equals(expected.sha256());
         }
     }
 
@@ -1429,6 +1560,19 @@ public final class TraceRecorder implements AutoCloseable {
             long maxUncompressedBytes) {}
 
     private record ArtifactInfo(Path path, String mediaType, long size, Object fileKey) {}
+
+    /**
+     * Immutable expected content evidence binding one regular file entry to the
+     * bytes the recorder wrote, so cleanup and publication never unlink or move
+     * an entry whose content no longer matches, even when a reused fileKey
+     * collides with a replacement.
+     */
+    record ContentEvidence(String sha256, long size) {}
+
+    /** Content evidence of the freshly created empty destination reservation. */
+    private static ContentEvidence emptyContentEvidence() {
+        return new ContentEvidence(HexFormat.of().formatHex(sha256().digest()), 0);
+    }
 
     @SuppressWarnings("serial")
     private static final class ArtifactLimitException extends RuntimeException {}

@@ -23,6 +23,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.MessageDigest;
 import java.time.Clock;
@@ -327,7 +330,24 @@ final class TraceRecorderTest {
 
         assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
         assertTrue(failure.getMessage().contains("digest"));
-        assertTrue(noTemporaryFiles(temporaryDirectory));
+        // Fail-closed cleanup: the tampered file's recorded content evidence no
+        // longer matches, so it is left untouched as residual rather than deleted.
+        try (var paths = Files.walk(temporaryDirectory)) {
+            Path tampered = paths
+                    .filter(path -> path.getFileName().toString().equals("events.ndjson"))
+                    .findFirst().orElseThrow();
+            byte[] remaining = Files.readAllBytes(tampered);
+            assertTrue(remaining.length > 0,
+                    "the tampered events file must remain as residual evidence");
+            boolean allA = true;
+            for (byte value : remaining) {
+                if (value != 'A') {
+                    allA = false;
+                    break;
+                }
+            }
+            assertTrue(allA, "the tampered events content must never be deleted");
+        }
         assertNull(publishedArchives(temporaryDirectory),
                 "no archive may be published from substituted evidence");
     }
@@ -842,6 +862,7 @@ final class TraceRecorderTest {
         // White-box contract guard: an existing entry without a recorded identity
         // must be left untouched and reported as residual, never silently skipped.
         Path directory = Files.createTempDirectory("identity");
+        TraceRecorder recorder = new TraceRecorder(directory, Clock.systemUTC());
         Path entry = directory.resolve("events.ndjson");
         Files.writeString(entry, "content", StandardCharsets.UTF_8);
         java.util.List<Throwable> failures = new java.util.ArrayList<>();
@@ -849,14 +870,139 @@ final class TraceRecorderTest {
                 (java.nio.file.SecureDirectoryStream<Path>) Files.newDirectoryStream(directory)) {
             java.lang.reflect.Method method = TraceRecorder.class.getDeclaredMethod(
                     "deleteChildChecked", java.nio.file.SecureDirectoryStream.class,
-                    String.class, Object.class, boolean.class, java.util.List.class);
+                    String.class, Object.class, TraceRecorder.ContentEvidence.class,
+                    boolean.class, java.util.List.class);
             method.setAccessible(true);
-            method.invoke(null, stream, "events.ndjson", null, true, failures);
+            method.invoke(recorder, stream, "events.ndjson", null, null, true, failures);
         }
         assertEquals("content", Files.readString(entry, StandardCharsets.UTF_8),
                 "an entry with unknown identity must be left untouched");
         assertFalse(failures.isEmpty(), "a residual cleanup failure must be reported");
         assertTrue(failures.get(0).getMessage().contains("identity unknown"));
+    }
+
+    @Test void equalFileKeyContentReplacementIsNeverDeletedOrPublished() throws Exception {
+        // A delete/recreate collision where the replacement reuses the recorded
+        // fileKey is simulated by reporting the recorded key; cleanup and the
+        // archive copy must still reject the changed content deterministically.
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                (step, path) -> { }, simulatedFileKeyReuse());
+        recorder.start("session-reuse", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-reuse", "request-1", 1, snapshot(1, 1), Map.of()));
+        recorder.addArtifact("image/png",
+                new ByteArrayInputStream("original".getBytes(StandardCharsets.UTF_8)));
+        Path artifact = artifactFile(temporaryDirectory);
+        Files.writeString(artifact, "replacement", StandardCharsets.UTF_8);
+
+        HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertEquals("replacement", Files.readString(artifact, StandardCharsets.UTF_8),
+                "a same-key content replacement must never be deleted during cleanup");
+        assertNull(publishedArchives(temporaryDirectory),
+                "no archive may be published with substituted artifact content");
+        List<String> suppressed = java.util.Arrays.stream(failure.getSuppressed())
+                .map(Throwable::getMessage).toList();
+        assertTrue(suppressed.stream().anyMatch(message -> message.contains("content")),
+                "the refused cleanup must be reported: " + suppressed);
+    }
+
+    @Test void equalFileKeySymlinkReplacementIsLeftUntouchedDuringCleanup()
+            throws Exception {
+        Path outside = temporaryDirectory.resolveSibling(
+                temporaryDirectory.getFileName() + "-reuse-secret");
+        Files.writeString(outside, "reuse-secret", StandardCharsets.UTF_8);
+        try {
+            TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                    (step, path) -> { }, simulatedFileKeyReuse());
+            recorder.start("session-reuse-symlink", TraceRecorder.Limits.defaults());
+            recorder.record(TraceEvent.commandStarted(
+                    "session-reuse-symlink", "request-1", 1, snapshot(1, 1), Map.of()));
+            recorder.addArtifact("image/png",
+                    new ByteArrayInputStream("original".getBytes(StandardCharsets.UTF_8)));
+            Path artifact = artifactFile(temporaryDirectory);
+            Files.delete(artifact);
+            Files.createSymbolicLink(artifact, outside);
+
+            HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+            assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+            assertTrue(Files.isSymbolicLink(artifact),
+                    "a same-key symlink replacement must never be deleted during cleanup");
+            assertEquals("reuse-secret", Files.readString(outside, StandardCharsets.UTF_8));
+            assertNull(publishedArchives(temporaryDirectory),
+                    "no archive may be published from a substituted artifact");
+        } finally {
+            Files.deleteIfExists(outside);
+        }
+    }
+
+    @Test void equalFileKeyArchiveReplacementAfterPublishIsLeftUntouched()
+            throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                (step, path) -> {
+                    if (step == TraceRecorder.FinalizationInterceptor.Step.VERIFY_ARCHIVE
+                            && path.getFileName().toString().endsWith(".zip")
+                            && !path.getFileName().toString().endsWith(".zip.tmp")) {
+                        Files.deleteIfExists(path);
+                        Files.writeString(path, "tampered-archive", StandardCharsets.UTF_8);
+                    }
+                }, simulatedFileKeyReuse());
+        recorder.start("session-reuse-archive", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-reuse-archive", "request-1", 1, snapshot(1, 1), Map.of()));
+
+        HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(noTemporaryFiles(temporaryDirectory));
+        try (var paths = Files.walk(temporaryDirectory)) {
+            Path leftover = paths
+                    .filter(path -> path.getFileName().toString().endsWith(".zip")
+                            && !path.getFileName().toString().endsWith(".zip.tmp"))
+                    .findFirst().orElseThrow();
+            assertEquals("tampered-archive",
+                    Files.readString(leftover, StandardCharsets.UTF_8),
+                    "the same-key replaced archive must be left untouched, not deleted");
+        }
+    }
+
+    @Test void equalFileKeyEventsReplacementIsLeftUntouchedDuringCleanup()
+            throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                (step, path) -> {
+                    if (step == TraceRecorder.FinalizationInterceptor.Step.AFTER_FINALIZE
+                            && path.getFileName().toString().endsWith(".zip")) {
+                        Path events;
+                        try (var paths = Files.walk(temporaryDirectory)) {
+                            events = paths
+                                    .filter(candidate -> candidate.getFileName().toString()
+                                            .equals("events.ndjson"))
+                                    .findFirst().orElseThrow();
+                        }
+                        Files.delete(events);
+                        Files.writeString(events, "substituted", StandardCharsets.UTF_8);
+                    }
+                }, simulatedFileKeyReuse());
+        recorder.start("session-reuse-events", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-reuse-events", "request-1", 1, snapshot(1, 1), Map.of()));
+
+        HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+        assertEquals(ErrorCode.INTERNAL_ERROR, failure.code());
+        assertTrue(failure.getSuppressed().length > 0,
+                "cleanup identity-mismatch failures must be retained");
+        try (var paths = Files.walk(temporaryDirectory)) {
+            Path substituted = paths
+                    .filter(candidate -> candidate.getFileName().toString()
+                            .equals("events.ndjson"))
+                    .findFirst().orElseThrow();
+            assertEquals("substituted",
+                    Files.readString(substituted, StandardCharsets.UTF_8),
+                    "the same-key substituted events file must be left untouched");
+        }
     }
 
     @Test void coreTraceRuntimeRemainsJdkOnly() {
@@ -976,6 +1122,81 @@ final class TraceRecorderTest {
         try (var paths = Files.walk(root)) {
             return paths.filter(path -> path.getFileName().toString().endsWith(".zip"))
                     .findFirst().orElse(null);
+        }
+    }
+
+    private static Path artifactFile(Path root) throws Exception {
+        try (var paths = Files.walk(root)) {
+            return paths
+                    .filter(path -> path.getParent() != null
+                            && path.getParent().getFileName().toString().equals("artifacts"))
+                    .filter(path -> Files.isRegularFile(path,
+                            java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                    .findFirst().orElseThrow();
+        }
+    }
+
+    /**
+     * Attribute seam that reports the recorded expected fileKey for every child,
+     * deterministically simulating a delete/recreate collision where the
+     * filesystem reuses the freed inode. Content, type, and size stay real, so
+     * only the key-based part of the identity is spoofed.
+     */
+    private static TraceRecorder.ChildAttributeReader simulatedFileKeyReuse() {
+        return (parent, name, expectedKey) -> {
+            BasicFileAttributes real = parent.getFileAttributeView(Path.of(name),
+                    BasicFileAttributeView.class, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    .readAttributes();
+            if (real.fileKey() != null && expectedKey != null) {
+                return new ReuseSimulatedAttributes(real, expectedKey);
+            }
+            return real;
+        };
+    }
+
+    private static final class ReuseSimulatedAttributes implements BasicFileAttributes {
+        private final BasicFileAttributes delegate;
+        private final Object simulatedKey;
+
+        private ReuseSimulatedAttributes(BasicFileAttributes delegate, Object simulatedKey) {
+            this.delegate = delegate;
+            this.simulatedKey = simulatedKey;
+        }
+
+        @Override public Object fileKey() {
+            return simulatedKey;
+        }
+
+        @Override public long size() {
+            return delegate.size();
+        }
+
+        @Override public boolean isDirectory() {
+            return delegate.isDirectory();
+        }
+
+        @Override public boolean isRegularFile() {
+            return delegate.isRegularFile();
+        }
+
+        @Override public boolean isSymbolicLink() {
+            return delegate.isSymbolicLink();
+        }
+
+        @Override public boolean isOther() {
+            return delegate.isOther();
+        }
+
+        @Override public FileTime lastModifiedTime() {
+            return delegate.lastModifiedTime();
+        }
+
+        @Override public FileTime lastAccessTime() {
+            return delegate.lastAccessTime();
+        }
+
+        @Override public FileTime creationTime() {
+            return delegate.creationTime();
         }
     }
 
