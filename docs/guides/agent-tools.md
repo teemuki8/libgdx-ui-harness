@@ -1,31 +1,33 @@
 # Agent tools and safe operation
 
-The MCP server exposes exactly twenty-three bounded tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms (1 through 600,000 ms for `ui_scenario_start`). Deadlines include adapter work and backend queue time. The server's outer request timeout is 630,000 ms (the scenario maximum plus a 30-second translation allowance), so a full scenario deadline is never aborted by the SDK transport timeout; the per-request deadline remains the authoritative bound.
+The MCP server exposes exactly twenty-three bounded tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms; `ui_assert` and `ui_scenario_start` require it, up to 120,000 ms and 600,000 ms respectively. Deadlines include adapter work and backend queue time. The server's outer request timeout is 630,000 ms (the scenario maximum plus a 30-second translation allowance), so a full scenario deadline is never aborted by the SDK transport timeout; the per-request deadline remains the authoritative bound.
+
+`sessionId` is the single envelope field documented by this preamble and omitted from the per-tool rows; the per-tool rows name every other required input and any optional tool-specific input. Each row is `none` or a comma-separated list of `required`/`optional` field tokens, and a schema-parity test fails when a required input appears on either side without the other.
 
 | Tool | Purpose | Tool-specific input | Result |
 |---|---|---|---|
 | `ui_sessions` | List active sessions | none | bounded session IDs and capability names |
 | `ui_snapshot` | Capture a compact semantic snapshot | none | revision, frame, root ID, node count, optional `state-action/v1` identity/contract and full-snapshot artifact |
 | `ui_query` | Evaluate a lazy locator | required `locator` | match count, bounded node summaries/evidence, optional artifact |
-| `ui_action` | Perform one allowlisted action | required `locator` and `action` | before/after revisions, observed state, evidence, optional artifact |
-| `ui_assert` | Assert a semantic condition on a resolved locator with typed outcome | required `locator` and `assertion` | assertion outcome and evidence |
-| `ui_wait` | Wait on semantics | required `locator`; `condition` is `present` or `visible` | final revision/frame, matches/evidence, optional artifact |
-| `ui_screenshot` | Capture completed-frame PNG evidence | optional `locator`; required `maxWidth`, `maxHeight`, `maxPixels`, `maxPngBytes` | opaque artifact receipt plus frame/revision/dimensions/scales |
-| `ui_inspect_compare` | Inspect, capture, and compare one current full frame | required allowlisted reference/policy/viewport identities plus iteration, duration, pixel, and PNG bounds | explicit convergence status, bounded semantic/spatial differences, current PNG and heatmap artifacts, and full immutable evidence artifact |
-| `ui_typography_diagnose` | Capture and diagnose visible registered text controls | required allowlisted reference and viewport identities plus duration, result, pixel, and PNG bounds | actor-attributed typography status and reports, current PNG artifact, and immutable diagnostic evidence artifact |
-| `ui_layout_diagnose` | Capture and diagnose selected controls after layout quiescence | required allowlisted reference and viewport identities plus a maximum two-second duration, result, pixel, and PNG bounds | actor-attributed layout status and summaries, quiescence proof, current PNG artifact, and immutable full evidence artifact |
-| `ui_trace_start` | Start bounded trace collection | required `maxDurationMillis` and `maxBytes` | trace ID |
+| `ui_action` | Perform one allowlisted action | required `action`, required `locator` | before/after revisions, observed state, evidence, optional artifact |
+| `ui_assert` | Assert a semantic condition on a resolved locator with typed outcome | required `schemaVersion`, required `locator`, required `assertion`, required `deadlineMillis` | assertion outcome and evidence |
+| `ui_wait` | Wait on semantics | required `condition`, required `locator` | final revision/frame, matches/evidence, optional artifact |
+| `ui_screenshot` | Capture completed-frame PNG evidence | optional `locator`, required `maxWidth`, required `maxHeight`, required `maxPixels`, required `maxPngBytes` | opaque artifact receipt plus frame/revision/dimensions/scales |
+| `ui_inspect_compare` | Inspect, capture, and compare one current full frame | required `referenceId`, required `policyId`, required `policyVersion`, required `viewportId`, required `maxIterations`, required `maxDurationMillis`, required `maxWidth`, required `maxHeight`, required `maxPixels`, required `maxPngBytes` | explicit convergence status, bounded semantic/spatial differences, current PNG and heatmap artifacts, and full immutable evidence artifact |
+| `ui_typography_diagnose` | Capture and diagnose visible registered text controls | required `referenceId`, required `viewportId`, required `maxDurationMillis`, required `maxResults`, required `maxWidth`, required `maxHeight`, required `maxPixels`, required `maxPngBytes` | actor-attributed typography status and reports, current PNG artifact, and immutable diagnostic evidence artifact |
+| `ui_layout_diagnose` | Capture and diagnose selected controls after layout quiescence | required `referenceId`, required `viewportId`, required `maxDurationMillis`, required `maxResults`, required `maxWidth`, required `maxHeight`, required `maxPixels`, required `maxPngBytes` | actor-attributed layout status and summaries, quiescence proof, current PNG artifact, and immutable full evidence artifact |
+| `ui_trace_start` | Start bounded trace collection | required `maxDurationMillis`, required `maxBytes` | trace ID |
 | `ui_trace_stop` | Stop and finalize the active trace | none | trace ID/reference, event count, bytes |
 | `ui_scenarios` | List registered bounded scenarios | none | bounded scenario list |
-| `ui_scenario_start` | Start one bounded scenario; one active lease per session | `scenarioId`, `seed`, optional `configuration` and `profileId` | scenario start outcome |
-| `ui_navigation_inspect` | Run a bounded navigation path through real input dispatch | required `spec` navigation spec | bounded navigation path with observed focus steps |
-| `ui_navigation_validate` | Validate a navigation path without executing it | required `spec` navigation spec | validation result |
-| `ui_validate_layout` | Validate whole-stage or subtree layout invariants from one completed frame | required `spec` layout spec | status and bounded findings |
-| `ui_matrix_run` | Run one scenario/assertion set across a bounded display matrix | required `spec` matrix spec | run ID |
+| `ui_scenario_start` | Start one bounded scenario; one active lease per session | required `scenarioId`, required `seed`, required `configuration`, required `profileId`, required `deadlineMillis` | scenario start outcome |
+| `ui_navigation_inspect` | Run a bounded navigation path through real input dispatch | required `spec` | bounded navigation path with observed focus steps |
+| `ui_navigation_validate` | Validate a navigation path without executing it | required `spec` | validation result |
+| `ui_validate_layout` | Validate whole-stage or subtree layout invariants from one completed frame | required `spec` | status and bounded findings |
+| `ui_matrix_run` | Run one scenario/assertion set across a bounded display matrix | required `spec` | run ID |
 | `ui_matrix_results` | Retrieve one retained matrix run report | required `runId` | bounded report |
-| `ui_runtime_compare` | Compare a bound node's displayed value against its runtime observation | required `locator` | typed comparison with correlation |
-| `ui_trace_query` | Query compact state transitions from a retained trace | required `spec` trace spec | bounded transitions |
-| `ui_semantic_compare` | Compare a registered semantic baseline against the current snapshot | required `spec` baseline spec | matched status and bounded differences |
+| `ui_runtime_compare` | Compare a bound node's displayed value against its runtime observation | required `maxDurationMillis`, required `locator` | typed comparison with correlation |
+| `ui_trace_query` | Query compact state transitions from a retained trace | required `spec` | bounded transitions |
+| `ui_semantic_compare` | Compare a registered semantic baseline against the current snapshot | required `spec` | matched status and bounded differences |
 | `ui_capabilities` | Discover one session's supported operations | none | bounded capability names, exact operation schemas/examples, diagnostic registry, and recovery policy |
 
 ## Locator and action inputs
