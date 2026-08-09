@@ -53,6 +53,7 @@ import java.util.zip.ZipOutputStream;
 /** Streams bounded causal events and evidence into atomically published ZIP traces. */
 public final class TraceRecorder implements AutoCloseable {
     private static final int COPY_BUFFER_SIZE = 16 * 1024;
+    private static final String DIRECTORY_MARKER_NAME = ".owner-token";
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Pattern FILE_URI = Pattern.compile("file:(?://)?[^\\s\\\",}]+");
     private static final Pattern WINDOWS_PATH =
@@ -77,6 +78,8 @@ public final class TraceRecorder implements AutoCloseable {
     private Object stagingFileKey;
     private Object artifactFileKey;
     private Object eventFileKey;
+    private DirectoryMarker stagingMarker;
+    private DirectoryMarker artifactMarker;
     private String sessionId;
     private Limits limits;
     private Instant startedAt;
@@ -107,6 +110,8 @@ public final class TraceRecorder implements AutoCloseable {
             VERIFY_ARCHIVE,
             /** About to check that the publication destination is absent. */
             CHECK_DESTINATION,
+            /** About to re-verify the reserved destination before the move. */
+            VERIFY_DESTINATION,
             /** Publication proof completed; staging cleanup is next. */
             AFTER_FINALIZE
         }
@@ -354,6 +359,7 @@ public final class TraceRecorder implements AutoCloseable {
                 verifyChildDirectory(rootStream, stagingName, stagingFileKey);
                 requireOwnerOnlyChild(rootStream, stagingName, true);
             }
+            stagingMarker = createDirectoryMarker(stagingDirectory, stagingFileKey);
 
             artifactDirectory = stagingDirectory.resolve("artifacts");
             Files.createDirectory(artifactDirectory, ownerOnlyDirectoryAttributes());
@@ -363,6 +369,7 @@ public final class TraceRecorder implements AutoCloseable {
                 verifyChildDirectory(stagingStream, "artifacts", artifactFileKey);
                 requireOwnerOnlyChild(stagingStream, "artifacts", true);
             }
+            artifactMarker = createDirectoryMarker(artifactDirectory, artifactFileKey);
 
             eventFile = stagingDirectory.resolve("events.ndjson");
             try (SecureDirectoryStream<Path> stagingStream = openSecureStreamOrFail(
@@ -466,7 +473,8 @@ public final class TraceRecorder implements AutoCloseable {
                 }
                 reservation = new ArtifactReservation(
                         generation, stagingDirectory, artifactDirectory,
-                        stagingFileKey, artifactFileKey, eventFileKey, temporary,
+                        stagingFileKey, artifactFileKey, eventFileKey,
+                        stagingMarker, artifactMarker, temporary,
                         temporaryFileKey, mediaType, limits.maxUncompressedBytes());
             }
         } catch (IOException exception) {
@@ -628,6 +636,85 @@ public final class TraceRecorder implements AutoCloseable {
         return Optional.ofNullable(lastManifest);
     }
 
+    /**
+     * Atomically captures and removes one published trace archive after proving
+     * its receipt evidence (exact size and SHA-256) through the verified root
+     * handle. The captured bytes are returned only after the entry is re-proven
+     * and keyed deletion succeeds; a replaced or tampered archive is left
+     * untouched and reported as a failure.
+     */
+    public synchronized byte[] consumeArchive(TraceManifest manifest) {
+        Objects.requireNonNull(manifest, "manifest");
+        if (manifest.archive() == null || manifest.archiveSha256() == null
+                || manifest.archiveSize() < 0 || manifest.archiveSize() > Integer.MAX_VALUE) {
+            throw failure(ErrorCode.INVALID_REQUEST,
+                    "Trace manifest carries no usable archive receipt", null);
+        }
+        verifyRoot();
+        String archiveName = manifest.archive().getFileName().toString();
+        ContentEvidence evidence = new ContentEvidence(
+                manifest.archiveSha256(), manifest.archiveSize());
+        try (SecureDirectoryStream<Path> rootStream = openRootStream()) {
+            BasicFileAttributes attributes;
+            try {
+                attributes = childAttributeReader.read(rootStream, archiveName, null);
+            } catch (NoSuchFileException exception) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive does not exist", exception);
+            }
+            if (!attributes.isRegularFile()) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive is not a regular file; leaving it untouched", null);
+            }
+            byte[] captured = readArchiveBounded(rootStream, archiveName, evidence);
+            List<Throwable> failures = new ArrayList<>();
+            deleteChildChecked(rootStream, archiveName, attributes.fileKey(),
+                    evidence, true, failures);
+            if (!failures.isEmpty()) {
+                HarnessException failure = failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive changed before it could be consumed", null);
+                failures.forEach(failure::addSuppressed);
+                throw failure;
+            }
+            return captured;
+        } catch (IOException exception) {
+            throw failure(ErrorCode.INTERNAL_ERROR,
+                    "Unable to consume trace archive", exception);
+        }
+    }
+
+    /**
+     * Reads exactly {@code expected.size()} bytes through the anchored root
+     * handle, rejecting any file that is shorter or longer than the recorded
+     * byte count before the digest is even consulted.
+     */
+    private static byte[] readArchiveBounded(SecureDirectoryStream<Path> rootStream,
+            String name, ContentEvidence expected) throws IOException {
+        try (SeekableByteChannel channel = rootStream.newByteChannel(Path.of(name),
+                Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
+                InputStream input = Channels.newInputStream(channel)) {
+            MessageDigest digest = sha256();
+            byte[] bytes = new byte[Math.toIntExact(expected.size())];
+            long copied = 0;
+            while (copied < expected.size()) {
+                int limit = (int) Math.min(COPY_BUFFER_SIZE, expected.size() - copied);
+                int read = input.read(bytes, (int) copied, limit);
+                if (read == -1) {
+                    break;
+                }
+                digest.update(bytes, (int) copied, read);
+                copied += read;
+            }
+            boolean oversized = copied == expected.size() && input.read() != -1;
+            if (oversized || copied != expected.size()
+                    || !HexFormat.of().formatHex(digest.digest()).equals(expected.sha256())) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive content does not match its receipt", null);
+            }
+            return bytes;
+        }
+    }
+
     /** Finalizes an active trace as interrupted. Repeated close is safe. */
     @Override public synchronized void close() {
         if (active) {
@@ -660,6 +747,7 @@ public final class TraceRecorder implements AutoCloseable {
         Path archive = root.resolve(archiveName);
         Object tempArchiveFileKey = null;
         Object destinationReservationKey = null;
+        ContentEvidence destinationReservationEvidence = null;
         boolean archivePublished = false;
         LinkedHashMap<String, TraceManifest.ArtifactBinding> bindings = new LinkedHashMap<>();
         for (Map.Entry<String, ArtifactInfo> entry : artifacts.entrySet()) {
@@ -710,9 +798,12 @@ public final class TraceRecorder implements AutoCloseable {
             verifyArchiveContent(rootStream, tempName, temporaryArchive,
                     tempArchiveFileKey, archiveSha256, archiveSize);
             // Reserve the destination with CREATE_NEW: an occupied destination fails
-            // closed at the reservation, and the reservation fileKey lets the move be
-            // proven to replace only our own reservation.
+            // closed at the reservation, and the reservation fileKey plus the
+            // unpredictable owner token written into it let the move be proven to
+            // replace only our own reservation, even when a reused key collides.
             interceptor.before(FinalizationInterceptor.Step.CHECK_DESTINATION, archive);
+            byte[] reservationToken = new byte[32];
+            RANDOM.nextBytes(reservationToken);
             SeekableByteChannel reservation;
             try {
                 reservation = rootStream.newByteChannel(Path.of(archiveName),
@@ -723,16 +814,24 @@ public final class TraceRecorder implements AutoCloseable {
                         "Trace archive destination already exists", exception);
             }
             try {
+                reservation.write(java.nio.ByteBuffer.wrap(reservationToken));
                 destinationReservationKey = rootStream.getFileAttributeView(
                         Path.of(archiveName), BasicFileAttributeView.class,
                         LinkOption.NOFOLLOW_LINKS).readAttributes().fileKey();
             } finally {
                 reservation.close();
             }
-            Object currentDestinationKey = rootStream.getFileAttributeView(
-                    Path.of(archiveName), BasicFileAttributeView.class,
-                    LinkOption.NOFOLLOW_LINKS).readAttributes().fileKey();
-            if (!Objects.equals(currentDestinationKey, destinationReservationKey)) {
+            destinationReservationEvidence = new ContentEvidence(
+                    HexFormat.of().formatHex(sha256().digest(reservationToken)),
+                    reservationToken.length);
+            interceptor.before(FinalizationInterceptor.Step.VERIFY_DESTINATION, archive);
+            BasicFileAttributes destinationCheck = childAttributeReader.read(
+                    rootStream, archiveName, destinationReservationKey);
+            if (!destinationCheck.isRegularFile()
+                    || !Objects.equals(destinationCheck.fileKey(),
+                            destinationReservationKey)
+                    || !matchesContent(rootStream, archiveName,
+                            destinationReservationEvidence)) {
                 throw failure(ErrorCode.INVALID_REQUEST,
                         "Trace archive destination changed unexpectedly", null);
             }
@@ -745,8 +844,8 @@ public final class TraceRecorder implements AutoCloseable {
         } catch (IOException exception) {
             List<Throwable> cleanupFailures = new ArrayList<>();
             deleteArchiveEntries(tempName, archiveName, tempArchiveFileKey,
-                    destinationReservationKey, archivePublished,
-                    archiveSha256 == null ? null
+                    destinationReservationKey, destinationReservationEvidence,
+                    archivePublished, archiveSha256 == null ? null
                             : new ContentEvidence(archiveSha256, archiveSize),
                     cleanupFailures);
             cleanupFailures.addAll(cleanupStaging(eventsEvidence));
@@ -757,8 +856,8 @@ public final class TraceRecorder implements AutoCloseable {
         } catch (RuntimeException failure) {
             List<Throwable> cleanupFailures = new ArrayList<>();
             deleteArchiveEntries(tempName, archiveName, tempArchiveFileKey,
-                    destinationReservationKey, archivePublished,
-                    archiveSha256 == null ? null
+                    destinationReservationKey, destinationReservationEvidence,
+                    archivePublished, archiveSha256 == null ? null
                             : new ContentEvidence(archiveSha256, archiveSize),
                     cleanupFailures);
             cleanupFailures.addAll(cleanupStaging(eventsEvidence));
@@ -787,15 +886,15 @@ public final class TraceRecorder implements AutoCloseable {
      */
     private void deleteArchiveEntries(String tempName, String archiveName,
             Object tempArchiveFileKey, Object destinationReservationKey,
-            boolean archivePublished, ContentEvidence archiveEvidence,
-            List<Throwable> failures) {
+            ContentEvidence destinationReservationEvidence, boolean archivePublished,
+            ContentEvidence archiveEvidence, List<Throwable> failures) {
         try (SecureDirectoryStream<Path> rootStream = openRootStream()) {
             if (archivePublished) {
                 deleteChildChecked(rootStream, archiveName, tempArchiveFileKey,
                         archiveEvidence, true, failures);
             } else {
                 deleteChildChecked(rootStream, archiveName, destinationReservationKey,
-                        null, true, failures);
+                        destinationReservationEvidence, true, failures);
             }
             deleteChildChecked(rootStream, tempName, tempArchiveFileKey,
                     archiveEvidence, true, failures);
@@ -834,14 +933,21 @@ public final class TraceRecorder implements AutoCloseable {
                 MessageDigest copyDigest = sha256();
                 long copied = 0;
                 byte[] buffer = new byte[COPY_BUFFER_SIZE];
-                int read;
-                while ((read = input.read(buffer)) != -1) {
+                while (copied < expectedSize) {
+                    int limit = (int) Math.min(buffer.length, expectedSize - copied);
+                    int read = input.read(buffer, 0, limit);
+                    if (read == -1) {
+                        break;
+                    }
                     copyDigest.update(buffer, 0, read);
                     copied += read;
                     zip.write(buffer, 0, read);
                 }
+                // Probe for one extra byte: the entry must never carry more than
+                // the recorded byte count, and the read never exceeds it.
+                boolean oversized = copied == expectedSize && input.read() != -1;
                 zip.closeEntry();
-                if (copied != expectedSize
+                if (oversized || copied != expectedSize
                         || !HexFormat.of().formatHex(copyDigest.digest())
                                 .equals(expectedSha256)) {
                     throw failure(ErrorCode.INVALID_REQUEST,
@@ -875,12 +981,17 @@ public final class TraceRecorder implements AutoCloseable {
             MessageDigest digest = sha256();
             long size = 0;
             byte[] buffer = new byte[COPY_BUFFER_SIZE];
-            int read;
-            while ((read = input.read(buffer)) != -1) {
+            while (size < expectedSize) {
+                int limit = (int) Math.min(buffer.length, expectedSize - size);
+                int read = input.read(buffer, 0, limit);
+                if (read == -1) {
+                    break;
+                }
                 digest.update(buffer, 0, read);
                 size += read;
             }
-            if (size != expectedSize
+            boolean oversized = size == expectedSize && input.read() != -1;
+            if (oversized || size != expectedSize
                     || !HexFormat.of().formatHex(digest.digest()).equals(expectedDigest)) {
                 throw failure(ErrorCode.INVALID_REQUEST,
                         "Trace archive content does not match its recorded digest", null);
@@ -936,8 +1047,9 @@ public final class TraceRecorder implements AutoCloseable {
             try (SecureDirectoryStream<Path> stagingStream = openSecureStreamOrFail(
                     reservation.stagingDirectory(), reservation.stagingFileKey(),
                     "trace staging")) {
-                deleteChildChecked(stagingStream, "artifacts",
-                        reservation.artifactFileKey(), null, false, failures);
+                deleteOwnedDirectory(stagingStream, "artifacts",
+                        reservation.artifactFileKey(), reservation.artifactMarker(),
+                        failures);
                 // The events binding of a detached trace is not recoverable, and the
                 // events entry was already deleted by the finalization cleanup; a
                 // same-key substitute is still rejected by type and key checks.
@@ -947,18 +1059,20 @@ public final class TraceRecorder implements AutoCloseable {
                 failures.add(exception);
             }
             try (SecureDirectoryStream<Path> rootStream = openRootStream()) {
-                deleteChildChecked(rootStream,
+                deleteOwnedDirectory(rootStream,
                         reservation.stagingDirectory().getFileName().toString(),
-                        reservation.stagingFileKey(), null, false, failures);
+                        reservation.stagingFileKey(), reservation.stagingMarker(),
+                        failures);
             } catch (IOException exception) {
                 failures.add(exception);
             }
         } else if (isUntamperedDirectory(
                 reservation.stagingDirectory(), reservation.stagingFileKey())) {
             try (SecureDirectoryStream<Path> rootStream = openRootStream()) {
-                deleteChildChecked(rootStream,
+                deleteOwnedDirectory(rootStream,
                         reservation.stagingDirectory().getFileName().toString(),
-                        reservation.stagingFileKey(), null, false, failures);
+                        reservation.stagingFileKey(), reservation.stagingMarker(),
+                        failures);
             } catch (IOException exception) {
                 failures.add(exception);
             }
@@ -1062,8 +1176,8 @@ public final class TraceRecorder implements AutoCloseable {
                 }
                 try {
                     switch (artifactCleanupState(artifactDirectory)) {
-                        case EMPTY -> deleteChildChecked(stagingStream, "artifacts",
-                                artifactFileKey, null, false, failures);
+                        case EMPTY -> deleteOwnedDirectory(stagingStream, "artifacts",
+                                artifactFileKey, artifactMarker, failures);
                         case IN_FLIGHT_TEMPS -> {
                             // In-flight reservation streams own these temporary files; the
                             // detached-reservation cleanup removes them when streaming
@@ -1097,9 +1211,9 @@ public final class TraceRecorder implements AutoCloseable {
         }
         if (!deferred) {
             try (SecureDirectoryStream<Path> rootStream = openRootStream()) {
-                deleteChildChecked(rootStream,
+                deleteOwnedDirectory(rootStream,
                         stagingDirectory.getFileName().toString(),
-                        stagingFileKey, null, false, failures);
+                        stagingFileKey, stagingMarker, failures);
             } catch (IOException exception) {
                 failures.add(exception);
             }
@@ -1126,16 +1240,21 @@ public final class TraceRecorder implements AutoCloseable {
 
     private static ArtifactCleanup artifactCleanupState(Path artifactDirectory)
             throws IOException {
-        boolean sawEntry = false;
+        // The owner-only marker token is an owned entry, never "unexpected".
+        boolean sawOwnedEntry = false;
         try (var entries = Files.newDirectoryStream(artifactDirectory)) {
             for (Path entry : entries) {
-                sawEntry = true;
-                if (!entry.getFileName().toString().startsWith(".artifact-")) {
+                String fileName = entry.getFileName().toString();
+                if (fileName.equals(DIRECTORY_MARKER_NAME)) {
+                    continue;
+                }
+                if (!fileName.startsWith(".artifact-")) {
                     return ArtifactCleanup.UNEXPECTED;
                 }
+                sawOwnedEntry = true;
             }
         }
-        return sawEntry ? ArtifactCleanup.IN_FLIGHT_TEMPS : ArtifactCleanup.EMPTY;
+        return sawOwnedEntry ? ArtifactCleanup.IN_FLIGHT_TEMPS : ArtifactCleanup.EMPTY;
     }
 
     /**
@@ -1215,13 +1334,140 @@ public final class TraceRecorder implements AutoCloseable {
             MessageDigest digest = sha256();
             long size = 0;
             byte[] buffer = new byte[COPY_BUFFER_SIZE];
-            int read;
-            while ((read = input.read(buffer)) != -1) {
+            while (size < expected.size()) {
+                int limit = (int) Math.min(buffer.length, expected.size() - size);
+                int read = input.read(buffer, 0, limit);
+                if (read == -1) {
+                    break;
+                }
                 digest.update(buffer, 0, read);
                 size += read;
             }
-            return size == expected.size()
-                    && HexFormat.of().formatHex(digest.digest()).equals(expected.sha256());
+            if (size != expected.size()) {
+                return false; // shorter than the recorded byte count
+            }
+            if (input.read() != -1) {
+                return false; // longer than the recorded byte count
+            }
+            return HexFormat.of().formatHex(digest.digest()).equals(expected.sha256());
+        }
+    }
+
+    /**
+     * Creates an unpredictable owner-only token file inside {@code directory} and
+     * returns its recorded identity and content evidence. The marker name is
+     * excluded from archive and cleanup enumeration; its content is the secret.
+     */
+    private DirectoryMarker createDirectoryMarker(Path directory,
+            Object directoryFileKey) throws IOException {
+        String name = DIRECTORY_MARKER_NAME;
+        byte[] token = new byte[32];
+        RANDOM.nextBytes(token);
+        Object tokenKey;
+        try (SecureDirectoryStream<Path> stream = openSecureStreamOrFail(
+                directory, directoryFileKey, "trace directory marker")) {
+            try (SeekableByteChannel channel = stream.newByteChannel(Path.of(name),
+                    Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
+                    ownerOnlyFileAttribute())) {
+                channel.write(java.nio.ByteBuffer.wrap(token));
+            }
+            requireOwnerOnlyChild(stream, name, false);
+            tokenKey = stream.getFileAttributeView(Path.of(name),
+                    BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
+                    .readAttributes().fileKey();
+        }
+        return new DirectoryMarker(name, tokenKey,
+                new ContentEvidence(HexFormat.of().formatHex(sha256().digest(token)),
+                        token.length));
+    }
+
+    /**
+     * Opens a secure directory stream for one child of a verified parent handle,
+     * proving the handle refers to the same filesystem object as
+     * {@code expectedFileKey}. Fails closed when the provider offers no secure
+     * directory streams for the child.
+     */
+    @SuppressWarnings("unchecked")
+    private static SecureDirectoryStream<Path> openChildSecureStream(
+            SecureDirectoryStream<Path> parent, String name, Object expectedFileKey)
+            throws IOException {
+        DirectoryStream<Path> stream = parent.newDirectoryStream(Path.of(name),
+                LinkOption.NOFOLLOW_LINKS);
+        if (!(stream instanceof SecureDirectoryStream<?>)) {
+            stream.close();
+            throw new IOException(
+                    "trace child directory does not support secure directory streams");
+        }
+        SecureDirectoryStream<Path> secure = (SecureDirectoryStream<Path>) stream;
+        try {
+            Object handleKey = secure.getFileAttributeView(BasicFileAttributeView.class)
+                    .readAttributes().fileKey();
+            if (!Objects.equals(handleKey, expectedFileKey)) {
+                secure.close();
+                throw new IOException(
+                        "trace child directory identity changed between verification and open");
+            }
+            return secure;
+        } catch (IOException | RuntimeException exception) {
+            try {
+                secure.close();
+            } catch (IOException ignored) {
+                // best effort after the primary failure
+            }
+            throw exception;
+        }
+    }
+
+    /**
+     * Deletes one owned directory after proving its nofollow type, recorded
+     * fileKey, and the exact owner-only marker token inside it through the
+     * parent handle. The marker is removed only after that exact proof; a
+     * replacement directory without the recorded token is left untouched and
+     * reported.
+     */
+    private void deleteOwnedDirectory(SecureDirectoryStream<Path> parentStream,
+            String name, Object expectedFileKey, DirectoryMarker marker,
+            List<Throwable> failures) {
+        if (marker == null) {
+            failures.add(new IOException(
+                    "cleanup directory ownership unproven; leaving entry untouched: "
+                            + name));
+            return;
+        }
+        try {
+            BasicFileAttributes attributes = childAttributeReader.read(
+                    parentStream, name, expectedFileKey);
+            if (!attributes.isDirectory()) {
+                failures.add(new IOException(
+                        "cleanup entry is not a directory; leaving entry untouched: "
+                                + name));
+                return;
+            }
+            if (!Objects.equals(attributes.fileKey(), expectedFileKey)) {
+                failures.add(new IOException(
+                        "cleanup identity mismatch; leaving entry untouched: " + name));
+                return;
+            }
+            try (SecureDirectoryStream<Path> childStream = openChildSecureStream(
+                    parentStream, name, expectedFileKey)) {
+                BasicFileAttributes markerAttributes = childAttributeReader.read(
+                        childStream, marker.name(), marker.fileKey());
+                if (!markerAttributes.isRegularFile()
+                        || !Objects.equals(markerAttributes.fileKey(), marker.fileKey())
+                        || !matchesContent(childStream, marker.name(), marker.content())) {
+                    failures.add(new IOException(
+                            "cleanup marker does not match recorded evidence; "
+                                    + "leaving directory untouched: " + name));
+                    return;
+                }
+                deleteChildChecked(childStream, marker.name(), marker.fileKey(),
+                        marker.content(), true, failures);
+            }
+            parentStream.deleteDirectory(Path.of(name));
+        } catch (NoSuchFileException alreadyRemoved) {
+            // already gone: nothing to do
+        } catch (IOException | RuntimeException exception) {
+            failures.add(exception);
         }
     }
 
@@ -1233,6 +1479,8 @@ public final class TraceRecorder implements AutoCloseable {
         stagingFileKey = null;
         artifactFileKey = null;
         eventFileKey = null;
+        stagingMarker = null;
+        artifactMarker = null;
     }
 
     private void verifyStaging() {
@@ -1554,6 +1802,8 @@ public final class TraceRecorder implements AutoCloseable {
             Object stagingFileKey,
             Object artifactFileKey,
             Object eventFileKey,
+            DirectoryMarker stagingMarker,
+            DirectoryMarker artifactMarker,
             Path temporary,
             Object temporaryFileKey,
             String mediaType,
@@ -1568,6 +1818,14 @@ public final class TraceRecorder implements AutoCloseable {
      * collides with a replacement.
      */
     record ContentEvidence(String sha256, long size) {}
+
+    /**
+     * Owner-only unpredictable token file proving one created directory is still
+     * the recorded filesystem object. The token content is secret (owner-only
+     * directory permissions protect it), so a replacement directory can never
+     * reproduce it; directories are deleted only after exact token proof.
+     */
+    private record DirectoryMarker(String name, Object fileKey, ContentEvidence content) {}
 
     /** Content evidence of the freshly created empty destination reservation. */
     private static ContentEvidence emptyContentEvidence() {

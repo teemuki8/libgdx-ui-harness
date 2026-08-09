@@ -1,5 +1,6 @@
 package dev.gdx.uiharness.core.trace;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -269,7 +270,10 @@ final class TraceRecorderTest {
             assertEquals("outside", Files.readString(outsideArtifact, StandardCharsets.UTF_8));
         } finally {
             Files.deleteIfExists(artifactDirectory);
-            Files.deleteIfExists(moved);
+            if (Files.exists(moved)) {
+                Files.deleteIfExists(moved.resolve(".owner-token"));
+                Files.deleteIfExists(moved);
+            }
             Files.deleteIfExists(outsideArtifact);
             Files.deleteIfExists(outside);
         }
@@ -1003,6 +1007,154 @@ final class TraceRecorderTest {
                     Files.readString(substituted, StandardCharsets.UTF_8),
                     "the same-key substituted events file must be left untouched");
         }
+    }
+
+    @Test void tamperedDirectoryMarkerIsLeftWithResidualFailure() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-marker", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-marker", "request-1", 1, snapshot(1, 1), Map.of()));
+        Path artifactDirectory = artifactDirectory(temporaryDirectory);
+        Path marker = artifactDirectory.resolve(".owner-token");
+        Files.writeString(marker, "tampered-token", StandardCharsets.UTF_8);
+
+        HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+        assertEquals(ErrorCode.INTERNAL_ERROR, failure.code());
+        assertTrue(Files.isDirectory(artifactDirectory,
+                        java.nio.file.LinkOption.NOFOLLOW_LINKS),
+                "a directory whose marker token was replaced must never be deleted");
+        List<String> messages = java.util.Arrays.stream(failure.getSuppressed())
+                .map(Throwable::getMessage).toList();
+        assertTrue(messages.stream().anyMatch(message -> message != null
+                        && message.contains("marker")),
+                "the marker mismatch must be reported: " + messages);
+    }
+
+    @Test void equalFileKeyDestinationReplacementIsNotMovedOver() throws Exception {
+        Path[] replaced = new Path[1];
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                (step, path) -> {
+                    if (step == TraceRecorder.FinalizationInterceptor.Step.VERIFY_DESTINATION) {
+                        replaced[0] = path;
+                        Files.deleteIfExists(path);
+                        Files.writeString(path, "replaced-destination",
+                                StandardCharsets.UTF_8);
+                    }
+                }, simulatedFileKeyReuse());
+        recorder.start("session-dest-reuse", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-dest-reuse", "request-1", 1, snapshot(1, 1), Map.of()));
+
+        HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertEquals("replaced-destination",
+                Files.readString(replaced[0], StandardCharsets.UTF_8),
+                "a same-key destination replacement must never be moved over");
+        assertTrue(noTemporaryFiles(temporaryDirectory));
+    }
+
+    @Test void equalFileKeyOversizedArtifactReplacementIsRejected() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                (step, path) -> { }, simulatedFileKeyReuse());
+        recorder.start("session-oversize", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-oversize", "request-1", 1, snapshot(1, 1), Map.of()));
+        recorder.addArtifact("image/png",
+                new ByteArrayInputStream("original".getBytes(StandardCharsets.UTF_8)));
+        Path artifact = artifactFile(temporaryDirectory);
+        byte[] oversized = new byte[4096];
+        java.util.Arrays.fill(oversized, (byte) 'X');
+        Files.write(artifact, oversized);
+
+        HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertEquals(oversized.length, Files.size(artifact),
+                "an oversized same-key replacement must be left untouched");
+        assertNull(publishedArchives(temporaryDirectory),
+                "no archive may be published with oversized substituted content");
+    }
+
+    @Test void equalFileKeyOversizedArchiveReplacementIsRejected() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                (step, path) -> {
+                    if (step == TraceRecorder.FinalizationInterceptor.Step.VERIFY_ARCHIVE
+                            && path.getFileName().toString().endsWith(".zip")
+                            && !path.getFileName().toString().endsWith(".zip.tmp")) {
+                        Files.deleteIfExists(path);
+                        byte[] oversized = new byte[1024 * 1024];
+                        java.util.Arrays.fill(oversized, (byte) 'A');
+                        Files.write(path, oversized);
+                    }
+                }, simulatedFileKeyReuse());
+        recorder.start("session-oversize-archive", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-oversize-archive", "request-1", 1, snapshot(1, 1), Map.of()));
+
+        HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        try (var paths = Files.walk(temporaryDirectory)) {
+            Path leftover = paths
+                    .filter(path -> path.getFileName().toString().endsWith(".zip")
+                            && !path.getFileName().toString().endsWith(".zip.tmp"))
+                    .findFirst().orElseThrow();
+            assertEquals(1024 * 1024, Files.size(leftover),
+                    "an oversized same-key archive replacement must be left untouched");
+        }
+    }
+
+    @Test void consumeArchiveCapturesAndRemovesPublishedArchive() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-consume", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-consume", "request-1", 1, snapshot(1, 1), Map.of()));
+        TraceManifest manifest = recorder.stop();
+        byte[] expected = Files.readAllBytes(manifest.archive());
+
+        byte[] captured = recorder.consumeArchive(manifest);
+
+        assertArrayEquals(expected, captured);
+        assertTrue(Files.notExists(manifest.archive()),
+                "a proven archive must be removed by consumeArchive");
+    }
+
+    @Test void consumeArchiveRejectsReplacedArchiveAndLeavesIt() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-consume-replace", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-consume-replace", "request-1", 1, snapshot(1, 1), Map.of()));
+        TraceManifest manifest = recorder.stop();
+        Files.writeString(manifest.archive(), "replaced", StandardCharsets.UTF_8);
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> recorder.consumeArchive(manifest));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertEquals("replaced",
+                Files.readString(manifest.archive(), StandardCharsets.UTF_8),
+                "a replaced archive must be left untouched by consumeArchive");
+    }
+
+    @Test void consumeArchiveLeavesEqualFileKeyReplacement() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                (step, path) -> { }, simulatedFileKeyReuse());
+        recorder.start("session-consume-reuse", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-consume-reuse", "request-1", 1, snapshot(1, 1), Map.of()));
+        TraceManifest manifest = recorder.stop();
+        Files.writeString(manifest.archive(), "replacement-content",
+                StandardCharsets.UTF_8);
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> recorder.consumeArchive(manifest));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertEquals("replacement-content",
+                Files.readString(manifest.archive(), StandardCharsets.UTF_8),
+                "a same-key archive replacement must never be consumed or deleted");
     }
 
     @Test void coreTraceRuntimeRemainsJdkOnly() {
