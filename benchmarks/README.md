@@ -1,5 +1,9 @@
 # Playwright semantic parity benchmark
 
+The deterministic parity and Agentic Palisade contract suites run in CI and block publication.
+Real-model Agentic Palisade executions remain manual or scheduled empirical qualification: model
+service availability, model revisions, and human review do not gate Maven artifacts (ADR 0034).
+
 This benchmark compares the production stdio MCP harness against a pinned Playwright implementation of the same ten semantic scenarios. It executes real hidden LWJGL3 processes and real Chromium contexts; it does not load precomputed outcomes. The Playwright page is created with `page.setContent`, so no HTTP server or non-loopback listener is opened.
 
 ## Pinned environment

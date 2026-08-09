@@ -27,11 +27,19 @@ for marker in (
     'git tag --verify "$tag"',
 ):
     require(marker in release, f"trusted tag verification marker missing: {marker}")
-require(
-    "if: ${{ ! hashFiles('.release-gate-exception') || "
-    "github.ref_name != 'v1.2.0' }}" in release,
-    "release gate exception must be mechanically limited to v1.2.0",
-)
+for forbidden in (
+        "release-gate.py verify",
+        ".release-gate-exception",
+        "release-evidence-$GITHUB_SHA",
+        "Verify sealed repeatability decision"):
+    require(forbidden not in release,
+            f"empirical benchmark machinery must not gate publication: {forbidden}")
+for marker in (
+        "runs-on: ubuntu-latest",
+        "clean check javadoc centralBundle --warning-mode=fail",
+        "VALIDATED) exit 0",
+        "PUBLISHED) exit 0"):
+    require(marker in release, f"deterministic release gate marker missing: {marker}")
 
 
 require('--header "Authorization:' not in release,
