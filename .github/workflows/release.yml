@@ -81,6 +81,8 @@ jobs:
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
       - name: Install Linux virtual display
         run: sudo apt-get update && sudo apt-get install --yes xvfb
+      - name: Qualify minimum and current ecosystem profiles
+        run: xvfb-run -a ./gradlew minimumEcosystemTest currentEcosystemTest --warning-mode=fail
       - name: Run release gate and create signed Central bundle
         shell: bash
         env:
