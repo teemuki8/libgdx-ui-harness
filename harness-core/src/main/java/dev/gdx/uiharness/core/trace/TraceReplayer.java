@@ -138,7 +138,7 @@ public final class TraceReplayer {
             ReplayBudget budget = new ReplayBudget();
             Structural structural = scanLocalEntries(archive, bytes, budget);
             CentralDirectory central = parseCentralDirectory(bytes);
-            requireMatchingCentral(structural, central);
+            requireMatchingCentral(bytes, structural, central);
             boolean verifiedFormat = TraceManifest.V2.equals(structural.manifest().schemaVersion());
             return readEvents(bytes, structural.manifest(), budget, archiveDigest,
                     verifiedFormat
@@ -269,8 +269,11 @@ public final class TraceReplayer {
                     "Trace archive central directory is out of bounds", null);
         }
         List<String> names = new ArrayList<>();
+        List<Integer> methods = new ArrayList<>();
+        List<Integer> flagsList = new ArrayList<>();
         List<Long> compressedSizes = new ArrayList<>();
         List<Long> uncompressedSizes = new ArrayList<>();
+        List<Long> localOffsets = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         int cursor = (int) centralOffset;
         int entriesEnd = (int) (centralOffset + centralSize);
@@ -313,26 +316,35 @@ public final class TraceReplayer {
                         "Trace archive central directory is malformed", null);
             }
             names.add(name);
+            methods.add(method);
+            flagsList.add(flags);
             compressedSizes.add(compressed);
             uncompressedSizes.add(uncompressed);
+            localOffsets.add(localOffset);
             cursor += 46 + nameLength + extraLength + commentLength;
         }
         if (cursor != entriesEnd) {
             throw failure(ErrorCode.INVALID_REQUEST,
                     "Trace archive central directory is malformed", null);
         }
-        return new CentralDirectory(names, compressedSizes, uncompressedSizes);
+        return new CentralDirectory(names, methods, flagsList, compressedSizes,
+                uncompressedSizes, localOffsets);
     }
 
-    /** Ordered central entry names and their claimed byte sizes. */
-    private record CentralDirectory(List<String> names, List<Long> compressedSizes,
-            List<Long> uncompressedSizes) {}
+    /** Ordered central entry names, methods, flags, claimed byte sizes, and the
+     *  local header offset each central entry points at. */
+    private record CentralDirectory(List<String> names, List<Integer> methods,
+            List<Integer> flags, List<Long> compressedSizes, List<Long> uncompressedSizes,
+            List<Long> localOffsets) {}
 
     /** Requires the central directory to name exactly the local entries in the same
-     *  order with the same sizes, and for v2 requires that exact set to be the
-     *  manifest allowlist, so central-only extras, local-only extras, and
-     *  undeclared or missing entries are all rejected. */
-    private void requireMatchingCentral(Structural structural, CentralDirectory central) {
+     *  order with the same methods, flags, and sizes, and to point each entry at the
+     *  local header that actually carries that name and method (offsets unique), so
+     *  central-only extras, local-only extras, offset swaps, and undeclared or
+     *  missing entries are all rejected; for v2 that exact set must also be the
+     *  manifest allowlist. */
+    private void requireMatchingCentral(byte[] archive, Structural structural,
+            CentralDirectory central) throws IOException {
         if (!structural.names().equals(central.names())) {
             throw failure(ErrorCode.INVALID_REQUEST,
                     "Trace archive entry set does not match its central directory", null);
@@ -342,6 +354,11 @@ public final class TraceReplayer {
             long measuredCompressed = structural.compressedSizes().get(index);
             long claimedCompressed = central.compressedSizes().get(index);
             long claimedUncompressed = central.uncompressedSizes().get(index);
+            if (structural.methods().get(index) != central.methods().get(index)) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive central directory method does not match its local entry",
+                        null);
+            }
             if (structural.methods().get(index) == ZipEntry.STORED) {
                 if (claimedCompressed != measuredInflated
                         || claimedUncompressed != measuredInflated) {
@@ -356,6 +373,7 @@ public final class TraceReplayer {
                         null);
             }
         }
+        requireMatchingOffsets(archive, central);
         if (TraceManifest.V2.equals(structural.manifest().schemaVersion())) {
             Set<String> allowlist = v2Allowlist(structural.manifest());
             Set<String> names = new HashSet<>(structural.names());
@@ -375,6 +393,43 @@ public final class TraceReplayer {
                     throw failure(ErrorCode.INVALID_REQUEST,
                             "Trace archive contains an undeclared entry", null);
                 }
+            }
+        }
+    }
+
+    /** Verifies each central entry's claimed local header offset by reading the
+     *  actual local header at that offset from the same captured bytes: the offset
+     *  must be in bounds, carry the LOC signature, be unique, and decode to the
+     *  same name, method, and flags the central record claims. Offsets must be
+     *  unique and each resolve to the matching local entry, so a central directory
+     *  that swaps offsets between same-sized entries cannot bind a name to the
+     *  wrong local header. */
+    private static void requireMatchingOffsets(byte[] archive, CentralDirectory central)
+            throws IOException {
+        Set<Long> offsets = new HashSet<>();
+        for (int index = 0; index < central.names().size(); index++) {
+            long offset = central.localOffsets().get(index);
+            if (offset > Integer.MAX_VALUE || offset + 30 > archive.length
+                    || littleEndianInt(archive, (int) offset) != 0x04034b50
+                    || !offsets.add(offset)) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive central directory offset does not match its local entry",
+                        null);
+            }
+            int flags = littleEndianShort(archive, (int) offset + 6);
+            int method = littleEndianShort(archive, (int) offset + 8);
+            int nameLength = littleEndianShort(archive, (int) offset + 26);
+            if (nameLength == 0 || method != central.methods().get(index)
+                    || flags != central.flags().get(index)) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive central directory offset does not match its local entry",
+                        null);
+            }
+            String name = decodeUtf8(archive, (int) offset + 30, nameLength);
+            if (!name.equals(central.names().get(index))) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive central directory offset does not match its local entry",
+                        null);
             }
         }
     }

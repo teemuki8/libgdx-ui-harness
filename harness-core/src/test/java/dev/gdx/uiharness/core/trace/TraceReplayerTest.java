@@ -793,6 +793,29 @@ final class TraceReplayerTest {
         assertTrue(failure.getMessage().contains("central"));
     }
 
+    @Test void centralDirectorySwappedOffsetsFailOffsetEquality() throws Exception {
+        byte[] line = ("{\"sequence\":0,\"kind\":\"COMMAND_STARTED\","
+                + "\"sessionId\":\"session-a\",\"requestId\":\"request-1\","
+                + "\"logicalTime\":1,\"frame\":1,\"revision\":1,"
+                + "\"parentSequence\":null,\"evidence\":{}}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] events = concat(line, line, line);
+        Path archive = temporaryDirectory.resolve("swapped-offsets.zip");
+        Files.write(archive, swapCentralEntryOffsets(
+                zipBytes("events.ndjson", events, "manifest.json",
+                        v1ManifestBytes(3, events.length)),
+                "events.ndjson", "manifest.json"));
+
+        // names, methods, flags, and sizes still line up; only the central
+        // local-header offsets are swapped, so a ZipFile-based consumer would
+        // resolve each name to the other entry's content
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> new TraceReplayer().load(archive));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(failure.getMessage().contains("offset"));
+    }
+
     @Test void receiptBoundLoadRejectsDifferentValidTraceAtSamePath() throws Exception {
         TraceRecorder first = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
         first.start("session-first", TraceRecorder.Limits.defaults());
@@ -1037,6 +1060,18 @@ final class TraceReplayerTest {
         int cursor = findCentralEntry(forged, entryName);
         putLittleEndianInt(forged, cursor + 20, compressedSize);
         putLittleEndianInt(forged, cursor + 24, uncompressedSize);
+        return forged;
+    }
+
+    private static byte[] swapCentralEntryOffsets(byte[] zip, String firstName,
+            String secondName) {
+        byte[] forged = zip.clone();
+        int first = findCentralEntry(forged, firstName);
+        int second = findCentralEntry(forged, secondName);
+        int firstOffset = littleEndianInt(forged, first + 42);
+        int secondOffset = littleEndianInt(forged, second + 42);
+        putLittleEndianInt(forged, first + 42, secondOffset);
+        putLittleEndianInt(forged, second + 42, firstOffset);
         return forged;
     }
 
