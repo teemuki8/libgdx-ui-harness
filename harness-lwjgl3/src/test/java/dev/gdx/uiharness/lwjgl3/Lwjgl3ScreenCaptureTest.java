@@ -541,6 +541,26 @@ final class Lwjgl3ScreenCaptureTest {
                 () -> fixture.fence().completedFrame(10_000, 10_000));
     }
 
+    @Test void renderingAndFrameFencesAdvanceWhileNoRunnerIsAttached() {
+        long start = fixture.latestFrame();
+        CompletableFuture<Long> reached = new CompletableFuture<>();
+        FrameSignal.Subscription subscription = fixture.fence().subscribe(frame -> {
+            if (frame.frame() >= start + 8) {
+                reached.complete(frame.frame());
+            }
+        });
+        try {
+            Long observedFrame = await(reached);
+            assertTrue(observedFrame >= start + 8,
+                    "frame fences must keep advancing while the session is idle");
+            CapturedImage captured = fixture.captureFullWindow();
+            assertTrue(captured.frame() >= observedFrame,
+                    "on-demand capture must observe the same advancing frame stream");
+        } finally {
+            subscription.close();
+        }
+    }
+
     @Test void captureRequestedAfterActionWaitsForALaterCompletedRenderedFrame() {
         CompletionStage<FrameSignal.Frame> action =
                 fixture.setTopLeftColorAfterAction(Color.MAGENTA);
