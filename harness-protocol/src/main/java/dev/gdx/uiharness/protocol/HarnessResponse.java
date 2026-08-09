@@ -788,7 +788,11 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
 
         /** Successful trace stop and bounded artifact reference. */
         record TraceStopped(
-                String traceId, String traceReference, long eventCount, long bytes)
+                String traceId,
+                String traceReference,
+                long eventCount,
+                long bytes,
+                String archiveSha256)
                 implements Result {
             /** Validates trace result metadata. */
             public TraceStopped {
@@ -797,6 +801,19 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                 if (eventCount < 0 || bytes < 0) {
                     throw new IllegalArgumentException("trace counters must be non-negative");
                 }
+                if (archiveSha256 != null && !archiveSha256.matches("[0-9a-f]{64}")) {
+                    throw new IllegalArgumentException(
+                            "archiveSha256 must be a lowercase 64-character hexadecimal digest");
+                }
+            }
+
+            /**
+             * Legacy constructor without the verified archive digest, for callers that
+             * publish trace bytes outside the recorder-finalized manifest path.
+             */
+            public TraceStopped(
+                    String traceId, String traceReference, long eventCount, long bytes) {
+                this(traceId, traceReference, eventCount, bytes, null);
             }
         }
 

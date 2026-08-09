@@ -1298,7 +1298,8 @@ public final class FixtureControl implements AutoCloseable {
                 Files.delete(manifest.archive());
                 return CompletableFuture.completedFuture(
                         new HarnessResponse.Result.TraceStopped(traceId, reference.reference(),
-                                manifest.eventCount(), reference.byteLength()));
+                                manifest.eventCount(), reference.byteLength(),
+                                manifest.archiveSha256()));
             } catch (IOException failure) {
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("Unable to publish trace archive", failure));

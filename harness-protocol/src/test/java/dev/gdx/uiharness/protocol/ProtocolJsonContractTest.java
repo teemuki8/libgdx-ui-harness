@@ -3,6 +3,7 @@ package dev.gdx.uiharness.protocol;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -509,6 +510,43 @@ final class ProtocolJsonContractTest {
 
         assertEquals("req-sessions", decoded.requestId());
         assertTrue(json.length < ProtocolJson.MAX_REQUEST_BYTES);
+    }
+
+    @Test void traceStoppedReceiptCarriesVerifiedArchiveDigest() throws Exception {
+        String digest = "ab".repeat(32);
+        HarnessResponse.Success response = new HarnessResponse.Success(
+                ProtocolVersion.V1, "req-trace-stop", "game",
+                new HarnessResponse.Result.TraceStopped(
+                        "trace-1", "trace://trace-1", 12, 4096, digest));
+
+        assertEquals(digest, ProtocolJson.mapper().valueToTree(response)
+                .at("/result/archiveSha256").asText());
+
+        HarnessResponse decoded = ProtocolJson.mapper().readValue(
+                ProtocolJson.encode(response), HarnessResponse.class);
+        HarnessResponse.Success success = assertInstanceOf(
+                HarnessResponse.Success.class, decoded);
+        HarnessResponse.Result.TraceStopped stopped = assertInstanceOf(
+                HarnessResponse.Result.TraceStopped.class, success.result());
+        assertEquals(digest, stopped.archiveSha256());
+        assertEquals("trace-1", stopped.traceId());
+    }
+
+    @Test void legacyTraceStoppedConstructorRemainsSourceCompatible() throws Exception {
+        HarnessResponse.Result.TraceStopped legacy = new HarnessResponse.Result.TraceStopped(
+                "trace-1", "trace://trace-1", 1, 10);
+
+        assertNull(legacy.archiveSha256());
+        HarnessResponse.Success response = new HarnessResponse.Success(
+                ProtocolVersion.V1, "req-trace-stop", "game", legacy);
+        assertFalse(ProtocolJson.mapper().writeValueAsString(response)
+                .contains("archiveSha256"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new HarnessResponse.Result.TraceStopped(
+                        "trace-1", "trace://trace-1", 1, 10, "not-a-digest"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new HarnessResponse.Result.TraceStopped(
+                        "trace-1", "trace://trace-1", 1, 10, "AB".repeat(32)));
     }
 
     private static JsonNode resource(String name) throws IOException {

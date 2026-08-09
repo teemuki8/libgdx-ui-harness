@@ -722,6 +722,9 @@ public final class HarnessToolHandler implements AutoCloseable {
                     stopped.traceReference()));
             content.put("eventCount", stopped.eventCount());
             content.put("bytes", stopped.bytes());
+            if (stopped.archiveSha256() != null) {
+                content.put("archiveSha256", stopped.archiveSha256());
+            }
             return Map.copyOf(content);
         }
         throw new AssertionError("Unhandled protocol result " + result.getClass().getName());

@@ -1731,6 +1731,30 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test void traceStopStructuredReceiptCarriesVerifiedArchiveDigest() {
+        String digest = "ab".repeat(32);
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.TraceStopped(
+                                "trace-1", "artifact:trace-1", 2, 128, digest)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> response, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_trace_stop", Map.of("sessionId", "game")))
+                    .block(Duration.ofSeconds(10));
+
+            assertFalse(result.isError());
+            Map<String, Object> content = structured(result);
+            assertEquals("trace-stopped", content.get("kind"));
+            assertEquals("trace-1", content.get("traceId"));
+            assertEquals("artifact:trace-1", content.get("traceReference"));
+            assertEquals(2L, content.get("eventCount"));
+            assertEquals(128L, content.get("bytes"));
+            assertEquals(digest, content.get("archiveSha256"));
+        }
+    }
+
     @Test void publisherFailureSecretsNeverReachMcpOutput() {
         String secret = "ghp_1234567890abcdef";
         ArtifactReference.Publisher leaking = (mediaType, content) -> {
