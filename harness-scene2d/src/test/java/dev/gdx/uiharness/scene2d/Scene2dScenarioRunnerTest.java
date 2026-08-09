@@ -1821,6 +1821,122 @@ final class Scene2dScenarioRunnerTest {
     }
 
     /**
+     * Task 6 (#22): an off-owner deferred readiness terminate routes to a queued owner task;
+     * while that task is still queued (no drain), the first-wins claim must SURVIVE and reject
+     * competing deadline/cancel requests. After the drain, the original READINESS_REJECTED
+     * wins, cleanup runs exactly once on the owner, and the reserved frame is preserved.
+     */
+    @Test void offOwnerDeferredTerminateClaimSurvivesUntilTheRoutedTaskExecutes() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            AtomicInteger cleanups = new AtomicInteger();
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never") {
+                @Override public boolean ready(ScenarioRequest request) {
+                    throw new IllegalStateException("readiness rejected");
+                }
+                @Override public void cleanup(ScenarioRequest request) {
+                    cleanups.incrementAndGet();
+                }
+            });
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain();
+
+            CountDownLatch supplier1Entered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier1 = new CountDownLatch(1);
+            CountDownLatch supplier2Entered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier2 = new CountDownLatch(1);
+            SemanticSnapshot snapshot = rootOnlySnapshot(1, 1);
+            CompletableFuture<Boolean> first = new CompletableFuture<>();
+            CompletableFuture<Boolean> second = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    first.complete(fixture.runner.completedFrame(() -> {
+                        supplier1Entered.countDown();
+                        try {
+                            releaseSupplier1.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        return snapshot;
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    first.completeExceptionally(failure);
+                }
+            });
+            assertTrue(supplier1Entered.await(5, TimeUnit.SECONDS),
+                    "the first reservation must enter its supplier");
+            workers.submit(() -> {
+                try {
+                    second.complete(fixture.runner.completedFrame(() -> {
+                        supplier2Entered.countDown();
+                        try {
+                            releaseSupplier2.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        throw new IllegalStateException("second snapshot build failed");
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    second.completeExceptionally(failure);
+                }
+            });
+            assertTrue(supplier2Entered.await(5, TimeUnit.SECONDS),
+                    "the second reservation must enter its supplier");
+            try {
+                // Delivery #1 drains while the second reservation is in flight: the
+                // observation's READINESS_REJECTED terminate defers. The get() guarantees the
+                // delivery is enqueued before the drain picks it up.
+                releaseSupplier1.countDown();
+                assertTrue(first.get(5, TimeUnit.SECONDS),
+                        "the surviving delivery must be enqueued");
+                fixture.scheduler.drain();
+                assertFalse(started.toCompletableFuture().isDone(),
+                        "the observation's terminalization must defer to the surviving reservation");
+                // The surviving reservation FAILS off-owner: the deferred terminate is applied
+                // on the caller thread, which routes the cleanup to a queued owner task.
+                releaseSupplier2.countDown();
+                try {
+                    second.get(5, TimeUnit.SECONDS);
+                    throw new AssertionError("the failing sibling reservation must fail");
+                } catch (ExecutionException expected) {
+                    assertEquals("second snapshot build failed", expected.getCause().getMessage());
+                }
+                // Pause — the routed owner task is still queued, so the first-wins claim must
+                // still be held and must reject competing terminal requests.
+                fixture.clock.advance(Duration.ofSeconds(2));
+                fixture.deadlines.expire();
+                assertFalse(started.toCompletableFuture().isDone(),
+                        "the queued first-wins termination must reject the competing deadline");
+                assertFalse(started.toCompletableFuture().cancel(false),
+                        "the queued first-wins termination must reject the competing cancellation");
+            } finally {
+                releaseSupplier1.countDown();
+                releaseSupplier2.countDown();
+            }
+            // The drain executes the routed owner task: the original READINESS_REJECTED wins.
+            fixture.scheduler.drain();
+            ScenarioResult result = started.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.READINESS_REJECTED, result.failure().orElseThrow(),
+                    "the original first-wins intent wins after the routed task executes");
+            assertEquals(1, result.startFrame(), "the reserved frame is preserved");
+            assertEquals(1, result.startRevision(), "the reserved frame is preserved");
+            assertTrue(result.cleanupCompleted(), "cleanup runs on the owner");
+            assertEquals(1, cleanups.get(), "cleanup runs exactly once");
+
+            // Idle supplier gate: post-terminal frames invoke no supplier.
+            AtomicInteger supplierCalls = new AtomicInteger();
+            assertFalse(fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return snapshot;
+            }, 3, 3));
+            assertEquals(0, supplierCalls.get(),
+                    "post-terminal frames must not build snapshots");
+        }
+    }
+
+    /**
      * Minimal valid semantic graph with a single root node, following the model test
      * convention (TraceRecorderTest/TraceReplayerTest): the snapshot constructor validates
      * that {@code rootId} references a node, so an empty node map is rejected.

@@ -363,10 +363,10 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         private String stateIdentity = "unavailable";
         /** In-flight reserved frame deliveries awaiting completion, guarded by the lifecycle monitor. */
         private int pendingFrameDeliveries;
-        /** First-wins deferred terminal transition, guarded by the lifecycle monitor; stays non-null while claimed/applying. */
+        /** First-wins deferred terminal transition, guarded by the lifecycle monitor; stays non-null while any hold remains. */
         private Runnable deferredTerminal;
-        /** Exclusive take marker for the deferred transition, guarded by the lifecycle monitor. */
-        private boolean deferredApplying;
+        /** Claim hold count — the synchronous apply's base hold plus retained holds for routed owner tasks; guarded by the lifecycle monitor. */
+        private int deferredTerminalHolds;
         /** Thread applying the claimed transition; distinguishes reentry from competitors. */
         private Thread deferredApplyingThread;
 
@@ -384,7 +384,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             boolean applyNow;
             synchronized (lifecycle) {
                 if (deferredTerminal != null) {
-                    return false;
+                                        return false;
                 }
                 deferredTerminal = transition;
                 applyNow = pendingFrameDeliveries == 0;
@@ -397,17 +397,18 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
 
         /**
          * Takes and applies the first-wins deferred terminal transition, keeping it claimed
-         * (non-null) through execution so a concurrent terminal request is rejected first-wins
-         * and cannot overtake the outcome. The transition is cleared in a finally only when it
-         * is still the same intent after the transition returns.
+         * (non-null) through execution and beyond — the synchronous apply holds the base claim
+         * and routed owner tasks retain extra holds — so a concurrent terminal request is
+         * rejected first-wins and cannot overtake the outcome. The intent is cleared only when
+         * every hold has been released.
          */
         private void applyDeferredTerminal() {
             Runnable transition;
             synchronized (lifecycle) {
-                if (deferredApplying || deferredTerminal == null) {
-                    return;
+                if (deferredTerminalHolds > 0 || deferredTerminal == null) {
+                                        return;
                 }
-                deferredApplying = true;
+                deferredTerminalHolds = 1;
                 deferredApplyingThread = Thread.currentThread();
                 transition = deferredTerminal;
             }
@@ -416,19 +417,52 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             try {
                 transition.run();
             } finally {
-                synchronized (lifecycle) {
-                    deferredApplying = false;
-                    deferredApplyingThread = null;
-                    if (deferredTerminal == transition) {
-                        deferredTerminal = null;
-                    }
+                releaseDeferredTerminalBaseHold();
+            }
+        }
+
+        /**
+         * Releases the synchronous apply's base claim hold. The original synchronous transition
+         * has ended, so the reentry thread is cleared; the intent itself is cleared only when no
+         * holds (base or retained) remain.
+         */
+        private void releaseDeferredTerminalBaseHold() {
+                        synchronized (lifecycle) {
+                if (deferredTerminalHolds > 0) {
+                    deferredTerminalHolds--;
+                }
+                deferredApplyingThread = null;
+                if (deferredTerminalHolds == 0) {
+                    deferredTerminal = null;
+                }
+            }
+        }
+
+        /** Retains an extra claim hold (for a routed owner task) so competitors stay rejected. */
+        private void retainDeferredTerminalHold() {
+            synchronized (lifecycle) {
+                deferredTerminalHolds++;
+            }
+        }
+
+        /**
+         * Releases one retained claim hold (routed task completion or routing failure); the
+         * intent is cleared when no holds remain. Idempotent against double releases.
+         */
+        private void releaseDeferredTerminalRetainedHold() {
+                        synchronized (lifecycle) {
+                if (deferredTerminalHolds > 0) {
+                    deferredTerminalHolds--;
+                }
+                if (deferredTerminalHolds == 0) {
+                    deferredTerminal = null;
                 }
             }
         }
 
         private boolean isApplyingDeferredTerminalOnCurrentThread() {
             synchronized (lifecycle) {
-                return deferredApplying && deferredApplyingThread == Thread.currentThread();
+                return deferredApplyingThread == Thread.currentThread();
             }
         }
 
@@ -483,6 +517,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         }
 
         private void deadlineReached() {
+
             synchronized (this) {
                 if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
                     return;
@@ -495,6 +530,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             // deliveries are in flight it defers, so the reserved frames are observed before
             // the run terminalizes; otherwise it publishes atomically on this thread.
             reserveTerminal(() -> {
+
                 boolean publish;
                 synchronized (this) {
                     if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
@@ -503,6 +539,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     if (!expired()) {
                         return;
                     }
+
                     // The deadline thread atomically publishes the terminal result so a paused
                     // or stopped render loop can never leave the call hanging; the run keeps
                     // owning the active slot and hook cleanup is deferred to the render thread.
@@ -769,7 +806,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
 
 
         private void terminate(ScenarioFailure failure) {
-            if (isApplyingDeferredTerminalOnCurrentThread()) {
+                        if (isApplyingDeferredTerminalOnCurrentThread()) {
                 // The caller is re-entering its own first-wins deferred terminal application
                 // (e.g. a release transition completing its lease during a drain): applying
                 // directly avoids competing with that same still-claimed intent. Other threads
@@ -784,23 +821,35 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             if (!scheduler.isOwnerThread()) {
                 // Cleanup hooks must run on the render thread: a deferred application from an
                 // off-thread release (a supplier/enqueue failure or a rejected delivery) routes
-                // the termination to the owner. If the routing itself fails — a synchronous
-                // throw or a rejected submission — fall back to a bounded, thread-safe terminal
-                // that runs no lifecycle or Stage hooks, as part of this same winning intent.
+                // the termination to the owner. The routed task retains an extra claim hold so
+                // the first-wins intent survives — and rejects competing deadline/close
+                // requests — until the task executes or fails; the synchronous apply's base
+                // hold is released when this method returns, and the task or failure callback
+                // releases the retained hold exactly once. If the routing itself fails — a
+                // synchronous throw or a rejected submission — fall back to a bounded,
+                // thread-safe terminal that runs no lifecycle or Stage hooks, as part of this
+                // same winning intent.
                 ScenarioFailure deferredFailure = failure;
+                retainDeferredTerminalHold();
                 CompletionStage<?> submission;
                 try {
                     submission = scheduler.submit(() -> {
-                        applyTerminate(deferredFailure);
+                        try {
+                            applyTerminate(deferredFailure);
+                        } finally {
+                            releaseDeferredTerminalRetainedHold();
+                        }
                         return null;
                     }, dispatchDeadline());
                 } catch (RuntimeException routingFailure) {
                     terminalDispatchFallback();
+                    releaseDeferredTerminalRetainedHold();
                     return;
                 }
                 submission.whenComplete((ignored, routingFailure) -> {
                     if (routingFailure != null) {
                         terminalDispatchFallback();
+                        releaseDeferredTerminalRetainedHold();
                     }
                 });
                 return;
