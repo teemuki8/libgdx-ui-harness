@@ -187,6 +187,24 @@ final class FixtureTracingLifecycleTest {
         }
     }
 
+    @Test void stopRejectsPublisherReceiptThatDoesNotMatchVerifiedArchive(@TempDir Path root) {
+        MutableClock clock = new MutableClock();
+        ArtifactReference.Publisher mismatched = (mediaType, content) ->
+                new ArtifactReference("artifact:mismatch", mediaType, content.length + 1L,
+                        sha256(content));
+        try (FixtureControl.ReferenceTraceController traces =
+                new FixtureControl.ReferenceTraceController(root, mismatched)) {
+            traces.start(new Command.TraceStart(30_000, 4L * 1_024 * 1_024), deadline(clock))
+                    .toCompletableFuture().join();
+
+            CompletionException failure = org.junit.jupiter.api.Assertions.assertThrows(
+                    CompletionException.class,
+                    () -> traces.stop(deadline(clock)).toCompletableFuture().join());
+
+            assertTrue(failure.getCause().getMessage().contains("publisher receipt"));
+        }
+    }
+
     @Test void captureCompletionClaimCannotBeCancelledDuringTerminalRecording(
             @TempDir Path root) throws Exception {
         MutableClock clock = new MutableClock();
@@ -377,7 +395,7 @@ final class FixtureTracingLifecycleTest {
         @Override public ArtifactReference publish(String mediaType, byte[] content) {
             archive.set(content.clone());
             return new ArtifactReference("artifact:fixture-trace", mediaType, content.length,
-                    "0".repeat(64));
+                    sha256(content));
         }
     }
 

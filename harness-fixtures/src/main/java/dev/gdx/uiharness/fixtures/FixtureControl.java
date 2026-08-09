@@ -1292,18 +1292,18 @@ public final class FixtureControl implements AutoCloseable {
                     Map.of("event", "trace-stop")));
             TraceManifest manifest = recorder.stop();
             active = false;
-            try {
-                byte[] archive = Files.readAllBytes(manifest.archive());
-                ArtifactReference reference = publisher.publish("application/zip", archive);
-                Files.delete(manifest.archive());
-                return CompletableFuture.completedFuture(
-                        new HarnessResponse.Result.TraceStopped(traceId, reference.reference(),
-                                manifest.eventCount(), reference.byteLength(),
-                                manifest.archiveSha256()));
-            } catch (IOException failure) {
-                return CompletableFuture.failedFuture(
-                        new IllegalStateException("Unable to publish trace archive", failure));
+            byte[] archive = recorder.consumeArchive(manifest);
+            ArtifactReference reference = publisher.publish("application/zip", archive);
+            if (!reference.mediaType().equals("application/zip")
+                    || reference.byteLength() != archive.length
+                    || !reference.sha256().equals(manifest.archiveSha256())) {
+                return CompletableFuture.failedFuture(new IllegalStateException(
+                        "Artifact publisher receipt does not match verified trace archive"));
             }
+            return CompletableFuture.completedFuture(
+                    new HarnessResponse.Result.TraceStopped(traceId, reference.reference(),
+                            manifest.eventCount(), reference.byteLength(),
+                            manifest.archiveSha256()));
         }
 
         synchronized TraceSpan commandStarted(String operation, SemanticSnapshot before) {
