@@ -71,7 +71,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -494,13 +493,13 @@ final class HarnessMcpServerContractTest {
 
         ArtifactReference.Publisher wrongMedia = (mediaType, content) ->
                 new ArtifactReference("artifact:1", "application/octet-stream",
-                        content.length, sha256(content));
+                        content.length, sha256Hex(content));
         assertThrows(ArtifactReference.ArtifactUnavailableException.class,
                 () -> new VerifiedArtifactPublisher(wrongMedia).publish("image/png", payload));
 
         ArtifactReference.Publisher honest = (mediaType, content) ->
                 new ArtifactReference("artifact:1", mediaType, content.length,
-                        sha256(content));
+                        sha256Hex(content));
         ArtifactReference receipt = new VerifiedArtifactPublisher(honest)
                 .publish("image/png", payload);
         assertEquals("artifact:1", receipt.reference());
@@ -534,7 +533,7 @@ final class HarnessMcpServerContractTest {
 
         ArtifactReference.Publisher invalidReference = (mediaType, content) ->
                 new ArtifactReference("/tmp/leak.zip", mediaType, content.length,
-                        sha256(content));
+                        sha256Hex(content));
         ArtifactReference.ArtifactUnavailableException normalized =
                 assertThrows(ArtifactReference.ArtifactUnavailableException.class,
                         () -> new VerifiedArtifactPublisher(invalidReference)
@@ -606,7 +605,7 @@ final class HarnessMcpServerContractTest {
         byte[] payload = new byte[] {1, 2, 3};
         ArtifactReference.Publisher uppercase = (mediaType, content) ->
                 new ArtifactReference("artifact:1", mediaType, content.length,
-                        sha256(content).toUpperCase());
+                        sha256Hex(content).toUpperCase());
         assertThrows(ArtifactReference.ArtifactUnavailableException.class,
                 () -> new VerifiedArtifactPublisher(uppercase)
                         .publish("image/png", payload));
@@ -617,7 +616,7 @@ final class HarnessMcpServerContractTest {
         ArtifactReference.Publisher mutating = (mediaType, content) -> {
             java.util.Arrays.fill(content, (byte) 0);
             return new ArtifactReference("artifact:1", mediaType, content.length,
-                    sha256(content)); // receipt matches the MUTATED bytes
+                    sha256Hex(content)); // receipt matches the MUTATED bytes
         };
 
         assertThrows(ArtifactReference.ArtifactUnavailableException.class,
@@ -983,7 +982,8 @@ final class HarnessMcpServerContractTest {
         AtomicLong nanos = new AtomicLong(999_000_000_000L);
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
                 HarnessToolHandler handler = new HarnessToolHandler(
-                        request -> CompletableFuture.completedFuture(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request ->
+                                CompletableFuture.completedFuture(
                                 new HarnessResponse.Success(ProtocolVersion.V1,
                                         "mcp-1", "game",
                                         new HarnessResponse.Result.Sessions(List.of()))),
@@ -1052,7 +1052,8 @@ final class HarnessMcpServerContractTest {
         AtomicLong nanos = new AtomicLong(1_000_000_000L);
         AtomicInteger calls = new AtomicInteger();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
                     calls.incrementAndGet();
                     if (calls.get() == 1) {
                         // NOT_FOUND maps to the transient LOCATOR_NOT_FOUND diagnostic
@@ -1091,7 +1092,8 @@ final class HarnessMcpServerContractTest {
         AtomicLong nanos = new AtomicLong(1_000_000_000L);
         AtomicInteger calls = new AtomicInteger();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
                     calls.incrementAndGet();
                     if (calls.get() == 1) {
                         return CompletableFuture.completedFuture(new HarnessResponse.Failure(
@@ -1182,7 +1184,8 @@ final class HarnessMcpServerContractTest {
         CountDownLatch staleAdmitted = new CountDownLatch(1);
         CompletableFuture<HarnessResponse> staleGate = new CompletableFuture<>();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
                     int call = calls.incrementAndGet();
                     if (call == 2) {
                         staleAdmitted.countDown();
@@ -1253,7 +1256,8 @@ final class HarnessMcpServerContractTest {
         CountDownLatch releaseGate = new CountDownLatch(1);
         CompletableFuture<HarnessResponse> endingGate = new CompletableFuture<>();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
                     if (calls.incrementAndGet() == 1) {
                         return endingGate;
                     }
@@ -1310,7 +1314,8 @@ final class HarnessMcpServerContractTest {
         AtomicLong nanos = new AtomicLong(1_000_000_000L);
         AtomicInteger calls = new AtomicInteger();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
                     calls.incrementAndGet();
                     return CompletableFuture.completedFuture(new HarnessResponse.Success(
                             ProtocolVersion.V1, request.requestId(), request.sessionId(),
@@ -1347,7 +1352,8 @@ final class HarnessMcpServerContractTest {
         CountDownLatch staleAdmitted = new CountDownLatch(1);
         CompletableFuture<HarnessResponse> staleGate = new CompletableFuture<>();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-                HarnessToolHandler handler = new HarnessToolHandler(request -> {
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
                     if (calls.incrementAndGet() == 1) {
                         staleAdmitted.countDown();
                         return staleGate;
@@ -1426,7 +1432,8 @@ final class HarnessMcpServerContractTest {
         AtomicLong nanos = new AtomicLong(1_000_000_000L);
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
                 HarnessToolHandler handler = new HarnessToolHandler(
-                        request -> CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request ->
+                                CompletableFuture.completedFuture(new HarnessResponse.Failure(
                                 ProtocolVersion.V1, request.requestId(), request.sessionId(),
                                 new ProtocolError(ProtocolError.Code.TIMEOUT,
                                         "frame deadline expired", request.requestId(),
@@ -1449,7 +1456,8 @@ final class HarnessMcpServerContractTest {
         AtomicLong nanos = new AtomicLong(1_000_000_000L);
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
                 HarnessToolHandler handler = new HarnessToolHandler(
-                        request -> CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request ->
+                                CompletableFuture.completedFuture(new HarnessResponse.Failure(
                                 ProtocolVersion.V1, request.requestId(), request.sessionId(),
                                 new ProtocolError(ProtocolError.Code.NOT_FOUND,
                                         "locator resolved to no actors", request.requestId(),
@@ -1791,7 +1799,8 @@ final class HarnessMcpServerContractTest {
                                 "0".repeat(64), 1, 1, 1, 1, 1.0, 1.0)));
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
                 HarnessToolHandler handler = new HarnessToolHandler(
-                        ignored -> response, leaking, executor, 1024)) {
+                        executionWithCapture(response, png), leaking, executor, 1024,
+                        System::nanoTime)) {
             McpSchema.CallToolResult result = handler.handle(call(
                     "ui_screenshot", Map.of(
                             "sessionId", "game",
@@ -1854,7 +1863,8 @@ final class HarnessMcpServerContractTest {
                                 "0".repeat(64), 1, 1, 1, 1, 1.0, 1.0)));
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
                 HarnessToolHandler handler = new HarnessToolHandler(
-                        ignored -> response, throwing, executor, 1024)) {
+                        executionWithCapture(response, png), throwing, executor, 1024,
+                        System::nanoTime)) {
             McpSchema.CallToolResult result = handler.handle(call(
                     "ui_screenshot", Map.of(
                             "sessionId", "game",
@@ -1887,7 +1897,8 @@ final class HarnessMcpServerContractTest {
                                 "0".repeat(64), 1, 1, 1, 1, 1.0, 1.0)));
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
                 HarnessToolHandler handler = new HarnessToolHandler(
-                        ignored -> response, throwing, executor, 1024)) {
+                        executionWithCapture(response, png), throwing, executor, 1024,
+                        System::nanoTime)) {
             McpSchema.CallToolResult result = handler.handle(call(
                     "ui_screenshot", Map.of(
                             "sessionId", "game",
@@ -1915,7 +1926,8 @@ final class HarnessMcpServerContractTest {
                                 "0".repeat(64), 1, 1, 1, 1, 1.0, 1.0)));
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
                 HarnessToolHandler handler = new HarnessToolHandler(
-                        ignored -> response, nullReceipt, executor, 1024)) {
+                        executionWithCapture(response, png), nullReceipt, executor, 1024,
+                        System::nanoTime)) {
             McpSchema.CallToolResult result = handler.handle(call(
                     "ui_screenshot", Map.of(
                             "sessionId", "game",
@@ -2883,9 +2895,6 @@ final class HarnessMcpServerContractTest {
         }
     }
 
-    private static String text(McpSchema.CallToolResult result) {
-        return ((McpSchema.TextContent) result.content().getFirst()).text();
-    }
 
     private static Map<String, String> largeEvidence() {
         LinkedHashMap<String, String> evidence = new LinkedHashMap<>();
@@ -2993,6 +3002,14 @@ final class HarnessMcpServerContractTest {
                 java.util.Optional.of(coordinator));
         return new HarnessProtocolService(
                 Map.of("game", session), CLOCK, Runnable::run);
+    }
+
+    private static HarnessToolHandler.ExecutionSource executionWithCapture(
+            CompletionStage<HarnessResponse> response, byte[] png) {
+        BinaryAttachment capture = BinaryAttachment.of(png);
+        return ignored -> response.thenApply(result ->
+                new HarnessProtocolService.Execution(result,
+                        Map.of(HarnessProtocolService.SCREENSHOT_CAPTURE, capture)));
     }
 
     private static HarnessProtocolService service(RecordingHarness harness) {

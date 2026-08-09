@@ -1,5 +1,6 @@
 package dev.gdx.uiharness.mcp;
 
+import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -56,10 +57,46 @@ public final class VerifiedArtifactPublisher implements ArtifactReference.Publis
         return receipt;
     }
 
+    @Override public ArtifactReference publishBuffer(String mediaType, ByteBuffer content) {
+        Objects.requireNonNull(mediaType, "mediaType");
+        Objects.requireNonNull(content, "content");
+        ByteBuffer snapshot = content.asReadOnlyBuffer();
+        long expectedLength = snapshot.remaining();
+        String expectedSha256 = sha256(snapshot.asReadOnlyBuffer());
+        ArtifactReference receipt;
+        try {
+            receipt = delegate.publishBuffer(mediaType, snapshot);
+        } catch (Throwable failure) {
+            if (failure instanceof VirtualMachineError
+                    || failure instanceof ThreadDeath) {
+                throw (Error) failure;
+            }
+            throw new ArtifactReference.ArtifactUnavailableException(
+                    UNAVAILABLE_MESSAGE, failure);
+        }
+        if (receipt == null
+                || !receipt.sha256().equals(expectedSha256)
+                || receipt.byteLength() != expectedLength
+                || !receipt.mediaType().equals(mediaType)) {
+            throw new ArtifactReference.ArtifactUnavailableException(UNAVAILABLE_MESSAGE);
+        }
+        return receipt;
+    }
+
     private static String sha256(byte[] content) {
         try {
             return HexFormat.of().formatHex(
                     MessageDigest.getInstance("SHA-256").digest(content));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError("SHA-256 is required by the Java platform", impossible);
+        }
+    }
+
+    private static String sha256(ByteBuffer content) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(content);
+            return HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException impossible) {
             throw new AssertionError("SHA-256 is required by the Java platform", impossible);
         }
