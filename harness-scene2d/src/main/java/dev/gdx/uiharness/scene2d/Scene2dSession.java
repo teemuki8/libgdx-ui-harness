@@ -47,27 +47,27 @@ public final class Scene2dSession implements AutoCloseable {
 
     /** Returns the metadata facade owned by this session. */
     public Semantics semantics() {
+        requireOwnerThread("semantics");
         return semantics;
     }
 
     /** Returns this session's built-in/custom adapter registry. */
     public ActorAdapterRegistry adapters() {
+        requireOwnerThread("adapters");
         requireOpen();
         return adapters;
     }
 
     /** Captures the attached stage at the supplied semantic revision and frame. */
     public SemanticSnapshot snapshot(long revision, long frame) {
+        requireOwnerThread("snapshot");
         requireOpen();
         return snapshotter.snapshot(stage, revision, frame);
     }
 
     /** Captures and publishes one completed semantic frame to a scenario runner. */
     public void completedFrame(Scene2dScenarioRunner runner, long revision, long frame) {
-        if (Thread.currentThread() != ownerThread) {
-            throw new IllegalStateException(
-                    "completed scenario frames must be captured on the owning render thread");
-        }
+        requireOwnerThread("completedFrame");
         Objects.requireNonNull(runner, "runner").completedFrame(
                 () -> snapshot(revision, frame), revision, frame);
     }
@@ -81,10 +81,7 @@ public final class Scene2dSession implements AutoCloseable {
             Scene2dNavigationRunner navigationRunner,
             long revision,
             long frame) {
-        if (Thread.currentThread() != ownerThread) {
-            throw new IllegalStateException(
-                    "completed navigation frames must be captured on the owning render thread");
-        }
+        requireOwnerThread("completedFrame");
         SemanticSnapshot[] shared = new SemanticSnapshot[1];
         Supplier<SemanticSnapshot> snapshots = () -> {
             if (shared[0] == null) {
@@ -100,6 +97,7 @@ public final class Scene2dSession implements AutoCloseable {
 
     /** Captures the evaluator-complete contract after a completed frame. */
     public StateActionContract stateActionContract(long revision, long frame) {
+        requireOwnerThread("stateActionContract");
         requireOpen();
         return contractSnapshotter.snapshot(revision, frame);
     }
@@ -107,6 +105,7 @@ public final class Scene2dSession implements AutoCloseable {
     /** Captures actor-attributed typography evidence after a completed frame. */
     public List<TypographyObservation> typography(
             long revision, long frame, TypographyCaptureContext context) {
+        requireOwnerThread("typography");
         requireOpen();
         return typographyExtractor.extract(revision, frame, context);
     }
@@ -114,6 +113,7 @@ public final class Scene2dSession implements AutoCloseable {
     /** Captures selected actor-attributed layout evidence after a completed frame. */
     public List<dev.gdx.uiharness.core.layout.LayoutObservation> layout(
             long revision, long frame, LayoutCaptureContext context) {
+        requireOwnerThread("layout");
         requireOpen();
         return new Scene2dLayoutExtractor(stage, semantics)
                 .extract(revision, frame, context);
@@ -121,6 +121,7 @@ public final class Scene2dSession implements AutoCloseable {
 
     /** Returns this session's stable weak-identity token without retaining the Actor. */
     long actorToken(Actor actor) {
+        requireOwnerThread("actorToken");
         requireOpen();
         return actorTokens.token(Objects.requireNonNull(actor, "actor"));
     }
@@ -145,6 +146,19 @@ public final class Scene2dSession implements AutoCloseable {
                     ErrorCode.SESSION_CLOSED,
                     "Scene2D session is closed",
                     ErrorEvidence.empty());
+        }
+    }
+
+    private void requireOwnerThread(String operation) {
+        if (Thread.currentThread() != ownerThread) {
+            throw new HarnessException(
+                    ErrorCode.RENDER_THREAD_VIOLATION,
+                    "Scene2D session " + operation + " requires the owning render thread;"
+                            + " route caller-thread work through RenderThreadScheduler",
+                    ErrorEvidence.ofDetails(Map.of(
+                            "operation", operation,
+                            "ownerThread", ownerThread.getName(),
+                            "callerThread", Thread.currentThread().getName())));
         }
     }
 

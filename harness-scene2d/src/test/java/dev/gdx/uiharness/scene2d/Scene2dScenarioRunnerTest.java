@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.badlogic.gdx.scenes.scene2d.Stage;
+import dev.gdx.uiharness.core.error.ErrorCode;
+import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.model.Bounds;
 import dev.gdx.uiharness.core.model.Role;
 import dev.gdx.uiharness.core.model.SemanticNode;
@@ -82,7 +84,9 @@ final class Scene2dScenarioRunnerTest {
                                     caller)
                             .join());
 
-            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            HarnessException renderThread = assertInstanceOf(
+                    HarnessException.class, failure.getCause());
+            assertEquals(ErrorCode.RENDER_THREAD_VIOLATION, renderThread.code());
         }
     }
 

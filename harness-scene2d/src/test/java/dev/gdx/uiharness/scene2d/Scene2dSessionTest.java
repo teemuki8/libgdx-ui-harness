@@ -1,7 +1,10 @@
 package dev.gdx.uiharness.scene2d;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.badlogic.gdx.Input.Keys;
@@ -12,6 +15,8 @@ import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
 import com.badlogic.gdx.utils.GdxNativesLoader;
 import com.badlogic.gdx.utils.viewport.FitViewport;
+import dev.gdx.uiharness.core.error.ErrorCode;
+import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.navigation.NavigationInput;
 import dev.gdx.uiharness.core.navigation.NavigationRequest;
@@ -28,6 +33,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
@@ -35,6 +41,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -376,6 +383,193 @@ final class Scene2dSessionTest {
         final AtomicLong rootReads = new AtomicLong();
 
         CountingStage() {
+            super(new FitViewport(800, 600), new NoopBatch());
+            getViewport().setScreenBounds(0, 0, 800, 600);
+            getViewport().getCamera().position.set(400, 300, 0);
+            getViewport().getCamera().update();
+        }
+
+        @Override public Group getRoot() {
+            rootReads.incrementAndGet();
+            return super.getRoot();
+        }
+    }
+
+    // ---- Task 5 (#21) RED wave: render-thread ownership guards on every session boundary. ----
+
+    @Test void everyBoundaryMethodSucceedsOnTheOwningThread() {
+        try (BoundaryFixture fixture = new BoundaryFixture()) {
+            assertDoesNotThrow(fixture.session::isOpen);
+            assertDoesNotThrow(() -> fixture.session.semantics());
+            assertDoesNotThrow(() -> fixture.session.adapters());
+            assertDoesNotThrow(() -> fixture.session.snapshot(1, 1));
+            assertDoesNotThrow(() -> fixture.session.stateActionContract(1, 1));
+            assertDoesNotThrow(() -> fixture.session.typography(1, 1,
+                    BoundaryFixture.typographyContext()));
+            assertDoesNotThrow(() -> fixture.session.layout(1, 1,
+                    BoundaryFixture.layoutContext()));
+            assertDoesNotThrow(() -> fixture.session.actorToken(new Actor()));
+            assertDoesNotThrow(() -> fixture.session.completedFrame(
+                    fixture.scenarios, 1, 1));
+            assertDoesNotThrow(() -> fixture.session.completedFrame(
+                    fixture.scenarios, fixture.navigation, 1, 1));
+            assertDoesNotThrow(fixture.session::close);
+        }
+    }
+
+    @Test void everyBoundaryMethodFailsWithTypedRenderThreadErrorOffThread() throws Exception {
+        try (BoundaryFixture fixture = new BoundaryFixture();
+                ExecutorService caller = Executors.newVirtualThreadPerTaskExecutor()) {
+            Actor actor = new Actor();
+            ActorAdapterRegistry adapters = fixture.session.adapters();
+            long stageReadsBefore = fixture.rootReads();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            Runnable[] operations = {
+                    () -> fixture.session.semantics(),
+                    () -> fixture.session.adapters(),
+                    () -> fixture.session.snapshot(1, 1),
+                    () -> fixture.session.stateActionContract(1, 1),
+                    () -> fixture.session.typography(1, 1,
+                            BoundaryFixture.typographyContext()),
+                    () -> fixture.session.layout(1, 1,
+                            BoundaryFixture.layoutContext()),
+                    () -> fixture.session.actorToken(actor),
+                    () -> fixture.session.completedFrame(fixture.scenarios, 1, 1),
+                    () -> fixture.session.completedFrame(
+                            fixture.scenarios, fixture.navigation, 1, 1)};
+            for (Runnable operation : operations) {
+                failure.set(null);
+                caller.submit(() -> {
+                    try {
+                        operation.run();
+                    } catch (Throwable thrown) {
+                        failure.set(thrown);
+                    }
+                }).get(5, TimeUnit.SECONDS);
+                HarnessException renderThread = assertInstanceOf(
+                        HarnessException.class, failure.get());
+                assertEquals(ErrorCode.RENDER_THREAD_VIOLATION, renderThread.code());
+                assertTrue(renderThread.getMessage().contains("render thread"));
+                assertTrue(renderThread.evidence().details().containsKey("operation"));
+                assertTrue(renderThread.evidence().details().containsKey("ownerThread"));
+                assertTrue(renderThread.evidence().details().containsKey("callerThread"));
+            }
+            assertEquals(stageReadsBefore, fixture.rootReads(),
+                    "off-thread failures must fire before any Stage root read");
+            assertSame(adapters, fixture.session.adapters(),
+                    "off-thread failures must not mutate the adapter registry");
+            assertTrue(fixture.session.isOpen(),
+                    "off-thread failures must not close the session");
+        }
+    }
+
+    @Test void callerThreadWaitsRouteThroughTheSchedulerAndRemainSupported() throws Exception {
+        try (BoundaryFixture fixture = new BoundaryFixture();
+                ExecutorService caller = Executors.newVirtualThreadPerTaskExecutor()) {
+            CountDownLatch queued = new CountDownLatch(1);
+            CompletableFuture<SemanticSnapshot> routed = CompletableFuture.supplyAsync(() -> {
+                CompletionStage<SemanticSnapshot> submitted;
+                try {
+                    submitted = fixture.scheduler.submit(
+                            () -> fixture.session.snapshot(1, 1),
+                            Deadline.after(fixture.clock, Duration.ofSeconds(5)));
+                } finally {
+                    queued.countDown();
+                }
+                return submitted.toCompletableFuture().join();
+            }, caller);
+            assertTrue(queued.await(5, TimeUnit.SECONDS),
+                    "the snapshot command must be enqueued before the owner drains");
+            fixture.scheduler.drain();
+            SemanticSnapshot snapshot = routed.get(5, TimeUnit.SECONDS);
+            assertEquals(1, snapshot.revision());
+            assertEquals(1, snapshot.frame());
+        }
+    }
+
+    /**
+     * Real production fixture boundary: a live Stage (no-op batch), fixed-step clock, bounded
+     * scheduler, and both runners — the same production classes the session guards protect.
+     */
+    private static final class BoundaryFixture implements AutoCloseable {
+        final ProbeStage stage;
+        final ControlledStageClock clock;
+        final RenderThreadScheduler scheduler;
+        final Scene2dSession session;
+        final ScenarioRegistry registry = new ScenarioRegistry();
+        final Scene2dScenarioRunner scenarios;
+        final Scene2dNavigationRunner navigation;
+
+        BoundaryFixture() {
+            GdxNativesLoader.load();
+            NoopBatch.installGraphics();
+            stage = new ProbeStage();
+            clock = new ControlledStageClock(stage, Duration.ofMillis(10));
+            scheduler = new RenderThreadScheduler(16);
+            session = new Scene2dSession(stage);
+            Actor row = new Actor();
+            row.setBounds(10, 10, 100, 30);
+            stage.addActor(row);
+            session.semantics().setTestId(row, "boundary-row");
+            session.semantics().setLayout(row, new LayoutMetadata("boundary-row"));
+            registry.register(
+                    new ScenarioDefinition(ScenarioDefinition.SCHEMA_VERSION,
+                            "boundary", "1.0.0", "app", List.of("desktop"), 1,
+                            Duration.ofSeconds(2)),
+                    new ScenarioLifecycle() {
+                        @Override public void setup(ScenarioRequest request) {}
+                        @Override public void reset(ScenarioRequest request) {}
+                        @Override public boolean ready(ScenarioRequest request) { return true; }
+                        @Override public String startStateIdentity(
+                                ScenarioRequest request, SemanticSnapshot snapshot) {
+                            return "ready";
+                        }
+                        @Override public void cleanup(ScenarioRequest request) {}
+                    });
+            scenarios = new Scene2dScenarioRunner(registry, scheduler, clock,
+                    (delay, signal) -> () -> {});
+            Scene2dInputDispatcher input =
+                    new Scene2dInputDispatcher(stage, stage);
+            navigation = new Scene2dNavigationRunner(
+                    scenarios, session, input, scheduler, clock,
+                    (delay, signal) -> () -> {},
+                    clock::revision, clock::frame,
+                    new Scene2dNavigationRunner.Scenario(
+                            "boundary", 7, Map.of(), "desktop", "app", "process", "session"),
+                    8);
+        }
+
+        static TypographyCaptureContext typographyContext() {
+            return new TypographyCaptureContext(
+                    "app", "main", "artifact:1", "0".repeat(64),
+                    800, 600, 800, 600, Map.of());
+        }
+
+        static LayoutCaptureContext layoutContext() {
+            return new LayoutCaptureContext(
+                    "app", "main", "artifact:1", "0".repeat(64),
+                    800, 600, 800, 600, 1, Set.of("boundary-row"));
+        }
+
+        long rootReads() {
+            return stage.rootReads.get();
+        }
+
+        @Override public void close() {
+            navigation.close();
+            scenarios.close();
+            session.close();
+            scheduler.close();
+            clock.close();
+            stage.dispose();
+        }
+    }
+
+    /** Counts Stage root reads so tests can prove guards fire before any stage access. */
+    private static final class ProbeStage extends Stage {
+        final AtomicLong rootReads = new AtomicLong();
+
+        ProbeStage() {
             super(new FitViewport(800, 600), new NoopBatch());
             getViewport().setScreenBounds(0, 0, 800, 600);
             getViewport().getCamera().position.set(400, 300, 0);
