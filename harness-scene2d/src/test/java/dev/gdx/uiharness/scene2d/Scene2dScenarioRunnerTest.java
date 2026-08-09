@@ -1779,6 +1779,8 @@ final class Scene2dScenarioRunnerTest {
             // Delivery #1 drains while the second reservation is in flight: the observation's
             // READINESS_REJECTED terminate defers.
             releaseSupplier1.countDown();
+            assertTrue(first.get(5, TimeUnit.SECONDS),
+                    "the first reservation must enqueue its observation before the drain");
             fixture.scheduler.drain();
             assertFalse(started.toCompletableFuture().isDone(),
                     "the observation's terminalization must defer to the surviving reservation");

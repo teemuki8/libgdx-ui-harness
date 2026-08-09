@@ -367,6 +367,8 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
         private Runnable deferredTerminal;
         /** Exclusive take marker for the deferred transition, guarded by the lifecycle monitor. */
         private boolean deferredApplying;
+        /** Thread applying the claimed transition; distinguishes reentry from competitors. */
+        private Thread deferredApplyingThread;
 
         /**
          * Reserves this terminal transition first-wins under the lifecycle monitor. While frame
@@ -406,6 +408,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     return;
                 }
                 deferredApplying = true;
+                deferredApplyingThread = Thread.currentThread();
                 transition = deferredTerminal;
             }
             // Test seam: the transition stays claimed (non-null) while paused here.
@@ -415,10 +418,17 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
             } finally {
                 synchronized (lifecycle) {
                     deferredApplying = false;
+                    deferredApplyingThread = null;
                     if (deferredTerminal == transition) {
                         deferredTerminal = null;
                     }
                 }
+            }
+        }
+
+        private boolean isApplyingDeferredTerminalOnCurrentThread() {
+            synchronized (lifecycle) {
+                return deferredApplying && deferredApplyingThread == Thread.currentThread();
             }
         }
 
@@ -708,15 +718,21 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                     return;
                 }
             }
-            reserveTerminal(() -> {
-                synchronized (this) {
-                    if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
-                        return;
-                    }
-                    phase = Phase.TERMINAL;
+            if (isApplyingDeferredTerminalOnCurrentThread()) {
+                applyDispatchFailed();
+            } else {
+                reserveTerminal(this::applyDispatchFailed);
+            }
+        }
+
+        private void applyDispatchFailed() {
+            synchronized (this) {
+                if (phase == Phase.TERMINAL || phase == Phase.CLEANING) {
+                    return;
                 }
-                completeTerminal(ScenarioFailure.DISPATCH_FAILED, false);
-            });
+                phase = Phase.TERMINAL;
+            }
+            completeTerminal(ScenarioFailure.DISPATCH_FAILED, false);
         }
 
         /**
@@ -753,14 +769,11 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
 
 
         private void terminate(ScenarioFailure failure) {
-            boolean claimed;
-            synchronized (lifecycle) {
-                claimed = deferredApplying;
-            }
-            if (claimed) {
-                // The caller is already inside the first-wins deferred terminal application
+            if (isApplyingDeferredTerminalOnCurrentThread()) {
+                // The caller is re-entering its own first-wins deferred terminal application
                 // (e.g. a release transition completing its lease during a drain): applying
-                // directly avoids competing with the still-claimed intent.
+                // directly avoids competing with that same still-claimed intent. Other threads
+                // remain competitors and must reserve normally.
                 applyTerminate(failure);
             } else {
                 reserveTerminal(() -> applyTerminate(failure));
