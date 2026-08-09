@@ -171,10 +171,11 @@ raw artifact path and SHA-256. Verification rejects a missing, extra-path, or
 changed referenced artifact.
 
 Release exceptions: the workflow's "Verify sealed repeatability decision"
-step is skipped only while the tagged commit contains a
-`.release-gate-exception` marker (ADR 0029). The marker is a one-release,
-maintainer-authorized deviation and must be deleted with the release; the
-workflow default is gated.
+step may be skipped only when both the tagged version and
+`.release-gate-exception` marker match an accepted release-specific ADR. The
+marker is a one-release, maintainer-authorized deviation and must be deleted
+before the next release; every other version remains gated even if cleanup is
+missed.
 
 Commit `precommitment.json`, `manifest.json`, `decision.json`, and the
 digest-bound retained raw artifacts on a dedicated evidence commit. Sign an
@@ -192,6 +193,12 @@ The evidence commit is deliberately separate: results can bind the already
 fixed candidate commit without creating a self-referential source hash. Never
 move or reuse an evidence tag.
 
+For an authorized exception, the signed evidence tag name still uses the final
+release source commit because the workflow derives it from `GITHUB_SHA`. The
+release-specific ADR must identify any measured parent candidate and explicitly
+authorize the source-identity difference; exception metadata must not be
+presented as part of the measured candidate.
+
 ```bash
 git switch main
 git pull --ff-only
@@ -200,10 +207,12 @@ git tag --verify vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-Both tags must be annotated and PGP-signed by the configured key. The release
-tag must point to the exact qualified candidate commit. Never move or reuse
-either tag. If a candidate fails, fix the cause, perform a fresh qualification,
-and create a new version.
+Both tags must be annotated and PGP-signed by the configured key. Without an
+authorized exception, the release tag must point to the exact qualified
+candidate commit. An exception release instead points to the final descendant
+source commit identified by its ADR and carrying the release-specific marker.
+Never move or reuse either tag. If an unexcepted candidate fails, fix the cause,
+perform a fresh qualification, and create a new version.
 
 ## Automated publication
 
@@ -211,9 +220,9 @@ Pushing the tag starts `.github/workflows/release.yml`. The workflow:
 
 1. imports only the configured trusted public key into an isolated temporary GnuPG home;
 2. verifies the primary fingerprint, signed semantic-version tag, and tag-to-commit binding;
-3. verifies the separately signed evidence tag for that exact commit;
-4. regenerates the sealed repeatability decision and requires byte-identical
-   agreement with its precommitted decision;
+3. verifies the separately signed evidence tag for that exact release source commit;
+4. regenerates and verifies the sealed repeatability decision unless the exact
+   tagged version and marker match an authorized release-specific ADR;
 5. runs the clean checks and Javadocs under JDK 25;
 6. builds and signs the deterministic six-module Central bundle;
 7. rejects missing artifacts, signatures, or unpublished-module leakage;

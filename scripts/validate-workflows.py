@@ -27,6 +27,12 @@ for marker in (
     'git tag --verify "$tag"',
 ):
     require(marker in release, f"trusted tag verification marker missing: {marker}")
+require(
+    "if: ${{ ! hashFiles('.release-gate-exception') || "
+    "github.ref_name != 'v1.2.0' }}" in release,
+    "release gate exception must be mechanically limited to v1.2.0",
+)
+
 
 require('--header "Authorization:' not in release,
         "Central authorization header must never be a curl argv value")
