@@ -21,7 +21,6 @@ import dev.gdx.uiharness.core.typography.GlyphRunObservation;
 import dev.gdx.uiharness.core.typography.TypographyDiagnostic;
 import dev.gdx.uiharness.core.typography.TypographyReport;
 import io.modelcontextprotocol.spec.McpSchema;
-import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.IdentityHashMap;
