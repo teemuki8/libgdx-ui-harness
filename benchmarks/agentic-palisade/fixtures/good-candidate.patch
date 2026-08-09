@@ -1,27 +1,16 @@
-diff --git a/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java b/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java
-new file mode 100644
---- /dev/null
+--- a/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java
 +++ b/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java
-@@ -0,0 +1,563 @@
+@@ -0,0 +1,469 @@
 +package benchmark.palisade;
 +
 +import com.badlogic.gdx.Gdx;
 +import com.badlogic.gdx.Input;
-+import com.badlogic.gdx.graphics.Color;
-+import com.badlogic.gdx.graphics.Pixmap;
-+import com.badlogic.gdx.graphics.Texture;
-+import com.badlogic.gdx.graphics.g2d.Batch;
-+import com.badlogic.gdx.graphics.g2d.BitmapFont;
-+import com.badlogic.gdx.math.Rectangle;
 +import com.badlogic.gdx.scenes.scene2d.Actor;
-+import com.badlogic.gdx.scenes.scene2d.Group;
 +import com.badlogic.gdx.scenes.scene2d.InputEvent;
 +import com.badlogic.gdx.scenes.scene2d.InputListener;
 +import com.badlogic.gdx.scenes.scene2d.Stage;
-+import com.badlogic.gdx.scenes.scene2d.Touchable;
-+import com.badlogic.gdx.scenes.scene2d.ui.Label;
-+import com.badlogic.gdx.utils.Align;
-+import com.badlogic.gdx.utils.viewport.ScreenViewport;
++import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
++import dev.gdx.markup.core.BuiltUi;
 +import java.util.ArrayList;
 +import java.util.LinkedHashMap;
 +import java.util.List;
@@ -36,13 +25,8 @@ new file mode 100644
 +            "richHarvest", "scarceGold", "costlyCavalry", "cavalryRush", "roadBoom",
 +            "seed", "copySeed", "randomSeed", "cancel", "startBattle");
 +
-+    private final Stage stage = new Stage(new ScreenViewport());
-+    private final QualificationCanvas canvas = new QualificationCanvas();
-+    private final Group panel = namedGroup("panel");
-+    private final Group scroll = namedGroup("scroll");
-+    private final Group form = namedGroup("form");
-+    private final Map<String, Label> controlActors = new LinkedHashMap<>();
-+    private final Map<String, Label> labelActors = new LinkedHashMap<>();
++    private Stage stage;
++    private ScrollPane scroll;
 +    private int focusIndex = -1;
 +    private boolean selectOpen;
 +    private boolean shiftDown;
@@ -61,26 +45,23 @@ new file mode 100644
 +                .getResource("missing-capture.fixture") != null) {
 +            throw new IllegalStateException("qualification missing capture fixture");
 +        }
-+        stage.addActor(canvas);
-+        panel.addActor(scroll);
-+        scroll.addActor(form);
-+        stage.addActor(panel);
++    }
++
++    @Override public void bind(BuiltUi ui) {
++        stage = ui.root().getStage();
++        if (stage == null) {
++            throw new IllegalStateException("markup root is not attached to the template Stage");
++        }
++        Actor scrollActor = ui.root().findActor("scroll");
++        if (!(scrollActor instanceof ScrollPane pane)) {
++            throw new IllegalStateException("markup must declare the scroll pane");
++        }
++        scroll = pane;
 +        for (Map<String, Object> definition : CONTROLS) {
 +            String id = String.valueOf(definition.get("id"));
-+            Label label = new Label(String.valueOf(definition.get("label")),
-+                    new Label.LabelStyle(canvas.font, Color.valueOf("fff1ddff")));
-+            label.setName(id + "Label");
-+            label.setTouchable(Touchable.disabled);
-+            label.setAlignment(Align.left);
-+            Label control = new Label("",
-+                    new Label.LabelStyle(canvas.font, Color.WHITE));
-+            control.setName(id);
-+            control.setTouchable(Touchable.enabled);
-+            control.setAlignment(Align.left);
-+            form.addActor(label);
-+            form.addActor(control);
-+            labelActors.put(id, label);
-+            controlActors.put(id, control);
++            if (ui.root().findActor(id) == null) {
++                throw new IllegalStateException("markup control is missing: " + id);
++            }
 +        }
 +        stage.addCaptureListener(new InputListener() {
 +            @Override public boolean keyDown(InputEvent event, int keycode) {
@@ -110,13 +91,10 @@ new file mode 100644
 +            @Override public boolean scrolled(
 +                    InputEvent event, float x, float y, float amountX, float amountY) {
 +                bottom = amountY > 0 || bottom;
++                if (bottom) scroll.setScrollPercentY(1f);
 +                return true;
 +            }
 +        });
-+    }
-+
-+    @Override public Stage stage() {
-+        return stage;
 +    }
 +
 +    @Override public void showInitial() {
@@ -131,6 +109,8 @@ new file mode 100644
 +        clipboardText = null;
 +        lastAction = null;
 +        previousSeed = null;
++        scroll.setScrollPercentY(0f);
++        syncConditionalVisibility();
 +    }
 +
 +    @Override public CandidateState snapshotState() {
@@ -165,8 +145,7 @@ new file mode 100644
 +    }
 +
 +    @Override public void dispose() {
-+        canvas.dispose();
-+        stage.dispose();
++        // The shared CandidateMarkupStage owns every libGDX UI resource.
 +    }
 +
 +    private boolean handleKey(int keycode) {
@@ -194,6 +173,7 @@ new file mode 100644
 +                    victory = pendingVictory;
 +                    selectOpen = false;
 +                    focusIndex = visible().indexOf("victoryCondition");
++                    syncConditionalVisibility();
 +                } else {
 +                    pendingVictory = victory;
 +                    selectOpen = true;
@@ -384,11 +364,10 @@ new file mode 100644
 +        return Map.of("type", "text", "textValue", String.valueOf(value));
 +    }
 +
-+    private static Group namedGroup(String name) {
-+        Group group = new Group();
-+        group.setName(name);
-+        group.setTouchable(Touchable.childrenOnly);
-+        return group;
++    private void syncConditionalVisibility() {
++        boolean visible = "rival-target".equals(victory);
++        stage.getRoot().findActor("rivalTargetCount").setVisible(visible);
++        stage.getRoot().findActor("rivalTargetCountLabel").setVisible(visible);
 +    }
 +
 +    private Map<String, Object> values() {
@@ -490,79 +469,114 @@ new file mode 100644
 +        return value;
 +    }
 +
-+    private final class QualificationCanvas extends Actor {
-+        private final Pixmap pixel = new Pixmap(1, 1, Pixmap.Format.RGBA8888);
-+        private final Texture texture;
-+        private final BitmapFont font = new BitmapFont();
-+        private final BitmapFont title = new BitmapFont();
-+
-+        QualificationCanvas() {
-+            pixel.setColor(Color.WHITE);
-+            pixel.fill();
-+            texture = new Texture(pixel);
-+        }
-+
-+        @Override public void draw(Batch batch, float parentAlpha) {
-+            float width = stage.getViewport().getWorldWidth();
-+            float height = stage.getViewport().getWorldHeight();
-+            setBounds(0, 0, width, height);
-+            batch.setColor(Color.valueOf("061417ff"));
-+            batch.draw(texture, 0, 0, width, height);
-+            float panelWidth = Math.min(680, width - 48);
-+            float x = (width - panelWidth) / 2f;
-+            panel.setBounds(x, 24, panelWidth, height - 48);
-+            scroll.setBounds(0, 0, panelWidth, height - 48);
-+            scroll.setCullingArea(new Rectangle(0, 0, panelWidth, height - 48));
-+            form.setBounds(0, 0, panelWidth, height - 48);
-+            controlActors.values().forEach(actor -> actor.setVisible(false));
-+            labelActors.values().forEach(actor -> actor.setVisible(false));
-+            batch.setColor(Color.valueOf("0c2427ff"));
-+            batch.draw(texture, x, 24, panelWidth, height - 48);
-+            batch.setColor(Color.valueOf("cb7d58ff"));
-+            batch.draw(texture, x, height - 28, panelWidth, 4);
-+            batch.setColor(Color.WHITE);
-+            title.getData().setScale(2f);
-+            title.setColor(Color.valueOf("fff1ddff"));
-+            title.draw(batch, "Skirmish Configuration", x + 95, height - 75);
-+            title.getData().setScale(1f);
-+            int start = bottom ? 10 : 0;
-+            List<String> shown = visible();
-+            float rowY = height - 125;
-+            for (int index = start; index < shown.size() && rowY > 55; index++) {
-+                Map<String, Object> metadata = control(shown.get(index));
-+                batch.setColor(Color.valueOf("315154ff"));
-+                batch.draw(texture, x + 42, rowY - 34, panelWidth - 84, 1);
-+                batch.setColor(Color.valueOf("173538ff"));
-+                batch.draw(texture, x + panelWidth - 225, rowY - 30, 180, 34);
-+                Label label = labelActors.get(shown.get(index));
-+                label.setText("  " + metadata.get("label"));
-+                label.setBounds(58, rowY - 34, panelWidth - 300, 34);
-+                label.setVisible(true);
-+                Label control = controlActors.get(shown.get(index));
-+                control.setText("  " + displayValue(shown.get(index)));
-+                control.setBounds(panelWidth - 225, rowY - 54, 180, 34);
-+                control.setVisible(true);
-+                rowY -= 54;
-+            }
-+            batch.setColor(Color.WHITE);
-+        }
-+
-+        private String displayValue(String id) {
-+            Object value = values().get(id);
-+            if ("map".equals(id)) return "The Northern Realms";
-+            if ("playerRealm".equals(id)) return "Vestfold";
-+            if ("victoryCondition".equals(id)) return "conquest".equals(victory) ? "Total conquest" : "Rival target";
-+            if (List.of("copySeed", "randomSeed", "cancel", "startBattle").contains(id)) {
-+                return String.valueOf(control(id).get("label"));
-+            }
-+            return value == null ? "" : String.valueOf(value);
-+        }
-+
-+        void dispose() {
-+            font.dispose();
-+            title.dispose();
-+            texture.dispose();
-+            pixel.dispose();
-+        }
-+    }
 +}
+--- a/src/main/resources/ui/skirmish.xml
++++ b/src/main/resources/ui/skirmish.xml
+@@ -1,11 +1,81 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <ui>
+-  <table id="skirmish-root" class="screen" width="1280" height="720">
+-    <label id="screen-title" class="title" text="SKIRMISH CONFIGURATION"/>
++  <table id="skirmish-root" class="backdrop" width="1280" height="720">
+     <row/>
+-    <label id="settlement-label" text="Settlement"/>
+-    <textfield id="settlement-name" label="Settlement"/>
+-    <row/>
+-    <button id="start-battle" class="primary" text="START BATTLE" name="START BATTLE"/>
++    <table id="panel" class="panel" width="680" height="676" align="center top">
++      <table id="accent" class="accent-bar" width="680" height="5"/>
++      <row/>
++      <label id="screenTitle" class="heading" text="Skirmish Configuration"
++             width="620" height="70" align="center"/>
++      <row/>
++      <scrollpane id="scroll" width="620" height="520" expand="true" fill="true">
++        <table id="form" width="590" pad="12" space="8">
++          <label id="mapLabel" text="Map" width="310" align="left"/>
++          <selectbox id="map" label="Map" items="The Northern Realms,The Great Army,The Seine,The Yellow Sky,The Eastern Muster,Ichi-no-Tani"
++                     width="230" height="42" align="right center"/>
++          <row/>
++          <label id="playerRealmLabel" text="Player realm" width="310" align="left"/>
++          <selectbox id="playerRealm" label="Player realm" items="Vestfold,Danish Realm,Swealand,Hålogaland"
++                     width="230" height="42" align="right center"/>
++          <row/>
++          <label id="majorRivalCountLabel" text="Major rival count" width="310" align="left"/>
++          <slider id="majorRivalCount" label="Major rival count" min="1" max="3" step="1" value="3"
++                  width="230" height="32"/>
++          <row/>
++          <label id="pettyRealmDensityLabel" text="Petty realm density" width="310" align="left"/>
++          <selectbox id="pettyRealmDensity" label="Petty realm density" items="Low,Medium,High"
++                     width="230" height="42"/>
++          <row/>
++          <label id="startingResourcesLabel" text="Starting resources" width="310" align="left"/>
++          <selectbox id="startingResources" label="Starting resources" items="Low,Standard,High"
++                     width="230" height="42"/>
++          <row/>
++          <label id="victoryConditionLabel" text="Victory condition" width="310" align="left"/>
++          <selectbox id="victoryCondition" label="Victory condition"
++                     items="Total conquest,Rival target,Territorial control" width="230" height="42"/>
++          <row/>
++          <label id="rivalTargetCountLabel" text="Rival target count" visible="false"
++                 width="310" align="left"/>
++          <textfield id="rivalTargetCount" label="Rival target count" text="1" visible="false"
++                     width="230" height="42"/>
++          <row/>
++          <label id="aiDifficultyLabel" text="AI difficulty" width="310" align="left"/>
++          <selectbox id="aiDifficulty" label="AI difficulty" items="Standard,Hard,Very hard"
++                     width="230" height="42"/>
++          <row/>
++          <label id="simulationSpeedLabel" text="Simulation speed" width="310" align="left"/>
++          <selectbox id="simulationSpeed" label="Simulation speed" items="Normal,Fast"
++                     width="230" height="42"/>
++          <row/>
++          <label id="balanceHeader" class="section" text="BALANCE MODIFIERS" colspan="2"
++                 width="570" height="32" align="left"/>
++          <row/>
++          <label id="richHarvestLabel" text="High income" width="310" align="left"/>
++          <checkbox id="richHarvest" label="High income" text="High income" width="230"/>
++          <row/>
++          <label id="scarceGoldLabel" text="Low income" width="310" align="left"/>
++          <checkbox id="scarceGold" label="Low income" text="Low income" width="230"/>
++          <row/>
++          <label id="costlyCavalryLabel" text="Higher cavalry cost" width="310" align="left"/>
++          <checkbox id="costlyCavalry" label="Higher cavalry cost" text="Higher cavalry cost" width="230"/>
++          <row/>
++          <label id="cavalryRushLabel" text="Faster cavalry" width="310" align="left"/>
++          <checkbox id="cavalryRush" label="Faster cavalry" text="Faster cavalry" width="230"/>
++          <row/>
++          <label id="roadBoomLabel" text="Faster road construction" width="310" align="left"/>
++          <checkbox id="roadBoom" label="Faster road construction" text="Faster road construction" width="230"/>
++          <row/>
++          <label id="seedLabel" text="Seed" width="310" align="left"/>
++          <textfield id="seed" label="Seed" text="305419896" width="230" height="42"/>
++          <row/>
++          <button id="copySeed" label="COPY SEED" text="COPY SEED" width="270" height="44"/>
++          <button id="randomSeed" label="RANDOM SEED" text="RANDOM SEED" width="270" height="44"/>
++          <row/>
++          <button id="cancel" label="CANCEL" text="CANCEL" width="270" height="44"/>
++          <button id="startBattle" class="primary" label="START BATTLE" name="START BATTLE"
++                  text="START BATTLE" width="270" height="44"/>
++        </table>
++      </scrollpane>
++    </table>
+   </table>
+ </ui>
+--- a/src/main/resources/ui/skirmish.css
++++ b/src/main/resources/ui/skirmish.css
+@@ -1,6 +1,13 @@
+-.screen { padding: 32px; }
+-.title { font-size: 32px; font-color: accent; }
+-textfield { padding: 8px; background: field; }
+-button.primary { padding: 12px; background: accent; }
++.backdrop { background: background; }
++.panel { background: panel; padding: 18px; }
++.accent-bar { background: accent; }
++.heading { font-size: 32px; font-color: text; }
++.section { font-size: 18px; font-color: muted; }
++label { font-size: 18px; font-color: text; }
++selectbox { font-size: 18px; }
++textfield { font-size: 18px; background: field; padding: 8px; }
++checkbox { font-size: 18px; font-color: text; }
++button { font-size: 18px; padding: 10px; }
++button.primary { background: accent; }
+ button.primary:hover { background: accent-over; }
+ button.primary:pressed { background: accent-down; }

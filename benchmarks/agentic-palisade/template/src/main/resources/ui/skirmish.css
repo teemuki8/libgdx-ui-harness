@@ -1,0 +1,6 @@
+.screen { padding: 32px; }
+.title { font-size: 32px; font-color: accent; }
+textfield { padding: 8px; background: field; }
+button.primary { padding: 12px; background: accent; }
+button.primary:hover { background: accent-over; }
+button.primary:pressed { background: accent-down; }

@@ -8,6 +8,12 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+readme = (ROOT / "README.md").read_text(encoding="utf-8")
+getting_started = (ROOT / "docs/guides/getting-started.md").read_text(encoding="utf-8")
+benchmark_guide = (ROOT / "benchmarks/README.md").read_text(encoding="utf-8")
+release_notes_path = ROOT / "docs/releases/v1.2.1.md"
+release_notes = (release_notes_path.read_text(encoding="utf-8")
+                 if release_notes_path.is_file() else "")
 errors: list[str] = []
 
 
@@ -27,11 +33,19 @@ for marker in (
     'git tag --verify "$tag"',
 ):
     require(marker in release, f"trusted tag verification marker missing: {marker}")
-require(
-    "if: ${{ ! hashFiles('.release-gate-exception') || "
-    "github.ref_name != 'v1.2.0' }}" in release,
-    "release gate exception must be mechanically limited to v1.2.0",
-)
+for forbidden in (
+        "release-gate.py verify",
+        ".release-gate-exception",
+        "release-evidence-$GITHUB_SHA",
+        "Verify sealed repeatability decision"):
+    require(forbidden not in release,
+            f"empirical benchmark machinery must not gate publication: {forbidden}")
+for marker in (
+        "runs-on: ubuntu-latest",
+        "clean check javadoc centralBundle --warning-mode=fail",
+        "VALIDATED) exit 0",
+        "PUBLISHED) exit 0"):
+    require(marker in release, f"deterministic release gate marker missing: {marker}")
 
 
 require('--header "Authorization:' not in release,
@@ -99,11 +113,32 @@ for marker in (
     require(marker in ci, f"benchmark qualification prerequisite missing: {marker}")
 require("omp --model" not in ci and "run-benchmark.py --output" not in ci,
         "CI must never invoke measured OMP agents")
+require("candidate_version='1.2.1-candidate.ci'" in ci,
+        "CI treatment preflight must publish the 1.2.1 candidate")
 require(
     "if: github.event_name == 'pull_request' && "
     "vars.DEPENDENCY_REVIEW_ENABLED == 'true'" in ci,
     "dependency review must require an explicit repository capability flag",
 )
+
+require("`1.2.1` is the current release" in readme,
+        "README must identify 1.2.1 as the current release")
+require("1.1.0` is the current release" not in readme,
+        "README contains stale 1.1.0 current-release text")
+for document_name, document in (("README", readme),
+                                ("getting-started", getting_started)):
+    require(document.count("io.github.teemuki8:harness-lwjgl3:1.2.1") == 1,
+            f"{document_name} must show the current harness-lwjgl3 coordinate")
+    require(document.count("io.github.teemuki8:harness-mcp:1.2.1") == 1,
+            f"{document_name} must show the current harness-mcp coordinate")
+for marker in (
+        "libgdx-ui-markup:0.4.1", "agent-runtime 1.0.0", "agent-runtime 2.0.0",
+        "deterministic", "empirical", "markup-only"):
+    require(marker in release_notes,
+            f"1.2.1 release notes missing compatibility marker: {marker}")
+for marker in ("markup-only", "libgdx-ui-markup:0.4.1", "HarnessSemanticSink"):
+    require(marker in benchmark_guide,
+            f"benchmark guide missing markup treatment marker: {marker}")
 
 
 for path, text in (("ci.yml", ci), ("release.yml", release)):

@@ -17,6 +17,9 @@ SPEC_PATH = ROOT / "corpus" / "spec.json"
 SCHEMA_PATH = ROOT / "corpus" / "schema" / "spec.schema.json"
 PROTOCOL_PATH = ROOT / "PROTOCOL.md"
 REFERENCE_DIR = ROOT / "corpus" / "reference"
+ALLOWED_CANDIDATE_SOURCE = {
+    Path("template/src/main/resources/ui/skirmish.css"),
+}
 
 EXPECTED_CONTROL_IDS = [
     "map",
@@ -380,7 +383,11 @@ def validate_blinding() -> None:
                 or any(part in {".gradle", "build", "__pycache__"}
                        for part in relative.parts)):
             continue
-        require(path.suffix.lower() not in forbidden_suffixes, f"forbidden reference source file: {path.relative_to(ROOT)}")
+        require(
+            path.suffix.lower() not in forbidden_suffixes
+            or relative in ALLOWED_CANDIDATE_SOURCE,
+            f"forbidden reference source file: {relative}",
+        )
         require(not ("hidden" in path.name.lower() and "test" in path.name.lower()), f"non-public test artifact is forbidden: {path.relative_to(ROOT)}")
         if path.suffix == ".png":
             continue

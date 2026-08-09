@@ -1,5 +1,9 @@
 # Playwright semantic parity benchmark
 
+The deterministic parity and Agentic Palisade contract suites run in CI and block publication.
+Real-model Agentic Palisade executions remain manual or scheduled empirical qualification: model
+service availability, model revisions, and human review do not gate Maven artifacts (ADR 0034).
+
 This benchmark compares the production stdio MCP harness against a pinned Playwright implementation of the same ten semantic scenarios. It executes real hidden LWJGL3 processes and real Chromium contexts; it does not load precomputed outcomes. The Playwright page is created with `page.setContent`, so no HTTP server or non-loopback listener is opened.
 
 ## Pinned environment
@@ -49,6 +53,13 @@ The runner refuses to mix a new execution with existing raw JSON. Choose a fresh
 `--profile` selects the sealed qualification profile recorded in the benchmark manifest. The default is `low-confidence`, the release gate: 3 pairs, 2 rounds, 1 repetition schedule, a >=60% assertion pass rate, 3 PNG digests per observation, and 1 blind reviewer at median fidelity >=3, with tighter cost ceilings. The `high-confidence` profile preserves the historical strict requirements (5 pairs, 3 rounds, 2+ repetition schedules, 25/25 semantic, 5 digests, 2 reviewers at median fidelity 5) and is not a release gate. Only the `high-confidence` profile requires a model that supports image input; the runner validates the image capability before any high-confidence schedule is prepared or executed and fails closed for unknown models. The `low-confidence` profile does not require image input, so image-incapable models (such as deepseek) can qualify functional and structural reliability.
 
 ## Corpus and symmetry
+
+Agentic Palisade uses one markup-only construction contract in both treatment arms. The candidate
+edits the shared XML/CSS resources and binds controller behavior through `CandidateUi.bind`; it
+cannot replace the template-owned Stage or create a parallel actor tree. Both arms resolve
+`io.github.teemuki8:libgdx-ui-markup:0.4.1` and the same qualified resource digests. The harness
+arm adds only the candidate harness modules, bridge, and `HarnessSemanticSink`; the offline
+treatment preflight rejects coordinate, resource, or digest drift before launch.
 
 `corpus/scenarios.json` is a strict schema-versioned, ordered definition of exactly:
 

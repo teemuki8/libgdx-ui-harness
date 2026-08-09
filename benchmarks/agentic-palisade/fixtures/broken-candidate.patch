@@ -1,6 +1,4 @@
-diff --git a/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java b/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java
-new file mode 100644
---- /dev/null
+--- a/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java
 +++ b/src/main/java/benchmark/palisade/SkirmishConfigurationUi.java
 @@ -0,0 +1,77 @@
 +package benchmark.palisade;
@@ -9,6 +7,7 @@ new file mode 100644
 +import com.badlogic.gdx.scenes.scene2d.InputEvent;
 +import com.badlogic.gdx.scenes.scene2d.InputListener;
 +import com.badlogic.gdx.scenes.scene2d.Stage;
++import dev.gdx.markup.core.BuiltUi;
 +import java.util.ArrayList;
 +import java.util.LinkedHashMap;
 +import java.util.List;
@@ -21,11 +20,15 @@ new file mode 100644
 +            "startingResources", "victoryCondition", "aiDifficulty", "simulationSpeed",
 +            "richHarvest", "scarceGold", "costlyCavalry", "cavalryRush", "roadBoom",
 +            "seed", "copySeed", "randomSeed", "cancel", "startBattle");
-+    private final Stage stage = new Stage();
++    private Stage stage;
 +    private int focus = -1;
 +    private boolean conditional;
 +
-+    public SkirmishConfigurationUi() {
++    @Override public void bind(BuiltUi ui) {
++        stage = ui.root().getStage();
++        if (stage == null) {
++            throw new IllegalStateException("markup root is not attached to the template Stage");
++        }
 +        stage.addCaptureListener(new InputListener() {
 +            @Override public boolean keyDown(InputEvent event, int keycode) {
 +                if (keycode == Input.Keys.TAB) {
@@ -42,12 +45,7 @@ new file mode 100644
 +        });
 +    }
 +
-+    @Override public Stage stage() {
-+        return stage;
-+    }
-+
 +    @Override public void showInitial() {
-+        stage.clear();
 +        focus = -1;
 +        conditional = false;
 +    }
@@ -65,7 +63,7 @@ new file mode 100644
 +    }
 +
 +    @Override public void dispose() {
-+        stage.dispose();
++        // The shared CandidateMarkupStage owns every libGDX UI resource.
 +    }
 +
 +    private List<String> visible() {

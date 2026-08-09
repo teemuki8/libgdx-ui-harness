@@ -33,6 +33,18 @@ val repositoryUrl = providers.gradleProperty("repositoryUrl")
 val releaseBuild = providers.gradleProperty("release").map(String::toBoolean).orElse(false)
 val junitJupiter = libs.junit.jupiter
 val junitPlatformLauncher = libs.junit.platform.launcher
+val ecosystemProfiles = mapOf(
+    "minimum" to "1.0.0",
+    "current" to "2.0.0",
+)
+val ecosystemProfile = providers.gradleProperty("ecosystemProfile").orNull
+val selectedAgentRuntime = ecosystemProfile?.let { profile ->
+    ecosystemProfiles[profile]
+        ?: throw GradleException(
+            "ecosystemProfile must be one of "
+                + ecosystemProfiles.keys.sorted().joinToString(),
+        )
+}
 
 allprojects {
     group = mavenGroup
@@ -50,6 +62,17 @@ subprojects {
 
     dependencyLocking {
         lockAllConfigurations()
+        if (name == "harness-agent-runtime" && ecosystemProfile == "current") {
+            lockFile.set(layout.projectDirectory.file("gradle-current.lockfile"))
+        }
+    }
+
+    configurations.configureEach {
+        if (selectedAgentRuntime != null) {
+            resolutionStrategy.force(
+                "io.github.teemuki8:agent-runtime-core:$selectedAgentRuntime",
+            )
+        }
     }
 
     dependencies {
@@ -223,6 +246,26 @@ tasks.register("javadoc") {
     group = "documentation"
     description = "Generates warning-free Javadocs for all published modules"
     dependsOn(publishableModules.map { project(":$it").tasks.named("javadoc") })
+}
+
+tasks.register<GradleBuild>("minimumEcosystemTest") {
+    group = "verification"
+    description = "Runs the runtime adapter against the published 1.0.0 compatibility floor"
+    dir = rootDir
+    buildName = "minimum-ecosystem"
+    tasks = listOf(":harness-agent-runtime:test")
+    startParameter.projectProperties = mapOf("ecosystemProfile" to "minimum")
+    startParameter.initScripts = gradle.startParameter.initScripts
+}
+
+tasks.register<GradleBuild>("currentEcosystemTest") {
+    group = "verification"
+    description = "Runs runtime 2.0.0 plus the markup 0.4.1 production fixture"
+    dir = rootDir
+    buildName = "current-ecosystem"
+    tasks = listOf(":harness-agent-runtime:test", ":harness-fixtures:test")
+    startParameter.projectProperties = mapOf("ecosystemProfile" to "current")
+    startParameter.initScripts = gradle.startParameter.initScripts
 }
 
 val verifyPublishedLicenseFiles = tasks.register("verifyPublishedLicenseFiles") {

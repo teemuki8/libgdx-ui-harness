@@ -494,6 +494,23 @@ class DryRunTest(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(manifest_path.stat().st_mode), 0o444)
             first_input = output / manifest["runs"][0]["inputManifest"]
             self.assertEqual(stat.S_IMODE(first_input.stat().st_mode), 0o444)
+            markup_by_treatment = {
+                treatment: {
+                    json.dumps(
+                        read_json(output / run["inputManifest"])["markup"],
+                        sort_keys=True,
+                    )
+                    for run in manifest["runs"]
+                    if run["treatment"] == treatment
+                }
+                for treatment in ("baseline", "harness")
+            }
+            self.assertEqual(1, len(markup_by_treatment["baseline"]))
+            self.assertEqual(
+                markup_by_treatment["baseline"], markup_by_treatment["harness"])
+            markup = json.loads(next(iter(markup_by_treatment["baseline"])))
+            self.assertEqual(self.runner.MARKUP_COORDINATE, markup["coordinate"])
+            self.assertEqual(self.runner.MARKUP_RESOURCE_HASHES, markup["resources"])
             original = read_json(first_input)["hashes"]["initialCandidate"]
             workspace = output / manifest["runs"][0]["workspace"]
             (workspace / "src/main/java/benchmark/palisade/Mutation.java").write_text("class Mutation {}\n")

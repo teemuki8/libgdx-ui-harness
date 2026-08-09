@@ -95,9 +95,9 @@ public final class HarnessBridge implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final CandidateUi candidate;
 
-    private HarnessBridge(CandidateUi candidate, Path artifactRoot) {
+    private HarnessBridge(CandidateUi candidate, Stage stage, Path artifactRoot) {
         this.candidate = Objects.requireNonNull(candidate, "candidate");
-        Stage stage = Objects.requireNonNull(candidate.stage(), "candidate.stage()");
+        Objects.requireNonNull(stage, "stage");
         ownedRoot = prepareOwnedRoot(artifactRoot);
         this.artifactRoot = ownedRoot.resolve("artifacts");
         traceRoot = ownedRoot.resolve("traces");
@@ -161,8 +161,8 @@ public final class HarnessBridge implements AutoCloseable {
 
 
     /** Attaches exactly one non-owning semantic session and one owned artifact tree. */
-    public static HarnessBridge open(CandidateUi candidate, Path artifactRoot) {
-        return new HarnessBridge(candidate, artifactRoot);
+    public static HarnessBridge open(CandidateUi candidate, Stage stage, Path artifactRoot) {
+        return new HarnessBridge(candidate, stage, artifactRoot);
     }
 
     private static ScheduledThreadPoolExecutor createDeadlineExecutor() {

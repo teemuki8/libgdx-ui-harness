@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui>
+  <table id="skirmish-root" class="screen" width="1280" height="720">
+    <label id="screen-title" class="title" text="SKIRMISH CONFIGURATION"/>
+    <row/>
+    <label id="settlement-label" text="Settlement"/>
+    <textfield id="settlement-name" label="Settlement"/>
+    <row/>
+    <button id="start-battle" class="primary" text="START BATTLE" name="START BATTLE"/>
+  </table>
+</ui>

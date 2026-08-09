@@ -12,11 +12,11 @@ APPENDIX_MARKER = b"## Treatment appendix\n"
 IGNORED_DIRECTORIES = {".gradle", "build", "__pycache__"}
 EXPECTED_SHARED_HASHES = {
     "PROTOCOL.md": "952ad23e0794165d0c4bf1a32d7c4605fa1792961c6203ae78f4d354916d910f",
-    "template": "5f737b1b4ac12c6a85c10dd8fc8eebea69ecb3dce2d49924978d5d3329c414db",
+    "template": "975d3b85a57db4bc1b2573e4e2df2c6269e41d3e3b800216b023aeb6b62ba4ef",
     "corpus": "d9d973fc53ba753fc665d64d299647444f51d26d42f87d21f14a162ac680065b",
 }
 EXPECTED_COMMON_HASH = (
-    "d910cc7576cf941784dfcfcf002bc9eb35e985e4ede522b0e50e3a4067417fb3"
+    "2aa5b22a3843bebc6764d5731319d48d5d35d60d9df822fc41a8c7c64b1374e7"
 )
 EXPECTED_APPENDIX_HASHES = {
     "baseline": "a9810b5911cf89ff97cd729d9923ae8e6deb455a5bbaaba427d1976f44ccdbed",
@@ -25,7 +25,9 @@ EXPECTED_APPENDIX_HASHES = {
 QUALIFIED_COORDINATES = {
     b'io.github.teemuki8:harness-lwjgl3:$harnessVersion',
     b'io.github.teemuki8:harness-mcp:$harnessVersion',
+    b'io.github.teemuki8:libgdx-ui-markup-harness:0.4.1',
 }
+MARKUP_COORDINATE = "io.github.teemuki8:libgdx-ui-markup:0.4.1"
 GRADLE_WRAPPER = "../../../gradlew"
 COMMON_BUILD_COMMAND = (
     "../../../gradlew -p . classes --no-daemon --console=plain --warning-mode=fail"
@@ -139,6 +141,15 @@ def validate_treatment_symmetry(root):
     common_text = shared_by_arm["baseline"].decode("utf-8")
     if common_text.count(GRADLE_WRAPPER) != 1 or "authorized exception" not in common_text:
         raise SymmetryError("shared instructions must authorize the fixed Gradle Wrapper")
+    for required in (
+            "ui/skirmish.xml", "ui/skirmish.css", "CandidateUi.bind(BuiltUi)",
+            "Do not construct a\nparallel programmatic Stage or actor tree"):
+        if required not in common_text:
+            raise SymmetryError(
+                "shared instructions must mandate the markup-only construction path")
+    template_build = (root / "template/build.gradle.kts").read_text(encoding="utf-8")
+    if template_build.count(f'"{MARKUP_COORDINATE}"') != 1:
+        raise SymmetryError("template must declare the fixed markup coordinate exactly once")
     baseline_appendix = appendices_by_arm["baseline"]
     harness_appendix = appendices_by_arm["harness"]
     if baseline_appendix.count(GRADLE_WRAPPER) != 3:
@@ -162,10 +173,17 @@ def validate_treatment_symmetry(root):
             )
     for marker in (
             b"candidate-version.txt", b"candidate-maven",
-            b"qualifiedHarnessCandidate", b"standardInput = System.`in`"):
+            b"qualifiedHarnessCandidate", b"standardInput = System.`in`",
+            b"required candidate Maven repository is missing",
+            b"required candidate version file is missing"):
         if overlay.count(marker) != 1:
             raise SymmetryError(
                 f"generated overlay must bind {marker.decode()} exactly once")
+    if b'"1.0.0"' in overlay:
+        raise SymmetryError("generated overlay must not fall back to an unqualified version")
+    if overlay.count(b'"module" to "harness-scene2d"') != 1:
+        raise SymmetryError(
+            "markup adapter must not override the exact harness candidate graph")
     return observed
 
 
@@ -238,6 +256,55 @@ class TreatmentSymmetryMutationTest(unittest.TestCase):
         overlay = harness_compile.index("--init-script")
         del harness_compile[overlay:overlay + 2]
         self.assertEqual(baseline_compile, harness_compile)
+
+    def test_preflight_seals_identical_markup_coordinate_digest_and_resources(self):
+        preflight = load_preflight()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspaces = {}
+            for treatment in ("baseline", "harness"):
+                workspace = root / treatment
+                shutil.copytree(self.root / "template", workspace,
+                                ignore=shutil.ignore_patterns(".gradle", "build"))
+                workspaces[treatment] = {
+                    "_runtime": {"workspace": workspace},
+                }
+            identity = preflight.shared_markup_identity(workspaces)
+
+            self.assertEqual(MARKUP_COORDINATE, identity["coordinate"])
+            self.assertEqual(
+                {"ui/skirmish.css", "ui/skirmish.xml"},
+                set(identity["resources"]),
+            )
+            self.assertRegex(identity["digest"], r"^[0-9a-f]{64}$")
+
+    def test_preflight_rejects_any_one_arm_markup_change(self):
+        preflight = load_preflight()
+        mutations = (
+            ("build.gradle.kts", MARKUP_COORDINATE, MARKUP_COORDINATE + "-changed"),
+            ("src/main/resources/ui/skirmish.xml", "</ui>", "<!-- changed --></ui>"),
+            ("src/main/resources/ui/skirmish.css", "\n", "\n/* changed */\n"),
+        )
+        for relative, before, after in mutations:
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                workspaces = {}
+                for treatment in ("baseline", "harness"):
+                    workspace = root / treatment
+                    shutil.copytree(self.root / "template", workspace,
+                                    ignore=shutil.ignore_patterns(".gradle", "build"))
+                    workspaces[treatment] = {
+                        "_runtime": {"workspace": workspace},
+                    }
+                target = root / "harness" / relative
+                content = target.read_text(encoding="utf-8")
+                self.assertIn(before, content)
+                target.write_text(content.replace(before, after, 1), encoding="utf-8")
+
+                with self.assertRaisesRegex(
+                        RuntimeError,
+                        "fixed markup coordinate|qualified digest|identical markup inputs"):
+                    preflight.shared_markup_identity(workspaces)
 
     def test_rejects_design_hint_in_only_one_treatment(self):
         with tempfile.TemporaryDirectory() as directory:

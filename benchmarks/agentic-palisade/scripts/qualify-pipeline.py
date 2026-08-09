@@ -158,6 +158,7 @@ def validate_treatment_symmetry(prepared):
         raise ValueError("prepared build-access contract is not current")
     if len(manifest["runs"]) != 6 or len({run["initialCandidateHash"] for run in manifest["runs"]}) != 1:
         raise ValueError("prepared candidates are not six identical neutral templates")
+    markup_identities = set()
     for pair in (1, 2, 3):
         arms = {run["treatment"]: run for run in manifest["runs"] if run["pair"] == pair}
         baseline = prepared / arms["baseline"]["workspace"]
@@ -166,6 +167,12 @@ def validate_treatment_symmetry(prepared):
             if (arm.get("treatmentAppendixHash")
                     != expected[treatment]["appendixHash"]):
                 raise ValueError("prepared treatment appendix is not current")
+            workspace = prepared / arm["workspace"]
+            recorded_markup = json_file(
+                prepared / arm["inputManifest"]).get("markup")
+            if recorded_markup != RUNNER.markup_identity(workspace):
+                raise ValueError("prepared markup identity is missing or stale")
+            markup_identities.add(json.dumps(recorded_markup, sort_keys=True))
         marker = "## Treatment appendix\n"
         baseline_common, baseline_appendix = (baseline / "INSTRUCTIONS.md").read_text().split(marker, 1)
         harness_common, harness_appendix = (harness / "INSTRUCTIONS.md").read_text().split(marker, 1)
@@ -176,6 +183,8 @@ def validate_treatment_symmetry(prepared):
             harness.parent, ("template/INSTRUCTIONS.md", "treatments/harness"))
         if baseline_files != harness_files:
             raise ValueError("prepared arms differ outside approved treatment inputs")
+    if len(markup_identities) != 1:
+        raise ValueError("prepared treatments do not record identical markup inputs")
     return True
 
 

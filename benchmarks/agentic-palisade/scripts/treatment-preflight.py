@@ -83,6 +83,23 @@ def gradle_commands(item):
     }
 
 
+def markup_identity(workspace):
+    try:
+        return load_runner().markup_identity(workspace)
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
+
+
+def shared_markup_identity(items):
+    identities = {
+        treatment: markup_identity(item["_runtime"]["workspace"])
+        for treatment, item in items.items()
+    }
+    if identities["baseline"] != identities["harness"]:
+        raise RuntimeError("prepared treatments do not share identical markup inputs")
+    return identities["baseline"]
+
+
 def run_command(command, environment, standard_input=None):
     completed = subprocess.run(
         command,
@@ -107,6 +124,7 @@ def preflight(arguments):
     items = prepare_pair(
         output, arguments.candidate_maven_repository.resolve(),
         arguments.candidate_version)
+    markup = shared_markup_identity(items)
     environment = dict(os.environ)
     environment["GRADLE_USER_HOME"] = str(arguments.gradle_user_home.resolve())
     results = []
@@ -137,6 +155,7 @@ def preflight(arguments):
         "offline": True,
         "dependenciesSeeded": arguments.seed_dependencies,
         "candidateVersion": arguments.candidate_version,
+        "markup": markup,
         "results": results,
     }, sort_keys=True))
 

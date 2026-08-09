@@ -2483,7 +2483,8 @@ final class HarnessMcpServerContractTest {
                     "the four admitted mutations drain exactly once after release");
             int actionResults = 0;
             int limitDiagnostics = 0;
-            int busy = 0;
+            int busyActions = 0;
+            int busyPings = 0;
             for (Map.Entry<Integer, JsonNode> entry : byId.entrySet()) {
                 int id = entry.getKey();
                 JsonNode response = entry.getValue();
@@ -2496,7 +2497,11 @@ final class HarnessMcpServerContractTest {
                     limitDiagnostics++;
                 } else if (response.path("error").path("code").asInt()
                         == HarnessMcpServer.TRANSPORT_BUSY_ERROR_CODE) {
-                    busy++;
+                    if (id == 9) {
+                        busyPings++;
+                    } else {
+                        busyActions++;
+                    }
                 } else if (id == 9 && response.path("result").isObject()) {
                     // The ping can only be dispatched after the gate releases and a rejected
                     // send drains; when it is dispatched it is still answered bounded.
@@ -2506,11 +2511,14 @@ final class HarnessMcpServerContractTest {
             }
             assertEquals(4, actionResults,
                     "the admitted mutations answer after their sends complete");
-            assertTrue(limitDiagnostics >= 3 && limitDiagnostics <= 4,
-                    "the handler rejects every call beyond its own session bound");
-            assertEquals(1, busy,
-                    "the first excess request receives the typed limit response while every "
-                            + "send slot is held");
+            assertEquals(4, limitDiagnostics + busyActions,
+                    "every non-admitted mutation is rejected by a bounded layer");
+            assertTrue(busyActions <= 1,
+                    "at most the first excess mutation is rejected by the transport");
+            assertTrue(busyPings <= 1,
+                    "the trailing ping may race with release but is always answered bounded");
+            assertTrue(busyActions + busyPings >= 1,
+                    "a request receives the typed busy response while every send slot is held");
         }
     }
 

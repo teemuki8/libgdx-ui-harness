@@ -38,6 +38,9 @@ jobs:
       - name: Clean check on Linux
         if: runner.os == 'Linux'
         run: xvfb-run -a ./gradlew clean check --warning-mode=fail
+      - name: Qualify minimum and current ecosystem profiles
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ./gradlew minimumEcosystemTest currentEcosystemTest --warning-mode=fail
       - name: Clean backend-neutral checks on Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -136,7 +139,7 @@ jobs:
       - name: Prove symmetric treatment build and launch access offline
         shell: bash
         run: |
-          candidate_version='1.1.0-candidate.ci'
+          candidate_version='1.2.1-candidate.ci'
           candidate_repository="$RUNNER_TEMP/agentic-palisade-candidate-maven"
           preflight_cache="$RUNNER_TEMP/agentic-palisade-gradle-cache"
           GRADLE_USER_HOME="$preflight_cache" ./gradlew \

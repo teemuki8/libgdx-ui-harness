@@ -51,17 +51,18 @@ public final class CandidateEvaluator {
     private static final Set<String> CANDIDATE_INPUT_NAMES =
             Set.of("INSTRUCTIONS.md", "PROTOCOL.md", "corpus");
     private static final Map<String, String> TRUSTED_TEMPLATE_FILES = Map.ofEntries(
-            Map.entry("build.gradle.kts", "537819f6baf1d593a8298a439b65eea2080bc5d2633573d178d669bb277f6ac6"),
+            Map.entry("build.gradle.kts", "3ad6a2c5ba8d2a25f151a712786cde7192f5d79a84dca0cf3734271ad5dc847c"),
             Map.entry("settings.gradle.kts", "2098bf5d2904d7d13b7a4e5e9d1b309800b63e5002e990f44bac0299a2693301"),
             Map.entry("src/main/java/benchmark/palisade/CandidateLauncher.java", "aa8bf5d629899646f770b6e395b877879e72111baaf6305239fda71348bc8024"),
             Map.entry("src/main/java/benchmark/palisade/BenchmarkControl.java", "a013cf41c0bf214dddefa4a378fe6627801c6b7ec87c3f4110f1eea96908c01e"),
-            Map.entry("src/main/java/benchmark/palisade/CandidateApplication.java", "01d92020ba840feb8ee1ccf1cbab6d876e3d120f1985ecd41a322c61ea612c2b"),
-            Map.entry("src/main/java/benchmark/palisade/BlankCandidateUi.java", "3572c409cb50db029e245e1af247824461dc47f73ff46f26211bc02912cece59"),
+            Map.entry("src/main/java/benchmark/palisade/CandidateApplication.java", "55cf200653970c20d57701205f65d6bff14905f4cedfdc21048de27910966400"),
+            Map.entry("src/main/java/benchmark/palisade/CandidateMarkupStage.java", "a489b6790cb301a8b89ffa9b19b2059550ffc896d581f04ac06645b5fb7eb2d9"),
+            Map.entry("src/main/java/benchmark/palisade/BlankCandidateUi.java", "3c49b0fd0e8c056a7a2a742fe135ba0b4474827eb2d7ffec136aeb6b2c3887a5"),
             Map.entry("src/main/java/benchmark/palisade/TrustedStructuralProbe.java", "306df337e504158efc13eec8ef421093180fb949310a64e6c6ebbc1445729b44"),
             Map.entry("src/main/java/benchmark/palisade/CandidateState.java", "88157890ecdfb4a4e7f2fee028d99d1f9940ff84d21dcd2445f73945ba5a2fd6"),
-            Map.entry("src/main/java/benchmark/palisade/CandidateUi.java", "fe93166097d0a357b85452a09f91fd7c2690e8d4f7d6648bc426456741c10eb7"));
+            Map.entry("src/main/java/benchmark/palisade/CandidateUi.java", "2b10c1216a515432a37f81fd3e9abe98d44af737e67443613be94f01f9cdf437"));
     private static final Pattern RESERVED_TYPE_DECLARATION = Pattern.compile(
-            "\\b(?:class|record|interface|enum)\\s+(?:CandidateLauncher|BenchmarkControl|CandidateApplication|BlankCandidateUi|TrustedStructuralProbe|CandidateState|CandidateUi)\\b");
+            "\\b(?:class|record|interface|enum)\\s+(?:CandidateLauncher|BenchmarkControl|CandidateApplication|CandidateMarkupStage|BlankCandidateUi|TrustedStructuralProbe|CandidateState|CandidateUi)\\b");
     private static final ObjectMapper JSON = new ObjectMapper(JsonFactory.builder()
             .streamReadConstraints(StreamReadConstraints.builder()
                     .maxNestingDepth(32).maxStringLength(65_536).maxNumberLength(128)
