@@ -722,9 +722,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                     stopped.traceReference()));
             content.put("eventCount", stopped.eventCount());
             content.put("bytes", stopped.bytes());
-            if (stopped.archiveSha256() != null) {
-                content.put("archiveSha256", stopped.archiveSha256());
-            }
+            content.put("archiveSha256", requireArchiveDigest(stopped.archiveSha256()));
             return Map.copyOf(content);
         }
         throw new AssertionError("Unhandled protocol result " + result.getClass().getName());
@@ -1001,6 +999,20 @@ public final class HarnessToolHandler implements AutoCloseable {
         if (value != null) {
             destination.put(key, value);
         }
+    }
+
+    /**
+     * Fail-closed guard for the {@code ui_trace_stop} receipt: the catalog output
+     * schema requires {@code archiveSha256}, so a controller that omits the verified
+     * digest (or supplies a non-canonical one) must surface as an INTERNAL_ERROR
+     * instead of a successful digest-less result.
+     */
+    private static String requireArchiveDigest(String digest) {
+        if (digest == null || !digest.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException(
+                    "archiveSha256 must be a lowercase 64-character hexadecimal digest");
+        }
+        return digest;
     }
 
     private static Map<String, Object> artifactMap(ArtifactReference reference) {

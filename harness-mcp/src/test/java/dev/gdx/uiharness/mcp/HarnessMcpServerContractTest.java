@@ -1731,6 +1731,28 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test void traceStopRejectsDigestLessReceipt() {
+        // The released four-arg TraceStopped (legacy constructor without the verified
+        // archive digest) must never surface as a successful MCP result: the
+        // ui_trace_stop output schema requires archiveSha256, so the handler must
+        // fail closed with INTERNAL_ERROR instead of emitting a digest-less receipt.
+        CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
+                new HarnessResponse.Success(ProtocolVersion.V1, "mcp-1", "game",
+                        new HarnessResponse.Result.TraceStopped(
+                                "trace-1", "artifact:trace-1", 2, 128)));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        ignored -> response, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_trace_stop", Map.of("sessionId", "game")))
+                    .block(Duration.ofSeconds(10));
+            assertTrue(result.isError());
+            Map<String, Object> content = structured(result);
+            assertEquals("INTERNAL_ERROR", content.get("code"));
+            assertFalse(content.containsKey("archiveSha256"));
+        }
+    }
+
     @Test void traceStopStructuredReceiptCarriesVerifiedArchiveDigest() {
         String digest = "ab".repeat(32);
         CompletableFuture<HarnessResponse> response = CompletableFuture.completedFuture(
