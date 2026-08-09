@@ -1008,8 +1008,8 @@ final class HarnessMcpServerContractTest {
                     calls.incrementAndGet();
                     return CompletableFuture.completedFuture(new HarnessResponse.Failure(
                             ProtocolVersion.V1, request.requestId(), request.sessionId(),
-                            new ProtocolError(ProtocolError.Code.TIMEOUT,
-                                    "frame deadline expired", request.requestId(),
+                            new ProtocolError(ProtocolError.Code.NOT_FOUND,
+                                    "locator resolved to no actors", request.requestId(),
                                     request.sessionId(), null, 0, null, null,
                                     List.of(), Map.of(), null, List.of())));
                 }, new RecordingArtifacts(), executor, 1024, nanos::get, 2)) {
@@ -1055,11 +1055,11 @@ final class HarnessMcpServerContractTest {
                 HarnessToolHandler handler = new HarnessToolHandler(request -> {
                     calls.incrementAndGet();
                     if (calls.get() == 1) {
-                        // TIMEOUT maps to the transient DEADLINE_EXCEEDED diagnostic
+                        // NOT_FOUND maps to the transient LOCATOR_NOT_FOUND diagnostic
                         return CompletableFuture.completedFuture(new HarnessResponse.Failure(
                                 ProtocolVersion.V1, request.requestId(), request.sessionId(),
-                                new ProtocolError(ProtocolError.Code.TIMEOUT,
-                                        "frame deadline expired", request.requestId(),
+                                new ProtocolError(ProtocolError.Code.NOT_FOUND,
+                                        "locator resolved to no actors", request.requestId(),
                                         request.sessionId(), null, 0, null, null,
                                         List.of(), Map.of(), null, List.of())));
                     }
@@ -1096,8 +1096,8 @@ final class HarnessMcpServerContractTest {
                     if (calls.get() == 1) {
                         return CompletableFuture.completedFuture(new HarnessResponse.Failure(
                                 ProtocolVersion.V1, request.requestId(), request.sessionId(),
-                                new ProtocolError(ProtocolError.Code.TIMEOUT,
-                                        "frame deadline expired", request.requestId(),
+                                new ProtocolError(ProtocolError.Code.NOT_FOUND,
+                                        "locator resolved to no actors", request.requestId(),
                                         request.sessionId(), null, 0, null, null,
                                         List.of(), Map.of(), null, List.of())));
                     }
@@ -1195,8 +1195,8 @@ final class HarnessMcpServerContractTest {
                     }
                     return CompletableFuture.completedFuture(new HarnessResponse.Failure(
                             ProtocolVersion.V1, request.requestId(), request.sessionId(),
-                            new ProtocolError(ProtocolError.Code.TIMEOUT,
-                                    "frame deadline expired", request.requestId(),
+                            new ProtocolError(ProtocolError.Code.NOT_FOUND,
+                                    "locator resolved to no actors", request.requestId(),
                                     request.sessionId(), null, 0, null, null,
                                     List.of(), Map.of(), null, List.of())));
                 }, new RecordingArtifacts(), executor, 1024, nanos::get)) {
@@ -1420,6 +1420,53 @@ final class HarnessMcpServerContractTest {
             handler.close(); // idempotent
         }
         assertTrue(executor.isShutdown());
+    }
+
+    @Test void timeoutProtocolErrorsRemainTerminalDeadlineExceeded() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        request -> CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                new ProtocolError(ProtocolError.Code.TIMEOUT,
+                                        "frame deadline expired", request.requestId(),
+                                        request.sessionId(), null, 0, null, null,
+                                        List.of(), Map.of(), null, List.of()))),
+                        new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            Map<String, Object> diagnostic = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            assertEquals("DEADLINE_EXCEEDED", diagnostic.get("code"),
+                    "a protocol timeout must keep the terminal DEADLINE_EXCEEDED contract");
+            assertEquals("terminal", diagnostic.get("disposition"));
+            assertEquals(Boolean.FALSE, diagnostic.get("retryable"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery = (Map<String, Object>) diagnostic.get("recovery");
+            assertEquals("terminal-code/v1", recovery.get("terminatingRule"));
+        }
+    }
+
+    @Test void notFoundProtocolErrorsRecordTransientLocatorNotFoundRecovery() {
+        AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        request -> CompletableFuture.completedFuture(new HarnessResponse.Failure(
+                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                new ProtocolError(ProtocolError.Code.NOT_FOUND,
+                                        "locator resolved to no actors", request.requestId(),
+                                        request.sessionId(), null, 0, null, null,
+                                        List.of(), Map.of(), null, List.of()))),
+                        new RecordingArtifacts(), executor, 1024, nanos::get)) {
+            Map<String, Object> diagnostic = structured(handler.handle(call(
+                    "ui_snapshot", Map.of("sessionId", "game"))).block(Duration.ofSeconds(10)));
+            assertEquals("LOCATOR_NOT_FOUND", diagnostic.get("code"));
+            assertEquals("transient", diagnostic.get("disposition"));
+            assertEquals(Boolean.TRUE, diagnostic.get("retryable"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> recovery = (Map<String, Object>) diagnostic.get("recovery");
+            assertEquals("wait-for-matching-locator/v1", recovery.get("terminatingRule"));
+            assertEquals(1, ((Number) recovery.get("consumed")).intValue(),
+                    "a transient protocol error must record a recovery attempt");
+        }
     }
 
     @Test void diagnosticOverflowFailsClosedWithoutSilentFieldTruncation() {

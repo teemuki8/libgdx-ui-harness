@@ -1041,9 +1041,7 @@ public final class HarnessToolHandler implements AutoCloseable {
         DiagnosticCode code = switch (error.code()) {
             case NOT_FOUND -> DiagnosticCode.LOCATOR_NOT_FOUND;
             case STRICTNESS_VIOLATION -> DiagnosticCode.LOCATOR_AMBIGUOUS;
-            // A frame deadline is a transient observable-state condition that an agent
-            // may retry; the terminal workflow ceiling is the recovery wall time.
-            case TIMEOUT -> DiagnosticCode.STATE_NOT_READY;
+            case TIMEOUT -> DiagnosticCode.DEADLINE_EXCEEDED;
             case LIMIT_EXCEEDED -> DiagnosticCode.LIMIT_EXCEEDED;
             case PROTOCOL_VERSION_MISMATCH -> DiagnosticCode.SCHEMA_CONFLICT;
             case INTERNAL_ERROR, RENDER_THREAD_FAILURE ->
