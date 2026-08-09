@@ -62,6 +62,11 @@ CANDIDATE_MODULES = (
     "harness-core", "harness-scene2d", "harness-lwjgl3",
     "harness-protocol", "harness-mcp",
 )
+MARKUP_COORDINATE = "io.github.teemuki8:libgdx-ui-markup:0.4.1"
+MARKUP_RESOURCE_HASHES = {
+    "ui/skirmish.xml": "4ee21b01b210a62962f3c245c58f7b76cafbcaadf3aa8cf5f6dbef8138005766",
+    "ui/skirmish.css": "c590d57698ff3b67c5272ab30c5dea8045628d84c7524265dab7f82670ca7195",
+}
 LOCAL_DISPLAY = re.compile(r":(?P<number>[1-9][0-9]*)\Z")
 CREDENTIAL_KEYS = {
     "SSH_AUTH_SOCK", "GIT_ASKPASS", "SSH_ASKPASS", "AWS_PROFILE",
@@ -140,6 +145,33 @@ def hash_candidate(workspace):
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return digest.hexdigest()
+
+
+def markup_identity(workspace):
+    workspace = Path(workspace)
+    build_text = (workspace / "build.gradle.kts").read_text(encoding="utf-8")
+    if build_text.count(f'"{MARKUP_COORDINATE}"') != 1:
+        raise ValueError(
+            "candidate template must declare the fixed markup coordinate exactly once")
+    resources = {}
+    for relative, expected in MARKUP_RESOURCE_HASHES.items():
+        path = workspace / "src/main/resources" / relative
+        if not path.is_file():
+            raise ValueError(f"candidate markup resource is missing: {relative}")
+        observed = sha256_bytes(path.read_bytes())
+        if observed != expected:
+            raise ValueError(
+                f"candidate markup resource differs from qualified digest: {relative}")
+        resources[relative] = observed
+    canonical = json.dumps(
+        {"coordinate": MARKUP_COORDINATE, "resources": resources},
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "coordinate": MARKUP_COORDINATE,
+        "digest": sha256_bytes(canonical),
+        "resources": resources,
+    }
 
 def verify_protected_inputs(workspace, expected_hashes):
     workspace = Path(workspace)
@@ -701,6 +733,7 @@ def _prepare_run(
         "maxTimeSeconds": max_seconds,
         "rounds": FIXED_ROUNDS,
         "protocolAmendment": PROTOCOL_AMENDMENT,
+        "markup": markup_identity(workspace),
         "hashes": {
             **hashes,
             "initialCandidate": initial_candidate_hash,

@@ -7,6 +7,12 @@ Do not inspect a reference checkout, evaluator internals, non-public fixtures, c
 Implement the public `CandidateState.values().stateAction` evidence contract on every completed frame. A visually working UI with omitted, partial, aliased, or differently nested functional evidence is incomplete. Structural evidence is measured independently from the completed Stage and framebuffer; candidate-authored structural claims do not substitute for those measurements.
 Keep finite command files and other trace inputs outside Gradle's `build/` directory so a later `clean` cannot remove evidence referenced by the session trace.
 
+Construct the complete UI only through the supplied `ui/skirmish.xml` and
+`ui/skirmish.css` resources. Use `CandidateUi.bind(BuiltUi)` only to attach
+bounded controller/state behavior to markup-declared actors. Do not construct a
+parallel programmatic Stage or actor tree, add actors outside the shared markup
+builder, or replace the fixed markup dependency and resource paths.
+
 The runner installs the repository-owned Gradle Wrapper at `../../../gradlew`.
 Executing that exact path is an authorized exception to the prohibition on
 inspecting parent directories. Do not use a system Gradle installation, another

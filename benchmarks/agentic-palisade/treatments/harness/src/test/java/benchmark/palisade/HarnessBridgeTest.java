@@ -18,7 +18,8 @@ import com.badlogic.gdx.scenes.scene2d.InputEvent;
 import com.badlogic.gdx.scenes.scene2d.InputListener;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
-import dev.gdx.uiharness.core.model.Role;
+import dev.gdx.markup.core.BuiltUi;
+import dev.gdx.markup.harness.HarnessSemanticSink;
 import dev.gdx.uiharness.protocol.ProtocolJson;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -129,8 +130,8 @@ final class HarnessBridgeTest {
             throw new AssertionError("fixture application failed", application.failure.get());
         }
         assertEquals(1, application.clicks.get(), "the semantic click action must reach Stage input");
-        assertFalse(application.candidateDisposed,
-                "HarnessBridge must not dispose the application-owned CandidateUi");
+        assertTrue(application.candidateDisposed,
+                "CandidateMarkupStage must dispose its application-owned CandidateUi");
         assertTrue(Files.isDirectory(ownedArtifacts),
                 "clean close must retain bounded benchmark artifacts for inspection");
         Path published = ownedArtifacts.resolve("published");
@@ -305,6 +306,7 @@ final class HarnessBridgeTest {
         private final AtomicReference<Throwable> failure = new AtomicReference<>();
         private final AtomicInteger clicks = new AtomicInteger();
         private Stage stage;
+        private CandidateMarkupStage markupStage;
         private HarnessBridge bridge;
         private CompletableFuture<Void> cli;
         private boolean candidateDisposed;
@@ -317,28 +319,25 @@ final class HarnessBridgeTest {
         @Override public void create() {
             try {
                 CandidateUi untouched = HarnessCli.loadCandidate();
-                assertNotNull(untouched.stage());
                 assertEquals(CandidateState.empty(), untouched.snapshotState());
                 untouched.dispose();
-                stage = new Stage(new ScreenViewport());
-                stage.getViewport().update(1280, 720, true);
-                Actor button = new Actor();
-                button.setBounds(80, 80, 160, 80);
-                button.addListener(new InputListener() {
-                    @Override public boolean touchDown(
-                            InputEvent event, float x, float y, int pointer, int mouseButton) {
-                        return mouseButton == Input.Buttons.LEFT;
-                    }
-
-                    @Override public void touchUp(
-                            InputEvent event, float x, float y, int pointer, int mouseButton) {
-                        clicks.incrementAndGet();
-                    }
-                });
-                stage.addActor(button);
                 CandidateUi candidate = new CandidateUi() {
-                    @Override public Stage stage() {
-                        return stage;
+                    @Override public void bind(BuiltUi ui) {
+                        Actor button = ui.root().findActor("start-battle");
+                        assertNotNull(button);
+                        button.addListener(new InputListener() {
+                            @Override public boolean touchDown(
+                                    InputEvent event, float x, float y, int pointer,
+                                    int mouseButton) {
+                                return mouseButton == Input.Buttons.LEFT;
+                            }
+
+                            @Override public void touchUp(
+                                    InputEvent event, float x, float y, int pointer,
+                                    int mouseButton) {
+                                clicks.incrementAndGet();
+                            }
+                        });
                     }
 
                     @Override public void showInitial() {
@@ -361,10 +360,13 @@ final class HarnessBridgeTest {
                         candidateDisposed = true;
                     }
                 };
+                markupStage = new CandidateMarkupStage(candidate);
+                stage = markupStage.stage();
+                stage.getViewport().update(1280, 720, true);
                 Gdx.input.setInputProcessor(stage);
-                bridge = HarnessBridge.open(candidate, artifactRoot);
-                bridge.semantics().setRole(button, Role.BUTTON);
-                bridge.semantics().setAccessibleName(button, "START BATTLE");
+                bridge = HarnessBridge.open(candidate, stage, artifactRoot);
+                markupStage.build(new HarnessSemanticSink(
+                        bridge.semantics(), "candidate-ui-frame"));
                 ByteArrayOutputStream sink = new ByteArrayOutputStream();
                 cli = CompletableFuture.runAsync(
                         () -> HarnessCli.run(bridge, boundedAttackInput(), sink));
@@ -405,7 +407,7 @@ final class HarnessBridgeTest {
             } catch (Throwable thrown) {
                 failure.compareAndSet(null, thrown);
             } finally {
-                if (stage != null) stage.dispose();
+                if (markupStage != null) markupStage.close();
             }
         }
     }
@@ -446,8 +448,7 @@ final class HarnessBridgeTest {
                 stage = new Stage(new ScreenViewport());
                 stage.getViewport().update(1280, 720, true);
                 CandidateUi candidate = new CandidateUi() {
-                    @Override public Stage stage() {
-                        return stage;
+                    @Override public void bind(BuiltUi ui) {
                     }
 
                     @Override public void showInitial() {
@@ -470,7 +471,7 @@ final class HarnessBridgeTest {
                     }
                 };
                 Gdx.input.setInputProcessor(stage);
-                bridge = HarnessBridge.open(candidate, artifactRoot);
+                bridge = HarnessBridge.open(candidate, stage, artifactRoot);
             } catch (Throwable thrown) {
                 failure.compareAndSet(null, thrown);
                 Gdx.app.exit();

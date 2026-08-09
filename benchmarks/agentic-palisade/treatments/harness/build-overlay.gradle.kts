@@ -1,6 +1,7 @@
 import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.testing.Test
+import org.gradle.api.artifacts.ExternalModuleDependency
 import org.gradle.kotlin.dsl.configure
 import org.gradle.kotlin.dsl.getByType
 import org.gradle.kotlin.dsl.named
@@ -19,11 +20,12 @@ fun harnessTreatment(root: java.io.File) = sequenceOf(
 
 gradle.settingsEvaluated {
     val candidateRepository = harnessTreatment(settingsDir).resolve("candidate-maven")
-    if (Files.isDirectory(candidateRepository)) {
-        dependencyResolutionManagement.repositories.maven {
-            name = "qualifiedHarnessCandidate"
-            url = uri(candidateRepository)
-        }
+    if (!Files.isDirectory(candidateRepository)) {
+        throw GradleException("required candidate Maven repository is missing")
+    }
+    dependencyResolutionManagement.repositories.maven {
+        name = "qualifiedHarnessCandidate"
+        url = uri(candidateRepository)
     }
 }
 
@@ -31,11 +33,10 @@ gradle.beforeProject {
     if (path != ":") return@beforeProject
     val harnessTreatment = harnessTreatment(projectDir)
     val versionFile = harnessTreatment.resolve("candidate-version.txt")
-    val harnessVersion = if (Files.isRegularFile(versionFile)) {
-        Files.readString(versionFile).trim()
-    } else {
-        "1.0.0"
+    if (!Files.isRegularFile(versionFile)) {
+        throw GradleException("required candidate version file is missing")
     }
+    val harnessVersion = Files.readString(versionFile).trim()
     if (harnessVersion.isBlank()) {
         throw GradleException("Harness candidate version is blank")
     }
@@ -49,6 +50,14 @@ gradle.beforeProject {
             "implementation",
             "io.github.teemuki8:harness-mcp:$harnessVersion",
         )
+        val markupAdapter = dependencies.create(
+            "io.github.teemuki8:libgdx-ui-markup-harness:0.4.1",
+        ) as ExternalModuleDependency
+        markupAdapter.exclude(mapOf(
+            "group" to "io.github.teemuki8",
+            "module" to "harness-scene2d",
+        ))
+        dependencies.add("implementation", markupAdapter)
 
         extensions.configure<SourceSetContainer> {
             named("main") {

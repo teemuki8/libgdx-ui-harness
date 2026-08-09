@@ -8,6 +8,7 @@ import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.glutils.HdpiMode;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.gdx.markup.harness.HarnessSemanticSink;
 import dev.gdx.uiharness.mcp.HarnessToolCatalog;
 import dev.gdx.uiharness.protocol.ProtocolJson;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -260,16 +261,19 @@ public final class HarnessCli {
     private static final class HarnessApplication extends ApplicationAdapter {
         private static final float FIXED_STEP_SECONDS = 1f / 60f;
         private CandidateUi candidate;
+        private CandidateMarkupStage markupStage;
         private HarnessBridge bridge;
         private Thread cliThread;
 
         @Override public void create() {
             candidate = loadCandidate();
-            Stage stage = requireStage();
+            markupStage = new CandidateMarkupStage(candidate);
+            Stage stage = markupStage.stage();
             stage.getViewport().update(Gdx.graphics.getWidth(), Gdx.graphics.getHeight(), true);
-            candidate.showInitial();
+            bridge = HarnessBridge.open(candidate, stage, newArtifactRoot());
+            markupStage.build(new HarnessSemanticSink(
+                    bridge.semantics(), "candidate-ui-frame"));
             Gdx.input.setInputProcessor(stage);
-            bridge = HarnessBridge.open(candidate, newArtifactRoot());
             cliThread = Thread.ofVirtual().name("palisade-harness-cli").start(() -> {
                 try {
                     run(bridge, System.in, System.out);
@@ -302,9 +306,9 @@ public final class HarnessCli {
                     failure = closeFailure;
                 }
             }
-            if (candidate != null) {
+            if (markupStage != null) {
                 try {
-                    candidate.dispose();
+                    markupStage.close();
                 } catch (RuntimeException closeFailure) {
                     if (failure == null) failure = closeFailure;
                     else failure.addSuppressed(closeFailure);
@@ -315,7 +319,7 @@ public final class HarnessCli {
         }
 
         private Stage requireStage() {
-            return Objects.requireNonNull(candidate.stage(), "candidate.stage()");
+            return Objects.requireNonNull(markupStage, "markupStage").stage();
         }
 
     }
