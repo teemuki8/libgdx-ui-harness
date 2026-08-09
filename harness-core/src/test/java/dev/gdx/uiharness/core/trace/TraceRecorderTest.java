@@ -19,6 +19,7 @@ import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.model.SemanticState;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
@@ -39,11 +40,40 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 final class TraceRecorderTest {
     @TempDir Path temporaryDirectory;
+
+    /**
+     * Every behavioral test in this class constructs a recorder whose security
+     * contract is anchored to verified secure directory streams. Providers
+     * without them (for example Windows) cannot satisfy that contract, so the
+     * recorder fails closed at construction; the fail-closed behavior itself
+     * is asserted by {@link TraceRecorderSecurityContractTest}, which has no
+     * such assumption and runs everywhere.
+     */
+    @BeforeEach
+    void requireSecureDirectoryStreams() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(secureDirectoryStreamsAvailable(),
+                "default provider lacks secure directory streams");
+    }
+
+    private static boolean secureDirectoryStreamsAvailable() {
+        try {
+            Path probe = Files.createTempDirectory("secure-stream-probe");
+            try (java.nio.file.DirectoryStream<Path> stream =
+                    Files.newDirectoryStream(probe)) {
+                return stream instanceof java.nio.file.SecureDirectoryStream;
+            } finally {
+                Files.deleteIfExists(probe);
+            }
+        } catch (IOException exception) {
+            return false;
+        }
+    }
 
     @Test void recordsCausalEvidenceAndDeduplicatesStreamedArtifacts() throws Exception {
         MutableClock clock = new MutableClock(Instant.parse("2026-07-28T12:00:00Z"));
@@ -374,6 +404,7 @@ final class TraceRecorderTest {
                                 && path.getParent().getFileName().toString().equals("artifacts"))
                         .filter(path -> Files.isRegularFile(path,
                                 java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                        .filter(path -> !path.getFileName().toString().startsWith("."))
                         .findFirst().orElseThrow();
             }
             Files.delete(artifactFile);
@@ -1415,6 +1446,7 @@ final class TraceRecorderTest {
                             && path.getParent().getFileName().toString().equals("artifacts"))
                     .filter(path -> Files.isRegularFile(path,
                             java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                    .filter(path -> !path.getFileName().toString().startsWith("."))
                     .findFirst().orElseThrow();
         }
     }

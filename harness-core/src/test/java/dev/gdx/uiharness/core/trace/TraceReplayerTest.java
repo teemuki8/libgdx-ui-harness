@@ -35,11 +35,41 @@ import java.util.Set;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 final class TraceReplayerTest {
     @TempDir Path temporaryDirectory;
+
+    /**
+     * Every behavioral test constructs a recorder to produce an archive; the
+     * recorder's security contract is anchored to verified secure directory
+     * streams. Providers without them (for example Windows) cannot satisfy
+     * that contract, so the recorder fails closed at construction; the
+     * fail-closed behavior itself is asserted by
+     * {@link TraceRecorderSecurityContractTest}, which has no such assumption
+     * and runs everywhere.
+     */
+    @BeforeEach
+    void requireSecureDirectoryStreams() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(secureDirectoryStreamsAvailable(),
+                "default provider lacks secure directory streams");
+    }
+
+    private static boolean secureDirectoryStreamsAvailable() {
+        try {
+            Path probe = Files.createTempDirectory("secure-stream-probe");
+            try (java.nio.file.DirectoryStream<Path> stream =
+                    Files.newDirectoryStream(probe)) {
+                return stream instanceof java.nio.file.SecureDirectoryStream;
+            } finally {
+                Files.deleteIfExists(probe);
+            }
+        } catch (IOException exception) {
+            return false;
+        }
+    }
 
     @Test void reportsMissingAndForwardCausalParentsWithoutExecutingEvents() throws Exception {
         TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
