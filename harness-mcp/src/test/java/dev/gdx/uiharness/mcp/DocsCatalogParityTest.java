@@ -67,21 +67,21 @@ final class DocsCatalogParityTest {
             if (!line.startsWith("|")) {
                 continue;
             }
-            if (line.contains("\\|")) {
-                errors.put("row " + rows.size(),
+            List<String> cells = splitCells(line);
+            if (cells.size() < 4) {
+                continue;
+            }
+            String name = cells.get(1).trim();
+            if (!name.startsWith("`ui_")) {
+                continue; // unrelated Markdown tables are not part of the parity contract
+            }
+            String toolName = name.replace("`", "");
+            String cell = cells.get(3).trim();
+            if (cell.contains("\\|")) {
+                errors.put(toolName,
                         "escaped pipe \\| is outside the strict token grammar");
                 continue;
             }
-            String[] cells = line.split("\\|", -1);
-            if (cells.length < 4) {
-                continue;
-            }
-            String name = cells[1].trim();
-            if (!name.startsWith("`ui_")) {
-                continue;
-            }
-            String toolName = name.replace("`", "");
-            String cell = cells[3].trim();
             List<String> required = new ArrayList<>();
             List<String> optional = new ArrayList<>();
             if (!"none".equals(cell)) {
@@ -109,6 +109,37 @@ final class DocsCatalogParityTest {
             rows.add(new ToolRow(toolName, new ToolInputs(required, optional)));
         }
         return new GuideTable(rows, errors);
+    }
+
+    /**
+     * Splits a Markdown table row on unescaped pipes only. A pipe preceded by an odd number of
+     * backslashes is literal cell content (an escaped {@code \|}); an even run makes the pipe a
+     * real column separator. Escaped pipes therefore never shift the tool/input/result columns.
+     */
+    private static List<String> splitCells(String line) {
+        List<String> cells = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        int backslashes = 0;
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (c == '\\') {
+                backslashes++;
+                current.append(c);
+            } else if (c == '|') {
+                if (backslashes % 2 == 1) {
+                    current.append(c); // escaped pipe: literal cell content
+                } else {
+                    cells.add(current.toString());
+                    current.setLength(0);
+                }
+                backslashes = 0;
+            } else {
+                backslashes = 0;
+                current.append(c);
+            }
+        }
+        cells.add(current.toString());
+        return cells;
     }
 
     private static Path writeGuide(Path dir, String... lines) throws IOException {
@@ -193,18 +224,36 @@ final class DocsCatalogParityTest {
         assertEquals(Set.of("ui_sessions"), withoutSessionId);
     }
 
-    @Test void escapedPipesInTableRowsAreRejected(@TempDir Path tempDir) throws Exception {
+    @Test void escapedPipesInInputCellsAreRejected(@TempDir Path tempDir) throws Exception {
         GuideTable table = parseGuide(writeGuide(tempDir,
                 "| Tool | Purpose | Tool-specific input | Result |",
                 "| `ui_query` | Evaluate a lazy locator | required `locator` | match count |",
                 "| `ui_wait` | Wait on semantics | required `locator` \\| required `condition` "
                         + "| result |"));
-        assertTrue(table.parseErrors().values().stream()
-                        .anyMatch(error -> error.contains("escaped pipe")),
-                "escaped pipes must be rejected: " + table.parseErrors());
+        assertEquals("escaped pipe \\| is outside the strict token grammar",
+                table.parseErrors().get("ui_wait"));
         assertFalse(table.rows().stream()
                         .anyMatch(row -> row.name().equals("ui_wait")),
-                "a row with an escaped pipe must not be parsed");
+                "a row with an escaped pipe in its input cell must not be parsed");
+    }
+
+    @Test void escapedPipesInPurposeOrResultCellsAreAllowed(@TempDir Path tempDir)
+            throws Exception {
+        GuideTable table = parseGuide(writeGuide(tempDir,
+                "| Tool | Purpose | Tool-specific input | Result |",
+                "| `ui_query` | Evaluate a lazy locator \\| lazily | required `locator` "
+                        + "| match count \\| framed |"));
+        assertTrue(table.parseErrors().isEmpty(), table.parseErrors().toString());
+        assertEquals(List.of("locator"), documented(table, "ui_query").required());
+    }
+
+    @Test void escapedPipesInUnrelatedTablesAreIgnored(@TempDir Path tempDir) throws Exception {
+        GuideTable table = parseGuide(writeGuide(tempDir,
+                "| A \\| B | C | D | E |",
+                "| `ui_query` | Evaluate a lazy locator | required `locator` | match count |"));
+        assertTrue(table.parseErrors().isEmpty(), table.parseErrors().toString());
+        assertEquals(List.of("ui_query"),
+                table.rows().stream().map(ToolRow::name).toList());
     }
 
     @Test void duplicateToolRowsAreReported(@TempDir Path tempDir) throws Exception {
