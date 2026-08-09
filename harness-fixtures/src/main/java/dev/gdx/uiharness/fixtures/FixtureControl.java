@@ -386,13 +386,14 @@ public final class FixtureControl implements AutoCloseable {
                     }
                 };
         HarnessProtocolService.LayoutValidationCoordinator layoutCoordinator =
-                (spec, deadline) -> CompletableFuture.completedFuture(
-                        layoutValidator.validate(
+                (spec, deadline) -> scheduler.submit(
+                        () -> layoutValidator.validate(
                                 clock.revision(),
                                 clock.frame(),
                                 spec.locator() == null ? null : spec.locator().toCore(),
                                 toCoreLayoutConfig(spec),
-                                null));
+                                null),
+                        deadline);
         RuntimeObservationSource runtimeSource =
                 new AgentRuntimeObservationSource(agentRuntime, SESSION_ID);
         RuntimeComparator runtimeComparator = new RuntimeComparator(runtimeSource);

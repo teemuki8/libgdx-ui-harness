@@ -1,9 +1,11 @@
 package dev.gdx.uiharness.mcp;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -42,6 +44,7 @@ import dev.gdx.uiharness.core.time.MonotonicClock;
 import dev.gdx.uiharness.core.wait.FrameSignal;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.core.locator.Stability;
+import dev.gdx.uiharness.protocol.BinaryAttachment;
 import dev.gdx.uiharness.protocol.CapabilitySet;
 import dev.gdx.uiharness.protocol.Command;
 import dev.gdx.uiharness.protocol.DistinguishingPropertySpec;
@@ -59,11 +62,16 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -80,6 +88,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -465,6 +474,176 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test void screenshotPublicationUsesTheInternalCaptureNotThePublicString() {
+        // A deliberately invalid public base64 string cannot be decoded: successful publication
+        // proves the artifact path uses the internal capture attachment, not the public String.
+        HarnessResponse.Result.Screenshot screenshot = new HarnessResponse.Result.Screenshot(
+                "not-valid-base64-!!!", "0".repeat(64), 1, 1, 3, 1, 1, 1);
+        byte[] attachment = {7, 8, 9};
+        RecordingArtifacts artifacts = new RecordingArtifacts();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (HarnessToolHandler.ExecutionSource) request -> CompletableFuture.completedFuture(
+                                new HarnessProtocolService.Execution(
+                                        new HarnessResponse.Success(
+                                                ProtocolVersion.V1, request.requestId(),
+                                                request.sessionId(), screenshot),
+                                        Map.of(HarnessProtocolService.SCREENSHOT_CAPTURE,
+                                                BinaryAttachment.of(attachment)))),
+                        artifacts, executor, 1_024, System::nanoTime)) {
+            McpSchema.CallToolResult result = handler.handle(call("ui_screenshot", Map.of(
+                    "sessionId", "game", "maxWidth", 8, "maxHeight", 8,
+                    "maxPixels", 64, "maxPngBytes", 128))).block(Duration.ofSeconds(10));
+
+            assertFalse(result.isError());
+            assertEquals(List.of((byte) 7, (byte) 8, (byte) 9), boxed(artifacts.lastBytes),
+                    "publication must publish the internal capture attachment bytes");
+        }
+    }
+
+    @Test void maxSizeScreenshotPublishesExactCaptureBytesWithMatchingReceipts() {
+        byte[] payload = new byte[HarnessResponse.Result.Screenshot.MAX_PNG_BYTES];
+        for (int index = 0; index < payload.length; index++) {
+            payload[index] = (byte) (index % 251);
+        }
+        String sha = sha256Hex(payload);
+        RecordingArtifacts artifacts = new RecordingArtifacts();
+        try (HarnessToolHandler handler = new HarnessToolHandler(
+                serviceWithCapture(payload, sha), artifacts)) {
+            McpSchema.CallToolResult result = handler.handle(call("ui_screenshot", Map.of(
+                    "sessionId", "game", "maxWidth", 8_192, "maxHeight", 8_192,
+                    "maxPixels", 33_554_432L, "maxPngBytes", payload.length)))
+                    .block(Duration.ofSeconds(60));
+
+            assertFalse(result.isError());
+            assertArrayEquals(payload, artifacts.lastBytes,
+                    "published bytes must equal the captured PNG bytes exactly");
+            assertEquals(sha, artifacts.lastReference.sha256(),
+                    "digest receipt must match the captured bytes");
+            assertEquals((long) payload.length, artifacts.lastReference.byteLength(),
+                    "length receipt must match the captured bytes");
+        }
+    }
+
+    @Test void screenshotPublicationPublishesThroughTheReadOnlyBufferOverload() {
+        byte[] attachment = {4, 5, 6};
+        ByteBufferOnlyArtifacts artifacts = new ByteBufferOnlyArtifacts();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (HarnessToolHandler.ExecutionSource) request -> CompletableFuture.completedFuture(
+                                new HarnessProtocolService.Execution(
+                                        new HarnessResponse.Success(
+                                                ProtocolVersion.V1, request.requestId(),
+                                                request.sessionId(), screenshot(attachment)),
+                                        Map.of(HarnessProtocolService.SCREENSHOT_CAPTURE,
+                                                BinaryAttachment.of(attachment)))),
+                        artifacts, executor, 1_024, System::nanoTime)) {
+            McpSchema.CallToolResult result = handler.handle(call("ui_screenshot", Map.of(
+                    "sessionId", "game", "maxWidth", 8, "maxHeight", 8,
+                    "maxPixels", 64, "maxPngBytes", 128))).block(Duration.ofSeconds(10));
+
+            assertFalse(result.isError(),
+                    "screenshot publication must not fall back to the byte[] overload");
+            assertEquals(1, artifacts.byteBufferCalls.get(),
+                    "exactly one publication through the read-only buffer overload");
+            assertEquals(0, artifacts.byteArrayCalls.get(),
+                    "the byte[] overload must never be invoked for screenshot publication");
+            assertArrayEquals(attachment, artifacts.lastBytes,
+                    "the publisher must receive the exact internal capture bytes");
+        }
+    }
+
+    @Test void screenshotWithoutCaptureAttachmentFailsClosed() {
+        RecordingArtifacts artifacts = new RecordingArtifacts();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (HarnessToolHandler.ExecutionSource) request -> CompletableFuture.completedFuture(
+                                new HarnessProtocolService.Execution(
+                                        new HarnessResponse.Success(
+                                                ProtocolVersion.V1, request.requestId(),
+                                                request.sessionId(),
+                                                screenshot(new byte[] {1, 2, 3})),
+                                        Map.of())),
+                        artifacts, executor, 1_024, System::nanoTime)) {
+            McpSchema.CallToolResult result = handler.handle(call("ui_screenshot", Map.of(
+                    "sessionId", "game", "maxWidth", 8, "maxHeight", 8,
+                    "maxPixels", 64, "maxPngBytes", 128))).block(Duration.ofSeconds(10));
+
+            assertTrue(result.isError(),
+                    "a screenshot result without its capture attachment must fail closed");
+            assertEquals(0, artifacts.count,
+                    "nothing may be published when the capture attachment is missing");
+            assertNull(artifacts.lastBytes);
+        }
+    }
+
+    @Test void screenshotWithMismatchedPublisherReceiptFailsClosed() {
+        MismatchedReceiptArtifacts artifacts = new MismatchedReceiptArtifacts();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (HarnessToolHandler.ExecutionSource) request -> CompletableFuture.completedFuture(
+                                new HarnessProtocolService.Execution(
+                                        new HarnessResponse.Success(
+                                                ProtocolVersion.V1, request.requestId(),
+                                                request.sessionId(),
+                                                screenshot(new byte[] {1, 2, 3})),
+                                        Map.of(HarnessProtocolService.SCREENSHOT_CAPTURE,
+                                                BinaryAttachment.of(new byte[] {1, 2, 3})))),
+                        artifacts, executor, 1_024, System::nanoTime)) {
+            McpSchema.CallToolResult result = handler.handle(call("ui_screenshot", Map.of(
+                    "sessionId", "game", "maxWidth", 8, "maxHeight", 8,
+                    "maxPixels", 64, "maxPngBytes", 128))).block(Duration.ofSeconds(10));
+
+            assertTrue(result.isError(),
+                    "a publication receipt that contradicts the published bytes must fail closed");
+            assertEquals(1, artifacts.count,
+                    "the publication was attempted but its inconsistent receipt was rejected");
+        }
+    }
+
+    @Test void screenshotPublicationPreservesPublicStructuredAndTextContent() {
+        byte[] attachment = {1, 2, 3};
+        String sha = sha256Hex(attachment);
+        HarnessResponse.Result.Screenshot screenshot = new HarnessResponse.Result.Screenshot(
+                Base64.getEncoder().encodeToString(attachment), sha, 7, 2, 640, 480, 2, 1);
+        RecordingArtifacts artifacts = new RecordingArtifacts();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (HarnessToolHandler.ExecutionSource) request -> CompletableFuture.completedFuture(
+                                new HarnessProtocolService.Execution(
+                                        new HarnessResponse.Success(
+                                                ProtocolVersion.V1, request.requestId(),
+                                                request.sessionId(), screenshot),
+                                        Map.of(HarnessProtocolService.SCREENSHOT_CAPTURE,
+                                                BinaryAttachment.of(attachment)))),
+                        artifacts, executor, 1_024, System::nanoTime)) {
+            McpSchema.CallToolResult result = handler.handle(call("ui_screenshot", Map.of(
+                    "sessionId", "game", "maxWidth", 8, "maxHeight", 8,
+                    "maxPixels", 64, "maxPngBytes", 128))).block(Duration.ofSeconds(10));
+
+            assertFalse(result.isError());
+            Map<String, Object> content = structured(result);
+            assertEquals("screenshot-result", content.get("kind"));
+            assertEquals("artifact:1", artifact(content).get("reference"));
+            assertEquals("image/png", artifact(content).get("mediaType"));
+            assertEquals(3L, artifact(content).get("byteLength"));
+            assertEquals(sha, artifact(content).get("sha256"));
+            assertEquals(7L, content.get("frame"));
+            assertEquals(2L, content.get("revision"));
+            assertEquals(640, content.get("width"));
+            assertEquals(480, content.get("height"));
+            assertEquals(2.0, content.get("scaleX"));
+            assertEquals(1.0, content.get("scaleY"));
+            assertFalse(content.containsKey("pngBase64"),
+                    "the raw PNG bytes must never leak into public structured content");
+            String text = text(result);
+            assertTrue(text.startsWith("screenshot-result: "),
+                    "the compact text must keep the public screenshot shape");
+            assertTrue(text.contains("artifact:1"));
+            assertFalse(text.contains("pngBase64"));
+        }
+    }
+
     @Test void malformedCallsReturnStructuredErrorsWithoutInvokingProtocol() {
         AtomicInteger calls = new AtomicInteger();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
@@ -516,10 +695,11 @@ final class HarnessMcpServerContractTest {
         AtomicInteger calls = new AtomicInteger();
         RecordingArtifacts artifacts = new RecordingArtifacts();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-                HarnessToolHandler handler = new HarnessToolHandler(request -> {
-                    calls.incrementAndGet();
-                    return service(new RecordingHarness()).execute(request);
-                }, artifacts, executor, 1024)) {
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (HarnessToolHandler.ExecutionSource) request -> {
+                            calls.incrementAndGet();
+                            return service(new RecordingHarness()).executeWithAttachments(request);
+                        }, artifacts, executor, 1_024, System::nanoTime)) {
             Map<String, Object> diagnostic = structured(handler.handle(call(
                     "ui_screenshot",
                     Map.of("sessionId", "game", "maxBytes", 1_024)))
@@ -615,7 +795,8 @@ final class HarnessMcpServerContractTest {
         AtomicLong nanos = new AtomicLong(1_000_000_000L);
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
                 HarnessToolHandler handler = new HarnessToolHandler(
-                        ignored -> CompletableFuture.failedFuture(new AssertionError()),
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>)
+                                ignored -> CompletableFuture.failedFuture(new AssertionError()),
                         new RecordingArtifacts(), executor, 1024, nanos::get)) {
             LinkedHashMap<String, Object> first = new LinkedHashMap<>();
             first.put("sessionId", "game");
@@ -933,12 +1114,13 @@ final class HarnessMcpServerContractTest {
         // production. The protocol signal fires when the second call actually reaches the
         // service, so no sleep or poll is needed.
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-                HarnessToolHandler handler = new HarnessToolHandler(request -> {
-                    protocolCalls.incrementAndGet();
-                    starts.record(request.requestId());
-                    return protocolCalls.get() == 1 ? firstGate : secondGate;
-                }, new RecordingArtifacts(), executor, 1024, System::nanoTime,
-                new RequestAdmission(2, 4, 4))) {
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
+                            protocolCalls.incrementAndGet();
+                            starts.record(request.requestId());
+                            return protocolCalls.get() == 1 ? firstGate : secondGate;
+                        }, new RecordingArtifacts(), executor, 1024, System::nanoTime,
+                        new RequestAdmission(2, 4, 4))) {
             CompletableFuture<McpSchema.CallToolResult> first = handler.handle(call(
                     "ui_capabilities", Map.of("sessionId", "game"))).toFuture();
             CompletableFuture<McpSchema.CallToolResult> second = handler.handle(call(
@@ -980,20 +1162,21 @@ final class HarnessMcpServerContractTest {
                 new HarnessResponse.Result.Action(1, 2, "clicked", Map.of()));
         ProtocolSignals mutationStarts = new ProtocolSignals();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-                HarnessToolHandler handler = new HarnessToolHandler(request -> {
-                    CompletableFuture<HarnessResponse> gate = new CompletableFuture<>();
-                    gates.add(gate);
-                    mutationStarts.record(request.requestId());
-                    // The lane starts the next mutation only after the previous mutation's
-                    // stage is terminal, so every new protocol call must observe the previous
-                    // gate already completed; a lane that ran two mutations at once could not.
-                    CompletableFuture<HarnessResponse> previous = previousGate.getAndSet(gate);
-                    if (previous != null && !previous.isDone()) {
-                        overlappedWhilePreviousMutationRunning.set(true);
-                    }
-                    return gate;
-                }, new RecordingArtifacts(), executor, 1024, System::nanoTime,
-                new RequestAdmission(8, 4, 4))) {
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
+                            CompletableFuture<HarnessResponse> gate = new CompletableFuture<>();
+                            gates.add(gate);
+                            mutationStarts.record(request.requestId());
+                            // The lane starts the next mutation only after the previous mutation's
+                            // stage is terminal, so every new protocol call must observe the previous
+                            // gate already completed; a lane that ran two mutations at once could not.
+                            CompletableFuture<HarnessResponse> previous = previousGate.getAndSet(gate);
+                            if (previous != null && !previous.isDone()) {
+                                overlappedWhilePreviousMutationRunning.set(true);
+                            }
+                            return gate;
+                        }, new RecordingArtifacts(), executor, 1024, System::nanoTime,
+                        new RequestAdmission(8, 4, 4))) {
             Map<String, Object> arguments = Map.of(
                     "sessionId", "game",
                     "locator", Map.of("kind", "role", "role", "button"),
@@ -1045,13 +1228,14 @@ final class HarnessMcpServerContractTest {
                 new HarnessResponse.Result.Action(1, 2, "clicked", Map.of()));
         ProtocolSignals starts = new ProtocolSignals();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-                HarnessToolHandler handler = new HarnessToolHandler(request -> {
-                    calls.incrementAndGet();
-                    starts.record(request.requestId());
-                    return request.command() instanceof Command.Sessions
-                            ? sessionlessGate : catalogGate;
-                }, new RecordingArtifacts(), executor, 1024, System::nanoTime,
-                new RequestAdmission(8, 1, 1))) {
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        (Function<HarnessRequest, CompletionStage<HarnessResponse>>) request -> {
+                            calls.incrementAndGet();
+                            starts.record(request.requestId());
+                            return request.command() instanceof Command.Sessions
+                                    ? sessionlessGate : catalogGate;
+                        }, new RecordingArtifacts(), executor, 1024, System::nanoTime,
+                        new RequestAdmission(8, 1, 1))) {
             CompletableFuture<McpSchema.CallToolResult> sessionless = handler.handle(call(
                     "ui_sessions", Map.of())).toFuture();
             starts.signal(1).get(5, TimeUnit.SECONDS);
@@ -1699,6 +1883,25 @@ final class HarnessMcpServerContractTest {
         return List.of(boxed);
     }
 
+    private static HarnessResponse.Result.Screenshot screenshot(byte[] png) {
+        return new HarnessResponse.Result.Screenshot(
+                Base64.getEncoder().encodeToString(png), sha256Hex(png),
+                1, 1, 1, 1, 1, 1);
+    }
+
+    private static String sha256Hex(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException failure) {
+            throw new AssertionError(failure);
+        }
+    }
+
+    private static String text(McpSchema.CallToolResult result) {
+        return ((McpSchema.TextContent) result.content().getFirst()).text();
+    }
+
     private static Map<String, String> largeEvidence() {
         LinkedHashMap<String, String> evidence = new LinkedHashMap<>();
         for (int index = 0; index < 16; index++) {
@@ -1808,6 +2011,15 @@ final class HarnessMcpServerContractTest {
     }
 
     private static HarnessProtocolService service(RecordingHarness harness) {
+        return service(harness, new byte[] {1, 2, 3}, "0".repeat(64), 1, 1);
+    }
+
+    private static HarnessProtocolService serviceWithCapture(byte[] payload, String sha) {
+        return service(new RecordingHarness(), payload, sha, 8_192, 8_192);
+    }
+
+    private static HarnessProtocolService service(
+            RecordingHarness harness, byte[] png, String sha, int width, int height) {
         LocatorEngine locators = new StrictResolution();
         FrameSignal frames = listener -> () -> {};
         AssertionSnapshotSource assertionSnapshots = new AssertionSnapshotSource() {
@@ -1829,8 +2041,8 @@ final class HarnessMcpServerContractTest {
         ScreenCapture capture = new ScreenCapture() {
             @Override public CompletionStage<CapturedImage> capture(
                     CaptureRequest request, Deadline deadline) {
-                return CompletableFuture.completedFuture(new CapturedImage(new byte[] {1, 2, 3},
-                        "0".repeat(64), 1, 1, 1, 1, new CapturedImage.Scale(1, 1)));
+                return CompletableFuture.completedFuture(new CapturedImage(
+                        png, sha, 1, 1, width, height, new CapturedImage.Scale(1, 1)));
             }
 
             @Override public void close() {}
@@ -2021,13 +2233,67 @@ final class HarnessMcpServerContractTest {
 
     private static final class RecordingArtifacts implements ArtifactReference.Publisher {
         private byte[] lastBytes;
+        private ArtifactReference lastReference;
         private int count;
 
         @Override public ArtifactReference publish(String mediaType, byte[] content) {
+            return record(mediaType, content);
+        }
+
+        @Override public ArtifactReference publishBuffer(String mediaType, ByteBuffer content) {
+            byte[] copy = new byte[content.remaining()];
+            content.get(copy);
+            return record(mediaType, copy);
+        }
+
+        private ArtifactReference record(String mediaType, byte[] content) {
             lastBytes = content.clone();
             count++;
-            return new ArtifactReference("artifact:" + count, mediaType, content.length,
-                    "0".repeat(64));
+            ArtifactReference reference = new ArtifactReference(
+                    "artifact:" + count, mediaType, content.length, sha256Hex(content));
+            lastReference = reference;
+            return reference;
+        }
+    }
+
+    /**
+     * Publisher that rejects the byte[] overload outright, so any base64-decode or byte[]
+     * fallback path in the handler surfaces as an error instead of a silent publication.
+     */
+    private static final class ByteBufferOnlyArtifacts implements ArtifactReference.Publisher {
+        private final AtomicInteger byteBufferCalls = new AtomicInteger();
+        private final AtomicInteger byteArrayCalls = new AtomicInteger();
+        private byte[] lastBytes;
+
+        @Override public ArtifactReference publish(String mediaType, byte[] content) {
+            byteArrayCalls.incrementAndGet();
+            throw new AssertionError(
+                    "screenshot publication must publish through the ByteBuffer overload");
+        }
+
+        @Override public ArtifactReference publishBuffer(String mediaType, ByteBuffer content) {
+            byteBufferCalls.incrementAndGet();
+            byte[] copy = new byte[content.remaining()];
+            content.get(copy);
+            lastBytes = copy;
+            return new ArtifactReference("artifact:1", mediaType, copy.length, sha256Hex(copy));
+        }
+    }
+
+    /** Publisher whose receipt contradicts the published payload (wrong length and digest). */
+    private static final class MismatchedReceiptArtifacts implements ArtifactReference.Publisher {
+        private int count;
+
+        @Override public ArtifactReference publish(String mediaType, byte[] content) {
+            count++;
+            return new ArtifactReference(
+                    "artifact:" + count, mediaType, content.length + 1, "0".repeat(64));
+        }
+
+        @Override public ArtifactReference publishBuffer(String mediaType, ByteBuffer content) {
+            byte[] copy = new byte[content.remaining()];
+            content.get(copy);
+            return publish(mediaType, copy);
         }
     }
 }

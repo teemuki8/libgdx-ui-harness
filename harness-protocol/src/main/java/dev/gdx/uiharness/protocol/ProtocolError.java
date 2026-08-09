@@ -113,6 +113,7 @@ public record ProtocolError(
         NOT_ACTIONABLE("not-actionable"),
         TIMEOUT("timeout"),
         RENDER_THREAD_FAILURE("render-thread-failure"),
+        RENDER_THREAD_VIOLATION("render-thread-violation"),
         CAPTURE_FAILURE("capture-failure"),
         LIMIT_EXCEEDED("limit-exceeded"),
         PROTOCOL_VERSION_MISMATCH("protocol-version-mismatch"),

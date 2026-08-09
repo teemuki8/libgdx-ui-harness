@@ -24,6 +24,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /** Traverses Scene2D focus using only application-configured input and completed frames. */
 public final class Scene2dNavigationRunner implements AutoCloseable {
@@ -176,6 +177,111 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         }
     }
 
+    /**
+     * Atomically reserves this completed frame for every run active at the call: the recipient
+     * snapshot and a per-run reservation counter are taken under the lifecycle lock, the snapshot
+     * supplier runs OUTSIDE the lock (at most once per call), and every terminal transition of a
+     * reserved recipient waits (releasing the lifecycle monitor) until the reservation has
+     * delivered or failed — a terminal cannot invalidate an already-reserved frame, and a run
+     * starting after the reservation observes the next frame.
+     *
+     * @return true when at least one active run consumed the frame
+     */
+    public boolean completedFrame(
+            Supplier<SemanticSnapshot> snapshots, long revision, long frame) {
+        Objects.requireNonNull(snapshots, "snapshots");
+        Run[] runs;
+        synchronized (lifecycle) {
+            if (active.isEmpty()) {
+                return false;
+            }
+            runs = active.toArray(Run[]::new);
+            for (Run run : runs) {
+                run.pendingFrameDeliveries++;
+            }
+        }
+        SemanticSnapshot snapshot;
+        try {
+            snapshot = snapshots.get();
+        } catch (RuntimeException failure) {
+            // The supplier failed before any delivery was enqueued: release exactly ONE
+            // reservation per recipient. Reservations made by other concurrent completedFrame
+            // calls, and deliveries already enqueued by them, are untouched; the deferred
+            // terminal (if any) applies only when the last reservation drains. The original
+            // failure propagates.
+            for (Run run : runs) {
+                releaseOneReservation(run);
+            }
+            throw failure;
+        }
+        for (int index = 0; index < runs.length; index++) {
+            try {
+                deliverFrame(runs[index], snapshot);
+            } catch (RuntimeException failure) {
+                // The enqueue for runs[index] failed: recipients before it were already
+                // enqueued and keep their reservations until their delivery callbacks release
+                // them; this recipient and the ones after were reserved but never delivered,
+                // so release exactly ONE reservation for each. The original failure propagates.
+                for (int i = index; i < runs.length; i++) {
+                    releaseOneReservation(runs[i]);
+                }
+                throw failure;
+            }
+        }
+        return true;
+    }
+
+    /** Package-private test seam: runs before each frame delivery enqueue; a throwing probe simulates an enqueue rejection. */
+    Runnable frameEnqueueProbe = () -> {};
+    /** Package-private test seam: pauses a deferred terminal transition after take, before commit. */
+    Runnable terminalApplyProbe = () -> {};
+
+    /**
+     * Enqueues one reserved frame delivery. The submission future completes exactly once — the
+     * observe ran, the queue rejected it, or the dispatch deadline expired — and its completion
+     * releases the reservation and applies any deferred terminal transition.
+     */
+    private void deliverFrame(Run run, SemanticSnapshot snapshot) {
+        frameEnqueueProbe.run();
+        CompletionStage<?> submission = scheduler.submit(() -> {
+            run.observe(snapshot);
+            return null;
+        }, dispatchDeadline());
+        submission.whenComplete((ignored, failure) ->
+                deliveryCompleted(run, failure));
+    }
+
+    /**
+     * Runs when a reserved frame delivery completes (or fails): releases the run's reservation
+     * and, once every in-flight reservation has drained, applies the first-wins deferred terminal
+     * transition. A failed delivery then reports the failure, which no-ops when the deferred
+     * transition already terminalized the run.
+     */
+    private void deliveryCompleted(Run run, Throwable failure) {
+        releaseOneReservation(run);
+        if (failure != null) {
+            run.fail(failure);
+        }
+    }
+
+    /**
+     * Releases exactly one in-flight frame reservation for the recipient. When the last
+     * reservation drains, the first-wins deferred terminal transition is applied outside the
+     * lifecycle lock (claimed through execution, so a later terminal request cannot overtake).
+     */
+    private void releaseOneReservation(Run run) {
+        boolean applyDeferred;
+        synchronized (lifecycle) {
+            if (run.pendingFrameDeliveries > 0) {
+                run.pendingFrameDeliveries--;
+            }
+            applyDeferred = run.pendingFrameDeliveries == 0;
+        }
+        if (applyDeferred) {
+            run.applyDeferredTerminal();
+        }
+    }
+
     @Override public void close() {
         Run[] runs;
         synchronized (lifecycle) {
@@ -231,6 +337,66 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         private boolean ready;
         private boolean waitingForFrame;
         private boolean terminal;
+        /** In-flight reserved frame deliveries awaiting completion, guarded by the lifecycle monitor. */
+        private int pendingFrameDeliveries;
+        /** First-wins deferred terminal transition, guarded by the lifecycle monitor; stays non-null while claimed/applying. */
+        private Runnable deferredTerminal;
+        /** Exclusive take marker for the deferred transition, guarded by the lifecycle monitor. */
+        private boolean deferredApplying;
+
+        /**
+         * Reserves this terminal transition first-wins under the lifecycle monitor. While frame
+         * deliveries are in flight the transition is deferred: the run keeps observing reserved
+         * frames, and the last delivery completion (or a supplier/enqueue failure) applies the
+         * transition. Never blocks — the render thread must stay free to drain the queued
+         * deliveries, so a terminal request on any thread returns immediately.
+         *
+         * @return true when this caller's transition was reserved; false when the run already
+         *         terminalized or another terminal transition won the reservation first
+         */
+        private boolean reserveTerminal(Runnable transition) {
+            boolean applyNow;
+            synchronized (lifecycle) {
+                if (deferredTerminal != null) {
+                    return false;
+                }
+                deferredTerminal = transition;
+                applyNow = pendingFrameDeliveries == 0;
+            }
+            if (applyNow) {
+                applyDeferredTerminal();
+            }
+            return true;
+        }
+
+        /**
+         * Takes and applies the first-wins deferred terminal transition, keeping it claimed
+         * (non-null) through execution so a concurrent terminal request is rejected first-wins
+         * and cannot overtake the outcome. The transition is cleared in a finally only when it
+         * is still the same intent after the transition returns.
+         */
+        private void applyDeferredTerminal() {
+            Runnable transition;
+            synchronized (lifecycle) {
+                if (deferredApplying || deferredTerminal == null) {
+                    return;
+                }
+                deferredApplying = true;
+                transition = deferredTerminal;
+            }
+            // Test seam: the transition stays claimed (non-null) while paused here.
+            Scene2dNavigationRunner.this.terminalApplyProbe.run();
+            try {
+                transition.run();
+            } finally {
+                synchronized (lifecycle) {
+                    deferredApplying = false;
+                    if (deferredTerminal == transition) {
+                        deferredTerminal = null;
+                    }
+                }
+            }
+        }
 
         Run(NavigationRequest request) {
             this.request = request;
@@ -415,28 +581,34 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
         }
 
         void cancelForClose() {
-            CompletionStage<Scene2dScenarioRunner.Lease> pending;
-            synchronized (this) {
-                if (terminal) {
-                    return;
+            // A caller-thread close/cancel never blocks: reserved frame deliveries are
+            // observed first, and the terminal transition applies when the last one completes.
+            reserveTerminal(() -> {
+                CompletionStage<Scene2dScenarioRunner.Lease> pending;
+                synchronized (this) {
+                    if (terminal) {
+                        return;
+                    }
+                    terminal = true;
+                    pending = scenarioStage;
                 }
-                terminal = true;
-                pending = scenarioStage;
-            }
-            if (scenarioLease == null && pending != null) {
-                pending.toCompletableFuture().cancel(false);
-            }
-            finishAfterCleanup(null, null, true);
+                if (scenarioLease == null && pending != null) {
+                    pending.toCompletableFuture().cancel(false);
+                }
+                finishAfterCleanup(null, null, true);
+            });
         }
 
         void fail(Throwable failure) {
-            synchronized (this) {
-                if (terminal) {
-                    return;
+            reserveTerminal(() -> {
+                synchronized (this) {
+                    if (terminal) {
+                        return;
+                    }
+                    terminal = true;
                 }
-                terminal = true;
-            }
-            finishAfterCleanup(null, failure, false);
+                finishAfterCleanup(null, failure, false);
+            });
         }
 
         /**
@@ -446,28 +618,32 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
          * and the result closes with the original failure.
          */
         void schedulingFailed(Throwable failure) {
-            CompletionStage<Scene2dScenarioRunner.Lease> pending;
-            synchronized (this) {
-                if (terminal) {
-                    return;
+            reserveTerminal(() -> {
+                CompletionStage<Scene2dScenarioRunner.Lease> pending;
+                synchronized (this) {
+                    if (terminal) {
+                        return;
+                    }
+                    terminal = true;
+                    pending = scenarioStage;
                 }
-                terminal = true;
-                pending = scenarioStage;
-            }
-            if (scenarioLease == null && pending != null) {
-                pending.toCompletableFuture().cancel(false);
-            }
-            finishAfterCleanup(null, failure, false);
+                if (scenarioLease == null && pending != null) {
+                    pending.toCompletableFuture().cancel(false);
+                }
+                finishAfterCleanup(null, failure, false);
+            });
         }
 
         private void complete(NavigationResult value) {
-            synchronized (this) {
-                if (terminal) {
-                    return;
+            reserveTerminal(() -> {
+                synchronized (this) {
+                    if (terminal) {
+                        return;
+                    }
+                    terminal = true;
                 }
-                terminal = true;
-            }
-            finishAfterCleanup(value, null, false);
+                finishAfterCleanup(value, null, false);
+            });
         }
 
         private void finishAfterCleanup(

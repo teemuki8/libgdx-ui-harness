@@ -20,6 +20,8 @@ public enum ErrorCode {
     TIMEOUT,
     /** Work scheduled on the render thread failed. */
     RENDER_THREAD_FAILURE,
+    /** A Scene2D session method was invoked from a thread other than its owning render thread. */
+    RENDER_THREAD_VIOLATION,
     /** Evidence capture failed. */
     CAPTURE_FAILURE,
     /** A configured hard limit was exceeded. */

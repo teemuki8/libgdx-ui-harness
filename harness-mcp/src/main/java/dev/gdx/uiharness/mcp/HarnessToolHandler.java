@@ -1,6 +1,7 @@
 package dev.gdx.uiharness.mcp;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.gdx.uiharness.protocol.BinaryAttachment;
 import dev.gdx.uiharness.protocol.Command;
 import dev.gdx.uiharness.protocol.DiagnosticCode;
 import dev.gdx.uiharness.protocol.DiagnosticEnvelope;
@@ -21,7 +22,6 @@ import dev.gdx.uiharness.core.typography.TypographyDiagnostic;
 import dev.gdx.uiharness.core.typography.TypographyReport;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.util.ArrayDeque;
-import java.util.Base64;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletionStage;
@@ -49,7 +50,13 @@ public final class HarnessToolHandler implements AutoCloseable {
     static final int MAX_LOCATOR_NODES = ProtocolJson.MAX_REQUEST_BYTES / 256;
     private static final ObjectMapper COMMAND_MAPPER = ProtocolJson.mapper();
 
-    private final Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol;
+    /** Internal protocol source carrying raw capture attachments for direct publication. */
+    @FunctionalInterface
+    interface ExecutionSource {
+        CompletionStage<HarnessProtocolService.Execution> apply(HarnessRequest request);
+    }
+
+    private final ExecutionSource protocol;
     private final ArtifactReference.Publisher artifacts;
     private final ExecutorService executor;
     private final Scheduler scheduler;
@@ -65,7 +72,7 @@ public final class HarnessToolHandler implements AutoCloseable {
     /** Creates a handler that owns a Java 25 virtual-thread executor and default admission. */
     public HarnessToolHandler(
             HarnessProtocolService protocol, ArtifactReference.Publisher artifacts) {
-        this(Objects.requireNonNull(protocol, "protocol")::execute, artifacts,
+        this(Objects.requireNonNull(protocol, "protocol")::executeWithAttachments, artifacts,
                 Executors.newVirtualThreadPerTaskExecutor(), DEFAULT_ARTIFACT_THRESHOLD_BYTES,
                 System::nanoTime, RequestAdmission.serverDefaults());
     }
@@ -73,7 +80,7 @@ public final class HarnessToolHandler implements AutoCloseable {
     /** Creates a handler for the server with the server-scoped admission. */
     HarnessToolHandler(HarnessProtocolService protocol, ArtifactReference.Publisher artifacts,
             RequestAdmission admission) {
-        this(Objects.requireNonNull(protocol, "protocol")::execute, artifacts,
+        this(Objects.requireNonNull(protocol, "protocol")::executeWithAttachments, artifacts,
                 Executors.newVirtualThreadPerTaskExecutor(), DEFAULT_ARTIFACT_THRESHOLD_BYTES,
                 System::nanoTime, admission);
     }
@@ -88,11 +95,52 @@ public final class HarnessToolHandler implements AutoCloseable {
     HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes, LongSupplier nanoClock) {
-        this(protocol, artifacts, executor, artifactThresholdBytes, nanoClock,
+        this(withEmptyCaptures(protocol), artifacts, executor, artifactThresholdBytes, nanoClock,
                 RequestAdmission.serverDefaults());
     }
 
     HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
+            ArtifactReference.Publisher artifacts, ExecutorService executor,
+            int artifactThresholdBytes, LongSupplier nanoClock, RequestAdmission admission) {
+        this(withEmptyCaptures(protocol), artifacts, executor, artifactThresholdBytes, nanoClock,
+                admission);
+    }
+
+    /**
+     * Adapts a response-only protocol source into the execution path with no attachments.
+     * The adapter links cancellation back to the raw protocol stage: a derived {@code thenApply}
+     * stage would swallow client cancellation, leaving the protocol work running.
+     */
+    private static ExecutionSource withEmptyCaptures(
+            Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol) {
+        return request -> {
+            CompletableFuture<HarnessResponse> raw = Objects.requireNonNull(
+                    protocol.apply(request), "protocol stage").toCompletableFuture();
+            CompletableFuture<HarnessProtocolService.Execution> execution = new CompletableFuture<>();
+            raw.whenComplete((response, failure) -> {
+                if (failure != null) {
+                    execution.completeExceptionally(failure);
+                } else {
+                    execution.complete(new HarnessProtocolService.Execution(response, Map.of()));
+                }
+            });
+            execution.whenComplete((ignored, failure) -> {
+                if (failure instanceof CancellationException && !raw.isDone()) {
+                    raw.cancel(false);
+                }
+            });
+            return execution;
+        };
+    }
+
+    HarnessToolHandler(ExecutionSource protocol,
+            ArtifactReference.Publisher artifacts, ExecutorService executor,
+            int artifactThresholdBytes, LongSupplier nanoClock) {
+        this(protocol, artifacts, executor, artifactThresholdBytes, nanoClock,
+                RequestAdmission.serverDefaults());
+    }
+
+    HarnessToolHandler(ExecutionSource protocol,
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes, LongSupplier nanoClock, RequestAdmission admission) {
         this.protocol = Objects.requireNonNull(protocol, "protocol");
@@ -187,7 +235,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             String operation,
             long sequence,
             Map<String, Object> arguments) {
-        CompletionStage<HarnessResponse> stage;
+        CompletionStage<HarnessProtocolService.Execution> stage;
         try {
             stage = Objects.requireNonNull(protocol.apply(request), "protocol stage");
         } catch (RuntimeException failure) {
@@ -197,8 +245,9 @@ public final class HarnessToolHandler implements AutoCloseable {
                     "Protocol invocation failed", List.of(), null));
         }
         return Mono.fromFuture(stage.toCompletableFuture())
-                .map(response -> toMcpResult(
-                        response, operation, sequence, arguments))
+                .map(execution -> toMcpResult(
+                        execution.response(), execution.captures(),
+                        operation, sequence, arguments))
                 .onErrorResume(failure -> Mono.just(
                         diagnostic(
                                 request.requestId(), sequence, operation, arguments,
@@ -264,6 +313,7 @@ public final class HarnessToolHandler implements AutoCloseable {
 
     private McpSchema.CallToolResult toMcpResult(
             HarnessResponse response,
+            Map<String, BinaryAttachment> captures,
             String operation,
             long sequence,
             Map<String, Object> arguments) {
@@ -274,7 +324,7 @@ public final class HarnessToolHandler implements AutoCloseable {
         HarnessResponse.Success success = (HarnessResponse.Success) response;
         try {
             LinkedHashMap<String, Object> content =
-                    new LinkedHashMap<>(structured(success.result()));
+                    new LinkedHashMap<>(structured(success.result(), captures));
             content.put("progress", encodedProgress(
                     DiagnosticEnvelope.Progress.unavailable()));
             content.put("recovery", encodedRecovery(new DiagnosticEnvelope.Recovery(
@@ -304,9 +354,10 @@ public final class HarnessToolHandler implements AutoCloseable {
         }
     }
 
-    private Map<String, Object> structured(HarnessResponse.Result result) {
-        byte[] encoded = encodeResult(result);
+    private Map<String, Object> structured(
+            HarnessResponse.Result result, Map<String, BinaryAttachment> captures) {
         if (result instanceof HarnessResponse.Result.Sessions sessions) {
+            byte[] encoded = encodeResult(result);
             LinkedHashMap<String, Object> content = content("sessions-result");
             content.put("sessions", sessions.sessions().stream().map(session -> Map.of(
                     "sessionId", session.sessionId(),
@@ -327,6 +378,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.Snapshot snapshotResult) {
+            byte[] encoded = encodeResult(result);
             var snapshot = snapshotResult.snapshot();
             LinkedHashMap<String, Object> content = content("snapshot-summary");
             content.put("revision", snapshot.revision());
@@ -346,6 +398,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.Query query) {
+            byte[] encoded = encodeResult(result);
             LinkedHashMap<String, Object> content = content("query-result");
             content.put("matchCount", query.matches().size());
             content.put("matches", query.matches().stream()
@@ -355,6 +408,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.Action action) {
+            byte[] encoded = encodeResult(result);
             LinkedHashMap<String, Object> content = content("action-result");
             content.put("beforeRevision", action.beforeRevision());
             content.put("afterRevision", action.afterRevision());
@@ -364,6 +418,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.Assertion assertion) {
+            byte[] encoded = encodeResult(result);
             LinkedHashMap<String, Object> content = content("assertion-result");
             content.put("schemaVersion", assertion.schemaVersion());
             content.put("outcome", assertion.outcome());
@@ -386,6 +441,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.Wait wait) {
+            byte[] encoded = encodeResult(result);
             LinkedHashMap<String, Object> content = content("wait-result");
             content.put("revision", wait.revision());
             content.put("frame", wait.frame());
@@ -397,8 +453,9 @@ public final class HarnessToolHandler implements AutoCloseable {
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.Screenshot screenshot) {
-            byte[] png = Base64.getDecoder().decode(screenshot.pngBase64());
-            ArtifactReference reference = artifacts.publish("image/png", png.clone());
+            BinaryAttachment png = requireCapture(captures, HarnessProtocolService.SCREENSHOT_CAPTURE);
+            ArtifactReference reference = artifacts.publishBuffer("image/png", png.asByteBuffer());
+            requireReceiptMatches(reference, "image/png", png.length(), png.sha256());
             LinkedHashMap<String, Object> content = content("screenshot-result");
             content.put("artifact", artifactMap(reference));
             content.put("frame", screenshot.frame());
@@ -410,6 +467,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.InspectCompare comparison) {
+            byte[] encoded = encodeResult(result);
             LinkedHashMap<String, Object> content = content("inspect-compare-result");
             content.put("status", comparison.status());
             content.put("policy", comparison.policy());
@@ -431,17 +489,12 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("metrics", metrics);
             }
             if (comparison.current() != null) {
-                if (comparison.currentPngBase64() == null) {
-                    throw new IllegalArgumentException(
-                            "accepted current evidence is missing PNG bytes");
-                }
-                byte[] png = Base64.getDecoder().decode(
-                        comparison.currentPngBase64());
-                ArtifactReference current = artifacts.publish("image/png", png.clone());
-                if (!current.sha256().equals(comparison.current().sha256())) {
-                    throw new IllegalArgumentException(
-                            "published current capture hash changed");
-                }
+                BinaryAttachment currentCapture = requireCapture(captures,
+                        HarnessProtocolService.COMPARE_CURRENT_CAPTURE);
+                ArtifactReference current = artifacts.publishBuffer(
+                        "image/png", currentCapture.asByteBuffer());
+                requireReceiptMatches(current, "image/png",
+                        currentCapture.length(), currentCapture.sha256());
                 content.put("currentArtifact", artifactMap(current));
                 content.put("revision", comparison.current().revision());
                 content.put("frame", comparison.current().frame());
@@ -452,17 +505,12 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("sha256", comparison.current().sha256());
             }
             if (comparison.heatmap() != null) {
-                if (comparison.heatmapPngBase64() == null) {
-                    throw new IllegalArgumentException(
-                            "accepted heatmap evidence is missing PNG bytes");
-                }
-                byte[] png = Base64.getDecoder().decode(
-                        comparison.heatmapPngBase64());
-                ArtifactReference heatmap = artifacts.publish("image/png", png.clone());
-                if (!heatmap.sha256().equals(comparison.heatmap().sha256())) {
-                    throw new IllegalArgumentException(
-                            "published heatmap hash changed");
-                }
+                BinaryAttachment heatmapCapture = requireCapture(captures,
+                        HarnessProtocolService.COMPARE_HEATMAP_CAPTURE);
+                ArtifactReference heatmap = artifacts.publishBuffer(
+                        "image/png", heatmapCapture.asByteBuffer());
+                requireReceiptMatches(heatmap, "image/png",
+                        heatmapCapture.length(), heatmapCapture.sha256());
                 content.put("heatmapArtifact", artifactMap(heatmap));
             }
             ArtifactReference evidence = artifacts.publish(
@@ -471,6 +519,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.TypographyDiagnostic typography) {
+            byte[] encoded = encodeResult(result);
             LinkedHashMap<String, Object> content =
                     content("typography-diagnostic-result");
             content.put("status", typography.status());
@@ -485,17 +534,12 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("referenceId", typography.referenceId());
             }
             if (typography.current() != null) {
-                if (typography.currentPngBase64() == null) {
-                    throw new IllegalArgumentException(
-                            "accepted typography evidence is missing PNG bytes");
-                }
-                byte[] png = Base64.getDecoder().decode(
-                        typography.currentPngBase64());
-                ArtifactReference current = artifacts.publish("image/png", png.clone());
-                if (!current.sha256().equals(typography.current().sha256())) {
-                    throw new IllegalArgumentException(
-                            "published typography capture hash changed");
-                }
+                BinaryAttachment currentCapture = requireCapture(captures,
+                        HarnessProtocolService.TYPOGRAPHY_CURRENT_CAPTURE);
+                ArtifactReference current = artifacts.publishBuffer(
+                        "image/png", currentCapture.asByteBuffer());
+                requireReceiptMatches(current, "image/png",
+                        currentCapture.length(), currentCapture.sha256());
                 content.put("currentArtifact", artifactMap(current));
                 content.put("revision", typography.current().revision());
                 content.put("frame", typography.current().frame());
@@ -511,6 +555,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.LayoutDiagnostic layout) {
+            byte[] encoded = encodeResult(result);
             LinkedHashMap<String, Object> content = content("layout-diagnostic-result");
             content.put("status", layout.status());
             content.put("reportCount", layout.reports().size());
@@ -543,16 +588,12 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("referenceId", layout.referenceId());
             }
             if (layout.current() != null) {
-                if (layout.currentPngBase64() == null) {
-                    throw new IllegalArgumentException(
-                            "accepted layout evidence is missing PNG bytes");
-                }
-                byte[] png = Base64.getDecoder().decode(layout.currentPngBase64());
-                ArtifactReference current = artifacts.publish("image/png", png.clone());
-                if (!current.sha256().equals(layout.current().sha256())) {
-                    throw new IllegalArgumentException(
-                            "published layout capture hash changed");
-                }
+                BinaryAttachment currentCapture = requireCapture(captures,
+                        HarnessProtocolService.LAYOUT_CURRENT_CAPTURE);
+                ArtifactReference current = artifacts.publishBuffer(
+                        "image/png", currentCapture.asByteBuffer());
+                requireReceiptMatches(current, "image/png",
+                        currentCapture.length(), currentCapture.sha256());
                 content.put("currentArtifact", artifactMap(current));
                 content.put("revision", layout.current().revision());
                 content.put("frame", layout.current().frame());
@@ -645,6 +686,31 @@ public final class HarnessToolHandler implements AutoCloseable {
             return Map.copyOf(content);
         }
         throw new AssertionError("Unhandled protocol result " + result.getClass().getName());
+    }
+
+    private static BinaryAttachment requireCapture(
+            Map<String, BinaryAttachment> captures, String key) {
+        BinaryAttachment attachment = captures.get(key);
+        if (attachment == null) {
+            throw new IllegalArgumentException(
+                    "accepted screenshot evidence is missing PNG bytes");
+        }
+        return attachment;
+    }
+
+    /**
+     * Validates the publication receipt against the exact bytes handed to the publisher, so an
+     * inconsistent or fake receipt (wrong media type, length, or digest) fails closed instead of
+     * being reported as success.
+     */
+    private static void requireReceiptMatches(
+            ArtifactReference reference, String mediaType, int byteLength, String sha256) {
+        if (!reference.mediaType().equals(mediaType)
+                || reference.byteLength() != byteLength
+                || !reference.sha256().equals(sha256)) {
+            throw new IllegalArgumentException(
+                    "publisher receipt does not match the published bytes");
+        }
     }
 
     private static Map<String, Object> typographyReport(TypographyReport report) {

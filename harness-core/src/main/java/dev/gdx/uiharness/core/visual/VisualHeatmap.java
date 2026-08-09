@@ -1,5 +1,7 @@
 package dev.gdx.uiharness.core.visual;
 
+import java.nio.ByteBuffer;
+
 /** Immutable bounded PNG heatmap for one exact comparison. */
 public record VisualHeatmap(
         byte[] pngBytes, String sha256, int width, int height) {
@@ -13,5 +15,10 @@ public record VisualHeatmap(
 
     @Override public byte[] pngBytes() {
         return pngBytes.clone();
+    }
+
+    /** Returns a fresh read-only view of the owned PNG bytes; the backing array never escapes. */
+    public ByteBuffer pngView() {
+        return ByteBuffer.wrap(pngBytes).asReadOnlyBuffer();
     }
 }

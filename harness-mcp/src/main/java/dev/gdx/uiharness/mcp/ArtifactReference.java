@@ -1,5 +1,6 @@
 package dev.gdx.uiharness.mcp;
 
+import java.nio.ByteBuffer;
 import java.util.Objects;
 
 /** Opaque reference returned by an injected artifact publisher. */
@@ -44,6 +45,19 @@ public record ArtifactReference(
     public interface Publisher {
         /** Publishes one immutable payload; implementations must not expose filesystem paths. */
         ArtifactReference publish(String mediaType, byte[] content);
+
+        /**
+         * Publishes one immutable payload from a read-only buffer. The default implementation
+         * copies once into {@link #publish(String, byte[])}; publishers may override for
+         * zero-copy streaming. Implementations must not retain the buffer beyond the call.
+         * The distinct name keeps {@link #publish(String, byte[])} call sites with a null
+         * payload unambiguous, so the byte[] SAM stays source-compatible for released callers.
+         */
+        default ArtifactReference publishBuffer(String mediaType, ByteBuffer content) {
+            byte[] copy = new byte[content.remaining()];
+            content.get(copy);
+            return publish(mediaType, copy);
+        }
 
         /** Publisher used when artifact persistence has not been installed. */
         static Publisher unavailable() {

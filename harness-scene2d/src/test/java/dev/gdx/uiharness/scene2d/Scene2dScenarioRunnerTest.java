@@ -8,7 +8,13 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.badlogic.gdx.scenes.scene2d.Stage;
+import dev.gdx.uiharness.core.error.ErrorCode;
+import dev.gdx.uiharness.core.error.HarnessException;
+import dev.gdx.uiharness.core.model.Bounds;
+import dev.gdx.uiharness.core.model.Role;
+import dev.gdx.uiharness.core.model.SemanticNode;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
+import dev.gdx.uiharness.core.model.SemanticState;
 import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
 import dev.gdx.uiharness.core.scenario.ScenarioFailure;
 import dev.gdx.uiharness.core.scenario.ScenarioLifecycle;
@@ -21,14 +27,17 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
@@ -75,7 +84,9 @@ final class Scene2dScenarioRunnerTest {
                                     caller)
                             .join());
 
-            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            HarnessException renderThread = assertInstanceOf(
+                    HarnessException.class, failure.getCause());
+            assertEquals(ErrorCode.RENDER_THREAD_VIOLATION, renderThread.code());
         }
     }
 
@@ -982,6 +993,962 @@ final class Scene2dScenarioRunnerTest {
             assertTrue(nextResult.failure().isEmpty(),
                     "a new acquisition succeeds after the owner cleanup drains");
         }
+    }
+
+    /**
+     * Task 6 (#22): a completed frame decided with no active run must neither invoke the
+     * snapshot supplier nor report consumption. Fails to compile until the runner gains the
+     * {@code completedFrame(Supplier<SemanticSnapshot>, long, long)} overload.
+     */
+    @Test void idleSupplierFramesInvokeNoSupplierAndReturnFalse() {
+        try (Fixture fixture = new Fixture()) {
+            AtomicInteger supplierCalls = new AtomicInteger();
+            boolean consumed = fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(1, 1);
+            }, 1, 1);
+            assertFalse(consumed, "an idle runner must not consume a completed frame");
+            assertEquals(0, supplierCalls.get(),
+                    "idle frames must not build runner snapshots");
+            boolean again = fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(1, 1);
+            }, 1, 1);
+            assertFalse(again);
+            assertEquals(0, supplierCalls.get());
+        }
+    }
+
+    /**
+     * Task 6 (#22): a run admitted to {@code active} before the frame decision receives that
+     * frame; the supplier runs at most once per completed frame.
+     */
+    @Test void startingARunEnablesSupplierFramesThroughItsFirstObservation() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain();
+
+            AtomicInteger supplierCalls = new AtomicInteger();
+            fixture.clock.advance(Fixture.STEP);
+            boolean first = fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(
+                        fixture.clock.revision(), fixture.clock.frame());
+            }, fixture.clock.revision(), fixture.clock.frame());
+            fixture.scheduler.drain();
+            assertTrue(first, "the first frame after start must reach the waiting run");
+            assertEquals(1, supplierCalls.get(),
+                    "the supplier must run exactly once for the active run");
+
+            fixture.clock.advance(Fixture.STEP);
+            boolean second = fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(
+                        fixture.clock.revision(), fixture.clock.frame());
+            }, fixture.clock.revision(), fixture.clock.frame());
+            fixture.scheduler.drain();
+            assertTrue(second);
+            assertEquals(2, supplierCalls.get());
+            assertFalse(started.toCompletableFuture().isDone());
+        }
+    }
+
+    /**
+     * Task 6 (#22): once the last run reaches its terminal state, completed frames stop
+     * invoking the supplier even though the session keeps deciding frames.
+     */
+    @Test void cancellingTheLastRunReturnsTheRunnerToIdleSupplierGating() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain();
+
+            AtomicInteger supplierCalls = new AtomicInteger();
+            fixture.clock.advance(Fixture.STEP);
+            assertTrue(fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(
+                        fixture.clock.revision(), fixture.clock.frame());
+            }, fixture.clock.revision(), fixture.clock.frame()));
+            assertEquals(1, supplierCalls.get());
+
+            assertTrue(started.toCompletableFuture().cancel(false));
+            // The cancellation defers while the reserved delivery is in flight: the first drain
+            // observes the frame and applies the deferred CANCELLED transition (queuing the
+            // termination), the second drain executes it and the run leaves `active`.
+            fixture.scheduler.drain();
+            fixture.scheduler.drain();
+            fixture.clock.advance(Fixture.STEP);
+            boolean consumed = fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(
+                        fixture.clock.revision(), fixture.clock.frame());
+            }, fixture.clock.revision(), fixture.clock.frame());
+            assertFalse(consumed, "terminal runs must stop the per-frame snapshot stream");
+            assertEquals(1, supplierCalls.get(),
+                    "a frame decided after the last run's terminal state must not build");
+        }
+    }
+
+    /**
+     * Task 6 (#22): a frame decided while a run is active-but-not-begun is that run's first
+     * observation. The launch barrier proves the run is in {@code active} before the owner
+     * decides the frame; the queue order guarantees the decided frame is the first delivery.
+     */
+    @Test void firstStartRaceNeverLosesTheRunFirstObservation() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService launcher = Executors.newVirtualThreadPerTaskExecutor()) {
+            CountDownLatch launched = new CountDownLatch(1);
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready"));
+            CompletableFuture<CompletionStage<ScenarioResult>> startedHolder =
+                    new CompletableFuture<>();
+            launcher.submit(() -> {
+                // The run is added to `active` synchronously at launch; begin() is queued.
+                startedHolder.complete(fixture.start(Duration.ofSeconds(2)));
+                launched.countDown();
+            });
+
+            // Owner thread: wait for the launch barrier (run active, begin still queued),
+            // then decide the frame BEFORE any drain runs begin().
+            assertTrue(launched.await(5, TimeUnit.SECONDS), "launch must reach the barrier");
+            AtomicInteger supplierCalls = new AtomicInteger();
+            fixture.clock.advance(Fixture.STEP);
+            boolean consumed = fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(
+                        fixture.clock.revision(), fixture.clock.frame());
+            }, fixture.clock.revision(), fixture.clock.frame());
+            fixture.scheduler.drain();
+            assertTrue(consumed);
+            ScenarioResult result = startedHolder.join().toCompletableFuture().join();
+            assertTrue(result.startFrame() > 0,
+                    "the run must observe the frame decided while it was active");
+            assertEquals(1, supplierCalls.get());
+        }
+    }
+
+    /**
+     * Task 6 (#22): the reservation protocol with a deferred terminal transition. A reserver
+     * runs {@code completedFrame} whose supplier signals entered and then blocks (the lifecycle
+     * lock is NOT held during the supplier). A closer calls close() while the supplier is
+     * blocked: the terminal REQUEST must never block (close returns immediately with the
+     * CANCELLED transition deferred), but the terminal EFFECT must wait — the run keeps
+     * observing reserved frames, and the deferred transition applies only after the delivery
+     * drains. The run's startFrame/startRevision prove the reserved snapshot was incorporated
+     * before the run terminalized.
+     */
+    @Test void lastTerminalReservationWinsDespiteConcurrentTerminal() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain(); // begin: the run waits for its first frame
+
+            CountDownLatch supplierEntered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier = new CountDownLatch(1);
+            CountDownLatch attemptingClose = new CountDownLatch(1);
+            AtomicInteger supplierCalls = new AtomicInteger();
+            SemanticSnapshot snapshot = rootOnlySnapshot(1, 1);
+            CompletableFuture<Boolean> reservation = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    reservation.complete(fixture.runner.completedFrame(() -> {
+                        supplierCalls.incrementAndGet();
+                        supplierEntered.countDown();
+                        try {
+                            releaseSupplier.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        return snapshot;
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    reservation.completeExceptionally(failure);
+                }
+            });
+            CompletableFuture<Void> closeDone = new CompletableFuture<>();
+            CompletableFuture<ScenarioResult> terminalResult = new CompletableFuture<>();
+            // releaseSupplier MUST be released on every path, so the try begins immediately
+            // after the reserver is submitted and EVERY wait/assertion lives inside it; a
+            // failure can never strand the blocked supplier or hang the worker executor.
+            try {
+                assertTrue(supplierEntered.await(5, TimeUnit.SECONDS),
+                        "the reservation must enter the supplier");
+                workers.submit(() -> {
+                    attemptingClose.countDown();
+                    fixture.runner.close();
+                    closeDone.complete(null);
+                    started.toCompletableFuture().whenComplete((value, failure) ->
+                            terminalResult.complete(value));
+                });
+                assertTrue(attemptingClose.await(5, TimeUnit.SECONDS),
+                        "the closer must signal before calling close()");
+                // The terminal REQUEST must never block: close() returns immediately while
+                // the supplier is still blocked, with the transition deferred.
+                closeDone.get(5, TimeUnit.SECONDS);
+                assertFalse(started.toCompletableFuture().isDone(),
+                        "the terminal effect must wait for the in-flight reservation");
+            } finally {
+                releaseSupplier.countDown();
+            }
+            assertTrue(reservation.get(5, TimeUnit.SECONDS),
+                    "the reserved frame must be delivered even though the closer waits");
+            assertEquals(1, supplierCalls.get());
+            fixture.scheduler.drain(); // the reserved delivery reaches the still-waiting run
+            fixture.scheduler.drain(); // the deferred CANCELLED transition applies
+            ScenarioResult result = terminalResult.get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.CANCELLED, result.failure().orElseThrow(),
+                    "the lease must reach the terminal CANCELLED state");
+            assertEquals(1, result.startFrame(),
+                    "the reserved snapshot must be incorporated into the run's first observation");
+            assertEquals(1, result.startRevision(),
+                    "the reserved snapshot must be incorporated into the run's first observation");
+
+            // Post-terminal gating: subsequent frames invoke no supplier.
+            assertFalse(fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return snapshot;
+            }, 2, 2));
+            assertEquals(1, supplierCalls.get(),
+                    "a frame decided after the last run's terminal state must not build");
+        }
+    }
+
+    /**
+     * Task 6 (#22): a supplier failure releases the deferred terminal with defined failure
+     * semantics. While the supplier is blocked (about to throw), the close() REQUEST returns
+     * immediately with the transition deferred; once the supplier fails, the reservation
+     * reports the failure, the deferred transition applies, and no snapshot is incorporated
+     * into the run.
+     */
+    @Test void failingSupplierReleasesTheTerminalBarrier() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain();
+
+            CountDownLatch supplierEntered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier = new CountDownLatch(1);
+            AtomicInteger supplierCalls = new AtomicInteger();
+            CompletableFuture<Boolean> reservation = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    reservation.complete(fixture.runner.completedFrame(() -> {
+                        supplierCalls.incrementAndGet();
+                        supplierEntered.countDown();
+                        try {
+                            releaseSupplier.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        throw new IllegalStateException("snapshot build failed");
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    reservation.completeExceptionally(failure);
+                }
+            });
+            CompletableFuture<Void> closeDone = new CompletableFuture<>();
+            CompletableFuture<ScenarioResult> terminalResult = new CompletableFuture<>();
+            try {
+                assertTrue(supplierEntered.await(5, TimeUnit.SECONDS),
+                        "the reservation must enter the supplier");
+                workers.submit(() -> {
+                    fixture.runner.close();
+                    closeDone.complete(null);
+                    started.toCompletableFuture().whenComplete((value, failure) ->
+                            terminalResult.complete(value));
+                });
+                // The terminal REQUEST never blocks, even while the supplier is blocked.
+                closeDone.get(5, TimeUnit.SECONDS);
+            } finally {
+                releaseSupplier.countDown();
+            }
+            try {
+                reservation.get(5, TimeUnit.SECONDS);
+                throw new AssertionError("a failing supplier must fail the reservation");
+            } catch (ExecutionException expected) {
+                assertEquals("snapshot build failed", expected.getCause().getMessage());
+            }
+            assertEquals(1, supplierCalls.get());
+            fixture.scheduler.drain(); // the deferred CANCELLED transition applies
+            ScenarioResult result = terminalResult.get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.CANCELLED, result.failure().orElseThrow());
+            assertEquals(0, result.startFrame(),
+                    "a failed reservation delivers no snapshot to the run");
+            assertEquals(0, result.startRevision(),
+                    "a failed reservation delivers no snapshot to the run");
+        }
+    }
+
+    /**
+     * Task 6 (#22): an OWNER-thread terminal request during a blocked off-thread supplier must
+     * not block (the owner has to stay free to drain the queued delivery) and must not
+     * invalidate the reserved frame: the request defers, the reserved frame is observed first,
+     * and only then does the run terminalize.
+     */
+    @Test void ownerThreadTerminalRequestDefersWhileSupplierBlocked() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain();
+
+            CountDownLatch supplierEntered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier = new CountDownLatch(1);
+            AtomicInteger supplierCalls = new AtomicInteger();
+            SemanticSnapshot snapshot = rootOnlySnapshot(1, 1);
+            CompletableFuture<Boolean> reservation = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    reservation.complete(fixture.runner.completedFrame(() -> {
+                        supplierCalls.incrementAndGet();
+                        supplierEntered.countDown();
+                        try {
+                            releaseSupplier.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        return snapshot;
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    reservation.completeExceptionally(failure);
+                }
+            });
+            try {
+                assertTrue(supplierEntered.await(5, TimeUnit.SECONDS),
+                        "the reservation must enter the supplier");
+                // OWNER thread requests the terminal while the off-thread supplier is blocked.
+                assertTrue(started.toCompletableFuture().cancel(false),
+                        "the owner-thread cancellation is accepted and deferred");
+                assertFalse(started.toCompletableFuture().isDone(),
+                        "the terminal effect must wait for the reserved delivery");
+            } finally {
+                releaseSupplier.countDown();
+            }
+            assertTrue(reservation.get(5, TimeUnit.SECONDS),
+                    "the reserved frame must be delivered");
+            assertEquals(1, supplierCalls.get());
+            fixture.scheduler.drain(); // the reserved frame is observed first
+            fixture.scheduler.drain(); // the deferred termination applies
+            ScenarioResult result = started.toCompletableFuture().join();
+            assertEquals(ScenarioFailure.CANCELLED, result.failure().orElseThrow());
+            assertEquals(1, result.startFrame(),
+                    "the owner-thread terminal must not invalidate the reserved frame");
+            assertEquals(1, result.startRevision(),
+                    "the owner-thread terminal must not invalidate the reserved frame");
+        }
+    }
+
+    /**
+     * Task 6 (#22): the deadline terminal transition participates in the reservation protocol.
+     * While the supplier is blocked the deadline does NOT publish — the transition defers — and
+     * once the delivery drains, the reserved frame is observed before the run terminalizes with
+     * READINESS_DEADLINE.
+     */
+    @Test void deadlineTerminalDefersWhileSupplierBlockedAndFrameIsObservedFirst() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofMillis(10));
+            fixture.scheduler.drain();
+
+            CountDownLatch supplierEntered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier = new CountDownLatch(1);
+            SemanticSnapshot snapshot = rootOnlySnapshot(1, 1);
+            CompletableFuture<Boolean> reservation = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    reservation.complete(fixture.runner.completedFrame(() -> {
+                        supplierEntered.countDown();
+                        try {
+                            releaseSupplier.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        return snapshot;
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    reservation.completeExceptionally(failure);
+                }
+            });
+            try {
+                assertTrue(supplierEntered.await(5, TimeUnit.SECONDS),
+                        "the reservation must enter the supplier");
+                fixture.clock.advance(Duration.ofMillis(10));
+                fixture.deadlines.expire(); // the deadline fires while the reservation is in flight
+                assertFalse(started.toCompletableFuture().isDone(),
+                        "the deadline terminal must defer until the reserved frame delivers");
+            } finally {
+                releaseSupplier.countDown();
+            }
+            assertTrue(reservation.get(5, TimeUnit.SECONDS),
+                    "the reserved frame must be delivered");
+            fixture.scheduler.drain(); // the reserved frame is observed; the deferred deadline applies
+            ScenarioResult result = started.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.READINESS_DEADLINE, result.failure().orElseThrow());
+            assertEquals(1, result.startFrame(),
+                    "the reserved frame must be observed before the deadline terminalizes the run");
+            assertEquals(1, result.startRevision(),
+                    "the reserved frame must be observed before the deadline terminalizes the run");
+            assertFalse(result.cleanupCompleted(),
+                    "the deferred deadline publishes before the render thread drains cleanup");
+            fixture.scheduler.drain(); // the deferred cleanup releases the active owner
+        }
+    }
+
+    /**
+     * Task 6 (#22): multiple terminal contenders resolve deterministically first-wins. close()
+     * reserves the CANCELLED transition while the supplier is blocked; when the reserved frame
+     * finally drains, the observation's own terminalization (readiness rejection) loses to the
+     * already-reserved intent, and the reserved frame is still observed before CANCELLED applies.
+     */
+    @Test void observationTerminalizationYieldsToTheFirstReservedTerminalIntent() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never") {
+                @Override public boolean ready(ScenarioRequest request) {
+                    throw new IllegalStateException("readiness rejected");
+                }
+            });
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain();
+
+            CountDownLatch supplierEntered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier = new CountDownLatch(1);
+            SemanticSnapshot snapshot = rootOnlySnapshot(1, 1);
+            CompletableFuture<Boolean> reservation = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    reservation.complete(fixture.runner.completedFrame(() -> {
+                        supplierEntered.countDown();
+                        try {
+                            releaseSupplier.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        return snapshot;
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    reservation.completeExceptionally(failure);
+                }
+            });
+            CompletableFuture<Void> closeDone = new CompletableFuture<>();
+            try {
+                assertTrue(supplierEntered.await(5, TimeUnit.SECONDS),
+                        "the reservation must enter the supplier");
+                workers.submit(() -> {
+                    fixture.runner.close();
+                    closeDone.complete(null);
+                });
+                closeDone.get(5, TimeUnit.SECONDS); // the terminal REQUEST never blocks
+            } finally {
+                releaseSupplier.countDown();
+            }
+            assertTrue(reservation.get(5, TimeUnit.SECONDS),
+                    "the reserved frame must be delivered");
+            fixture.scheduler.drain(); // observe: readiness rejection LOSES to the reserved intent
+            fixture.scheduler.drain(); // the deferred CANCELLED transition applies
+            ScenarioResult result = started.toCompletableFuture().join();
+            assertEquals(ScenarioFailure.CANCELLED, result.failure().orElseThrow(),
+                    "the first terminal intent wins over the observation's own terminalization");
+            assertEquals(1, result.startFrame(),
+                    "the reserved frame is still observed before the first terminal applies");
+            assertEquals(1, result.startRevision(),
+                    "the reserved frame is still observed before the first terminal applies");
+        }
+    }
+
+    /**
+     * Task 6 (#22): sequential post-terminal gating (not a race): release, drain, then
+     * decide — the frame must never invoke the supplier.
+     */
+    @Test void postTerminalSupplierFramesInvokeNoSupplier() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), true, "ready"));
+            Scene2dScenarioRunner.Lease lease = fixture.acquireReady(Duration.ofSeconds(2));
+
+            CompletionStage<ScenarioResult> released = lease.release();
+            fixture.scheduler.drain();
+            released.toCompletableFuture().join();
+
+            AtomicInteger supplierCalls = new AtomicInteger();
+            boolean consumed = fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return fixture.session.snapshot(1, 1);
+            }, 1, 1);
+            assertFalse(consumed);
+            assertEquals(0, supplierCalls.get(),
+                    "a post-terminal frame decision must never invoke the snapshot supplier");
+        }
+    }
+
+    /**
+     * Task 6 (#22): exact reservation accounting under a sibling supplier failure. Two
+     * concurrent completedFrame calls reserve the same run; the second supplier throws while
+     * the first is still blocked. The failure releases exactly ONE reservation (its own),
+     * leaving the surviving reservation in flight — the terminal request defers to it, and
+     * the surviving frame is incorporated before the run terminalizes.
+     */
+    @Test void siblingSupplierFailureReleasesOnlyItsOwnReservation() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain(); // the run waits for its first frame
+
+            CountDownLatch firstEntered = new CountDownLatch(1);
+            CountDownLatch releaseFirst = new CountDownLatch(1);
+            SemanticSnapshot snapshot = rootOnlySnapshot(1, 1);
+            CompletableFuture<Boolean> first = new CompletableFuture<>();
+            CompletableFuture<Boolean> second = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    first.complete(fixture.runner.completedFrame(() -> {
+                        firstEntered.countDown();
+                        try {
+                            releaseFirst.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        return snapshot;
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    first.completeExceptionally(failure);
+                }
+            });
+            CompletableFuture<Void> closeDone = new CompletableFuture<>();
+            try {
+                assertTrue(firstEntered.await(5, TimeUnit.SECONDS),
+                        "the surviving reservation must enter its supplier");
+                workers.submit(() -> {
+                    try {
+                        second.complete(fixture.runner.completedFrame(() -> {
+                            throw new IllegalStateException("sibling snapshot build failed");
+                        }, 1, 1));
+                    } catch (Throwable failure) {
+                        second.completeExceptionally(failure);
+                    }
+                });
+                try {
+                    second.get(5, TimeUnit.SECONDS);
+                    throw new AssertionError("the failing sibling reservation must fail");
+                } catch (ExecutionException expected) {
+                    assertEquals("sibling snapshot build failed", expected.getCause().getMessage());
+                }
+                // Terminal request while the surviving reservation is still in flight.
+                workers.submit(() -> {
+                    fixture.runner.close();
+                    closeDone.complete(null);
+                });
+                closeDone.get(5, TimeUnit.SECONDS);
+                assertFalse(started.toCompletableFuture().isDone(),
+                        "the terminal must defer to the surviving reservation");
+            } finally {
+                releaseFirst.countDown();
+            }
+            assertTrue(first.get(5, TimeUnit.SECONDS),
+                    "the surviving reservation must deliver");
+            fixture.scheduler.drain(); // the surviving delivery observes the reserved frame
+            fixture.scheduler.drain(); // the deferred terminal applies
+            ScenarioResult result = started.toCompletableFuture().join();
+            assertEquals(ScenarioFailure.CANCELLED, result.failure().orElseThrow());
+            assertEquals(1, result.startFrame(),
+                    "the surviving reservation's frame must be incorporated");
+            assertEquals(1, result.startRevision(),
+                    "the surviving reservation's frame must be incorporated");
+        }
+    }
+
+    /**
+     * Task 6 (#22): exact reservation accounting under a rejected delivery enqueue (injected
+     * through the package-private frame-enqueue seam). The failing call releases exactly ONE
+     * reservation — its own — while the earlier, still-blocked reservation stays in flight;
+     * the terminal request defers to it and the surviving frame is incorporated.
+     */
+    @Test void failedEnqueueKeepsTheSurvivingReservationAlive() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain();
+
+            AtomicInteger enqueues = new AtomicInteger();
+            fixture.runner.frameEnqueueProbe = () -> {
+                if (enqueues.incrementAndGet() == 1) {
+                    throw new IllegalStateException("enqueue rejected");
+                }
+            };
+            CountDownLatch firstEntered = new CountDownLatch(1);
+            CountDownLatch releaseFirst = new CountDownLatch(1);
+            SemanticSnapshot snapshot = rootOnlySnapshot(1, 1);
+            CompletableFuture<Boolean> first = new CompletableFuture<>();
+            CompletableFuture<Boolean> second = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    first.complete(fixture.runner.completedFrame(() -> {
+                        firstEntered.countDown();
+                        try {
+                            releaseFirst.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        return snapshot;
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    first.completeExceptionally(failure);
+                }
+            });
+            CompletableFuture<Void> closeDone = new CompletableFuture<>();
+            try {
+                assertTrue(firstEntered.await(5, TimeUnit.SECONDS),
+                        "the surviving reservation must enter its supplier");
+                workers.submit(() -> {
+                    try {
+                        second.complete(fixture.runner.completedFrame(() -> snapshot, 1, 1));
+                    } catch (Throwable failure) {
+                        second.completeExceptionally(failure);
+                    }
+                });
+                try {
+                    second.get(5, TimeUnit.SECONDS);
+                    throw new AssertionError("the rejected enqueue must fail the sibling reservation");
+                } catch (ExecutionException expected) {
+                    assertEquals("enqueue rejected", expected.getCause().getMessage());
+                }
+                workers.submit(() -> {
+                    fixture.runner.close();
+                    closeDone.complete(null);
+                });
+                closeDone.get(5, TimeUnit.SECONDS);
+                assertFalse(started.toCompletableFuture().isDone(),
+                        "the terminal must defer to the surviving reservation");
+            } finally {
+                releaseFirst.countDown();
+            }
+            assertTrue(first.get(5, TimeUnit.SECONDS),
+                    "the surviving reservation must deliver");
+            fixture.scheduler.drain();
+            fixture.scheduler.drain();
+            ScenarioResult result = started.toCompletableFuture().join();
+            assertEquals(ScenarioFailure.CANCELLED, result.failure().orElseThrow());
+            assertEquals(1, result.startFrame(),
+                    "the surviving reservation's frame must be incorporated");
+            assertEquals(1, result.startRevision(),
+                    "the surviving reservation's frame must be incorporated");
+        }
+    }
+
+    /**
+     * Task 6 (#22): the first terminal intent stays CLAIMED through its application (paused
+     * at the package-private apply seam), so a later terminal request — here the deadline —
+     * is rejected first-wins and cannot overtake the outcome.
+     */
+    @Test void deferredTerminalStaysClaimedUntilTheFirstTransitionCommits() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never"));
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain();
+
+            CountDownLatch supplierEntered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier = new CountDownLatch(1);
+            CountDownLatch applyPaused = new CountDownLatch(1);
+            CompletableFuture<Boolean> reservation = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    reservation.complete(fixture.runner.completedFrame(() -> {
+                        supplierEntered.countDown();
+                        try {
+                            releaseSupplier.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        throw new IllegalStateException("snapshot build failed");
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    reservation.completeExceptionally(failure);
+                }
+            });
+            try {
+                assertTrue(supplierEntered.await(5, TimeUnit.SECONDS),
+                        "the reservation must enter the supplier");
+                assertTrue(started.toCompletableFuture().cancel(false),
+                        "the owner-thread cancellation is accepted and deferred");
+                fixture.runner.terminalApplyProbe = () -> {
+                    try {
+                        applyPaused.await();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError("apply probe interrupted", interrupted);
+                    }
+                };
+                // The supplier fails, the reservation drains to zero, and the deferred CANCELLED
+                // transition is TAKEN — the probe pauses it before commit with the intent still
+                // claimed, so the deadline fired meanwhile cannot overtake it.
+                releaseSupplier.countDown();
+                fixture.clock.advance(Duration.ofSeconds(2));
+                fixture.deadlines.expire();
+                assertFalse(started.toCompletableFuture().isDone(),
+                        "a later terminal request must not overtake the first (claimed) intent");
+            } finally {
+                applyPaused.countDown();
+                releaseSupplier.countDown();
+            }
+            try {
+                reservation.get(5, TimeUnit.SECONDS);
+                throw new AssertionError("the failing supplier must fail the reservation");
+            } catch (ExecutionException expected) {
+                assertEquals("snapshot build failed", expected.getCause().getMessage());
+            }
+            fixture.scheduler.drain(); // the committed CANCELLED transition's termination runs
+            ScenarioResult result = started.toCompletableFuture().join();
+            assertEquals(ScenarioFailure.CANCELLED, result.failure().orElseThrow(),
+                    "the first terminal intent wins even over a concurrent deadline");
+        }
+    }
+
+    /**
+     * Task 6 (#22): an off-owner deferred terminate that cannot be routed to the render thread
+     * falls back to a bounded, thread-safe DISPATCH_FAILED terminal — no lifecycle hooks run
+     * off-owner, the active owner slot is released, and post-terminal frames gate to idle.
+     */
+    @Test void offOwnerDeferredTerminateRoutesToBoundedDispatchFailureFallback() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never") {
+                @Override public boolean ready(ScenarioRequest request) {
+                    throw new IllegalStateException("readiness rejected");
+                }
+            });
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain();
+
+            CountDownLatch supplier1Entered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier1 = new CountDownLatch(1);
+            CountDownLatch supplier2Entered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier2 = new CountDownLatch(1);
+            SemanticSnapshot snapshot = rootOnlySnapshot(1, 1);
+            CompletableFuture<Boolean> first = new CompletableFuture<>();
+            CompletableFuture<Boolean> second = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    first.complete(fixture.runner.completedFrame(() -> {
+                        supplier1Entered.countDown();
+                        try {
+                            releaseSupplier1.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        return snapshot;
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    first.completeExceptionally(failure);
+                }
+            });
+            assertTrue(supplier1Entered.await(5, TimeUnit.SECONDS),
+                    "the first reservation must enter its supplier");
+            workers.submit(() -> {
+                try {
+                    second.complete(fixture.runner.completedFrame(() -> {
+                        supplier2Entered.countDown();
+                        try {
+                            releaseSupplier2.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        throw new IllegalStateException("second snapshot build failed");
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    second.completeExceptionally(failure);
+                }
+            });
+            assertTrue(supplier2Entered.await(5, TimeUnit.SECONDS),
+                    "the second reservation must enter its supplier");
+            // Delivery #1 drains while the second reservation is in flight: the observation's
+            // READINESS_REJECTED terminate defers.
+            releaseSupplier1.countDown();
+            assertTrue(first.get(5, TimeUnit.SECONDS),
+                    "the first reservation must enqueue its observation before the drain");
+            fixture.scheduler.drain();
+            assertFalse(started.toCompletableFuture().isDone(),
+                    "the observation's terminalization must defer to the surviving reservation");
+            // The render scheduler is closed before the surviving reservation fails: the
+            // deferred terminate cannot be routed to the owner and must fall back.
+            fixture.scheduler.close();
+            releaseSupplier2.countDown();
+            try {
+                second.get(5, TimeUnit.SECONDS);
+                throw new AssertionError("the failing sibling reservation must fail");
+            } catch (ExecutionException expected) {
+                assertEquals("second snapshot build failed", expected.getCause().getMessage());
+            }
+            ScenarioResult result = started.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.DISPATCH_FAILED, result.failure().orElseThrow(),
+                    "an unroutable deferred terminate falls back to DISPATCH_FAILED");
+            assertFalse(result.cleanupCompleted(),
+                    "the fallback must not run lifecycle hooks off-owner");
+            assertEquals(1, result.startFrame(),
+                    "the reserved frame was observed before the fallback terminalized the run");
+
+            // The fallback released the active owner: a successor acquisition is admitted and
+            // only fails because the render scheduler is closed.
+            CompletionStage<ScenarioResult> next = fixture.start(Duration.ofSeconds(1));
+            ScenarioResult nextResult = next.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertNotEquals(ScenarioFailure.SESSION_BUSY, nextResult.failure().orElseThrow(),
+                    "the fallback must release the active owner slot");
+
+            // Idle supplier gate: with no active runs, a frame decision invokes no supplier.
+            AtomicInteger supplierCalls = new AtomicInteger();
+            assertFalse(fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return snapshot;
+            }, 3, 3));
+            assertEquals(0, supplierCalls.get(),
+                    "post-terminal frames must not build snapshots");
+        }
+    }
+
+    /**
+     * Task 6 (#22): an off-owner deferred readiness terminate routes to a queued owner task;
+     * while that task is still queued (no drain), the first-wins claim must SURVIVE and reject
+     * competing deadline/cancel requests. After the drain, the original READINESS_REJECTED
+     * wins, cleanup runs exactly once on the owner, and the reserved frame is preserved.
+     */
+    @Test void offOwnerDeferredTerminateClaimSurvivesUntilTheRoutedTaskExecutes() throws Exception {
+        try (Fixture fixture = new Fixture();
+                ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            AtomicInteger cleanups = new AtomicInteger();
+            fixture.register(new RecordingLifecycle(new ArrayList<>(), false, "never") {
+                @Override public boolean ready(ScenarioRequest request) {
+                    throw new IllegalStateException("readiness rejected");
+                }
+                @Override public void cleanup(ScenarioRequest request) {
+                    cleanups.incrementAndGet();
+                }
+            });
+            CompletionStage<ScenarioResult> started = fixture.start(Duration.ofSeconds(2));
+            fixture.scheduler.drain();
+
+            CountDownLatch supplier1Entered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier1 = new CountDownLatch(1);
+            CountDownLatch supplier2Entered = new CountDownLatch(1);
+            CountDownLatch releaseSupplier2 = new CountDownLatch(1);
+            SemanticSnapshot snapshot = rootOnlySnapshot(1, 1);
+            CompletableFuture<Boolean> first = new CompletableFuture<>();
+            CompletableFuture<Boolean> second = new CompletableFuture<>();
+            workers.submit(() -> {
+                try {
+                    first.complete(fixture.runner.completedFrame(() -> {
+                        supplier1Entered.countDown();
+                        try {
+                            releaseSupplier1.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        return snapshot;
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    first.completeExceptionally(failure);
+                }
+            });
+            assertTrue(supplier1Entered.await(5, TimeUnit.SECONDS),
+                    "the first reservation must enter its supplier");
+            workers.submit(() -> {
+                try {
+                    second.complete(fixture.runner.completedFrame(() -> {
+                        supplier2Entered.countDown();
+                        try {
+                            releaseSupplier2.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError("supplier interrupted", interrupted);
+                        }
+                        throw new IllegalStateException("second snapshot build failed");
+                    }, 1, 1));
+                } catch (Throwable failure) {
+                    second.completeExceptionally(failure);
+                }
+            });
+            assertTrue(supplier2Entered.await(5, TimeUnit.SECONDS),
+                    "the second reservation must enter its supplier");
+            try {
+                // Delivery #1 drains while the second reservation is in flight: the
+                // observation's READINESS_REJECTED terminate defers. The get() guarantees the
+                // delivery is enqueued before the drain picks it up.
+                releaseSupplier1.countDown();
+                assertTrue(first.get(5, TimeUnit.SECONDS),
+                        "the surviving delivery must be enqueued");
+                fixture.scheduler.drain();
+                assertFalse(started.toCompletableFuture().isDone(),
+                        "the observation's terminalization must defer to the surviving reservation");
+                // The surviving reservation FAILS off-owner: the deferred terminate is applied
+                // on the caller thread, which routes the cleanup to a queued owner task.
+                releaseSupplier2.countDown();
+                try {
+                    second.get(5, TimeUnit.SECONDS);
+                    throw new AssertionError("the failing sibling reservation must fail");
+                } catch (ExecutionException expected) {
+                    assertEquals("second snapshot build failed", expected.getCause().getMessage());
+                }
+                // Pause — the routed owner task is still queued, so the first-wins claim must
+                // still be held and must reject competing terminal requests.
+                fixture.clock.advance(Duration.ofSeconds(2));
+                fixture.deadlines.expire();
+                assertFalse(started.toCompletableFuture().isDone(),
+                        "the queued first-wins termination must reject the competing deadline");
+                assertFalse(started.toCompletableFuture().cancel(false),
+                        "the queued first-wins termination must reject the competing cancellation");
+            } finally {
+                releaseSupplier1.countDown();
+                releaseSupplier2.countDown();
+            }
+            // The drain executes the routed owner task: the original READINESS_REJECTED wins.
+            fixture.scheduler.drain();
+            ScenarioResult result = started.toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(ScenarioFailure.READINESS_REJECTED, result.failure().orElseThrow(),
+                    "the original first-wins intent wins after the routed task executes");
+            assertEquals(1, result.startFrame(), "the reserved frame is preserved");
+            assertEquals(1, result.startRevision(), "the reserved frame is preserved");
+            assertTrue(result.cleanupCompleted(), "cleanup runs on the owner");
+            assertEquals(1, cleanups.get(), "cleanup runs exactly once");
+
+            // Idle supplier gate: post-terminal frames invoke no supplier.
+            AtomicInteger supplierCalls = new AtomicInteger();
+            assertFalse(fixture.runner.completedFrame(() -> {
+                supplierCalls.incrementAndGet();
+                return snapshot;
+            }, 3, 3));
+            assertEquals(0, supplierCalls.get(),
+                    "post-terminal frames must not build snapshots");
+        }
+    }
+
+    /**
+     * Minimal valid semantic graph with a single root node, following the model test
+     * convention (TraceRecorderTest/TraceReplayerTest): the snapshot constructor validates
+     * that {@code rootId} references a node, so an empty node map is rejected.
+     */
+    private static SemanticSnapshot rootOnlySnapshot(long revision, long frame) {
+        Bounds bounds = new Bounds(0, 0, 100, 100);
+        SemanticState state = new SemanticState(
+                true, true, Optional.of(true), Optional.empty(), Optional.empty(),
+                Optional.empty(), Optional.empty(), false, false, 1.0, false, true, true);
+        SemanticNode root = new SemanticNode("root", null, List.of(), Role.GROUP, "root", "",
+                null, null, null, null, state, bounds, bounds, bounds, 0, Map.of());
+        return new SemanticSnapshot(revision, frame, "root", Map.of("root", root));
     }
 
     private static class RecordingLifecycle implements ScenarioLifecycle {

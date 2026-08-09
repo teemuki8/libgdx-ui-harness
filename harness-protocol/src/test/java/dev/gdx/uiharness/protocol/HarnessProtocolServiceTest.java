@@ -1,9 +1,11 @@
 package dev.gdx.uiharness.protocol;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.gdx.uiharness.core.action.ActionResult;
@@ -36,7 +38,11 @@ import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.MonotonicClock;
 import dev.gdx.uiharness.core.wait.FrameSignal;
 import dev.gdx.uiharness.core.wait.WaitEngine;
+import java.nio.ByteBuffer;
+import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.Base64;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -301,6 +307,71 @@ final class HarnessProtocolServiceTest {
         assertFalse(write(failure).contains("internal-error"));
     }
 
+    @Test void executeWithAttachmentsCarriesTheSingleDefensiveSnapshotForScreenshot()
+            throws Exception {
+        byte[] payload = {1, 2, 3, 4, 5};
+        RecordingCapture capture = new RecordingCapture();
+        capture.image = new CapturedImage(payload, sha256Hex(payload), 1, 1, 5, 1,
+                new CapturedImage.Scale(1, 1));
+        HarnessProtocolService service = service(new RecordingHarness(), capture, traces());
+        HarnessProtocolService.Execution execution = service
+                .executeWithAttachments(new HarnessRequest(ProtocolVersion.V1, "game", "req-1", 10,
+                        new Command.Screenshot(null, 8, 8, 64, 128)))
+                .toCompletableFuture().join();
+
+        HarnessResponse.Result.Screenshot screenshot = assertInstanceOf(
+                HarnessResponse.Result.Screenshot.class,
+                assertInstanceOf(HarnessResponse.Success.class, execution.response()).result());
+        assertArrayEquals(payload, Base64.getDecoder().decode(screenshot.pngBase64()),
+                "the public String wire representation must decode to the captured bytes");
+        BinaryAttachment attachment =
+                execution.captures().get(HarnessProtocolService.SCREENSHOT_CAPTURE);
+        assertArrayEquals(payload, readAll(attachment.asByteBuffer()),
+                "the internal capture attachment must equal the captured bytes exactly");
+        assertEquals(sha256Hex(payload), attachment.sha256());
+        assertEquals(payload.length, attachment.length());
+    }
+
+    @Test void executeKeepsItsExactPublicContractWithEmptyCaptures() {
+        RecordingCapture capture = new RecordingCapture();
+        HarnessProtocolService service = service(new RecordingHarness(), capture, traces());
+        HarnessResponse response = service.execute(new HarnessRequest(
+                ProtocolVersion.V1, "game", "req-1", 10,
+                new Command.Screenshot(null, 8, 8, 64, 128)))
+                .toCompletableFuture().join();
+        HarnessResponse.Result.Screenshot screenshot = assertInstanceOf(
+                HarnessResponse.Result.Screenshot.class,
+                assertInstanceOf(HarnessResponse.Success.class, response).result());
+        assertEquals("AQID", screenshot.pngBase64(), "public execute must keep its exact output");
+    }
+
+    @Test void executionBoundsAttachmentsAndDefensivelyOwnsTheMap() {
+        Map<String, BinaryAttachment> supplied = new java.util.HashMap<>();
+        supplied.put(HarnessProtocolService.SCREENSHOT_CAPTURE,
+                BinaryAttachment.of(new byte[] {1, 2, 3}));
+        HarnessProtocolService.Execution execution = new HarnessProtocolService.Execution(
+                new HarnessResponse.Success(ProtocolVersion.V1, "r", "game",
+                        new HarnessResponse.Result.Screenshot("AQID", "0".repeat(64),
+                                1, 1, 3, 1, 1, 1)),
+                supplied);
+        supplied.put("extra", BinaryAttachment.of(new byte[] {9}));
+        assertEquals(1, execution.captures().size(),
+                "the Execution must own its attachment map defensively");
+
+        Map<String, BinaryAttachment> tooMany = new java.util.HashMap<>();
+        for (int index = 0; index < HarnessProtocolService.Execution.MAX_ATTACHMENTS + 1; index++) {
+            tooMany.put("key-" + index, BinaryAttachment.of(new byte[] {(byte) index}));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessProtocolService.Execution(
+                        new HarnessResponse.Success(ProtocolVersion.V1, "r", "game",
+                                new HarnessResponse.Result.Screenshot("AQID", "0".repeat(64),
+                                        1, 1, 3, 1, 1, 1)),
+                        tooMany));
+        // Per-attachment size is enforced by BinaryAttachment.of/takeCaptured (1..MAX_PNG_BYTES),
+        // covered in BinaryAttachmentTest.ofRejectsEmptyAndOverLimitPayloadsAtTheFactory.
+    }
+
     @Test void cancellingExecuteResponseCancelsRoutedActionAndCaptureStages() {
         RecordingHarness harness = new RecordingHarness();
         harness.actionResult = new CompletableFuture<>();
@@ -535,6 +606,26 @@ final class HarnessProtocolServiceTest {
 
     private static HarnessResponse await(CompletionStage<HarnessResponse> stage) {
         return stage.toCompletableFuture().join();
+    }
+
+    private static HarnessProtocolService.TraceController traces() {
+        return HarnessProtocolService.TraceController.unsupported();
+    }
+
+    private static String sha256Hex(byte[] content) {
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(content));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError("SHA-256 unavailable", impossible);
+        }
+    }
+
+    private static byte[] readAll(ByteBuffer view) {
+        ByteBuffer local = view.duplicate();
+        byte[] bytes = new byte[local.remaining()];
+        local.get(bytes);
+        return bytes;
     }
 
     private static String write(Object value) {

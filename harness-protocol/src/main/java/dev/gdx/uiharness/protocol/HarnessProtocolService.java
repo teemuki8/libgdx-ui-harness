@@ -1,6 +1,7 @@
 package dev.gdx.uiharness.protocol;
 
 import dev.gdx.uiharness.core.action.Harness;
+import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
 import dev.gdx.uiharness.core.contract.StateActionContract;
 import dev.gdx.uiharness.core.error.ErrorCode;
@@ -12,6 +13,7 @@ import dev.gdx.uiharness.core.scenario.ScenarioRequest;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.time.MonotonicClock;
+import dev.gdx.uiharness.core.visual.VisualHeatmap;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -48,6 +50,40 @@ public final class HarnessProtocolService {
     private final Map<String, LayoutDiagnosticService> layoutDiagnostics;
     private final MonotonicClock clock;
     private final Executor blockingExecutor;
+
+    /** Internal capture attachment key for screenshot results. */
+    public static final String SCREENSHOT_CAPTURE = "screenshot-capture";
+    /** Internal capture attachment key for inspect-compare current evidence. */
+    public static final String COMPARE_CURRENT_CAPTURE = "compare-current-capture";
+    /** Internal capture attachment key for inspect-compare heatmap evidence. */
+    public static final String COMPARE_HEATMAP_CAPTURE = "compare-heatmap-capture";
+    /** Internal capture attachment key for typography current evidence. */
+    public static final String TYPOGRAPHY_CURRENT_CAPTURE = "typography-current-capture";
+    /** Internal capture attachment key for layout current evidence. */
+    public static final String LAYOUT_CURRENT_CAPTURE = "layout-current-capture";
+
+    /**
+     * Internal execution result: the public response plus bounded immutable evidence attachments
+     * for direct artifact publication, so the MCP publication path never base64 round-trips the
+     * public string representation. Not part of the supported public API.
+     */
+    public record Execution(HarnessResponse response, Map<String, BinaryAttachment> captures) {
+        /** Maximum number of attachments per execution. */
+        public static final int MAX_ATTACHMENTS = 4;
+
+        public Execution {
+            response = Objects.requireNonNull(response, "response");
+            captures = Map.copyOf(Objects.requireNonNull(captures, "captures"));
+            if (captures.size() > MAX_ATTACHMENTS) {
+                throw new IllegalArgumentException(
+                        "too many execution attachments: " + captures.size());
+            }
+            for (String key : captures.keySet()) {
+                ProtocolJson.requireIdentifier(key, "attachment key");
+            }
+            // Per-attachment size is enforced by BinaryAttachment's factories (1..MAX_PNG_BYTES).
+        }
+    }
 
     /** Creates a service over an immutable session registry. */
     public HarnessProtocolService(
@@ -161,14 +197,24 @@ public final class HarnessProtocolService {
      * failure response, including for cancellation and unexpected backend failures.
      */
     public CompletionStage<HarnessResponse> execute(HarnessRequest request) {
+        return new PublicResponseFuture(
+                executeInternal(request).toCompletableFuture());
+    }
+
+    /** Internal: executes one command and returns the raw capture attachments for publication. */
+    public CompletionStage<Execution> executeWithAttachments(HarnessRequest request) {
+        return executeInternal(request);
+    }
+
+    private CompletionStage<Execution> executeInternal(HarnessRequest request) {
         Objects.requireNonNull(request, "request");
         if (!ProtocolVersion.V1.equals(request.version())) {
-            return CompletableFuture.completedFuture(failure(request,
+            return CompletableFuture.completedFuture(new Execution(failure(request,
                     new ProtocolError(ProtocolError.Code.PROTOCOL_VERSION_MISMATCH,
                             "Unsupported protocol version " + request.version(),
                             request.requestId(), request.sessionId(), null, 0, null, null,
                             List.of(), Map.of("supportedVersion", ProtocolVersion.V1.toString()),
-                            null, List.of())));
+                            null, List.of())), Map.of()));
         }
 
         Deadline deadline = Deadline.after(clock, Duration.ofMillis(request.deadlineMillis()));
@@ -176,14 +222,14 @@ public final class HarnessProtocolService {
         try {
             operation = route(request, deadline);
         } catch (Throwable routeFailure) {
-            return CompletableFuture.completedFuture(failure(request,
-                    translate(request, routeFailure)));
+            return CompletableFuture.completedFuture(new Execution(failure(request,
+                    translate(request, routeFailure)), Map.of()));
         }
         return response(request, operation);
     }
 
     @SuppressWarnings("unchecked")
-    private static <T> CompletionStage<HarnessResponse> response(
+    private static <T> CompletionStage<Execution> response(
             HarnessRequest request, RoutedOperation<?> operation) {
         return new ResponseFuture<>(
                 request, (RoutedOperation<T>) operation);
@@ -245,7 +291,8 @@ public final class HarnessProtocolService {
                     deadline);
             return RoutedOperation.map(
                     session.scenarioCoordinator().orElseThrow().start(scenarioRequest),
-                    HarnessResponse.Result.ScenarioStart::new);
+                    outcome -> RoutedValue.plain(
+                            new HarnessResponse.Result.ScenarioStart(outcome)));
         }
         if (command instanceof Command.NavigationInspect inspect) {
             requireCapability(session, capability(command));
@@ -287,38 +334,45 @@ public final class HarnessProtocolService {
             if (contract != null) {
                 return RoutedOperation.map(
                         contract.snapshotWith(session.harness(), deadline),
-                        evidence -> new HarnessResponse.Result.Snapshot(
+                        evidence -> RoutedValue.plain(new HarnessResponse.Result.Snapshot(
                                 HarnessResponse.SnapshotData.fromCore(
-                                        evidence.snapshot(), evidence.contract())));
+                                        evidence.snapshot(), evidence.contract()))));
             }
             return RoutedOperation.map(session.harness().snapshot(deadline),
-                    snapshot -> new HarnessResponse.Result.Snapshot(
-                            HarnessResponse.SnapshotData.fromCore(snapshot)));
+                    snapshot -> RoutedValue.plain(new HarnessResponse.Result.Snapshot(
+                            HarnessResponse.SnapshotData.fromCore(snapshot))));
         }
         if (command instanceof Command.Query query) {
             return RoutedOperation.map(session.harness().snapshot(deadline),
-                    snapshot -> HarnessResponse.Result.Query.fromCore(
-                            session.locators().query(snapshot, query.locator().toCore())));
+                    snapshot -> RoutedValue.plain(
+                            HarnessResponse.Result.Query.fromCore(
+                                    session.locators().query(snapshot, query.locator().toCore()))));
         }
         if (command instanceof Command.Action action) {
             return RoutedOperation.map(session.harness().perform(action.locator().toCore(),
                             action.action().toCore(), deadline),
-                    HarnessResponse.Result.Action::fromCore);
+                    actionResult -> RoutedValue.plain(
+                            HarnessResponse.Result.Action.fromCore(actionResult)));
         }
         if (command instanceof Command.Assert assertion) {
             return RoutedOperation.map(
                     session.waits().assertThat(assertion.toCore(deadline)),
-                    result -> HarnessResponse.Result.Assertion.fromCore(assertion, result));
+                    result -> RoutedValue.plain(
+                            HarnessResponse.Result.Assertion.fromCore(assertion, result)));
         }
         if (command instanceof Command.Wait wait) {
             return RoutedOperation.map(submitInterruptibly(() ->
                             session.waits().await(wait.locator().toCore(),
                                     wait.condition().toCore(), deadline)),
-                    HarnessResponse.Result.Wait::fromCore);
+                    result -> RoutedValue.plain(HarnessResponse.Result.Wait.fromCore(result)));
         }
         if (command instanceof Command.Screenshot screenshot) {
             return RoutedOperation.map(session.capture().capture(screenshot.toCore(), deadline),
-                    HarnessResponse.Result.Screenshot::fromCore);
+                    image -> {
+                        return new RoutedValue(
+                                HarnessResponse.Result.Screenshot.fromCore(image, image.pngView()),
+                                Map.of(SCREENSHOT_CAPTURE, BinaryAttachment.takeCaptured(image)));
+                    });
         }
         if (command instanceof Command.InspectCompare compare) {
             InspectCaptureCompareService comparison = comparisons.get(request.sessionId());
@@ -329,7 +383,16 @@ public final class HarnessProtocolService {
             }
             return RoutedOperation.map(
                     comparison.execute(compare.toCore(), deadline),
-                    HarnessResponse.Result.InspectCompare::fromCore);
+                    result -> new RoutedValue(
+                            HarnessResponse.Result.InspectCompare.fromCore(result,
+                                    result.current() == null ? null
+                                            : result.current().image().pngView(),
+                                    result.heatmap() == null ? null
+                                            : result.heatmap().pngView()),
+                            captures(COMPARE_CURRENT_CAPTURE,
+                                    result.current() == null ? null
+                                            : result.current().image(),
+                                    COMPARE_HEATMAP_CAPTURE, result.heatmap())));
         }
         if (command instanceof Command.TypographyDiagnose typography) {
             TypographyDiagnosticService diagnostic =
@@ -342,7 +405,14 @@ public final class HarnessProtocolService {
             }
             return RoutedOperation.map(
                     diagnostic.execute(typography.toCore(), deadline),
-                    HarnessResponse.Result.TypographyDiagnostic::fromCore);
+                    result -> new RoutedValue(
+                            HarnessResponse.Result.TypographyDiagnostic.fromCore(result,
+                                    result.current() == null ? null
+                                            : result.current().pngView()),
+                            result.current() == null ? Map.of()
+                                    : Map.of(TYPOGRAPHY_CURRENT_CAPTURE,
+                                            BinaryAttachment.takeCaptured(
+                                                    result.current()))));
         }
         if (command instanceof Command.LayoutDiagnose layout) {
             LayoutDiagnosticService diagnostic = layoutDiagnostics.get(request.sessionId());
@@ -354,14 +424,22 @@ public final class HarnessProtocolService {
             }
             return RoutedOperation.map(
                     diagnostic.execute(layout.toCore(), deadline),
-                    HarnessResponse.Result.LayoutDiagnostic::fromCore);
+                    result -> new RoutedValue(
+                            HarnessResponse.Result.LayoutDiagnostic.fromCore(result,
+                                    result.current() == null ? null
+                                            : result.current().pngView()),
+                            result.current() == null ? Map.of()
+                                    : Map.of(LAYOUT_CURRENT_CAPTURE,
+                                            BinaryAttachment.takeCaptured(
+                                                    result.current()))));
         }
         if (command instanceof Command.TraceStart traceStart) {
             return RoutedOperation.map(session.traces().start(traceStart, deadline),
-                    Function.identity());
+                    result -> RoutedValue.plain(result));
         }
         if (command instanceof Command.TraceStop) {
-            return RoutedOperation.map(session.traces().stop(deadline), Function.identity());
+            return RoutedOperation.map(session.traces().stop(deadline),
+                    result -> RoutedValue.plain(result));
         }
         throw new AssertionError("unhandled sealed command " + command.getClass().getName());
     }
@@ -450,14 +528,14 @@ public final class HarnessProtocolService {
         }
         return RoutedOperation.map(
                 session.runtimeCompareCoordinator().orElseThrow().compare(locator, deadline),
-                HarnessResponse.Result.RuntimeCompare::new);
+                result -> RoutedValue.plain(new HarnessResponse.Result.RuntimeCompare(result)));
     }
 
     private static RoutedOperation<?> traceQuery(
             Session session, Command.TraceQuerySpec spec, Deadline deadline) {
         return RoutedOperation.map(
                 session.traces().query(toCoreQuery(spec), deadline),
-                HarnessResponse.Result.TraceQuery::new);
+                result -> RoutedValue.plain(new HarnessResponse.Result.TraceQuery(result)));
     }
 
     private static dev.gdx.uiharness.core.trace.TransitionQuery toCoreQuery(
@@ -488,7 +566,7 @@ public final class HarnessProtocolService {
         }
         return RoutedOperation.map(
                 session.semanticCompareCoordinator().orElseThrow().compare(spec, deadline),
-                HarnessResponse.Result.SemanticCompare::new);
+                result -> RoutedValue.plain(new HarnessResponse.Result.SemanticCompare(result)));
     }
 
     private static RoutedOperation<?> runMatrix(
@@ -500,7 +578,8 @@ public final class HarnessProtocolService {
         }
         return RoutedOperation.map(
                 session.matrixCoordinator().orElseThrow().run(spec, deadline),
-                HarnessResponse.Result.MatrixRunStarted::new);
+                result -> RoutedValue.plain(
+                        new HarnessResponse.Result.MatrixRunStarted(result)));
     }
 
     private static RoutedOperation<?> matrixResults(Session session, String runId) {
@@ -511,7 +590,7 @@ public final class HarnessProtocolService {
         }
         return RoutedOperation.map(
                 session.matrixCoordinator().orElseThrow().results(runId),
-                HarnessResponse.Result.MatrixReportData::new);
+                result -> RoutedValue.plain(new HarnessResponse.Result.MatrixReportData(result)));
     }
 
     private static RoutedOperation<?> validateLayout(
@@ -522,7 +601,7 @@ public final class HarnessProtocolService {
         }
         return RoutedOperation.map(
                 session.layoutValidationCoordinator().orElseThrow().validate(spec, deadline),
-                HarnessResponse.Result.LayoutValidation::new);
+                result -> RoutedValue.plain(new HarnessResponse.Result.LayoutValidation(result)));
     }
 
     private static RoutedOperation<?> navigate(
@@ -548,7 +627,8 @@ public final class HarnessProtocolService {
         CompletionStage<dev.gdx.uiharness.core.navigation.NavigationResult> traversal =
                 validate ? coordinator.validate(spec, deadline)
                         : coordinator.inspect(spec, deadline);
-        return RoutedOperation.map(traversal, HarnessResponse.Result.Navigation::new);
+        return RoutedOperation.map(traversal,
+                result -> RoutedValue.plain(new HarnessResponse.Result.Navigation(result)));
     }
 
     private static HarnessResponse.Failure failure(
@@ -645,26 +725,46 @@ public final class HarnessProtocolService {
         }
     }
 
+    private record RoutedValue(HarnessResponse.Result result,
+            Map<String, BinaryAttachment> captures) {
+        static RoutedValue plain(HarnessResponse.Result result) {
+            return new RoutedValue(result, Map.of());
+        }
+    }
+
+    /** Internal: bounded two-owner capture map; null owners are skipped, never stored. */
+    private static Map<String, BinaryAttachment> captures(
+            String firstKey, CapturedImage first, String secondKey, VisualHeatmap second) {
+        LinkedHashMap<String, BinaryAttachment> captures = new LinkedHashMap<>();
+        if (first != null) {
+            captures.put(firstKey, BinaryAttachment.takeCaptured(first));
+        }
+        if (second != null) {
+            captures.put(secondKey, BinaryAttachment.takeCaptured(second));
+        }
+        return captures;
+    }
+
     private record RoutedOperation<T>(
             CompletableFuture<T> source,
-            Function<? super T, ? extends HarnessResponse.Result> mapper) {
+            Function<? super T, ? extends RoutedValue> mapper) {
         RoutedOperation {
             source = Objects.requireNonNull(source, "source");
             mapper = Objects.requireNonNull(mapper, "mapper");
         }
 
         static <T> RoutedOperation<T> map(CompletionStage<T> source,
-                Function<? super T, ? extends HarnessResponse.Result> mapper) {
+                Function<? super T, ? extends RoutedValue> mapper) {
             return new RoutedOperation<>(
                     Objects.requireNonNull(source, "source").toCompletableFuture(), mapper);
         }
 
         static <T extends HarnessResponse.Result> RoutedOperation<T> completed(T result) {
-            return map(CompletableFuture.completedFuture(result), Function.identity());
+            return map(CompletableFuture.completedFuture(result), RoutedValue::plain);
         }
     }
 
-    private static final class ResponseFuture<T> extends CompletableFuture<HarnessResponse> {
+    private static final class ResponseFuture<T> extends CompletableFuture<Execution> {
         private final Object lifecycle = new Object();
         private final HarnessRequest request;
         private final RoutedOperation<T> operation;
@@ -717,19 +817,56 @@ public final class HarnessProtocolService {
 
         private void completeResponse(T value, Throwable sourceFailure) {
             HarnessResponse response;
+            Map<String, BinaryAttachment> captures = Map.of();
             try {
-                response = sourceFailure == null
-                        ? new HarnessResponse.Success(
-                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
-                                operation.mapper().apply(value))
-                        : failure(request, translate(request, sourceFailure));
+                if (sourceFailure == null) {
+                    RoutedValue routed = operation.mapper().apply(value);
+                    response = new HarnessResponse.Success(
+                            ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                            routed.result());
+                    captures = routed.captures();
+                } else {
+                    response = failure(request, translate(request, sourceFailure));
+                }
             } catch (Throwable mappingFailure) {
                 response = failure(request, translate(request, mappingFailure));
+                captures = Map.of();
             }
-            super.complete(response);
+            super.complete(new Execution(response, captures));
         }
 
         private record Completion<T>(T value, Throwable failure) {}
+    }
+
+    /**
+     * Public view of one internal execution: completes with the public response and forwards
+     * cancellation to the internal execution future, so backend stages are cancelled exactly as
+     * before the internal envelope was introduced.
+     */
+    private static final class PublicResponseFuture extends CompletableFuture<HarnessResponse> {
+        private final CompletableFuture<Execution> internal;
+
+        PublicResponseFuture(CompletableFuture<Execution> internal) {
+            this.internal = Objects.requireNonNull(internal, "internal");
+            internal.whenComplete((execution, failure) -> {
+                if (failure == null) {
+                    complete(execution.response());
+                } else if (!(failure instanceof CancellationException)) {
+                    completeExceptionally(failure);
+                }
+            });
+        }
+
+        @Override public boolean cancel(boolean mayInterruptIfRunning) {
+            if (isDone()) {
+                return false;
+            }
+            boolean cancelled = internal.cancel(mayInterruptIfRunning);
+            if (cancelled) {
+                return super.cancel(false);
+            }
+            return false;
+        }
     }
 
     private static final class InterruptibleOperationFuture<T>
