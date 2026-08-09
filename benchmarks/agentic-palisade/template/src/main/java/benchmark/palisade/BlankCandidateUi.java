@@ -1,17 +1,17 @@
 package benchmark.palisade;
 
-import com.badlogic.gdx.scenes.scene2d.Stage;
+import dev.gdx.markup.core.BuiltUi;
+import java.util.Objects;
 
 /** Empty candidate used only to prove that an untouched template can launch. */
 final class BlankCandidateUi implements CandidateUi {
-    private final Stage stage = new Stage();
-
-    @Override public Stage stage() {
-        return stage;
+    @Override public void bind(BuiltUi ui) {
+        Objects.requireNonNull(ui, "ui");
+        Objects.requireNonNull(ui.root().findActor("skirmish-root"), "skirmish-root");
     }
 
     @Override public void showInitial() {
-        stage.clear();
+        // The shared markup resource already represents the initial state.
     }
 
     @Override public CandidateState snapshotState() {
@@ -19,6 +19,6 @@ final class BlankCandidateUi implements CandidateUi {
     }
 
     @Override public void dispose() {
-        stage.dispose();
+        // This controller owns no libGDX resources.
     }
 }

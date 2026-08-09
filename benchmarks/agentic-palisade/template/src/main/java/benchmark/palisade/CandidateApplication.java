@@ -4,6 +4,7 @@ import com.badlogic.gdx.ApplicationAdapter;
 import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.scenes.scene2d.Stage;
+import dev.gdx.markup.core.NoopSink;
 import java.lang.reflect.InvocationTargetException;
 
 /** Owns the candidate Stage and advances it by one fixed step per rendered frame. */
@@ -12,7 +13,7 @@ public final class CandidateApplication extends ApplicationAdapter {
     private static final float FIXED_STEP_SECONDS = 1f / 60f;
 
     private final BenchmarkControl control;
-    private CandidateUi candidate;
+    private CandidateMarkupStage markupStage;
 
     /** Creates an application controlled by one finite command stream. */
     public CandidateApplication(BenchmarkControl control) {
@@ -21,10 +22,10 @@ public final class CandidateApplication extends ApplicationAdapter {
 
     @Override public void create() {
         TrustedStructuralProbe.verifyLoaded();
-        candidate = loadCandidate();
-        Stage stage = requireStage();
+        markupStage = new CandidateMarkupStage(loadCandidate());
+        Stage stage = markupStage.stage();
         stage.getViewport().update(Gdx.graphics.getWidth(), Gdx.graphics.getHeight(), true);
-        candidate.showInitial();
+        markupStage.build(new NoopSink());
         Gdx.input.setInputProcessor(stage);
     }
 
@@ -35,10 +36,7 @@ public final class CandidateApplication extends ApplicationAdapter {
         Gdx.gl.glClearColor(0f, 0f, 0f, 0f);
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
         stage.draw();
-        CandidateState state = candidate.snapshotState();
-        if (state == null) {
-            throw new IllegalStateException("Candidate returned a null state snapshot");
-        }
+        CandidateState state = markupStage.snapshotState();
         control.afterCompletedFrame(stage, state);
         if (control.exitRequested()) {
             Gdx.app.exit();
@@ -46,15 +44,15 @@ public final class CandidateApplication extends ApplicationAdapter {
     }
 
     @Override public void resize(int width, int height) {
-        if (candidate != null) {
+        if (markupStage != null) {
             requireStage().getViewport().update(width, height, true);
         }
     }
 
     @Override public void dispose() {
         try {
-            if (candidate != null) {
-                candidate.dispose();
+            if (markupStage != null) {
+                markupStage.close();
             }
         } finally {
             control.close();
@@ -62,11 +60,7 @@ public final class CandidateApplication extends ApplicationAdapter {
     }
 
     private Stage requireStage() {
-        Stage stage = candidate.stage();
-        if (stage == null) {
-            throw new IllegalStateException("Candidate returned a null Stage");
-        }
-        return stage;
+        return java.util.Objects.requireNonNull(markupStage, "markupStage").stage();
     }
 
     private static CandidateUi loadCandidate() {

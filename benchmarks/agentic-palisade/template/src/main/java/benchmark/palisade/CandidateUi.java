@@ -1,11 +1,11 @@
 package benchmark.palisade;
 
-import com.badlogic.gdx.scenes.scene2d.Stage;
+import dev.gdx.markup.core.BuiltUi;
 
 /** UI contract implemented by the measured candidate. */
 public interface CandidateUi {
-    /** Returns the root Scene2D stage. */
-    Stage stage();
+    /** Binds candidate behavior to the template-owned markup actor tree. */
+    void bind(BuiltUi ui);
 
     /** Restores the initial observable state. */
     void showInitial();

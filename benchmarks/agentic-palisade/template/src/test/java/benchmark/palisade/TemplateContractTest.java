@@ -69,11 +69,22 @@ final class TemplateContractTest {
 
     @Test
     void exposesTheCandidateContract() throws Exception {
-        assertMethod(CandidateUi.class, "stage", Stage.class);
+        assertThrows(NoSuchMethodException.class,
+                () -> CandidateUi.class.getMethod("stage"));
+        Class<?> builtUi = Class.forName("dev.gdx.markup.core.BuiltUi");
+        Method bind = CandidateUi.class.getMethod("bind", builtUi);
+        assertEquals(void.class, bind.getReturnType());
         assertMethod(CandidateUi.class, "showInitial", void.class);
         assertMethod(CandidateUi.class, "snapshotState", CandidateState.class);
         assertMethod(CandidateUi.class, "dispose", void.class);
         assertNotNull(CandidateState.empty());
+    }
+
+    @Test
+    void sharedMarkupResourcesAreRequiredTemplateInputs() {
+        ClassLoader loader = TemplateContractTest.class.getClassLoader();
+        assertNotNull(loader.getResource("ui/skirmish.xml"));
+        assertNotNull(loader.getResource("ui/skirmish.css"));
     }
 
     @Test
