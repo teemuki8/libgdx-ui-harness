@@ -410,8 +410,8 @@ public final class StructuralUsability {
         } else {
             units = "identity";
         }
-        return new Diagnostic(
-                code, controlId, path, coordinateSpace, units, expected, observed);
+        return new Diagnostic(code, controlId, path, coordinateSpace, units,
+                expected, Objects.requireNonNullElse(observed, "absent"));
     }
 
     private static String atLeast(double value) {

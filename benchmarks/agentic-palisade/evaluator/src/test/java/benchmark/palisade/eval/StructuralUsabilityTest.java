@@ -252,6 +252,31 @@ final class StructuralUsabilityTest {
     }
 
     @Test
+    void missingClipOwnerProducesBoundedMismatchDiagnostic() {
+        StructuralUsability.ControlEvidence base = control();
+        StructuralUsability.ControlEvidence missingClipOwner =
+                new StructuralUsability.ControlEvidence(
+                        base.controlId(), base.role(), base.labelControlId(),
+                        base.labelledControlId(), base.enabled(), base.focusable(),
+                        base.hitBounds(), base.visualBounds(), base.occluded(),
+                        base.fontPixels(), base.rasterResidual(), base.contrastRatio(),
+                        base.glyphClipped(), base.hierarchyRole(), base.parentControlId(),
+                        base.scrollOwnerId(), null, base.visibleBounds());
+
+        StructuralUsability.Signal clipping = signal(
+                StructuralUsability.evaluate(
+                        policy(), evidence(missingClipOwner), null),
+                "clipping");
+        StructuralUsability.Diagnostic diagnostic = clipping.diagnostics().stream()
+                .filter(item -> item.code().equals("CLIP_OWNER_MISMATCH"))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(StructuralUsability.Status.FAIL, clipping.status());
+        assertEquals("absent", diagnostic.observed());
+    }
+
+    @Test
     void wrongFixedCompositionFailsOnlyAtDeclared1280Viewport() {
         StructuralUsability.Evidence at1280 = evidence(control())
                 .withViewport("desktop-1280x720", 1280, 720)
