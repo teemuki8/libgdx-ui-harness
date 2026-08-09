@@ -241,7 +241,7 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 }
             }
             for (Run run : runs) {
-                applyDeferredTerminal(run);
+                run.applyDeferredTerminal();
             }
             throw failure;
         }
@@ -725,8 +725,9 @@ public final class Scene2dScenarioRunner implements AutoCloseable {
                 // Cleanup hooks must run on the render thread: a deferred application from an
                 // off-thread release (a supplier/enqueue failure or a rejected delivery) routes
                 // the termination to the owner instead of running the hooks here.
+                ScenarioFailure deferredFailure = failure;
                 observeSubmission(this, scheduler.submit(() -> {
-                    applyTerminate(failure);
+                    applyTerminate(deferredFailure);
                     return null;
                 }, dispatchDeadline()));
                 return;

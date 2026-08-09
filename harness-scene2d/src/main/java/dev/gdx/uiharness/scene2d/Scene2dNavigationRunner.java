@@ -217,7 +217,7 @@ public final class Scene2dNavigationRunner implements AutoCloseable {
                 }
             }
             for (Run run : runs) {
-                applyDeferredTerminal(run);
+                run.applyDeferredTerminal();
             }
             throw failure;
         }

@@ -1070,6 +1070,10 @@ final class Scene2dScenarioRunnerTest {
             assertEquals(1, supplierCalls.get());
 
             assertTrue(started.toCompletableFuture().cancel(false));
+            // The cancellation defers while the reserved delivery is in flight: the first drain
+            // observes the frame and applies the deferred CANCELLED transition (queuing the
+            // termination), the second drain executes it and the run leaves `active`.
+            fixture.scheduler.drain();
             fixture.scheduler.drain();
             fixture.clock.advance(Fixture.STEP);
             boolean consumed = fixture.runner.completedFrame(() -> {
