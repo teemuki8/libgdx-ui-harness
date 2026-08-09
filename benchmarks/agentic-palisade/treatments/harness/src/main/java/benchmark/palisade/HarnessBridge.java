@@ -505,7 +505,8 @@ public final class HarnessBridge implements AutoCloseable {
                 ArtifactReference reference = publish(manifest);
                 return CompletableFuture.completedFuture(
                         new HarnessResponse.Result.TraceStopped(traceId, reference.reference(),
-                                manifest.eventCount(), reference.byteLength()));
+                                manifest.eventCount(), reference.byteLength(),
+                                reference.sha256()));
             } catch (RuntimeException failure) {
                 active = false;
                 recoverPartial(failure);

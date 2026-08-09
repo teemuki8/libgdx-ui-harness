@@ -183,12 +183,11 @@ final class HarnessBridgeTest {
         assertOpaqueArtifact((Map<?, ?>) comparison.get("currentArtifact"), "image/png");
         assertOpaqueArtifact(
                 (Map<?, ?>) comparison.get("evidenceArtifact"), "application/json");
-        assertSuccessKind(responses.get(8), "trace-stopped");
-        assertTrue(((Number) result(responses.get(8)).get("eventCount")).longValue() >= 2);
+        assertTraceStopped(responses.get(8));
         assertSuccessKind(responses.get(9), "capabilities-result");
         assertRejected(responses.get(10), "LIMIT_EXCEEDED");
         assertSuccessKind(responses.get(11), "trace-started");
-        assertSuccessKind(responses.get(12), "trace-stopped");
+        assertTraceStopped(responses.get(12));
         assertRejected(responses.get(13), "unknown-operation");
         assertRejected(responses.get(14), "invalid-request");
         assertRejected(responses.get(15), "limit-exceeded");
@@ -229,6 +228,17 @@ final class HarnessBridgeTest {
         assertEquals(mediaType, artifact.get("mediaType"));
         assertEquals(64, ((String) artifact.get("sha256")).length());
         assertTrue(((Number) artifact.get("byteLength")).longValue() > 0);
+    }
+
+    private static void assertTraceStopped(Map<String, Object> response) {
+        assertSuccessKind(response, "trace-stopped");
+        Map<String, Object> stopped = result(response);
+        assertTrue(((Number) stopped.get("eventCount")).longValue() >= 2);
+        String reference = (String) stopped.get("traceReference");
+        assertTrue(reference.startsWith("artifact:"), "trace reference must be opaque");
+        assertFalse(reference.contains("/"), "trace reference must not leak a path");
+        assertTrue(((String) stopped.get("archiveSha256")).matches("[0-9a-f]{64}"),
+                "trace-stop must expose the verified lowercase archive digest");
     }
 
     private static void assertRejected(Map<String, Object> response, String code) {
