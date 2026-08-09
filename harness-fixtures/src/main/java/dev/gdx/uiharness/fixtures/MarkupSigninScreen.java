@@ -19,6 +19,7 @@ import dev.gdx.uiharness.core.typography.UnavailableReason;
 import dev.gdx.uiharness.scene2d.Semantics;
 import dev.gdx.uiharness.scene2d.TypographyMetadata;
 import io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime;
+import io.github.teemuki8.libgdx.agent.runtime.core.RuntimeValues;
 import java.util.Objects;
 
 /**
@@ -51,6 +52,8 @@ public final class MarkupSigninScreen implements FixtureScreen {
                     <row/>
                     <button id="save" class="primary" text="Save" name="Save" width="180"
                             align="left"/>
+                    <row/>
+                    <button id="model-divergence" text="Diverge model" name="Diverge model"/>
                   </table>
                 </window>
               </table>
@@ -92,11 +95,32 @@ public final class MarkupSigninScreen implements FixtureScreen {
      * {@code data-runtime-entity} actor as an agent-runtime value source. The sink carries
      * {@link FixtureControl#CORRELATION_TOKEN} so {@code ui_runtime_compare} can prove frames.
      */
-    public void attachSemantics(Semantics semantics, AgentRuntime runtime, String uiSessionId) {
+    public void attachSemantics(Semantics semantics, AgentRuntime runtime, String uiSessionId,
+            ReferenceUiModel model) {
         Objects.requireNonNull(semantics, "semantics");
         Objects.requireNonNull(runtime, "runtime");
+        Objects.requireNonNull(model, "model");
         BuiltUi built = buildUi(new HarnessSemanticSink(
                 semantics, FixtureControl.CORRELATION_TOKEN));
+        com.badlogic.gdx.scenes.scene2d.ui.TextField username =
+                (com.badlogic.gdx.scenes.scene2d.ui.TextField) Objects.requireNonNull(
+                        built.root().findActor("username"), "markup username");
+        username.setText(model.username());
+        username.addListener(new com.badlogic.gdx.scenes.scene2d.utils.ChangeListener() {
+            @Override public void changed(ChangeEvent event,
+                    com.badlogic.gdx.scenes.scene2d.Actor actor) {
+                model.setUsername(username.getText());
+            }
+        });
+        com.badlogic.gdx.scenes.scene2d.ui.TextButton divergence =
+                (com.badlogic.gdx.scenes.scene2d.ui.TextButton) Objects.requireNonNull(
+                        built.root().findActor("model-divergence"), "model divergence button");
+        divergence.addListener(new com.badlogic.gdx.scenes.scene2d.utils.ChangeListener() {
+            @Override public void changed(ChangeEvent event,
+                    com.badlogic.gdx.scenes.scene2d.Actor actor) {
+                model.setUsername("Carol");
+            }
+        });
         // The harness typography and layout references require marked actors; mirror the
         // reference screen's title-label metadata.
         com.badlogic.gdx.scenes.scene2d.Actor title = built.root().findActor("signin-title");
@@ -105,7 +129,14 @@ public final class MarkupSigninScreen implements FixtureScreen {
         if (runtimeSource != null) {
             runtimeSource.close();
         }
-        runtimeSource = MarkupRuntimeSource.register(runtime, document, built, uiSessionId);
+        runtimeSource = MarkupRuntimeSource.registerAuthoritative(
+                runtime, document, built, uiSessionId,
+                (entityId, propertyId, actor) -> {
+                    if ("user".equals(entityId) && "value".equals(propertyId)) {
+                        return () -> RuntimeValues.string(model.username());
+                    }
+                    return null;
+                });
     }
 
     private static TypographyMetadata typographyMetadata() {

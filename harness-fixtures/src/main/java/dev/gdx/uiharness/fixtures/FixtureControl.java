@@ -335,6 +335,11 @@ public final class FixtureControl implements AutoCloseable {
     public io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime agentRuntime() {
         return agentRuntime;
     }
+
+    /** Returns the fixture-owned domain model used by authoritative markup registration. */
+    public ReferenceUiModel uiModel() {
+        return uiModel;
+    }
     /** Stops assertion frame notifications while the deterministic clock keeps advancing. */
     public void withholdAssertionFrames() {
         withholdAssertionFrames.set(true);

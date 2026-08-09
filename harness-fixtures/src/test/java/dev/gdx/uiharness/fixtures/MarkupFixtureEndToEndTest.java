@@ -33,8 +33,7 @@ final class MarkupFixtureEndToEndTest {
                 client.waitForState(SESSION_ID, Map.of("kind", "test-id", "testId", "remember"),
                         "checked", true, 5_000);
 
-                // Runtime hop: the markup data-runtime-entity binds and compares EQUAL.
-                client.fillByLabel(SESSION_ID, "Username", "Ada");
+                // Runtime hop: authoritative model and initial markup state compare EQUAL.
                 JsonNode comparison = client.runtimeCompare(SESSION_ID, 5_000);
                 assertEquals("EQUAL", comparison.path("status").asText(),
                         "the markup runtime entity compares on the proven frame");
@@ -42,6 +41,20 @@ final class MarkupFixtureEndToEndTest {
                 assertEquals("value", comparison.path("propertyId").asText());
                 assertEquals("Ada", comparison.path("displayedValue").asText());
                 assertEquals("Ada", comparison.path("runtimeValue").asText());
+
+                client.fillByLabel(SESSION_ID, "Username", "Grace");
+                JsonNode filled = client.runtimeCompare(SESSION_ID, 5_000);
+                assertEquals("EQUAL", filled.path("status").asText());
+                assertEquals("Grace", filled.path("displayedValue").asText());
+                assertEquals("Grace", filled.path("runtimeValue").asText());
+
+                // Authority proof: a fixture-only real-input action changes only domain state.
+                // Widget-mirror registration would incorrectly keep reporting EQUAL here.
+                client.clickByRoleAndName(SESSION_ID, "button", "Diverge model");
+                JsonNode mismatch = client.runtimeCompare(SESSION_ID, 5_000);
+                assertEquals("MISMATCH", mismatch.path("status").asText());
+                assertEquals("Grace", mismatch.path("displayedValue").asText());
+                assertEquals("Carol", mismatch.path("runtimeValue").asText());
 
                 HarnessMcpClient.Screenshot screenshot = client.screenshot(SESSION_ID);
                 assertEquals(1280, screenshot.width());

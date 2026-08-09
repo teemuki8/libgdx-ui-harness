@@ -3,6 +3,8 @@
 # This file is expected to be part of source control.
 # To regenerate this file, run: ./gradlew :harness-fixtures:dependencies --write-locks
 com.badlogicgames.gdx:gdx-backend-lwjgl3:1.14.2=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+com.badlogicgames.gdx:gdx-freetype-platform:1.14.2=runtimeClasspath,testRuntimeClasspath
+com.badlogicgames.gdx:gdx-freetype:1.14.2=runtimeClasspath,testRuntimeClasspath
 com.badlogicgames.gdx:gdx-jnigen-loader:2.5.2=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.badlogicgames.gdx:gdx-platform:1.14.2=runtimeClasspath,testRuntimeClasspath
 com.badlogicgames.gdx:gdx:1.14.2=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
@@ -25,10 +27,10 @@ commons-beanutils:commons-beanutils:1.10.1=checkstyle
 commons-codec:commons-codec:1.15=checkstyle
 commons-collections:commons-collections:3.2.2=checkstyle
 info.picocli:picocli:4.7.7=checkstyle
-io.github.teemuki8:agent-runtime-core:1.0.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
-io.github.teemuki8:libgdx-ui-markup-harness:0.2.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
-io.github.teemuki8:libgdx-ui-markup-runtime:0.2.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
-io.github.teemuki8:libgdx-ui-markup:0.2.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+io.github.teemuki8:agent-runtime-core:2.0.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+io.github.teemuki8:libgdx-ui-markup-harness:0.4.1=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+io.github.teemuki8:libgdx-ui-markup-runtime:0.4.1=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+io.github.teemuki8:libgdx-ui-markup:0.4.1=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 io.modelcontextprotocol.sdk:mcp-core:2.0.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 io.modelcontextprotocol.sdk:mcp-json-jackson3:2.0.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 io.modelcontextprotocol.sdk:mcp:2.0.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath

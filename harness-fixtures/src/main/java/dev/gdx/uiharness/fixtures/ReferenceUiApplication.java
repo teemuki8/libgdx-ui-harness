@@ -101,7 +101,7 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
             control = new FixtureControl(screen.stage(), processRoot,
                     screen.typographyControlIds(), screen.layoutControlIds());
             markupScreen.attachSemantics(control.semantics(), control.agentRuntime(),
-                    FixtureControl.SESSION_ID);
+                    FixtureControl.SESSION_ID, control.uiModel());
         } else {
             ReferenceScreen referenceScreen =
                     new ReferenceScreen(benchmarkScenario, benchmarkDelayMillis);
