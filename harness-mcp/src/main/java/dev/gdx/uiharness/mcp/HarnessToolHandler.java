@@ -23,7 +23,6 @@ import dev.gdx.uiharness.core.typography.TypographyReport;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
-import java.util.Base64;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -491,17 +490,12 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("metrics", metrics);
             }
             if (comparison.current() != null) {
-                if (comparison.currentPngBase64() == null) {
-                    throw new IllegalArgumentException(
-                            "accepted current evidence is missing PNG bytes");
-                }
-                byte[] png = Base64.getDecoder().decode(
-                        comparison.currentPngBase64());
-                ArtifactReference current = artifacts.publish("image/png", png.clone());
-                if (!current.sha256().equals(comparison.current().sha256())) {
-                    throw new IllegalArgumentException(
-                            "published current capture hash changed");
-                }
+                BinaryAttachment currentCapture = requireCapture(captures,
+                        HarnessProtocolService.COMPARE_CURRENT_CAPTURE);
+                ArtifactReference current = artifacts.publish(
+                        "image/png", currentCapture.asByteBuffer());
+                requireReceiptMatches(current, "image/png",
+                        currentCapture.length(), currentCapture.sha256());
                 content.put("currentArtifact", artifactMap(current));
                 content.put("revision", comparison.current().revision());
                 content.put("frame", comparison.current().frame());
@@ -512,17 +506,12 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("sha256", comparison.current().sha256());
             }
             if (comparison.heatmap() != null) {
-                if (comparison.heatmapPngBase64() == null) {
-                    throw new IllegalArgumentException(
-                            "accepted heatmap evidence is missing PNG bytes");
-                }
-                byte[] png = Base64.getDecoder().decode(
-                        comparison.heatmapPngBase64());
-                ArtifactReference heatmap = artifacts.publish("image/png", png.clone());
-                if (!heatmap.sha256().equals(comparison.heatmap().sha256())) {
-                    throw new IllegalArgumentException(
-                            "published heatmap hash changed");
-                }
+                BinaryAttachment heatmapCapture = requireCapture(captures,
+                        HarnessProtocolService.COMPARE_HEATMAP_CAPTURE);
+                ArtifactReference heatmap = artifacts.publish(
+                        "image/png", heatmapCapture.asByteBuffer());
+                requireReceiptMatches(heatmap, "image/png",
+                        heatmapCapture.length(), heatmapCapture.sha256());
                 content.put("heatmapArtifact", artifactMap(heatmap));
             }
             ArtifactReference evidence = artifacts.publish(
@@ -546,17 +535,12 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("referenceId", typography.referenceId());
             }
             if (typography.current() != null) {
-                if (typography.currentPngBase64() == null) {
-                    throw new IllegalArgumentException(
-                            "accepted typography evidence is missing PNG bytes");
-                }
-                byte[] png = Base64.getDecoder().decode(
-                        typography.currentPngBase64());
-                ArtifactReference current = artifacts.publish("image/png", png.clone());
-                if (!current.sha256().equals(typography.current().sha256())) {
-                    throw new IllegalArgumentException(
-                            "published typography capture hash changed");
-                }
+                BinaryAttachment currentCapture = requireCapture(captures,
+                        HarnessProtocolService.TYPOGRAPHY_CURRENT_CAPTURE);
+                ArtifactReference current = artifacts.publish(
+                        "image/png", currentCapture.asByteBuffer());
+                requireReceiptMatches(current, "image/png",
+                        currentCapture.length(), currentCapture.sha256());
                 content.put("currentArtifact", artifactMap(current));
                 content.put("revision", typography.current().revision());
                 content.put("frame", typography.current().frame());
@@ -605,16 +589,12 @@ public final class HarnessToolHandler implements AutoCloseable {
                 content.put("referenceId", layout.referenceId());
             }
             if (layout.current() != null) {
-                if (layout.currentPngBase64() == null) {
-                    throw new IllegalArgumentException(
-                            "accepted layout evidence is missing PNG bytes");
-                }
-                byte[] png = Base64.getDecoder().decode(layout.currentPngBase64());
-                ArtifactReference current = artifacts.publish("image/png", png.clone());
-                if (!current.sha256().equals(layout.current().sha256())) {
-                    throw new IllegalArgumentException(
-                            "published layout capture hash changed");
-                }
+                BinaryAttachment currentCapture = requireCapture(captures,
+                        HarnessProtocolService.LAYOUT_CURRENT_CAPTURE);
+                ArtifactReference current = artifacts.publish(
+                        "image/png", currentCapture.asByteBuffer());
+                requireReceiptMatches(current, "image/png",
+                        currentCapture.length(), currentCapture.sha256());
                 content.put("currentArtifact", artifactMap(current));
                 content.put("revision", layout.current().revision());
                 content.put("frame", layout.current().frame());
