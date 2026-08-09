@@ -1157,6 +1157,137 @@ final class TraceRecorderTest {
                 "a same-key archive replacement must never be consumed or deleted");
     }
 
+    @Test void consumeArchiveRequiresExactManifestObject() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-consume-exact", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-consume-exact", "request-1", 1, snapshot(1, 1), Map.of()));
+        TraceManifest manifest = recorder.stop();
+        // A value-identical copy is still a different object: not the receipt.
+        TraceManifest forged = new TraceManifest(manifest.archive(),
+                manifest.sessionId(), manifest.startedAt(), manifest.endedAt(),
+                manifest.complete(), manifest.terminationReason(), manifest.eventCount(),
+                manifest.artifactCount(), manifest.uncompressedBytes(),
+                manifest.schemaVersion(), manifest.eventsSha256(), manifest.artifacts(),
+                manifest.archiveSha256(), manifest.archiveSize());
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> recorder.consumeArchive(forged));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(Files.exists(manifest.archive()),
+                "a forged receipt must not read or delete the archive");
+    }
+
+    @Test void consumeArchiveIsSingleShot() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-consume-once", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-consume-once", "request-1", 1, snapshot(1, 1), Map.of()));
+        TraceManifest manifest = recorder.stop();
+
+        byte[] captured = recorder.consumeArchive(manifest);
+        assertTrue(captured.length > 0);
+        assertTrue(Files.notExists(manifest.archive()));
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> recorder.consumeArchive(manifest));
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+    }
+
+    @Test void consumeArchiveRejectsStaleReceiptAfterNewFinalize() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-consume-stale", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-consume-stale", "request-1", 1, snapshot(1, 1), Map.of()));
+        TraceManifest first = recorder.stop();
+
+        recorder.start("session-consume-current", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-consume-current", "request-2", 2, snapshot(2, 2), Map.of()));
+        TraceManifest current = recorder.stop();
+
+        HarnessException failure = assertThrows(HarnessException.class,
+                () -> recorder.consumeArchive(first));
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.code());
+        assertTrue(Files.exists(first.archive()),
+                "a stale receipt must not read or delete the earlier archive");
+
+        byte[] captured = recorder.consumeArchive(current);
+        assertTrue(captured.length > 0);
+        assertTrue(Files.notExists(current.archive()));
+    }
+
+    @Test void oversizedTemporaryArchiveAboveCapIsRejected() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC(),
+                (step, path) -> {
+                    if (step == TraceRecorder.FinalizationInterceptor.Step.VERIFY_ARCHIVE_SIZE
+                            && path.getFileName().toString().endsWith(".zip.tmp")) {
+                        try (java.nio.channels.SeekableByteChannel channel =
+                                java.nio.channels.FileChannel.open(path,
+                                        java.nio.file.StandardOpenOption.WRITE)) {
+                            channel.position(TraceRecorder.MAX_ARCHIVE_BYTES + 1);
+                            channel.write(java.nio.ByteBuffer.wrap(new byte[] {0}));
+                        }
+                    }
+                });
+        recorder.start("session-cap", TraceRecorder.Limits.defaults());
+        recorder.record(TraceEvent.commandStarted(
+                "session-cap", "request-1", 1, snapshot(1, 1), Map.of()));
+
+        HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+        assertEquals(ErrorCode.LIMIT_EXCEEDED, failure.code());
+        assertNull(publishedArchives(temporaryDirectory),
+                "no archive may be published beyond the hard cap");
+        try (var paths = Files.walk(temporaryDirectory)) {
+            Path leftover = paths
+                    .filter(path -> path.getFileName().toString().endsWith(".zip.tmp"))
+                    .findFirst().orElseThrow();
+            assertTrue(Files.size(leftover) > TraceRecorder.MAX_ARCHIVE_BYTES,
+                    "the oversized temp archive must be left untouched as residual");
+        }
+    }
+
+    @Test void archiveWriteBeyondHardCapFailsImmediately() throws Exception {
+        TraceRecorder recorder = new TraceRecorder(temporaryDirectory, Clock.systemUTC());
+        recorder.start("session-write-cap", new TraceRecorder.Limits(
+                TraceRecorder.MAX_ARCHIVE_BYTES * 2, 100, Duration.ofMinutes(1)));
+        recorder.record(TraceEvent.commandStarted(
+                "session-write-cap", "request-1", 1, snapshot(1, 1), Map.of()));
+        // Incompressible pseudorandom evidence: the compressed archive exceeds
+        // the hard cap during the zip write, not just at the attribute check.
+        java.util.Random random = new java.util.Random(42);
+        long total = TraceRecorder.MAX_ARCHIVE_BYTES + (1024L * 1024);
+        long[] produced = new long[1];
+        java.io.InputStream incompressible = new java.io.InputStream() {
+            @Override public int read() {
+                return -1;
+            }
+
+            @Override public int read(byte[] buffer, int offset, int length) {
+                if (produced[0] >= total) {
+                    return -1;
+                }
+                int count = (int) Math.min(length, total - produced[0]);
+                byte[] chunk = new byte[count];
+                random.nextBytes(chunk);
+                System.arraycopy(chunk, 0, buffer, offset, count);
+                produced[0] += count;
+                return count;
+            }
+        };
+        recorder.addArtifact("application/octet-stream", incompressible);
+
+        HarnessException failure = assertThrows(HarnessException.class, recorder::stop);
+
+        assertEquals(ErrorCode.LIMIT_EXCEEDED, failure.code());
+        assertNull(publishedArchives(temporaryDirectory),
+                "no archive beyond the hard cap may be published");
+        assertTrue(noTemporaryFiles(temporaryDirectory),
+                "staging must be fully cleaned after a capped finalize");
+    }
+
     @Test void coreTraceRuntimeRemainsJdkOnly() {
         String[] classPath = System.getProperty("java.class.path")
                 .split(java.util.regex.Pattern.quote(java.io.File.pathSeparator));

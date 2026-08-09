@@ -53,6 +53,12 @@ import java.util.zip.ZipOutputStream;
 /** Streams bounded causal events and evidence into atomically published ZIP traces. */
 public final class TraceRecorder implements AutoCloseable {
     private static final int COPY_BUFFER_SIZE = 16 * 1024;
+    /**
+     * Hard cap on one published archive, matching the documented 64 MiB trace
+     * trust boundary. Any archive larger than this is rejected before any
+     * verification read; the recorded size is immutable write evidence.
+     */
+    static final long MAX_ARCHIVE_BYTES = 64L * 1024 * 1024;
     private static final String DIRECTORY_MARKER_NAME = ".owner-token";
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Pattern FILE_URI = Pattern.compile("file:(?://)?[^\\s\\\",}]+");
@@ -90,6 +96,7 @@ public final class TraceRecorder implements AutoCloseable {
     private boolean active;
     private long generation;
     private TraceManifest lastManifest;
+    private TraceReceipt publishedReceipt;
 
     /**
      * Test-only finalization interceptor; the production default is a no-op.
@@ -108,6 +115,8 @@ public final class TraceRecorder implements AutoCloseable {
             OPEN_EVIDENCE,
             /** About to verify the temporary or published archive identity and content. */
             VERIFY_ARCHIVE,
+            /** About to prove the temporary archive size against the hard cap. */
+            VERIFY_ARCHIVE_SIZE,
             /** About to check that the publication destination is absent. */
             CHECK_DESTINATION,
             /** About to re-verify the reserved destination before the move. */
@@ -637,45 +646,52 @@ public final class TraceRecorder implements AutoCloseable {
     }
 
     /**
-     * Atomically captures and removes one published trace archive after proving
-     * its receipt evidence (exact size and SHA-256) through the verified root
-     * handle. The captured bytes are returned only after the entry is re-proven
-     * and keyed deletion succeeds; a replaced or tampered archive is left
-     * untouched and reported as a failure.
+     * Atomically captures and removes the published trace archive bound to the
+     * exact {@link TraceManifest} object returned by {@link #stop()}, once,
+     * while the recorder generation is current. The archive is proven through
+     * the verified root handle — nofollow regular type, recorded fileKey, and
+     * current size equal to the recorded evidence — before any allocation or
+     * read; the captured bytes are returned only after the entry is re-proven
+     * and keyed deletion succeeds. A forged, copied, or stale receipt, or a
+     * replaced or tampered archive, fails without reading or deleting anything.
      */
     public synchronized byte[] consumeArchive(TraceManifest manifest) {
         Objects.requireNonNull(manifest, "manifest");
-        if (manifest.archive() == null || manifest.archiveSha256() == null
-                || manifest.archiveSize() < 0 || manifest.archiveSize() > Integer.MAX_VALUE) {
+        TraceReceipt receipt = publishedReceipt;
+        if (receipt == null || receipt.consumed || receipt.manifest != manifest
+                || receipt.generation != generation) {
             throw failure(ErrorCode.INVALID_REQUEST,
-                    "Trace manifest carries no usable archive receipt", null);
+                    "Trace archive receipt is not the current unconsumed publication", null);
         }
         verifyRoot();
-        String archiveName = manifest.archive().getFileName().toString();
-        ContentEvidence evidence = new ContentEvidence(
-                manifest.archiveSha256(), manifest.archiveSize());
+        String archiveName = receipt.manifest.archive().getFileName().toString();
         try (SecureDirectoryStream<Path> rootStream = openRootStream()) {
             BasicFileAttributes attributes;
             try {
-                attributes = childAttributeReader.read(rootStream, archiveName, null);
+                attributes = childAttributeReader.read(rootStream, archiveName,
+                        receipt.archiveFileKey);
             } catch (NoSuchFileException exception) {
                 throw failure(ErrorCode.INVALID_REQUEST,
                         "Trace archive does not exist", exception);
             }
-            if (!attributes.isRegularFile()) {
+            if (!attributes.isRegularFile()
+                    || !Objects.equals(attributes.fileKey(), receipt.archiveFileKey)
+                    || attributes.size() != receipt.evidence.size()) {
                 throw failure(ErrorCode.INVALID_REQUEST,
-                        "Trace archive is not a regular file; leaving it untouched", null);
+                        "Trace archive does not match its publication receipt", null);
             }
-            byte[] captured = readArchiveBounded(rootStream, archiveName, evidence);
+            byte[] captured = readArchiveBounded(rootStream, archiveName,
+                    receipt.evidence);
             List<Throwable> failures = new ArrayList<>();
-            deleteChildChecked(rootStream, archiveName, attributes.fileKey(),
-                    evidence, true, failures);
+            deleteChildChecked(rootStream, archiveName, receipt.archiveFileKey,
+                    receipt.evidence, true, failures);
             if (!failures.isEmpty()) {
                 HarnessException failure = failure(ErrorCode.INVALID_REQUEST,
                         "Trace archive changed before it could be consumed", null);
                 failures.forEach(failure::addSuppressed);
                 throw failure;
             }
+            receipt.consumed = true;
             return captured;
         } catch (IOException exception) {
             throw failure(ErrorCode.INTERNAL_ERROR,
@@ -747,6 +763,7 @@ public final class TraceRecorder implements AutoCloseable {
         Path archive = root.resolve(archiveName);
         Object tempArchiveFileKey = null;
         Object destinationReservationKey = null;
+        Object publishedArchiveKey = null;
         ContentEvidence destinationReservationEvidence = null;
         boolean archivePublished = false;
         LinkedHashMap<String, TraceManifest.ArtifactBinding> bindings = new LinkedHashMap<>();
@@ -769,9 +786,13 @@ public final class TraceRecorder implements AutoCloseable {
             tempArchiveFileKey = rootStream.getFileAttributeView(Path.of(tempName),
                     BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
                     .readAttributes().fileKey();
+            long[] archiveWriteCount = new long[1];
             try (OutputStream raw = Channels.newOutputStream(tempChannel);
+                    CountingOutputStream counting = new CountingOutputStream(
+                            raw, archiveWriteCount);
                     ZipOutputStream zip = new ZipOutputStream(
-                            new BufferedOutputStream(new DigestOutputStream(raw, archiveDigest)),
+                            new BufferedOutputStream(new DigestOutputStream(
+                                    counting, archiveDigest)),
                             StandardCharsets.UTF_8)) {
                 copyEntry(zip, "events.ndjson", eventFile, stagingFileKey,
                         "events.ndjson", eventFileKey, eventsSha256, eventsFileSize);
@@ -785,6 +806,12 @@ public final class TraceRecorder implements AutoCloseable {
                 zip.write(archiveManifest.toJson());
                 zip.closeEntry();
             }
+            // The recorded archive size is immutable write evidence, never a
+            // mutable attribute read: a tampered file cannot change it.
+            archiveSize = archiveWriteCount[0];
+            archiveSha256 = HexFormat.of().formatHex(archiveDigest.digest());
+            interceptor.before(FinalizationInterceptor.Step.VERIFY_ARCHIVE_SIZE,
+                    temporaryArchive);
             BasicFileAttributes attributes = rootStream.getFileAttributeView(
                     Path.of(tempName), BasicFileAttributeView.class,
                     LinkOption.NOFOLLOW_LINKS).readAttributes();
@@ -792,9 +819,19 @@ public final class TraceRecorder implements AutoCloseable {
                 throw failure(ErrorCode.INVALID_REQUEST,
                         "Trace archive storage changed unexpectedly", null);
             }
-            archiveSize = attributes.size();
+            if (attributes.size() > MAX_ARCHIVE_BYTES) {
+                // Reject before any verification read: an archive beyond the hard
+                // trust boundary is never opened for content verification. The
+                // recorded evidence still binds the cleanup, so the oversized
+                // entry is left untouched and reported as residual.
+                throw failure(ErrorCode.LIMIT_EXCEEDED,
+                        "Trace archive exceeds the configured size cap", null);
+            }
+            if (attributes.size() != archiveSize) {
+                throw failure(ErrorCode.INVALID_REQUEST,
+                        "Trace archive storage changed unexpectedly", null);
+            }
             requireOwnerOnlyChild(rootStream, tempName, false);
-            archiveSha256 = HexFormat.of().formatHex(archiveDigest.digest());
             verifyArchiveContent(rootStream, tempName, temporaryArchive,
                     tempArchiveFileKey, archiveSha256, archiveSize);
             // Reserve the destination with CREATE_NEW: an occupied destination fails
@@ -840,6 +877,11 @@ public final class TraceRecorder implements AutoCloseable {
             verifyArchiveContent(rootStream, archiveName, archive,
                     tempArchiveFileKey, archiveSha256, archiveSize);
             requireOwnerOnlyChild(rootStream, archiveName, false);
+            // Capture the published archive identity before the finalization
+            // interceptor: the receipt must reflect the verified archive.
+            publishedArchiveKey = rootStream.getFileAttributeView(
+                    Path.of(archiveName), BasicFileAttributeView.class,
+                    LinkOption.NOFOLLOW_LINKS).readAttributes().fileKey();
             interceptor.before(FinalizationInterceptor.Step.AFTER_FINALIZE, archive);
         } catch (IOException exception) {
             List<Throwable> cleanupFailures = new ArrayList<>();
@@ -849,8 +891,14 @@ public final class TraceRecorder implements AutoCloseable {
                             : new ContentEvidence(archiveSha256, archiveSize),
                     cleanupFailures);
             cleanupFailures.addAll(cleanupStaging(eventsEvidence));
-            HarnessException failure = failure(ErrorCode.INTERNAL_ERROR,
-                    "Unable to finalize trace archive", exception);
+            HarnessException failure;
+            if (exception instanceof ArchiveLimitException) {
+                failure = failure(ErrorCode.LIMIT_EXCEEDED,
+                        "Trace archive exceeds the configured size cap", exception);
+            } else {
+                failure = failure(ErrorCode.INTERNAL_ERROR,
+                        "Unable to finalize trace archive", exception);
+            }
             cleanupFailures.forEach(failure::addSuppressed);
             throw failure;
         } catch (RuntimeException failure) {
@@ -875,6 +923,8 @@ public final class TraceRecorder implements AutoCloseable {
             cleanupFailures.forEach(failure::addSuppressed);
             throw failure;
         }
+        publishedReceipt = new TraceReceipt(manifest, publishedArchiveKey,
+                new ContentEvidence(archiveSha256, archiveSize), generation);
         return manifest;
     }
 
@@ -1826,6 +1876,73 @@ public final class TraceRecorder implements AutoCloseable {
      * reproduce it; directories are deleted only after exact token proof.
      */
     private record DirectoryMarker(String name, Object fileKey, ContentEvidence content) {}
+
+    /**
+     * Bound receipt of one successfully published archive: the exact manifest
+     * object returned to the caller, the published archive fileKey captured
+     * through the root handle before return, the immutable content evidence,
+     * and the recorder generation at publication. Consumption accepts only
+     * this exact object, once, while the generation is current; forged,
+     * copied, or stale receipts fail without reading or deleting anything.
+     */
+    private static final class TraceReceipt {
+        final TraceManifest manifest;
+        final Object archiveFileKey;
+        final ContentEvidence evidence;
+        final long generation;
+        boolean consumed;
+
+        TraceReceipt(TraceManifest manifest, Object archiveFileKey,
+                ContentEvidence evidence, long generation) {
+            this.manifest = manifest;
+            this.archiveFileKey = archiveFileKey;
+            this.evidence = evidence;
+            this.generation = generation;
+        }
+    }
+
+    /**
+     * Counts the exact bytes written, so the recorded size is write truth, and
+     * enforces the hard archive cap during the write: the recorder never writes
+     * past {@link #MAX_ARCHIVE_BYTES}.
+     */
+    private static final class CountingOutputStream extends OutputStream {
+        private final OutputStream delegate;
+        private final long[] countRef;
+
+        CountingOutputStream(OutputStream delegate, long[] countRef) {
+            this.delegate = delegate;
+            this.countRef = countRef;
+        }
+
+        @Override public void write(int value) throws IOException {
+            if (countRef[0] >= MAX_ARCHIVE_BYTES) {
+                throw new ArchiveLimitException();
+            }
+            delegate.write(value);
+            countRef[0]++;
+        }
+
+        @Override public void write(byte[] bytes, int offset, int length) throws IOException {
+            if (length > MAX_ARCHIVE_BYTES - countRef[0]) {
+                throw new ArchiveLimitException();
+            }
+            delegate.write(bytes, offset, length);
+            countRef[0] += length;
+        }
+
+        @Override public void flush() throws IOException {
+            delegate.flush();
+        }
+
+        @Override public void close() throws IOException {
+            delegate.close();
+        }
+    }
+
+    /** Signals that the archive write exceeded the configured hard cap. */
+    @SuppressWarnings("serial")
+    private static final class ArchiveLimitException extends IOException {}
 
     /** Content evidence of the freshly created empty destination reservation. */
     private static ContentEvidence emptyContentEvidence() {
