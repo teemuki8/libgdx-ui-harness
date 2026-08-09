@@ -8,12 +8,19 @@ Add only the layers the application uses. For a Scene2D desktop harness and MCP 
 
 ```kotlin
 dependencies {
-    implementation("io.github.teemuki8:harness-lwjgl3:1.1.0")
-    implementation("io.github.teemuki8:harness-mcp:1.1.0")
+    implementation("io.github.teemuki8:harness-lwjgl3:1.2.1")
+    implementation("io.github.teemuki8:harness-mcp:1.2.1")
 }
 ```
 
 `harness-lwjgl3` brings in `harness-scene2d` and `harness-core`; `harness-mcp` brings in `harness-protocol` and core. The published modules require Java 25. Fixtures and benchmarks have no Maven publication. An optional published `harness-agent-runtime` module implements runtime-value comparison for the ADR 0025 SPI.
+
+For new agentic UI construction, add `io.github.teemuki8:libgdx-ui-markup:0.4.1` and its
+`libgdx-ui-markup-harness` adapter. Declare semantic identity in XML and pass a
+`HarnessSemanticSink` into the markup builder. Bootstrap and benchmark workflows support this one
+markup-only actor-construction path; controller code binds behavior to the resulting `BuiltUi`
+instead of creating a second Stage or actor tree. The harness artifacts above remain markup-free
+and can still validate existing Scene2D applications.
 
 ## The compiled Java flow
 

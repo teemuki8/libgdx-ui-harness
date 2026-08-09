@@ -9,7 +9,7 @@ A semantic UI automation library for libGDX Scene2D. It gives coding agents and 
 
 The design brings Playwright-style principles to libGDX: lazy strict locators, actionability checks, automatic waits, immutable semantic snapshots, completed-frame screenshots, and causal traces. Live `Stage`, `Actor`, input, and framebuffer work remains confined to the application's render thread.
 
-> **Release:** `1.1.0` is the current release (see [v1.1.0 notes](docs/releases/v1.1.0.md)). Published modules require Java 25.
+> **Release:** `1.2.1` is the current release (see [v1.2.1 notes](docs/releases/v1.2.1.md)). Published modules require Java 25.
 
 ## Why use it?
 
@@ -38,8 +38,8 @@ repositories {
 }
 
 dependencies {
-    implementation("io.github.teemuki8:harness-lwjgl3:1.1.0")
-    implementation("io.github.teemuki8:harness-mcp:1.1.0")
+    implementation("io.github.teemuki8:harness-lwjgl3:1.2.1")
+    implementation("io.github.teemuki8:harness-mcp:1.2.1")
 }
 ```
 
@@ -64,6 +64,18 @@ try (FixtureHarness fixture = FixtureHarness.start()) {
 `FixtureHarness` is the repository's test fixture. A production game instead creates a `Scene2dSession` for its application-owned `Stage`, binds the render scheduler, frame signal, revision/frame suppliers, and configured `InputProcessor`, then publishes that session through the protocol service. The harness does not replace or dispose the game's stage, input processor, or loop.
 
 See [Getting started](docs/guides/getting-started.md) for the compiled example and production lifecycle.
+
+### Markup-first agentic UIs
+
+Repository-owned agentic workflows construct UI exclusively with
+[`libgdx-ui-markup`](https://github.com/teemuki8/libgdx-ui-markup). The XML source declares stable
+`testId`, `role`, and `accessibleName` metadata, and the markup harness adapter publishes those
+semantics while building the one Scene2D actor tree. This removes a parallel imperative semantic
+tree and makes the same source authoritative for construction and automation.
+
+The six published harness modules intentionally remain independent of markup so they can validate
+existing Scene2D applications. New bootstrap projects, fixtures, and agentic benchmark candidates
+use the markup-only construction path.
 
 ## MCP tools
 

@@ -54,6 +54,13 @@ The runner refuses to mix a new execution with existing raw JSON. Choose a fresh
 
 ## Corpus and symmetry
 
+Agentic Palisade uses one markup-only construction contract in both treatment arms. The candidate
+edits the shared XML/CSS resources and binds controller behavior through `CandidateUi.bind`; it
+cannot replace the template-owned Stage or create a parallel actor tree. Both arms resolve
+`io.github.teemuki8:libgdx-ui-markup:0.4.1` and the same qualified resource digests. The harness
+arm adds only the candidate harness modules, bridge, and `HarnessSemanticSink`; the offline
+treatment preflight rejects coordinate, resource, or digest drift before launch.
+
 `corpus/scenarios.json` is a strict schema-versioned, ordered definition of exactly:
 
 1. sign-in

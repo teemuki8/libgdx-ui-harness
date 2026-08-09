@@ -40,9 +40,17 @@ A GitHub token is not a Maven Central user token. Never place secret values in r
 Run the complete release candidate gate:
 
 ```bash
-./gradlew clean check javadoc publishToMavenLocal --warning-mode=fail
 python3 scripts/validate-workflows.py
+python3 scripts/test-ecosystem-profile.py
+python3 benchmarks/agentic-palisade/scripts/test-treatment-symmetry.py
+xvfb-run -a ./gradlew minimumEcosystemTest currentEcosystemTest --warning-mode=fail
+xvfb-run -a ./gradlew clean check javadoc publishToMavenLocal --warning-mode=fail
 ```
+
+CI additionally publishes the exact candidate version to an isolated Maven repository, seeds a
+fresh Gradle cache, and proves both markup-identical Agentic Palisade treatments can compile, test,
+and launch offline. It then runs the deterministic synthetic qualification pipeline. Neither step
+calls a real model.
 
 Confirm that Maven local contains only the six publishable modules:
 
@@ -54,6 +62,8 @@ Confirm that Maven local contains only the six publishable modules:
 - `harness-agent-runtime`
 
 `harness-fixtures` and `benchmarks` must not be published.
+Inspect all six generated POMs and reject any dependency on `libgdx-ui-markup`; markup belongs only
+to unpublished fixtures and workflow templates.
 
 ## Create the release
 
