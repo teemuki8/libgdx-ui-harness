@@ -8,8 +8,8 @@ Add only the layers the application uses. For a Scene2D desktop harness and MCP 
 
 ```kotlin
 dependencies {
-    implementation("io.github.teemuki8:harness-lwjgl3:1.2.1")
-    implementation("io.github.teemuki8:harness-mcp:1.2.1")
+    implementation("io.github.teemuki8:harness-lwjgl3:1.3.0")
+    implementation("io.github.teemuki8:harness-mcp:1.3.0")
 }
 ```
 

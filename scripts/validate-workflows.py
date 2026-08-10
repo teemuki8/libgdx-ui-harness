@@ -6,12 +6,14 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+CURRENT_RELEASE = "1.3.0"
+PREVIOUS_RELEASE = "1.2.1"
 release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 readme = (ROOT / "README.md").read_text(encoding="utf-8")
 getting_started = (ROOT / "docs/guides/getting-started.md").read_text(encoding="utf-8")
 benchmark_guide = (ROOT / "benchmarks/README.md").read_text(encoding="utf-8")
-release_notes_path = ROOT / "docs/releases/v1.2.1.md"
+release_notes_path = ROOT / f"docs/releases/v{CURRENT_RELEASE}.md"
 release_notes = (release_notes_path.read_text(encoding="utf-8")
                  if release_notes_path.is_file() else "")
 errors: list[str] = []
@@ -113,29 +115,31 @@ for marker in (
     require(marker in ci, f"benchmark qualification prerequisite missing: {marker}")
 require("omp --model" not in ci and "run-benchmark.py --output" not in ci,
         "CI must never invoke measured OMP agents")
-require("candidate_version='1.2.1-candidate.ci'" in ci,
-        "CI treatment preflight must publish the 1.2.1 candidate")
+require(f"candidate_version='{CURRENT_RELEASE}-candidate.ci'" in ci,
+        f"CI treatment preflight must publish the {CURRENT_RELEASE} candidate")
 require(
     "if: github.event_name == 'pull_request' && "
     "vars.DEPENDENCY_REVIEW_ENABLED == 'true'" in ci,
     "dependency review must require an explicit repository capability flag",
 )
 
-require("`1.2.1` is the current release" in readme,
-        "README must identify 1.2.1 as the current release")
-require("1.1.0` is the current release" not in readme,
-        "README contains stale 1.1.0 current-release text")
+require(f"`{CURRENT_RELEASE}` is the current release" in readme,
+        f"README must identify {CURRENT_RELEASE} as the current release")
+require(f"`{PREVIOUS_RELEASE}` is the current release" not in readme,
+        f"README contains stale {PREVIOUS_RELEASE} current-release text")
 for document_name, document in (("README", readme),
                                 ("getting-started", getting_started)):
-    require(document.count("io.github.teemuki8:harness-lwjgl3:1.2.1") == 1,
+    require(document.count(
+            f"io.github.teemuki8:harness-lwjgl3:{CURRENT_RELEASE}") == 1,
             f"{document_name} must show the current harness-lwjgl3 coordinate")
-    require(document.count("io.github.teemuki8:harness-mcp:1.2.1") == 1,
+    require(document.count(
+            f"io.github.teemuki8:harness-mcp:{CURRENT_RELEASE}") == 1,
             f"{document_name} must show the current harness-mcp coordinate")
 for marker in (
-        "libgdx-ui-markup:0.4.1", "agent-runtime 1.0.0", "agent-runtime 2.0.0",
-        "deterministic", "empirical", "markup-only"):
+        "ui_keyboard_gesture", "ui_keyboard_gesture_ticks",
+        "source- and binary-compatible with 1.2.1", "harness-agent-runtime:1.3.0"):
     require(marker in release_notes,
-            f"1.2.1 release notes missing compatibility marker: {marker}")
+            f"{CURRENT_RELEASE} release notes missing compatibility marker: {marker}")
 for marker in ("markup-only", "libgdx-ui-markup:0.4.1", "HarnessSemanticSink"):
     require(marker in benchmark_guide,
             f"benchmark guide missing markup treatment marker: {marker}")
