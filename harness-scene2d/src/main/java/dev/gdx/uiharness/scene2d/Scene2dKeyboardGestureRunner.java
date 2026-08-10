@@ -2,6 +2,10 @@ package dev.gdx.uiharness.scene2d;
 
 import com.badlogic.gdx.InputProcessor;
 import dev.gdx.uiharness.core.gesture.ExactTickCoordinator;
+import dev.gdx.uiharness.core.gesture.ExactTickCoordinator.TickAdvanceResult;
+import dev.gdx.uiharness.core.gesture.ExactTickCoordinator.TickFailure;
+import dev.gdx.uiharness.core.gesture.ExactTickCoordinator.TickFailureCategory;
+import dev.gdx.uiharness.core.gesture.ExactTickCoordinator.TickPreflight;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureRequest;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureResult;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureResult.CleanupAttempt;
@@ -154,6 +158,7 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
         private int stepIndex;
         private int completedSteps;
         private ActiveFrameWait activeFrameWait;
+        private CompletableFuture<TickAdvanceResult> activeTick;
         private DeadlineScheduler.Cancellation requestDeadline;
         private DeadlineScheduler.Cancellation cleanupDeadline;
         private Terminal terminal;
@@ -172,6 +177,9 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
         }
 
         void start() {
+            if (!preflightTicks()) {
+                return;
+            }
             armRequestDeadline();
             safeTrace("gesture-accepted", null, null);
             synchronized (this) {
@@ -180,6 +188,39 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
                 }
             }
             scheduleNext();
+        }
+
+        private boolean preflightTicks() {
+            for (int index = 0; index < request.steps().size(); index++) {
+                KeyboardGestureRequest.Step step = request.steps().get(index);
+                if (!(step instanceof KeyboardGestureRequest.WaitTicks wait)) {
+                    continue;
+                }
+                if (ticks.isEmpty()) {
+                    requestTermination(
+                            TerminalOutcome.REJECTED,
+                            FailureCategory.UNSUPPORTED_TICK_CAPABILITY,
+                            OptionalInt.of(index));
+                    return false;
+                }
+                TickPreflight result;
+                try {
+                    result = ticks.orElseThrow().preflight(wait.count(), deadline);
+                } catch (RuntimeException | Error failure) {
+                    requestTermination(
+                            TerminalOutcome.REJECTED,
+                            FailureCategory.TICK_ADVANCE_FAILURE,
+                            OptionalInt.of(index));
+                    return false;
+                }
+                if (result instanceof TickPreflight.Rejected rejected) {
+                    TickTermination terminal = mapTickFailure(rejected.failure(), true);
+                    requestTermination(
+                            terminal.outcome(), terminal.failure(), OptionalInt.of(index));
+                    return false;
+                }
+            }
+            return true;
         }
 
         private void armRequestDeadline() {
@@ -221,14 +262,118 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
                 case KeyboardGestureRequest.KeyUp up ->
                         scheduleKey(up.keycode(), false);
                 case KeyboardGestureRequest.WaitFrames wait -> waitForFrames(wait.count());
-                case KeyboardGestureRequest.WaitTicks ignored ->
-                        requestTermination(
-                                TerminalOutcome.REJECTED,
-                                ticks.isEmpty()
-                                        ? FailureCategory.UNSUPPORTED_TICK_CAPABILITY
-                                        : FailureCategory.INVALID_RUNTIME_STATE,
-                                OptionalInt.of(currentStepIndex()));
+                case KeyboardGestureRequest.WaitTicks wait -> waitForTicks(wait.count());
             }
+        }
+
+        private void waitForTicks(int count) {
+            int tickStep = currentStepIndex();
+            long beforeRevision = revisions.getAsLong();
+            long beforeFrame = frameNumbers.getAsLong();
+            CompletableFuture<TickAdvanceResult> submitted;
+            try {
+                submitted = ticks.orElseThrow().advance(count, deadline).toCompletableFuture();
+            } catch (RuntimeException | Error failure) {
+                addFailedTickEvidence(
+                        count, beforeRevision, beforeFrame,
+                        revisions.getAsLong(), frameNumbers.getAsLong());
+                requestTermination(
+                        TerminalOutcome.FAILED, FailureCategory.TICK_ADVANCE_FAILURE,
+                        OptionalInt.of(tickStep));
+                return;
+            }
+            synchronized (this) {
+                if (phase != Phase.NORMAL) {
+                    submitted.cancel(false);
+                    return;
+                }
+                activeTick = submitted;
+            }
+            submitted.whenComplete((advance, submissionFailure) -> {
+                synchronized (this) {
+                    if (phase != Phase.NORMAL || activeTick != submitted) {
+                        return;
+                    }
+                    activeTick = null;
+                }
+                if (submissionFailure != null || advance == null) {
+                    addFailedTickEvidence(
+                            count, beforeRevision, beforeFrame,
+                            revisions.getAsLong(), frameNumbers.getAsLong());
+                    requestTermination(
+                            deadline.isExpired() ? TerminalOutcome.TIMED_OUT
+                                    : TerminalOutcome.FAILED,
+                            deadline.isExpired() ? FailureCategory.TIMEOUT
+                                    : FailureCategory.TICK_ADVANCE_FAILURE,
+                            OptionalInt.of(tickStep));
+                    return;
+                }
+                if (advance instanceof TickAdvanceResult.Failed failed) {
+                    addFailedTickEvidence(
+                            count, beforeRevision, beforeFrame,
+                            revisions.getAsLong(), frameNumbers.getAsLong());
+                    TickTermination terminal = mapTickFailure(failed.failure(), false);
+                    requestTermination(
+                            terminal.outcome(), terminal.failure(), OptionalInt.of(tickStep));
+                    return;
+                }
+                TickAdvanceResult.Completed completed =
+                        (TickAdvanceResult.Completed) advance;
+                synchronized (this) {
+                    if (phase != Phase.NORMAL || stepIndex != tickStep) {
+                        return;
+                    }
+                    evidence.add(new StepEvidence(
+                            stepIndex, StepKind.WAIT_TICKS, StepStatus.COMPLETED,
+                            OptionalInt.empty(), OptionalInt.of(count),
+                            beforeRevision, beforeFrame,
+                            revisions.getAsLong(), frameNumbers.getAsLong(),
+                            List.copyOf(held), Optional.of(completed.evidence())));
+                    stepIndex++;
+                    completedSteps++;
+                }
+                safeTrace("gesture-step", tickStep, "wait-ticks");
+                scheduleNext();
+            });
+        }
+
+        private void addFailedTickEvidence(
+                int count,
+                long beforeRevision,
+                long beforeFrame,
+                long afterRevision,
+                long afterFrame) {
+            synchronized (this) {
+                if (phase != Phase.NORMAL) {
+                    return;
+                }
+                evidence.add(new StepEvidence(
+                        stepIndex, StepKind.WAIT_TICKS, StepStatus.FAILED,
+                        OptionalInt.empty(), OptionalInt.of(count),
+                        beforeRevision, beforeFrame, afterRevision, afterFrame,
+                        List.copyOf(held), Optional.empty()));
+                stepIndex++;
+            }
+        }
+
+        private TickTermination mapTickFailure(TickFailure tickFailure, boolean preflight) {
+            TickFailureCategory category = tickFailure.category();
+            return switch (category) {
+                case UNSUPPORTED_CAPABILITY -> new TickTermination(
+                        preflight ? TerminalOutcome.REJECTED : TerminalOutcome.FAILED,
+                        FailureCategory.UNSUPPORTED_TICK_CAPABILITY);
+                case INVALID_STATE, LIMIT_EXCEEDED -> new TickTermination(
+                        preflight ? TerminalOutcome.REJECTED : TerminalOutcome.FAILED,
+                        FailureCategory.INVALID_RUNTIME_STATE);
+                case TIMED_OUT -> new TickTermination(
+                        TerminalOutcome.TIMED_OUT, FailureCategory.TIMEOUT);
+                case EPOCH_CHANGED -> new TickTermination(
+                        TerminalOutcome.FAILED, FailureCategory.EPOCH_CHANGED);
+                case CANCELLED -> new TickTermination(
+                        TerminalOutcome.CANCELLED, FailureCategory.CANCELLED);
+                case CALLBACK_FAILED, INTERNAL_FAILURE -> new TickTermination(
+                        TerminalOutcome.FAILED, FailureCategory.TICK_ADVANCE_FAILURE);
+            };
         }
 
         private void scheduleKey(int keycode, boolean down) {
@@ -471,8 +616,8 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
                 FailureCategory failure,
                 OptionalInt failureStep) {
             ActiveFrameWait frameWait;
+            CompletableFuture<TickAdvanceResult> tickAdvance;
             DeadlineScheduler.Cancellation requestCancellation;
-            boolean begin;
             synchronized (this) {
                 if (phase != Phase.NORMAL) {
                     return;
@@ -481,20 +626,22 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
                 terminal = new Terminal(outcome, failure, failureStep);
                 frameWait = activeFrameWait;
                 activeFrameWait = null;
+                tickAdvance = activeTick;
+                activeTick = null;
                 requestCancellation = requestDeadline;
                 requestDeadline = null;
                 cleanupOrder = reverse(held);
-                begin = true;
             }
             close(requestCancellation);
             if (frameWait != null) {
                 frameWait.cancel();
             }
+            if (tickAdvance != null) {
+                tickAdvance.cancel(false);
+            }
             safeTrace("gesture-failed", failureStep.isPresent()
                     ? failureStep.getAsInt() : null, failure.name().toLowerCase());
-            if (begin) {
-                beginCleanup();
-            }
+            beginCleanup();
         }
 
         private void beginCleanup() {
@@ -731,6 +878,10 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
             TerminalOutcome outcome,
             FailureCategory failure,
             OptionalInt failureStep) {}
+
+    private record TickTermination(
+            TerminalOutcome outcome,
+            FailureCategory failure) {}
 
     private record KeyDispatch(
             boolean success,

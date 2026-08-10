@@ -6,6 +6,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.badlogic.gdx.Input.Keys;
 import com.badlogic.gdx.InputAdapter;
+import dev.gdx.uiharness.core.gesture.ExactTickCoordinator;
+import dev.gdx.uiharness.core.gesture.ExactTickCoordinator.TickAdvanceResult;
+import dev.gdx.uiharness.core.gesture.ExactTickCoordinator.TickEvidence;
+import dev.gdx.uiharness.core.gesture.ExactTickCoordinator.TickFailure;
+import dev.gdx.uiharness.core.gesture.ExactTickCoordinator.TickFailureCategory;
+import dev.gdx.uiharness.core.gesture.ExactTickCoordinator.TickPreflight;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureRequest;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureResult;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureResult.CleanupAttemptStatus;
@@ -20,9 +26,12 @@ import dev.gdx.uiharness.core.wait.FrameSignal;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
@@ -274,6 +283,61 @@ final class Scene2dKeyboardGestureRunnerTest {
         assertEquals(TerminalOutcome.COMPLETED, result.join().outcome());
     }
 
+    @Test void tickPreflightRejectsBeforeInputAndExactAdvanceKeepsKeyHeld() {
+        FakeTicks rejectedTicks = new FakeTicks();
+        rejectedTicks.preflight = new TickPreflight.Rejected(new TickFailure(
+                TickFailureCategory.INVALID_STATE, Map.of("reason", "not-paused")));
+        Fixture rejectedFixture = new Fixture(rejectedTicks);
+        KeyboardGestureResult rejected = rejectedFixture.execute(List.of(
+                new KeyboardGestureRequest.KeyDown(Keys.A),
+                new KeyboardGestureRequest.WaitTicks(3),
+                new KeyboardGestureRequest.KeyUp(Keys.A))).join();
+        assertEquals(FailureCategory.INVALID_RUNTIME_STATE, rejected.failure().orElseThrow());
+        assertTrue(rejectedFixture.input.events.isEmpty());
+
+        FakeTicks ticks = new FakeTicks();
+        Fixture fixture = new Fixture(ticks);
+        CompletableFuture<KeyboardGestureResult> result = fixture.execute(List.of(
+                new KeyboardGestureRequest.KeyDown(Keys.A),
+                new KeyboardGestureRequest.WaitTicks(3),
+                new KeyboardGestureRequest.KeyUp(Keys.A)));
+        assertEquals(1, ticks.preflightCalls);
+        fixture.scheduler.drain();
+        assertEquals(List.of("down:" + Keys.A), fixture.input.events);
+        assertFalse(result.isDone());
+
+        ticks.advance.complete(new TickAdvanceResult.Completed(new TickEvidence(
+                3, 3, 10, 13, 7,
+                OptionalLong.of(20), OptionalLong.of(22),
+                OptionalLong.of(30), OptionalLong.of(32), 16_000_000)));
+        assertFalse(result.isDone(), "tick completion must only schedule render-thread key-up");
+        fixture.scheduler.drain();
+
+        KeyboardGestureResult completed = result.join();
+        assertEquals(TerminalOutcome.COMPLETED, completed.outcome());
+        assertEquals(3, completed.steps().get(1).tick().orElseThrow().completedTicks());
+        assertEquals(List.of("down:" + Keys.A, "up:" + Keys.A), fixture.input.events);
+    }
+
+    @Test void tickFailureBeginsRenderThreadCleanupAndMapsEpochChange() {
+        FakeTicks ticks = new FakeTicks();
+        Fixture fixture = new Fixture(ticks);
+        CompletableFuture<KeyboardGestureResult> result = fixture.execute(List.of(
+                new KeyboardGestureRequest.KeyDown(Keys.A),
+                new KeyboardGestureRequest.WaitTicks(3),
+                new KeyboardGestureRequest.KeyUp(Keys.A)));
+        fixture.scheduler.drain();
+
+        ticks.advance.complete(new TickAdvanceResult.Failed(new TickFailure(
+                TickFailureCategory.EPOCH_CHANGED, Map.of("reason", "execution-epoch"))));
+        assertFalse(result.isDone());
+        fixture.scheduler.drain();
+
+        KeyboardGestureResult failed = result.join();
+        assertEquals(FailureCategory.EPOCH_CHANGED, failed.failure().orElseThrow());
+        assertEquals(CleanupStatus.COMPLETED, failed.cleanupStatus());
+    }
+
     private static final class Fixture {
         final Thread ownerThread = Thread.currentThread();
         final ManualClock clock = new ManualClock();
@@ -289,10 +353,19 @@ final class Scene2dKeyboardGestureRunnerTest {
             this(ignored -> {});
         }
 
+        Fixture(ExactTickCoordinator tickCoordinator) {
+            this(Optional.of(tickCoordinator), ignored -> {});
+        }
+
         Fixture(java.util.function.Consumer<dev.gdx.uiharness.core.trace.TraceEvent> trace) {
+            this(Optional.empty(), trace);
+        }
+
+        Fixture(Optional<ExactTickCoordinator> tickCoordinator,
+                java.util.function.Consumer<dev.gdx.uiharness.core.trace.TraceEvent> trace) {
             runner = new Scene2dKeyboardGestureRunner(
                     "game", input, scheduler, frames, revision::get, frame::get, deadlines,
-                    Optional.empty(), trace);
+                    tickCoordinator, trace);
         }
 
         CompletableFuture<KeyboardGestureResult> execute(
@@ -400,6 +473,22 @@ final class Scene2dKeyboardGestureRunnerTest {
             ScheduledSignal(Runnable signal) {
                 this.signal = signal;
             }
+        }
+    }
+
+    private static final class FakeTicks implements ExactTickCoordinator {
+        TickPreflight preflight = new TickPreflight.Ready(10_000);
+        final CompletableFuture<TickAdvanceResult> advance = new CompletableFuture<>();
+        int preflightCalls;
+
+        @Override public TickPreflight preflight(int ticks, Deadline deadline) {
+            preflightCalls++;
+            return preflight;
+        }
+
+        @Override public CompletionStage<TickAdvanceResult> advance(
+                int ticks, Deadline deadline) {
+            return advance;
         }
     }
 }
