@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 
-/** Immutable catalog of the fifteen allowlisted MCP tools and their bounded JSON schemas. */
+/** Immutable catalog of the allowlisted MCP tools and their bounded JSON schemas. */
 public final class HarnessToolCatalog {
     private static final int MAX_IDENTIFIER = 256;
 
@@ -86,6 +86,9 @@ public final class HarnessToolCatalog {
                                 "evidence", evidenceSchema(),
                                 "artifact", ARTIFACT_SCHEMA),
                                 List.of("beforeRevision", "afterRevision", "observedState"))),
+                tool(AccessMode.MUTATING, "ui_keyboard_gesture",
+                        "Run one bounded atomic keyboard timeline through real input dispatch",
+                        keyboardGestureInput(), keyboardGestureOutput()),
                 tool(AccessMode.READ_ONLY, "ui_assert",
                         "Evaluate one bounded declarative UI assertion",
                         assertionInput(), assertionOutput()),
@@ -991,6 +994,21 @@ public final class HarnessToolCatalog {
                                 "kind", "pointer", "phase", "move",
                                 "offsetX", 0, "offsetY", 0,
                                 "pointer", 0, "button", 0, "force", false))));
+        values.put("ui_keyboard_gesture", List.of(
+                Map.of(
+                        "sessionId", "SESSION", "schemaVersion", 1,
+                        "deadlineMillis", 30_000,
+                        "steps", List.of(
+                                Map.of("kind", "key-down", "keycode", 29),
+                                Map.of("kind", "wait-frames", "count", 30),
+                                Map.of("kind", "key-up", "keycode", 29))),
+                Map.of(
+                        "sessionId", "SESSION", "schemaVersion", 1,
+                        "deadlineMillis", 30_000,
+                        "steps", List.of(
+                                Map.of("kind", "key-down", "keycode", 29),
+                                Map.of("kind", "wait-ticks", "count", 30),
+                                Map.of("kind", "key-up", "keycode", 29)))));
         values.put("ui_assert", assertionExamples(roleButton));
         values.put("ui_wait", List.of(Map.of(
                 "sessionId", "SESSION", "locator", roleButton,
@@ -1205,6 +1223,90 @@ public final class HarnessToolCatalog {
         LinkedHashMap<String, Object> schema = new LinkedHashMap<>(object(properties, allRequired));
         customizer.accept(schema);
         return Map.copyOf(schema);
+    }
+
+    private static Map<String, Object> keyboardGestureInput() {
+        Map<String, Object> steps = new LinkedHashMap<>();
+        steps.put("type", "array");
+        steps.put("minItems", 2);
+        steps.put("maxItems", 64);
+        steps.put("items", Map.of("oneOf", List.of(
+                tagged("key-down", Map.of("keycode", integer(0, 255)),
+                        List.of("keycode")),
+                tagged("wait-frames", Map.of("count", integer(1, 10_000)),
+                        List.of("count")),
+                tagged("wait-ticks", Map.of("count", integer(1, 10_000)),
+                        List.of("count")),
+                tagged("key-up", Map.of("keycode", integer(0, 255)),
+                        List.of("keycode")))));
+        return envelope(Map.of(
+                        "schemaVersion", Map.of("type", "integer", "const", 1),
+                        "steps", Map.copyOf(steps)),
+                List.of("schemaVersion", "steps", "deadlineMillis"), true, ignored -> {});
+    }
+
+    private static Map<String, Object> keyboardGestureOutput() {
+        Map<String, Object> tick = object(Map.ofEntries(
+                Map.entry("requestedTicks", integer(1, 10_000)),
+                Map.entry("completedTicks", integer(1, 10_000)),
+                Map.entry("startTick", integer(0, Long.MAX_VALUE)),
+                Map.entry("finalTick", integer(1, Long.MAX_VALUE)),
+                Map.entry("executionEpoch", integer(0, Long.MAX_VALUE)),
+                Map.entry("firstRuntimeFrame", integer(0, Long.MAX_VALUE)),
+                Map.entry("finalRuntimeFrame", integer(0, Long.MAX_VALUE)),
+                Map.entry("firstUiFrame", integer(0, Long.MAX_VALUE)),
+                Map.entry("finalUiFrame", integer(0, Long.MAX_VALUE)),
+                Map.entry("configuredDeltaNanos", integer(1, Long.MAX_VALUE))),
+                List.of("requestedTicks", "completedTicks", "startTick", "finalTick",
+                        "executionEpoch", "configuredDeltaNanos"));
+        Map<String, Object> step = object(Map.ofEntries(
+                Map.entry("index", integer(0, 63)),
+                Map.entry("kind", enumString(
+                        "key-down", "wait-frames", "wait-ticks", "key-up")),
+                Map.entry("status", enumString("completed", "failed")),
+                Map.entry("keycode", integer(0, 255)),
+                Map.entry("count", integer(1, 10_000)),
+                Map.entry("beforeRevision", integer(0, Long.MAX_VALUE)),
+                Map.entry("beforeFrame", integer(0, Long.MAX_VALUE)),
+                Map.entry("afterRevision", integer(0, Long.MAX_VALUE)),
+                Map.entry("afterFrame", integer(0, Long.MAX_VALUE)),
+                Map.entry("heldKeys", array(integer(0, 255), 16)),
+                Map.entry("tick", tick)),
+                List.of("index", "kind", "status", "beforeRevision", "beforeFrame",
+                        "afterRevision", "afterFrame", "heldKeys"));
+        Map<String, Object> cleanup = object(Map.of(
+                "keycode", integer(0, 255),
+                "status", enumString(
+                        "released", "dispatch-failed", "deadline-exceeded",
+                        "scheduler-rejected")), List.of("keycode", "status"));
+        return output("keyboard-gesture-result", Map.ofEntries(
+                Map.entry("schemaVersion", Map.of("type", "integer", "const", 1)),
+                Map.entry("outcome", enumString(
+                        "completed", "rejected", "failed", "timed-out",
+                        "cancelled", "session-closed")),
+                Map.entry("requestedSteps", integer(2, 64)),
+                Map.entry("startedSteps", integer(0, 64)),
+                Map.entry("completedSteps", integer(0, 64)),
+                Map.entry("startRevision", integer(0, Long.MAX_VALUE)),
+                Map.entry("startFrame", integer(0, Long.MAX_VALUE)),
+                Map.entry("endRevision", integer(0, Long.MAX_VALUE)),
+                Map.entry("endFrame", integer(0, Long.MAX_VALUE)),
+                Map.entry("elapsedNanos", integer(0, Long.MAX_VALUE)),
+                Map.entry("steps", array(step, 64)),
+                Map.entry("failureStep", integer(0, 63)),
+                Map.entry("failure", enumString(
+                        "invalid-request", "unsupported-tick-capability",
+                        "invalid-runtime-state", "session-busy", "key-dispatch-failure",
+                        "frame-source-closed", "tick-advance-failure", "epoch-changed",
+                        "timeout", "cancelled", "session-closed", "cleanup-failure")),
+                Map.entry("heldKeys", array(integer(0, 255), 16)),
+                Map.entry("cleanupStatus", enumString("not-required", "completed", "failed")),
+                Map.entry("cleanup", array(cleanup, 16)),
+                Map.entry("traceId", string(1, MAX_IDENTIFIER))),
+                List.of("schemaVersion", "outcome", "requestedSteps", "startedSteps",
+                        "completedSteps", "startRevision", "startFrame", "endRevision",
+                        "endFrame", "elapsedNanos", "steps", "heldKeys", "cleanupStatus",
+                        "cleanup"));
     }
 
     private static Map<String, Object> assertionInput() {

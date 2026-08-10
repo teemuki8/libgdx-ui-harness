@@ -1,6 +1,6 @@
 # Agent tools and safe operation
 
-The MCP server exposes exactly twenty-three bounded tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms; `ui_assert` and `ui_scenario_start` require it, up to 120,000 ms and 600,000 ms respectively. Deadlines include adapter work and backend queue time. The server's outer request timeout is 630,000 ms (the scenario maximum plus a 30-second translation allowance), so a full scenario deadline is never aborted by the SDK transport timeout; the per-request deadline remains the authoritative bound.
+The MCP server exposes exactly twenty-four bounded tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms; `ui_assert` and `ui_keyboard_gesture` require it up to 120,000 ms, while `ui_scenario_start` requires it up to 600,000 ms. Deadlines include adapter work and backend queue time. The server's outer request timeout is 630,000 ms (the scenario maximum plus a 30-second translation allowance), so a full scenario deadline is never aborted by the SDK transport timeout; the per-request deadline remains the authoritative bound.
 
 `sessionId` is the single envelope field documented by this preamble and omitted from the per-tool rows; the per-tool rows name every other required input and any optional tool-specific input. Each row is `none` or a comma-separated list of `required`/`optional` field tokens, and a schema-parity test fails when a required input appears on either side without the other.
 
@@ -10,6 +10,7 @@ The MCP server exposes exactly twenty-three bounded tools. `tools/list` is the a
 | `ui_snapshot` | Capture a compact semantic snapshot | none | revision, frame, root ID, node count, optional `state-action/v1` identity/contract and full-snapshot artifact |
 | `ui_query` | Evaluate a lazy locator | required `locator` | match count, bounded node summaries/evidence, optional artifact |
 | `ui_action` | Perform one allowlisted action | required `action`, required `locator` | before/after revisions, observed state, evidence, optional artifact |
+| `ui_keyboard_gesture` | Run one atomic keyboard timeline through real input dispatch | required `schemaVersion`, required `steps`, required `deadlineMillis` | terminal step, tick, held-key, failure, and cleanup evidence |
 | `ui_assert` | Assert a semantic condition on a resolved locator with typed outcome | required `schemaVersion`, required `locator`, required `assertion`, required `deadlineMillis` | assertion outcome and evidence |
 | `ui_wait` | Wait on semantics | required `condition`, required `locator` | final revision/frame, matches/evidence, optional artifact |
 | `ui_screenshot` | Capture completed-frame PNG evidence | optional `locator`, required `maxWidth`, required `maxHeight`, required `maxPixels`, required `maxPngBytes` | opaque artifact receipt plus frame/revision/dimensions/scales |
@@ -35,6 +36,58 @@ The MCP server exposes exactly twenty-three bounded tools. `tools/list` is the a
 Locator schemas are closed recursive unions. Supported locator kinds are role, text/label, test ID, actor name/type, relation, filter, and index. Text match modes are exact, case-insensitive exact, substring, and regex. Regex mode compiles with the linear-time RE2/J engine: supported syntax includes literals, character classes and escapes, Unicode classes, groups, alternation, anchors, and greedy/lazy quantifiers; backreferences, lookahead/lookbehind, and atomic or possessive groups are rejected at construction as `invalid-request` rather than evaluated with backtracking. Relations are child, descendant, parent, and sibling. Filters support accessible name, `has`, `hasText`, and semantic state. Indexes are zero-based and intentionally reported as structurally fragile. Prefer `role` plus an accessible-name filter; never treat snapshot-local node IDs as durable handles.
 
 `ui_action` accepts only click, hover, focus, fill, press, scroll, drag, and pointer. Pointer phases are down, move, and up. An action may request `force`, but force never bypasses strict locator resolution, render-thread confinement, request bounds, or input dispatch through the application's configured processor.
+
+## Keyboard gestures
+
+Capability `ui_keyboard_gesture` enables one atomic, session-scoped keyboard timeline. Capability
+`ui_keyboard_gesture_ticks` additionally reports that the application installed an exact
+controlled-tick coordinator. Capability registration does not prove that the controller is
+currently paused or within its provider limits; every gesture containing `wait-ticks` preflights
+that state before the first key callback. A request with any structural or tick-preflight failure
+dispatches no input.
+
+Gestures have no locator. If input depends on widget focus, first complete a strict `ui_action`
+whose action kind is `focus`, then start the gesture. `key-down` and `key-up` call only the named
+methods on the application's configured libGDX `InputProcessor`; unlike the existing `press`
+action, they never synthesize `keyTyped`, repeat events, or global `Gdx.input` state.
+
+This frame example keeps libGDX keycode 29 held while the application publishes three later
+completed UI frames:
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"ui_keyboard_gesture","arguments":{"sessionId":"game","schemaVersion":1,"steps":[{"kind":"key-down","keycode":29},{"kind":"wait-frames","count":3},{"kind":"key-up","keycode":29}],"deadlineMillis":5000}}}
+```
+
+This tick example keeps the same key held while the application-owned controller advances exactly
+three configured ticks:
+
+```json
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"ui_keyboard_gesture","arguments":{"sessionId":"game","schemaVersion":1,"steps":[{"kind":"key-down","keycode":29},{"kind":"wait-ticks","count":3},{"kind":"key-up","keycode":29}],"deadlineMillis":5000}}}
+```
+
+`wait-frames(N)` observes exactly `N` distinct completed frame publications after the preceding
+transition; it never advances the render loop. `wait-ticks(N)` advances exactly `N` controlled
+simulation ticks without implicitly pausing or resuming the application and without approximating
+ticks from frames or wall time. The result's `configuredDeltaNanos` is the integration's explicit
+configured request evidence. Agent-runtime 1.0.0 does not independently acknowledge that delta.
+Successful tick evidence retains one unchanged execution epoch, exact start/final tick counts,
+first/final runtime frames, and UI-frame identities only when both endpoint correlations are
+proven.
+
+The schema version is exactly 1. A request contains 2 through 64 steps, keycodes 0 through 255,
+and at most 16 simultaneously held keys. Each frame or tick wait is 1 through 10,000; cumulative
+frame waits and cumulative tick waits are independently capped at 10,000. Every wait requires at
+least one held key, a key cannot be pressed twice or released before it is held, and the complete
+sequence must release every owned key. The required MCP deadline is 1 through 120,000 ms. An
+installed tick provider may impose a lower tick ceiling.
+
+Only `completed` is an MCP success. Rejected, failed, timed-out, cancelled, and session-closed
+outcomes remain structured `keyboard-gesture-result` content marked as an MCP error. They retain
+the failure step/category, completed step evidence, held-key set, cleanup status, and bounded
+cleanup attempts. On abnormal termination, the runner releases remaining keys in reverse press
+order through the same input processor and render scheduler under a fresh 1,000 ms cleanup
+deadline. The per-session mutation lane and gesture lease remain held until cleanup terminates, so
+a cancelled transport call cannot overlap a later mutation or silently abandon a pressed key.
 
 ## Hard bounds
 

@@ -18,7 +18,7 @@ The design brings Playwright-style principles to libGDX: lazy strict locators, a
 - **Faithful input:** click, hover, focus, fill, press, scroll, drag, and pointer actions travel through libGDX input dispatch.
 - **Deterministic synchronization:** monotonic deadlines and frame/state signals replace sleeps and arbitrary delays.
 - **Useful diagnostics:** errors have stable codes; screenshots and replayable traces retain causal evidence.
-- **Agent-ready access:** a bounded stdio MCP server exposes exactly twenty-three typed tools with closed schemas.
+- **Agent-ready access:** a bounded stdio MCP server exposes exactly twenty-four typed tools with closed schemas.
 
 ## Quick start
 
@@ -87,6 +87,7 @@ The server uses stdio and exposes a deliberately small tool surface:
 | `ui_snapshot` | Capture a compact immutable semantic snapshot |
 | `ui_query` | Evaluate a lazy locator |
 | `ui_action` | Perform one allowlisted input action |
+| `ui_keyboard_gesture` | Hold bounded keys across completed frames or exact controlled ticks, then release them |
 | `ui_assert` | Assert a semantic condition on a resolved locator with typed outcome |
 | `ui_wait` | Wait for a semantic condition |
 | `ui_screenshot` | Capture bounded completed-frame PNG evidence |
@@ -106,6 +107,12 @@ The server uses stdio and exposes a deliberately small tool surface:
 | `ui_trace_query` | Query compact state transitions from a retained trace |
 | `ui_semantic_compare` | Compare a registered semantic baseline against the current snapshot |
 | `ui_capabilities` | Discover operations supported by a session |
+
+Capability `ui_keyboard_gesture` means the session can dispatch cleanup-safe key-down, frame-wait,
+and key-up timelines through its configured input processor. Capability
+`ui_keyboard_gesture_ticks` additionally means an exact application-owned tick coordinator is
+installed; each request still preflights its current paused state and limits before dispatching
+input. Focus a widget with `ui_action` before starting a gesture that depends on keyboard focus.
 
 All remote requests, responses, recursive locators, strings, regular expressions, screenshots, traces, and artifacts are bounded. The default server accepts no scripts, reflection targets, arbitrary commands, caller-selected file paths, or unauthenticated network listener.
 

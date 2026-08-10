@@ -26,13 +26,13 @@ final class HarnessToolCatalogTest {
             "ui_scenarios", "ui_scenario_start", "ui_navigation_inspect",
             "ui_navigation_validate", "ui_validate_layout", "ui_matrix_run",
             "ui_matrix_results", "ui_semantic_compare", "ui_trace_query",
-            "ui_runtime_compare");
+            "ui_runtime_compare", "ui_keyboard_gesture");
 
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
 
     @Test void exposesOnlyTheApprovedBoundedTools() {
         assertEquals(APPROVED, catalog.toolNames());
-        assertEquals(23, catalog.tools().size());
+        assertEquals(24, catalog.tools().size());
         for (String name : APPROVED) {
             assertNotNull(catalog.accessMode(name));
         }
@@ -73,11 +73,73 @@ final class HarnessToolCatalogTest {
                 Map.entry("ui_semantic_compare", HarnessToolCatalog.AccessMode.READ_ONLY),
                 Map.entry("ui_trace_query", HarnessToolCatalog.AccessMode.READ_ONLY),
                 Map.entry("ui_runtime_compare", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_keyboard_gesture", HarnessToolCatalog.AccessMode.MUTATING),
                 Map.entry("ui_capabilities", HarnessToolCatalog.AccessMode.READ_ONLY));
         assertEquals(APPROVED, expected.keySet());
         for (Map.Entry<String, HarnessToolCatalog.AccessMode> entry : expected.entrySet()) {
             assertEquals(entry.getValue(), catalog.accessMode(entry.getKey()));
         }
+    }
+
+    @Test void keyboardGestureSchemaIsClosedBoundedAndLocatorFree() {
+        Map<String, Object> frame = Map.of(
+                "sessionId", "game", "schemaVersion", 1, "deadlineMillis", 30_000,
+                "steps", List.of(
+                        Map.of("kind", "key-down", "keycode", 29),
+                        Map.of("kind", "wait-frames", "count", 30),
+                        Map.of("kind", "key-up", "keycode", 29)));
+        Map<String, Object> ticks = Map.of(
+                "sessionId", "game", "schemaVersion", 1, "deadlineMillis", 30_000,
+                "steps", List.of(
+                        Map.of("kind", "key-down", "keycode", 29),
+                        Map.of("kind", "wait-ticks", "count", 30),
+                        Map.of("kind", "key-up", "keycode", 29)));
+        assertValid("ui_keyboard_gesture", frame);
+        assertValid("ui_keyboard_gesture", ticks);
+        assertEquals(HarnessToolCatalog.AccessMode.MUTATING,
+                catalog.accessMode("ui_keyboard_gesture"));
+        JsonNode input = ProtocolJson.mapper().valueToTree(
+                catalog.tool("ui_keyboard_gesture").inputSchema());
+        assertTrue(input.at("/properties/locator").isMissingNode());
+        assertEquals(2, input.at("/properties/steps/minItems").asInt());
+        assertEquals(64, input.at("/properties/steps/maxItems").asInt());
+        assertEquals(false, input.at("/additionalProperties").asBoolean());
+        for (JsonNode variant : input.at("/properties/steps/items/oneOf")) {
+            assertEquals(false, variant.at("/additionalProperties").asBoolean());
+        }
+
+        assertInvalid("ui_keyboard_gesture", with(frame, "extra", true));
+        assertInvalid("ui_keyboard_gesture", with(frame, "locator", Map.of()));
+        assertInvalid("ui_keyboard_gesture", with(frame, "schemaVersion", 2));
+        assertInvalid("ui_keyboard_gesture", with(frame, "deadlineMillis", 0));
+        assertInvalid("ui_keyboard_gesture", with(frame, "deadlineMillis", 120_001));
+        assertInvalid("ui_keyboard_gesture", with(frame, "steps", List.of(
+                Map.of("kind", "key-down", "keycode", 29, "extra", true),
+                Map.of("kind", "key-up", "keycode", 29))));
+        assertInvalid("ui_keyboard_gesture", with(frame, "steps", List.of(
+                Map.of("kind", "key-down", "keycode", -1),
+                Map.of("kind", "key-up", "keycode", 29))));
+        assertInvalid("ui_keyboard_gesture", with(frame, "steps", List.of(
+                Map.of("kind", "key-down", "keycode", 256),
+                Map.of("kind", "key-up", "keycode", 29))));
+        assertInvalid("ui_keyboard_gesture", with(frame, "steps", List.of(
+                Map.of("kind", "key-down", "keycode", 29),
+                Map.of("kind", "wait-frames", "count", 0),
+                Map.of("kind", "key-up", "keycode", 29))));
+        assertInvalid("ui_keyboard_gesture", with(frame, "steps", List.of(
+                Map.of("kind", "key-down", "keycode", 29),
+                Map.of("kind", "wait-ticks", "count", 10_001),
+                Map.of("kind", "key-up", "keycode", 29))));
+
+        JsonNode output = ProtocolJson.mapper().valueToTree(
+                catalog.tool("ui_keyboard_gesture").outputSchema());
+        assertEquals("keyboard-gesture-result", output.at("/properties/kind/const").asText());
+        assertTrue(output.at("/required").toString().contains("cleanupStatus"));
+        assertEquals(64, output.at("/properties/steps/maxItems").asInt());
+        assertEquals(16, output.at("/properties/cleanup/maxItems").asInt());
+        assertEquals(10_000,
+                output.at("/properties/steps/items/properties/tick/properties/requestedTicks/maximum")
+                        .asInt());
     }
 
     @Test void layoutSchemaEnforcesTheFixedTwoSecondQuiescenceBound() {

@@ -49,9 +49,9 @@ final class HarnessMcpClient implements Closeable {
         }
         client.notify("notifications/initialized", Map.of());
         JsonNode listed = client.request("tools/list", Map.of());
-        if (listed.path("tools").size() != 23) {
+        if (listed.path("tools").size() != 24) {
             client.close();
-            throw new IllegalStateException("Expected the twenty-three production tools: " + listed);
+            throw new IllegalStateException("Expected the twenty-four production tools: " + listed);
         }
         return client;
     }
@@ -440,7 +440,9 @@ final class HarnessMcpClient implements Closeable {
                     event.path("parentSequence").isNull()
                             ? null : event.path("parentSequence").asLong(),
                     event.at("/evidence/operation").isMissingNode()
-                            ? null : event.at("/evidence/operation").asText()));
+                            ? null : event.at("/evidence/operation").asText(),
+                    event.at("/evidence/event").isMissingNode()
+                            ? null : event.at("/evidence/event").asText()));
         }
         return new TraceEvidence(decoded);
     }
@@ -609,6 +611,41 @@ final class HarnessMcpClient implements Closeable {
         return content;
     }
 
+    JsonNode keyboardGesture(
+            String sessionId, List<Map<String, Object>> steps, long deadlineMillis)
+            throws Exception {
+        JsonNode content = call("ui_keyboard_gesture", Map.of(
+                "sessionId", sessionId,
+                "schemaVersion", 1,
+                "steps", steps,
+                "deadlineMillis", deadlineMillis));
+        requireKind(content, "keyboard-gesture-result");
+        return content;
+    }
+
+    long beginKeyboardGesture(
+            String sessionId, List<Map<String, Object>> steps, long deadlineMillis)
+            throws Exception {
+        long id = ++requestId;
+        send(Map.of(
+                "jsonrpc", "2.0",
+                "id", id,
+                "method", "tools/call",
+                "params", Map.of(
+                        "name", "ui_keyboard_gesture",
+                        "arguments", Map.of(
+                                "sessionId", sessionId,
+                                "schemaVersion", 1,
+                                "steps", steps,
+                                "deadlineMillis", deadlineMillis))));
+        return id;
+    }
+
+    void cancelKeyboardGesture(long id) throws Exception {
+        notify("notifications/cancelled", Map.of(
+                "requestId", id, "reason", "fixture shutdown cancellation"));
+    }
+
     private JsonNode call(String tool, Map<String, Object> arguments) throws Exception {
         JsonNode result = request("tools/call", Map.of("name", tool, "arguments", arguments));
         if (result.path("isError").asBoolean()) {
@@ -770,6 +807,23 @@ final class HarnessMcpClient implements Closeable {
             return events.stream().anyMatch(event ->
                     "SNAPSHOT".equals(event.kind()) && operation.equals(event.operation()));
         }
+
+        List<String> gestureEvents() {
+            return events.stream()
+                    .map(TraceEventData::event)
+                    .filter(Objects::nonNull)
+                    .filter(event -> event.startsWith("gesture-"))
+                    .toList();
+        }
+
+        List<String> gestureRequestIds() {
+            return events.stream()
+                    .filter(event -> event.event() != null
+                            && event.event().startsWith("gesture-"))
+                    .map(TraceEventData::requestId)
+                    .distinct()
+                    .toList();
+        }
     }
 
     private record TraceEventData(
@@ -777,7 +831,8 @@ final class HarnessMcpClient implements Closeable {
             String kind,
             String requestId,
             Long parentSequence,
-            String operation) {}
+            String operation,
+            String event) {}
 
     record Artifact(String reference, String mediaType, long byteLength, String sha256) {}
 

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import dev.gdx.uiharness.core.assertion.AssertionRequest;
 import dev.gdx.uiharness.core.assertion.UiAssertion;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
+import dev.gdx.uiharness.core.gesture.KeyboardGestureRequest;
 import dev.gdx.uiharness.core.locator.ActorField;
 import dev.gdx.uiharness.core.locator.ActorLocator;
 import dev.gdx.uiharness.core.locator.EntityLocator;
@@ -40,6 +41,7 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.Snapshot.class, name = "snapshot"),
     @JsonSubTypes.Type(value = Command.Query.class, name = "query"),
     @JsonSubTypes.Type(value = Command.Action.class, name = "action"),
+    @JsonSubTypes.Type(value = Command.KeyboardGesture.class, name = "keyboard-gesture"),
     @JsonSubTypes.Type(value = Command.Assert.class, name = "assert"),
     @JsonSubTypes.Type(value = Command.Wait.class, name = "wait"),
     @JsonSubTypes.Type(value = Command.Screenshot.class, name = "screenshot"),
@@ -60,7 +62,8 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.RuntimeCompare.class, name = "runtime-compare")
 })
 public sealed interface Command permits Command.Sessions, Command.Capabilities, Command.Snapshot,
-        Command.Query, Command.Action, Command.Assert, Command.Wait, Command.Screenshot,
+        Command.Query, Command.Action, Command.KeyboardGesture, Command.Assert, Command.Wait,
+        Command.Screenshot,
         Command.TraceStart, Command.InspectCompare, Command.TypographyDiagnose,
         Command.LayoutDiagnose, Command.TraceStop, Command.ScenarioList, Command.ScenarioStart,
         Command.NavigationInspect, Command.NavigationValidate, Command.LayoutValidate,
@@ -71,6 +74,66 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
 
     /** Reads capabilities for the selected session. */
     record Capabilities() implements Command {}
+
+    /** One bounded atomic real-input keyboard timeline. */
+    record KeyboardGesture(int schemaVersion, List<KeyboardGestureStep> steps)
+            implements Command {
+        /** Copies and fully validates the closed timeline before routing. */
+        public KeyboardGesture {
+            steps = List.copyOf(Objects.requireNonNull(steps, "steps"));
+            new KeyboardGestureRequest(
+                    schemaVersion, steps.stream().map(KeyboardGestureStep::toCore).toList());
+        }
+
+        /** Projects the protocol-owned step DTOs to the backend-neutral core request. */
+        public KeyboardGestureRequest toCore() {
+            return new KeyboardGestureRequest(
+                    schemaVersion, steps.stream().map(KeyboardGestureStep::toCore).toList());
+        }
+    }
+
+    /** Closed tagged keyboard gesture step union. */
+    @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "kind")
+    @JsonSubTypes({
+        @JsonSubTypes.Type(value = KeyboardGestureStep.KeyDown.class, name = "key-down"),
+        @JsonSubTypes.Type(value = KeyboardGestureStep.WaitFrames.class, name = "wait-frames"),
+        @JsonSubTypes.Type(value = KeyboardGestureStep.WaitTicks.class, name = "wait-ticks"),
+        @JsonSubTypes.Type(value = KeyboardGestureStep.KeyUp.class, name = "key-up")
+    })
+    sealed interface KeyboardGestureStep permits KeyboardGestureStep.KeyDown,
+            KeyboardGestureStep.WaitFrames, KeyboardGestureStep.WaitTicks,
+            KeyboardGestureStep.KeyUp {
+        /** Projects one protocol step without backend types. */
+        KeyboardGestureRequest.Step toCore();
+
+        /** One key-down transition. */
+        record KeyDown(int keycode) implements KeyboardGestureStep {
+            @Override public KeyboardGestureRequest.Step toCore() {
+                return new KeyboardGestureRequest.KeyDown(keycode);
+            }
+        }
+
+        /** One completed-frame wait. */
+        record WaitFrames(int count) implements KeyboardGestureStep {
+            @Override public KeyboardGestureRequest.Step toCore() {
+                return new KeyboardGestureRequest.WaitFrames(count);
+            }
+        }
+
+        /** One exact controlled-tick wait. */
+        record WaitTicks(int count) implements KeyboardGestureStep {
+            @Override public KeyboardGestureRequest.Step toCore() {
+                return new KeyboardGestureRequest.WaitTicks(count);
+            }
+        }
+
+        /** One key-up transition. */
+        record KeyUp(int keycode) implements KeyboardGestureStep {
+            @Override public KeyboardGestureRequest.Step toCore() {
+                return new KeyboardGestureRequest.KeyUp(keycode);
+            }
+        }
+    }
 
     /** Lists bounded application-registered scenario definitions. */
     record ScenarioList() implements Command {}
