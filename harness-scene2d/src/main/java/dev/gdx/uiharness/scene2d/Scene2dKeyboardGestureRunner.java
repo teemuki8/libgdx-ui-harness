@@ -499,11 +499,6 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
             try {
                 subscription = frames.subscribe(wait);
             } catch (RuntimeException | Error failure) {
-                synchronized (this) {
-                    if (activeFrameWait == wait) {
-                        activeFrameWait = null;
-                    }
-                }
                 requestTermination(
                         TerminalOutcome.FAILED, FailureCategory.FRAME_SOURCE_CLOSED,
                         OptionalInt.of(currentStepIndex()));
@@ -628,6 +623,17 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
                 if (phase != Phase.NORMAL) {
                     return;
                 }
+                if (activeFrameWait != null) {
+                    ActiveFrameWait waiting = activeFrameWait;
+                    evidence.add(new StepEvidence(
+                            stepIndex, StepKind.WAIT_FRAMES, StepStatus.FAILED,
+                            OptionalInt.empty(), OptionalInt.of(waiting.count),
+                            waiting.beforeRevision, waiting.beforeFrame,
+                            revisions.getAsLong(), frameNumbers.getAsLong(),
+                            List.copyOf(held), Optional.empty()));
+                    safeTrace("gesture-step", stepIndex, "wait-frames-failed");
+                    stepIndex++;
+                }
                 phase = Phase.CLEANING;
                 terminal = new Terminal(outcome, failure, failureStep);
                 frameWait = activeFrameWait;
@@ -688,6 +694,11 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
                 keycode = cleanupOrder.get(cleanupIndex);
             }
             CompletableFuture<CleanupAttemptStatus> submitted = scheduler.submit(() -> {
+                synchronized (this) {
+                    if (!held.contains(keycode)) {
+                        return CleanupAttemptStatus.RELEASED;
+                    }
+                }
                 try {
                     Scene2dInputDispatcher.keyUp(input, keycode);
                     synchronized (this) {

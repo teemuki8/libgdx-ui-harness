@@ -99,6 +99,8 @@ final class KeyboardGestureProtocolTest {
     }
 
     @Test void resultProjectionRejectsUnknownClosedWireValues() {
+        HarnessResponse.KeyboardTickData tick = new HarnessResponse.KeyboardTickData(
+                3, 3, 4, 7, 2, 10L, 12L, null, null, 16_000_000);
         assertThrows(IllegalArgumentException.class,
                 () -> new HarnessResponse.KeyboardCleanupData(29, "mystery"));
         assertThrows(IllegalArgumentException.class,
@@ -106,10 +108,36 @@ final class KeyboardGestureProtocolTest {
                         0, "unknown", "completed", 29, null,
                         1, 1, 2, 1, List.of(29), null));
         assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.KeyboardGestureStepData(
+                        0, "key-down", "completed", 29, 1,
+                        1, 1, 2, 1, List.of(29), null));
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.KeyboardGestureStepData(
+                        0, "wait-frames", "completed", 29, 1,
+                        1, 1, 2, 1, List.of(29), null));
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.KeyboardGestureStepData(
+                        0, "key-up", "completed", 256, null,
+                        1, 1, 2, 1, List.of(), null));
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.KeyboardGestureStepData(
+                        0, "wait-ticks", "completed", null, 2,
+                        1, 1, 2, 1, List.of(29), tick));
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.KeyboardGestureStepData(
+                        0, "key-down", "completed", 29, null,
+                        1, 1, 2, 1, List.of(29, 29), null));
+        assertThrows(IllegalArgumentException.class,
                 () -> new HarnessResponse.KeyboardGestureData(
                         1, "unknown", 2, 0, 0,
                         1, 1, 1, 1, 1, List.of(), 0,
                         "invalid-runtime-state", List.of(), "not-required",
+                        List.of(), null));
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.KeyboardGestureData(
+                        1, "cancelled", 2, 0, 0,
+                        1, 1, 1, 1, 1, List.of(), 0,
+                        "cancelled", List.of(29, 29), "not-required",
                         List.of(), null));
     }
 

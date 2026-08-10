@@ -32,6 +32,7 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
@@ -156,7 +157,12 @@ final class Scene2dKeyboardGestureRunnerTest {
         timeoutFixture.deadlines.fireNext();
         assertFalse(timedOut.isDone());
         timeoutFixture.scheduler.drain();
-        assertEquals(TerminalOutcome.TIMED_OUT, timedOut.join().outcome());
+        KeyboardGestureResult timeout = timedOut.join();
+        assertEquals(TerminalOutcome.TIMED_OUT, timeout.outcome());
+        assertEquals(2, timeout.startedSteps());
+        assertEquals(StepKind.WAIT_FRAMES, timeout.steps().get(1).kind());
+        assertEquals(KeyboardGestureResult.StepStatus.FAILED,
+                timeout.steps().get(1).status());
 
         Fixture closedFixture = new Fixture();
         CompletableFuture<KeyboardGestureResult> closed = closedFixture.execute(List.of(
@@ -169,8 +175,57 @@ final class Scene2dKeyboardGestureRunnerTest {
         closedFixture.scheduler.drain();
         KeyboardGestureResult failed = closed.join();
         assertEquals(FailureCategory.FRAME_SOURCE_CLOSED, failed.failure().orElseThrow());
+        assertEquals(StepKind.WAIT_FRAMES, failed.steps().get(1).kind());
+        assertEquals(KeyboardGestureResult.StepStatus.FAILED,
+                failed.steps().get(1).status());
         assertEquals(List.of("down:" + Keys.B, "up:" + Keys.B),
                 closedFixture.input.events);
+    }
+
+    @Test void cancellationDuringSuccessfulExplicitKeyUpNeverDispatchesDuplicateRelease()
+            throws Exception {
+        Fixture fixture = new Fixture();
+        fixture.input.blockUp.add(Keys.A);
+        CompletableFuture<KeyboardGestureResult> result = fixture.execute(List.of(
+                new KeyboardGestureRequest.KeyDown(Keys.A),
+                new KeyboardGestureRequest.KeyUp(Keys.A)));
+        fixture.scheduler.drain();
+        Thread canceller = Thread.ofVirtual().start(() -> {
+            await(fixture.input.upStarted);
+            result.cancel(false);
+            fixture.input.releaseUp.countDown();
+        });
+
+        fixture.scheduler.drain();
+        canceller.join();
+        fixture.scheduler.drain();
+
+        KeyboardGestureResult cancelled = result.join();
+        assertEquals(TerminalOutcome.CANCELLED, cancelled.outcome());
+        assertEquals(List.of("down:" + Keys.A, "up:" + Keys.A), fixture.input.events);
+        assertTrue(cancelled.heldKeys().isEmpty());
+    }
+
+    @Test void deadlineDuringSuccessfulExplicitKeyUpNeverDispatchesDuplicateRelease()
+            throws Exception {
+        Fixture fixture = new Fixture();
+        fixture.input.blockUp.add(Keys.A);
+        CompletableFuture<KeyboardGestureResult> result = fixture.execute(List.of(
+                new KeyboardGestureRequest.KeyDown(Keys.A),
+                new KeyboardGestureRequest.KeyUp(Keys.A)));
+        fixture.scheduler.drain();
+        Thread timer = Thread.ofVirtual().start(() -> {
+            await(fixture.input.upStarted);
+            fixture.deadlines.fireNext();
+            fixture.input.releaseUp.countDown();
+        });
+
+        fixture.scheduler.drain();
+        timer.join();
+        fixture.scheduler.drain();
+
+        assertEquals(TerminalOutcome.TIMED_OUT, result.join().outcome());
+        assertEquals(List.of("down:" + Keys.A, "up:" + Keys.A), fixture.input.events);
     }
 
     @Test void cleanupFailureRetainsPrimaryCancellationAndUnreleasedKey() {
@@ -383,6 +438,9 @@ final class Scene2dKeyboardGestureRunnerTest {
         final Set<Integer> failDown = new java.util.HashSet<>();
         final Set<Integer> failUpOnce = new java.util.HashSet<>();
         final Set<Integer> failUpAlways = new java.util.HashSet<>();
+        final Set<Integer> blockUp = new java.util.HashSet<>();
+        final CountDownLatch upStarted = new CountDownLatch(1);
+        final CountDownLatch releaseUp = new CountDownLatch(1);
 
         @Override public boolean keyDown(int keycode) {
             threads.add(Thread.currentThread());
@@ -396,6 +454,10 @@ final class Scene2dKeyboardGestureRunnerTest {
         @Override public boolean keyUp(int keycode) {
             threads.add(Thread.currentThread());
             events.add("up:" + keycode);
+            if (blockUp.contains(keycode)) {
+                upStarted.countDown();
+                await(releaseUp);
+            }
             if (failUpOnce.remove(keycode) || failUpAlways.contains(keycode)) {
                 throw new IllegalStateException("keyUp failed");
             }
@@ -404,6 +466,15 @@ final class Scene2dKeyboardGestureRunnerTest {
 
         @Override public boolean keyTyped(char character) {
             throw new AssertionError("gesture must not synthesize keyTyped");
+        }
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted while coordinating input callback", failure);
         }
     }
 

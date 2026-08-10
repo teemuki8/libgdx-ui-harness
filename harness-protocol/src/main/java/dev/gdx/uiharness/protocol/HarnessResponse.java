@@ -49,6 +49,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
 import java.util.Set;
 
 /** Explicit V1 response union, correlated to exactly one request and session. */
@@ -897,6 +899,22 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             if (traceId != null) {
                 ProtocolJson.requireIdentifier(traceId, "traceId");
             }
+            new KeyboardGestureResult(
+                    schemaVersion,
+                    fromWire(outcome, KeyboardGestureResult.TerminalOutcome.class),
+                    requestedSteps, startedSteps, completedSteps,
+                    startRevision, startFrame, endRevision, endFrame, elapsedNanos,
+                    steps.stream().map(KeyboardGestureStepData::toCore).toList(),
+                    failureStep == null
+                            ? OptionalInt.empty() : OptionalInt.of(failureStep),
+                    failure == null
+                            ? Optional.empty()
+                            : Optional.of(fromWire(
+                                    failure, KeyboardGestureResult.FailureCategory.class)),
+                    heldKeys,
+                    fromWire(cleanupStatus, KeyboardGestureResult.CleanupStatus.class),
+                    cleanup.stream().map(KeyboardCleanupData::toCore).toList(),
+                    Optional.ofNullable(traceId));
         }
 
         static KeyboardGestureData fromCore(KeyboardGestureResult result) {
@@ -943,6 +961,8 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             if (heldKeys.size() > 16) {
                 throw new IllegalArgumentException("heldKeys exceeds 16 entries");
             }
+            toCore(index, kind, status, keycode, count,
+                    beforeRevision, beforeFrame, afterRevision, afterFrame, heldKeys, tick);
         }
 
         static KeyboardGestureStepData fromCore(KeyboardGestureResult.StepEvidence step) {
@@ -953,6 +973,33 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                     step.beforeRevision(), step.beforeFrame(),
                     step.afterRevision(), step.afterFrame(), step.heldKeys(),
                     step.tick().map(KeyboardTickData::fromCore).orElse(null));
+        }
+
+        KeyboardGestureResult.StepEvidence toCore() {
+            return toCore(index, kind, status, keycode, count,
+                    beforeRevision, beforeFrame, afterRevision, afterFrame, heldKeys, tick);
+        }
+
+        private static KeyboardGestureResult.StepEvidence toCore(
+                int index,
+                String kind,
+                String status,
+                Integer keycode,
+                Integer count,
+                long beforeRevision,
+                long beforeFrame,
+                long afterRevision,
+                long afterFrame,
+                List<Integer> heldKeys,
+                KeyboardTickData tick) {
+            return new KeyboardGestureResult.StepEvidence(
+                    index,
+                    fromWire(kind, KeyboardGestureResult.StepKind.class),
+                    fromWire(status, KeyboardGestureResult.StepStatus.class),
+                    keycode == null ? OptionalInt.empty() : OptionalInt.of(keycode),
+                    count == null ? OptionalInt.empty() : OptionalInt.of(count),
+                    beforeRevision, beforeFrame, afterRevision, afterFrame, heldKeys,
+                    tick == null ? Optional.empty() : Optional.of(tick.toCore()));
         }
     }
 
@@ -993,6 +1040,20 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                     tick.configuredDeltaNanos());
         }
 
+        TickEvidence toCore() {
+            return new TickEvidence(
+                    requestedTicks, completedTicks, startTick, finalTick, executionEpoch,
+                    firstRuntimeFrame == null
+                            ? OptionalLong.empty() : OptionalLong.of(firstRuntimeFrame),
+                    finalRuntimeFrame == null
+                            ? OptionalLong.empty() : OptionalLong.of(finalRuntimeFrame),
+                    firstUiFrame == null
+                            ? OptionalLong.empty() : OptionalLong.of(firstUiFrame),
+                    finalUiFrame == null
+                            ? OptionalLong.empty() : OptionalLong.of(finalUiFrame),
+                    configuredDeltaNanos);
+        }
+
         private static void requirePair(Long first, Long last, String name) {
             if ((first == null) != (last == null)
                     || (first != null && (first < 0 || last < first))) {
@@ -1016,6 +1077,12 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
 
         static KeyboardCleanupData fromCore(KeyboardGestureResult.CleanupAttempt attempt) {
             return new KeyboardCleanupData(attempt.keycode(), wire(attempt.status().name()));
+        }
+
+        KeyboardGestureResult.CleanupAttempt toCore() {
+            return new KeyboardGestureResult.CleanupAttempt(
+                    keycode,
+                    fromWire(status, KeyboardGestureResult.CleanupAttemptStatus.class));
         }
     }
 
@@ -1870,6 +1937,10 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
 
     private static String wire(String name) {
         return name.toLowerCase(Locale.ROOT).replace('_', '-');
+    }
+
+    private static <E extends Enum<E>> E fromWire(String value, Class<E> type) {
+        return Enum.valueOf(type, value.toUpperCase(Locale.ROOT).replace('-', '_'));
     }
 
     /** Explicit transport representation of one semantic node. */

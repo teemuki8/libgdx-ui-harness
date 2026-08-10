@@ -36,19 +36,19 @@ final class KeyboardGestureProductionFixtureTest {
 
     @Test
     @Timeout(120)
-    void controlledTicksRunWhileScene2dCallbackOwnsHeldKeyState() throws Exception {
+    void thirtyControlledTicksRunWhileScene2dCallbackOwnsHeldKeyState() throws Exception {
         try (ReferenceProcess app = ReferenceProcess.launch();
                 HarnessMcpClient client = HarnessMcpClient.connect(app)) {
             assertTrue(client.capabilities(SESSION_ID).contains("ui_keyboard_gesture_ticks"));
 
             JsonNode result = client.keyboardGesture(SESSION_ID, List.of(
-                    key("key-down"), waitFor("wait-ticks", 3), key("key-up")), 10_000);
+                    key("key-down"), waitFor("wait-ticks", 30), key("key-up")), 10_000);
 
             assertCompleted(result, "key-down", "wait-ticks", "key-up");
             JsonNode tick = result.path("steps").get(1).path("tick");
-            assertEquals(3, tick.path("requestedTicks").asInt());
-            assertEquals(3, tick.path("completedTicks").asInt());
-            assertEquals(tick.path("startTick").asLong() + 3,
+            assertEquals(30, tick.path("requestedTicks").asInt());
+            assertEquals(30, tick.path("completedTicks").asInt());
+            assertEquals(tick.path("startTick").asLong() + 30,
                     tick.path("finalTick").asLong());
             assertEquals(Duration.ofMillis(16).toNanos(),
                     tick.path("configuredDeltaNanos").asLong());
