@@ -2,8 +2,12 @@ package dev.gdx.uiharness.mcp;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import dev.gdx.uiharness.protocol.ProtocolJson;
+import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -45,15 +49,22 @@ final class DocsCatalogParityTest {
     private record GuideTable(List<ToolRow> rows, Map<String, String> parseErrors) {}
 
     private static Path guideFile() {
+        return repositoryFile("docs/guides/agent-tools.md");
+    }
+
+    private static Path readmeFile() {
+        return repositoryFile("README.md");
+    }
+
+    private static Path repositoryFile(String relativePath) {
         Path start = Path.of(System.getProperty("user.dir")).toAbsolutePath();
         for (Path dir = start; dir != null; dir = dir.getParent()) {
-            Path candidate = dir.resolve("docs/guides/agent-tools.md");
+            Path candidate = dir.resolve(relativePath);
             if (Files.isRegularFile(candidate)) {
                 return candidate;
             }
         }
-        throw new IllegalStateException(
-                "Cannot locate docs/guides/agent-tools.md from " + start);
+        throw new IllegalStateException("Cannot locate " + relativePath + " from " + start);
     }
 
     private GuideTable parseGuide() throws IOException {
@@ -171,6 +182,54 @@ final class DocsCatalogParityTest {
         List<String> catalogNames =
                 catalog.tools().stream().map(McpSchema.Tool::name).toList();
         assertEquals(catalogNames, documentedNames, "tool row order");
+    }
+
+    @Test void readmeToolTableCoversEveryCatalogToolExactlyOnceInOrder() throws Exception {
+        List<String> documentedNames = new ArrayList<>();
+        for (String line : Files.readAllLines(readmeFile(), StandardCharsets.UTF_8)) {
+            List<String> cells = splitCells(line);
+            if (cells.size() < 3) {
+                continue;
+            }
+            String name = cells.get(1).trim();
+            if (name.startsWith("`ui_") && name.endsWith("`")) {
+                documentedNames.add(name.substring(1, name.length() - 1));
+            }
+        }
+        assertEquals(catalog.tools().stream().map(McpSchema.Tool::name).toList(),
+                documentedNames, "README tool row order and uniqueness");
+    }
+
+    @Test void publicDocsAdvertiseBothGestureCapabilities() throws Exception {
+        for (Path document : List.of(readmeFile(), guideFile())) {
+            String content = Files.readString(document, StandardCharsets.UTF_8);
+            assertTrue(content.contains("ui_keyboard_gesture"), document.toString());
+            assertTrue(content.contains("ui_keyboard_gesture_ticks"), document.toString());
+        }
+    }
+
+    @Test void guideFrameAndTickExamplesParseAndMatchTheCatalogSchema() throws Exception {
+        String content = Files.readString(guideFile(), StandardCharsets.UTF_8);
+        assertGestureExample(content, "wait-frames");
+        assertGestureExample(content, "wait-ticks");
+    }
+
+    private void assertGestureExample(String content, String waitKind) throws Exception {
+        String example = content.lines()
+                .filter(line -> line.startsWith("{\"jsonrpc\":\"2.0\""))
+                .filter(line -> line.contains("\"name\":\"ui_keyboard_gesture\""))
+                .filter(line -> line.contains("\"kind\":\"" + waitKind + "\""))
+                .findFirst()
+                .orElse(null);
+        assertNotNull(example, "missing " + waitKind + " gesture example");
+        JsonNode request = ProtocolJson.mapper().readTree(example);
+        assertEquals("tools/call", request.path("method").asText());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> arguments = ProtocolJson.mapper().convertValue(
+                request.at("/params/arguments"), Map.class);
+        assertTrue(McpJsonDefaults.getSchemaValidator().validate(
+                        catalog.tool("ui_keyboard_gesture").inputSchema(), arguments).valid(),
+                waitKind + " example must satisfy the live input schema");
     }
 
     @Test void documentedRequiredInputsMatchCatalogSchemasForEveryTool() throws Exception {
