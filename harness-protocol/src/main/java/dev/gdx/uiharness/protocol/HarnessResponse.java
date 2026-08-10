@@ -18,6 +18,8 @@ import dev.gdx.uiharness.core.contract.ViewportState;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
+import dev.gdx.uiharness.core.gesture.ExactTickCoordinator.TickEvidence;
+import dev.gdx.uiharness.core.gesture.KeyboardGestureResult;
 import dev.gdx.uiharness.core.locator.QueryResult;
 import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
 import dev.gdx.uiharness.core.scenario.ScenarioFailure;
@@ -99,6 +101,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(value = Result.Snapshot.class, name = "snapshot"),
         @JsonSubTypes.Type(value = Result.Query.class, name = "query"),
         @JsonSubTypes.Type(value = Result.Action.class, name = "action"),
+        @JsonSubTypes.Type(value = Result.KeyboardGesture.class, name = "keyboard-gesture"),
         @JsonSubTypes.Type(value = Result.Assertion.class, name = "assertion"),
         @JsonSubTypes.Type(value = Result.Wait.class, name = "wait"),
         @JsonSubTypes.Type(value = Result.Screenshot.class, name = "screenshot"),
@@ -120,7 +123,8 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(value = Result.RuntimeCompare.class, name = "runtime-compare")
     })
     sealed interface Result permits Result.Sessions, Result.Capabilities, Result.Snapshot,
-            Result.Query, Result.Action, Result.Assertion, Result.Wait, Result.Screenshot,
+            Result.Query, Result.Action, Result.KeyboardGesture, Result.Assertion, Result.Wait,
+            Result.Screenshot,
             Result.TraceStarted, Result.InspectCompare, Result.TypographyDiagnostic,
             Result.LayoutDiagnostic, Result.TraceStopped, Result.ScenarioList,
             Result.ScenarioStart, Result.Navigation, Result.LayoutValidation,
@@ -269,6 +273,18 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             static Action fromCore(ActionResult result) {
                 return new Action(result.beforeRevision(), result.afterRevision(),
                         result.observedState(), result.evidence());
+            }
+        }
+
+        /** Terminal bounded evidence for one atomic keyboard gesture. */
+        record KeyboardGesture(KeyboardGestureData gesture) implements Result {
+            /** Requires the protocol-owned projection. */
+            public KeyboardGesture {
+                gesture = Objects.requireNonNull(gesture, "gesture");
+            }
+
+            static KeyboardGesture fromCore(KeyboardGestureResult result) {
+                return new KeyboardGesture(KeyboardGestureData.fromCore(result));
             }
         }
 
@@ -823,6 +839,183 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             return evidence.stream()
                     .map(item -> copyBoundedMap(item, name))
                     .toList();
+        }
+    }
+
+    /** Immutable protocol-owned terminal keyboard gesture projection. */
+    record KeyboardGestureData(
+            int schemaVersion,
+            String outcome,
+            int requestedSteps,
+            int startedSteps,
+            int completedSteps,
+            long startRevision,
+            long startFrame,
+            long endRevision,
+            long endFrame,
+            long elapsedNanos,
+            List<KeyboardGestureStepData> steps,
+            Integer failureStep,
+            String failure,
+            List<Integer> heldKeys,
+            String cleanupStatus,
+            List<KeyboardCleanupData> cleanup,
+            String traceId) {
+        /** Copies all bounded collections and validates stable terminal fields. */
+        public KeyboardGestureData {
+            if (schemaVersion != 1 || requestedSteps < 2 || requestedSteps > 64
+                    || startedSteps < 0 || startedSteps > requestedSteps
+                    || completedSteps < 0 || completedSteps > startedSteps) {
+                throw new IllegalArgumentException("invalid keyboard gesture step counts");
+            }
+            ProtocolJson.requireText(outcome, "outcome");
+            requireWireValue(
+                    outcome, "outcome", KeyboardGestureResult.TerminalOutcome.values());
+            if (startRevision < 0 || startFrame < 0 || endRevision < startRevision
+                    || endFrame < startFrame || elapsedNanos < 0) {
+                throw new IllegalArgumentException("invalid keyboard gesture identities");
+            }
+            steps = List.copyOf(Objects.requireNonNull(steps, "steps"));
+            heldKeys = List.copyOf(Objects.requireNonNull(heldKeys, "heldKeys"));
+            cleanup = List.copyOf(Objects.requireNonNull(cleanup, "cleanup"));
+            if (steps.size() != startedSteps || heldKeys.size() > 16 || cleanup.size() > 16) {
+                throw new IllegalArgumentException("invalid keyboard gesture evidence bounds");
+            }
+            if (failureStep != null
+                    && (failureStep < 0 || failureStep >= requestedSteps)) {
+                throw new IllegalArgumentException("failureStep is outside the gesture");
+            }
+            if (failure != null) {
+                ProtocolJson.requireText(failure, "failure");
+                requireWireValue(
+                        failure, "failure", KeyboardGestureResult.FailureCategory.values());
+            }
+            ProtocolJson.requireText(cleanupStatus, "cleanupStatus");
+            requireWireValue(
+                    cleanupStatus, "cleanupStatus",
+                    KeyboardGestureResult.CleanupStatus.values());
+            if (traceId != null) {
+                ProtocolJson.requireIdentifier(traceId, "traceId");
+            }
+        }
+
+        static KeyboardGestureData fromCore(KeyboardGestureResult result) {
+            Objects.requireNonNull(result, "result");
+            return new KeyboardGestureData(
+                    result.schemaVersion(), wire(result.outcome().name()),
+                    result.requestedSteps(), result.startedSteps(), result.completedSteps(),
+                    result.startRevision(), result.startFrame(),
+                    result.endRevision(), result.endFrame(), result.elapsedNanos(),
+                    result.steps().stream().map(KeyboardGestureStepData::fromCore).toList(),
+                    result.failureStep().isPresent()
+                            ? result.failureStep().getAsInt() : null,
+                    result.failure().map(value -> wire(value.name())).orElse(null),
+                    result.heldKeys(), wire(result.cleanupStatus().name()),
+                    result.cleanup().stream().map(KeyboardCleanupData::fromCore).toList(),
+                    result.traceId().orElse(null));
+        }
+    }
+
+    /** One started keyboard gesture step and its correlated evidence. */
+    record KeyboardGestureStepData(
+            int index,
+            String kind,
+            String status,
+            Integer keycode,
+            Integer count,
+            long beforeRevision,
+            long beforeFrame,
+            long afterRevision,
+            long afterFrame,
+            List<Integer> heldKeys,
+            KeyboardTickData tick) {
+        /** Copies held-key evidence and bounds one step. */
+        public KeyboardGestureStepData {
+            if (index < 0 || index >= 64 || beforeRevision < 0 || beforeFrame < 0
+                    || afterRevision < beforeRevision || afterFrame < beforeFrame) {
+                throw new IllegalArgumentException("invalid keyboard gesture step evidence");
+            }
+            ProtocolJson.requireText(kind, "kind");
+            ProtocolJson.requireText(status, "status");
+            requireWireValue(kind, "kind", KeyboardGestureResult.StepKind.values());
+            requireWireValue(status, "status", KeyboardGestureResult.StepStatus.values());
+            heldKeys = List.copyOf(Objects.requireNonNull(heldKeys, "heldKeys"));
+            if (heldKeys.size() > 16) {
+                throw new IllegalArgumentException("heldKeys exceeds 16 entries");
+            }
+        }
+
+        static KeyboardGestureStepData fromCore(KeyboardGestureResult.StepEvidence step) {
+            return new KeyboardGestureStepData(
+                    step.index(), wire(step.kind().name()), wire(step.status().name()),
+                    step.keycode().isPresent() ? step.keycode().getAsInt() : null,
+                    step.count().isPresent() ? step.count().getAsInt() : null,
+                    step.beforeRevision(), step.beforeFrame(),
+                    step.afterRevision(), step.afterFrame(), step.heldKeys(),
+                    step.tick().map(KeyboardTickData::fromCore).orElse(null));
+        }
+    }
+
+    /** Exact controlled-tick evidence without agent-runtime types. */
+    record KeyboardTickData(
+            int requestedTicks,
+            int completedTicks,
+            long startTick,
+            long finalTick,
+            long executionEpoch,
+            Long firstRuntimeFrame,
+            Long finalRuntimeFrame,
+            Long firstUiFrame,
+            Long finalUiFrame,
+            long configuredDeltaNanos) {
+        /** Validates exact tick completion and optional frame pairs. */
+        public KeyboardTickData {
+            if (requestedTicks < 1 || requestedTicks > 10_000
+                    || completedTicks != requestedTicks || startTick < 0
+                    || finalTick != Math.addExact(startTick, completedTicks)
+                    || executionEpoch < 0 || configuredDeltaNanos <= 0) {
+                throw new IllegalArgumentException("invalid exact tick evidence");
+            }
+            requirePair(firstRuntimeFrame, finalRuntimeFrame, "runtime frames");
+            requirePair(firstUiFrame, finalUiFrame, "UI frames");
+        }
+
+        static KeyboardTickData fromCore(TickEvidence tick) {
+            return new KeyboardTickData(
+                    tick.requestedTicks(), tick.completedTicks(),
+                    tick.startTick(), tick.finalTick(), tick.executionEpoch(),
+                    tick.firstRuntimeFrame().isPresent()
+                            ? tick.firstRuntimeFrame().getAsLong() : null,
+                    tick.finalRuntimeFrame().isPresent()
+                            ? tick.finalRuntimeFrame().getAsLong() : null,
+                    tick.firstUiFrame().isPresent() ? tick.firstUiFrame().getAsLong() : null,
+                    tick.finalUiFrame().isPresent() ? tick.finalUiFrame().getAsLong() : null,
+                    tick.configuredDeltaNanos());
+        }
+
+        private static void requirePair(Long first, Long last, String name) {
+            if ((first == null) != (last == null)
+                    || (first != null && (first < 0 || last < first))) {
+                throw new IllegalArgumentException("invalid " + name);
+            }
+        }
+    }
+
+    /** One abnormal reverse-order key release attempt. */
+    record KeyboardCleanupData(int keycode, String status) {
+        /** Validates the bounded key and stable status. */
+        public KeyboardCleanupData {
+            if (keycode < 0 || keycode > 255) {
+                throw new IllegalArgumentException("cleanup keycode is outside the gesture bound");
+            }
+            ProtocolJson.requireText(status, "cleanup status");
+            requireWireValue(
+                    status, "cleanup status",
+                    KeyboardGestureResult.CleanupAttemptStatus.values());
+        }
+
+        static KeyboardCleanupData fromCore(KeyboardGestureResult.CleanupAttempt attempt) {
+            return new KeyboardCleanupData(attempt.keycode(), wire(attempt.status().name()));
         }
     }
 
@@ -1788,6 +1981,15 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             }
         }
         return Map.copyOf(source);
+    }
+
+    private static void requireWireValue(String value, String name, Enum<?>[] allowed) {
+        for (Enum<?> candidate : allowed) {
+            if (wire(candidate.name()).equals(value)) {
+                return;
+            }
+        }
+        throw new IllegalArgumentException("unknown " + name + ": " + value);
     }
 
     private static String sha256(byte[] content) {

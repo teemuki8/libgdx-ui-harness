@@ -40,7 +40,7 @@ final class ProtocolJsonContractTest {
                 Command.Snapshot.class, Command.Query.class, Command.Action.class,
                 Command.Assert.class, Command.Wait.class, Command.Screenshot.class,
                 Command.TraceStart.class, Command.TraceStop.class, Command.ScenarioList.class,
-                Command.ScenarioStart.class), variants);
+                Command.ScenarioStart.class, Command.KeyboardGesture.class), variants);
         String encoded = ProtocolJson.mapper().writeValueAsString(
                 ProtocolJson.mapper().treeToValue(contracts.get(4).get("value"),
                         HarnessRequest.class));
@@ -74,7 +74,8 @@ final class ProtocolJsonContractTest {
                 HarnessResponse.Result.TraceStarted.class,
                 HarnessResponse.Result.TraceStopped.class,
                 HarnessResponse.Result.ScenarioList.class,
-                HarnessResponse.Result.ScenarioStart.class), variants);
+                HarnessResponse.Result.ScenarioStart.class,
+                HarnessResponse.Result.KeyboardGesture.class), variants);
     }
 
     @Test void everyV1ErrorGoldenRoundTripsCanonically() throws Exception {
