@@ -331,8 +331,8 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
                             List.copyOf(held), Optional.of(completed.evidence())));
                     stepIndex++;
                     completedSteps++;
+                    safeTrace("gesture-step", tickStep, "wait-ticks");
                 }
-                safeTrace("gesture-step", tickStep, "wait-ticks");
                 scheduleNext();
             });
         }
@@ -434,9 +434,15 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
                             OptionalInt.of(failedIndex));
                     return;
                 }
-                addKeyEvidence(keycode, down, dispatch, StepStatus.COMPLETED);
-                safeTrace("gesture-step", currentStepIndex() - 1,
-                        down ? "key-down" : "key-up");
+                synchronized (this) {
+                    if (phase != Phase.NORMAL) {
+                        return;
+                    }
+                    int completedIndex = stepIndex;
+                    addKeyEvidence(keycode, down, dispatch, StepStatus.COMPLETED);
+                    safeTrace("gesture-step", completedIndex,
+                            down ? "key-down" : "key-up");
+                }
                 scheduleNext();
             });
         }
@@ -558,9 +564,9 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
                             List.copyOf(held), Optional.empty()));
                     stepIndex++;
                     completedSteps++;
+                    safeTrace("gesture-step", stepIndex - 1, "wait-frames");
                 }
                 close(toClose);
-                safeTrace("gesture-step", currentStepIndex() - 1, "wait-frames");
                 scheduleNext();
             }
 

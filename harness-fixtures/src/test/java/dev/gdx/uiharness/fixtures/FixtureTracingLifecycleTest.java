@@ -51,6 +51,24 @@ import org.junit.jupiter.api.io.TempDir;
 final class FixtureTracingLifecycleTest {
     private static final long STEP_NANOS = Duration.ofMillis(16).toNanos();
 
+    @Test void gestureEventsRetainOrderAndOneRequestIdentity(@TempDir Path root)
+            throws Exception {
+        MutableClock clock = new MutableClock();
+        ArchivePublisher publisher = new ArchivePublisher();
+        try (FixtureControl.ReferenceTraceController traces = traces(root, publisher, clock)) {
+            traces.gesture(gestureEvent("gesture-accepted", "gesture-request", 1));
+            traces.gesture(gestureEvent("gesture-step", "gesture-request", 2));
+            traces.gesture(gestureEvent("gesture-completed", "gesture-request", 3));
+
+            byte[] archive = stop(traces, publisher, clock);
+            HarnessMcpClient.TraceEvidence evidence = HarnessMcpClient.traceEvidence(archive);
+            assertEquals(List.of(
+                    "gesture-accepted", "gesture-step", "gesture-completed"),
+                    evidence.gestureEvents());
+            assertEquals(List.of("gesture-request"), evidence.gestureRequestIds());
+        }
+    }
+
     @Test void cancellingActionBeforeDelegateCompletionCancelsDelegateAndClosesTrace(
             @TempDir Path root) throws Exception {
         MutableClock clock = new MutableClock();
@@ -76,6 +94,14 @@ final class FixtureTracingLifecycleTest {
             assertEquals(1, evidence.failedCausalChains("Click"));
             assertReplayable(root, archive);
         }
+    }
+
+    private static dev.gdx.uiharness.core.trace.TraceEvent gestureEvent(
+            String event, String requestId, long frame) {
+        return new dev.gdx.uiharness.core.trace.TraceEvent(
+                -1, dev.gdx.uiharness.core.trace.TraceEvent.Kind.LOG,
+                FixtureControl.SESSION_ID, requestId, frame * STEP_NANOS,
+                frame, frame, null, Map.of("event", event));
     }
 
     @Test void actionCompletionWinsOverCancellationDuringPostActionSnapshot(

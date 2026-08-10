@@ -1,9 +1,13 @@
 package dev.gdx.uiharness.fixtures;
 
 import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.Input;
+import com.badlogic.gdx.scenes.scene2d.InputEvent;
+import com.badlogic.gdx.scenes.scene2d.InputListener;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.TextField;
 import dev.gdx.uiharness.agentruntime.AgentRuntimeObservationSource;
+import dev.gdx.uiharness.agentruntime.AgentRuntimeTickCoordinator;
 import dev.gdx.uiharness.core.action.Action;
 import dev.gdx.uiharness.core.action.ActionResult;
 import dev.gdx.uiharness.core.action.Harness;
@@ -80,7 +84,6 @@ import dev.gdx.uiharness.protocol.ArtifactStore;
 import dev.gdx.uiharness.protocol.CapabilitySet;
 import dev.gdx.uiharness.protocol.Command;
 import dev.gdx.uiharness.protocol.FileArtifactStore;
-import dev.gdx.uiharness.protocol.Command;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
 import dev.gdx.uiharness.protocol.HarnessResponse;
 import dev.gdx.uiharness.protocol.InspectCaptureCompareService;
@@ -93,8 +96,10 @@ import dev.gdx.uiharness.scene2d.Scene2dHarness;
 import dev.gdx.uiharness.scene2d.Scene2dNavigationRunner;
 import dev.gdx.uiharness.scene2d.Scene2dScenarioRunner;
 import dev.gdx.uiharness.scene2d.Scene2dInputDispatcher;
+import dev.gdx.uiharness.scene2d.Scene2dKeyboardGestureRunner;
 import dev.gdx.uiharness.scene2d.Scene2dSession;
 import dev.gdx.uiharness.scene2d.TypographyCaptureContext;
+import io.github.teemuki8.libgdx.agent.runtime.core.SimulationControllerSpec;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -151,7 +156,8 @@ public final class FixtureControl implements AutoCloseable {
             "screenshot", "snapshot", "layout", "trace", "typography", "ui_assert", "wait",
             "ui_matrix_run", "ui_matrix_results", "ui_semantic_compare",
             "ui_navigation_inspect", "ui_navigation_validate", "ui_runtime_compare",
-            "ui_trace_query", "ui_validate_layout");
+            "ui_trace_query", "ui_validate_layout", "ui_keyboard_gesture",
+            "ui_keyboard_gesture_ticks");
 
     private final Path processRoot;
     private final Path artifactRoot;
@@ -185,6 +191,10 @@ public final class FixtureControl implements AutoCloseable {
     private final Lwjgl3MatrixRunner matrixRunner;
     private final SemanticBaselineCatalog baselineCatalog = new SemanticBaselineCatalog();
     private final io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime agentRuntime;
+    private final AgentRuntimeTickCoordinator tickCoordinator;
+    private final Scene2dKeyboardGestureRunner gestureRunner;
+    private final AtomicBoolean gestureKeyHeld = new AtomicBoolean();
+    private String gestureMarkerPreviousText;
     private final ReferenceUiModel uiModel = new ReferenceUiModel("Ada", "");
     private HarnessMcpServer server;
     private Future<?> terminationTask;
@@ -303,8 +313,51 @@ public final class FixtureControl implements AutoCloseable {
                 Thread.ofVirtual().name("reference-mcp-termination-", 0).factory());
         agentRuntime = io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime.builder()
                 .sessionId(new io.github.teemuki8.libgdx.agent.runtime.core.SessionId(SESSION_ID))
+                .captureThread(Thread.currentThread())
+                .commandDispatcher(Gdx.app::postRunnable)
                 .build();
         agentRuntime.start();
+        stage.getRoot().addCaptureListener(new InputListener() {
+            @Override public boolean keyDown(InputEvent event, int keycode) {
+                if (keycode == Input.Keys.A) {
+                    gestureKeyHeld.set(true);
+                    TextField marker = (TextField) stage.getRoot().findActor("password");
+                    gestureMarkerPreviousText = marker.getText();
+                    marker.setText("gesture-key-held");
+                }
+                return false;
+            }
+
+            @Override public boolean keyUp(InputEvent event, int keycode) {
+                if (keycode == Input.Keys.A) {
+                    gestureKeyHeld.set(false);
+                    TextField marker = (TextField) stage.getRoot().findActor("password");
+                    marker.setText(gestureMarkerPreviousText == null
+                            ? "" : gestureMarkerPreviousText);
+                    gestureMarkerPreviousText = null;
+                }
+                return false;
+            }
+        });
+        agentRuntime.controls().register(SimulationControllerSpec.builder()
+                .pause(() -> {})
+                .resume(() -> {})
+                .tick(deltaNanos -> {
+                    if (deltaNanos != FIXED_STEP.toNanos()) {
+                        throw new IllegalStateException("unexpected controlled tick delta");
+                    }
+                    if (!gestureKeyHeld.get()) {
+                        throw new IllegalStateException(
+                                "controlled tick ran without callback-owned held key");
+                    }
+                })
+                .build());
+        agentRuntime.controls().control(true, "fixture-pause", Duration.ofSeconds(5));
+        tickCoordinator = new AgentRuntimeTickCoordinator(
+                agentRuntime, SESSION_ID, FIXED_STEP.toNanos(), fence, deadlineScheduler);
+        gestureRunner = new Scene2dKeyboardGestureRunner(
+                SESSION_ID, stage, scheduler, fence, clock::revision, clock::frame,
+                deadlineScheduler, Optional.of(tickCoordinator), traces::gesture);
         agentRuntime.entities().register(
                 io.github.teemuki8.libgdx.agent.runtime.core.EntityId.of("reference-ui-user"),
                 io.github.teemuki8.libgdx.agent.runtime.core.EntityType.of("user"),
@@ -448,7 +501,7 @@ public final class FixtureControl implements AutoCloseable {
                 Optional.of(navigationCoordinator),
                 Optional.of(layoutCoordinator),
                 Optional.of(matrixCoordinator), Optional.of(semanticCoordinator),
-                Optional.of(runtimeCoordinator));
+                Optional.of(runtimeCoordinator), Optional.of(gestureRunner::execute));
         VisualReference reference = reference();
         VisualPolicy policy = new VisualPolicy(
                 "reference-smoke", 1, 1280L * 720, 0.125, true, true);
@@ -642,9 +695,32 @@ public final class FixtureControl implements AutoCloseable {
             return;
         }
         RuntimeException failure = null;
+        CompletionStage<Void> gestureStop = gestureRunner.stop();
+        for (int attempt = 0; attempt <= 16
+                && !gestureStop.toCompletableFuture().isDone(); attempt++) {
+            scheduler.drain();
+        }
+        if (!gestureStop.toCompletableFuture().isDone()) {
+            failure = append(failure,
+                    new IllegalStateException("keyboard gesture cleanup did not terminate"));
+        } else {
+            try {
+                gestureStop.toCompletableFuture().join();
+            } catch (CompletionException stopFailure) {
+                failure = append(failure,
+                        new IllegalStateException("keyboard gesture cleanup failed",
+                                stopFailure.getCause()));
+            }
+        }
+        if (gestureKeyHeld.get()) {
+            failure = append(failure,
+                    new IllegalStateException("keyboard gesture key remained held at shutdown"));
+        }
         failure = closeResource(server, failure);
         failure = closeResource(waits, failure);
         failure = closeResource(capture, failure);
+        failure = closeResource(gestureRunner, failure);
+        failure = closeResource(tickCoordinator, failure);
         failure = closeResource(fence, failure);
         failure = closeResource(replacementCoordinator, failure);
         failure = closeResource(agentRuntime, failure);
@@ -1359,6 +1435,12 @@ public final class FixtureControl implements AutoCloseable {
                     Map.of(
                             "operation", operation,
                             "nodeCount", Integer.toString(snapshot.nodes().size()))));
+        }
+
+        synchronized void gesture(TraceEvent event) {
+            if (active) {
+                record(event);
+            }
         }
 
         synchronized TraceSpan captureStarted(Deadline deadline) {
