@@ -82,6 +82,24 @@ public final class Scene2dInputDispatcher {
         return true;
     }
 
+    /** Sends one raw key-down callback through only the configured input processor. */
+    void keyDown(int keycode) {
+        keyDown(input, keycode);
+    }
+
+    /** Sends one raw key-up callback through only the configured input processor. */
+    void keyUp(int keycode) {
+        keyUp(input, keycode);
+    }
+
+    static void keyDown(InputProcessor input, int keycode) {
+        Objects.requireNonNull(input, "input").keyDown(keycode);
+    }
+
+    static void keyUp(InputProcessor input, int keycode) {
+        Objects.requireNonNull(input, "input").keyUp(keycode);
+    }
+
     /** Dispatches at a previously validated stage-space point during the same render-thread turn. */
     void dispatchAt(Actor actor, Action action, float stageX, float stageY) {
         Objects.requireNonNull(actor, "actor");

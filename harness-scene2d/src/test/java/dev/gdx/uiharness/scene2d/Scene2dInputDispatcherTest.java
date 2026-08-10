@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.badlogic.gdx.Input.Buttons;
+import com.badlogic.gdx.Input.Keys;
+import com.badlogic.gdx.InputAdapter;
 import com.badlogic.gdx.InputMultiplexer;
 import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.Stage;
@@ -16,9 +18,50 @@ import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
 import com.badlogic.gdx.scenes.scene2d.ui.TextField;
 import com.badlogic.gdx.scenes.scene2d.utils.BaseDrawable;
 import dev.gdx.uiharness.core.action.Action;
+import java.util.ArrayList;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 final class Scene2dInputDispatcherTest {
+    @Test void directKeyTransitionsUseConfiguredProcessorWithoutTypedInput() {
+        Stage stage = Scene2dTestSupport.stage();
+        try {
+            RecordingKeys input = new RecordingKeys();
+            Scene2dInputDispatcher dispatcher = new Scene2dInputDispatcher(stage, input);
+
+            dispatcher.keyDown(Keys.SHIFT_LEFT);
+            dispatcher.keyDown(Keys.A);
+            dispatcher.keyUp(Keys.A);
+            dispatcher.keyUp(Keys.SHIFT_LEFT);
+
+            assertEquals(List.of(
+                    "down:" + Keys.SHIFT_LEFT,
+                    "down:" + Keys.A,
+                    "up:" + Keys.A,
+                    "up:" + Keys.SHIFT_LEFT), input.events);
+        } finally {
+            stage.dispose();
+        }
+    }
+
+    @Test void existingPressStillSynthesizesTypedCharacter() {
+        Stage stage = Scene2dTestSupport.stage();
+        try {
+            TextField field = new TextField("", WidgetStyles.textField());
+            field.setBounds(10, 10, 100, 30);
+            stage.addActor(field);
+            RecordingKeys input = new RecordingKeys();
+            Scene2dInputDispatcher dispatcher = new Scene2dInputDispatcher(stage, input);
+
+            dispatcher.dispatch(field, Action.press(Keys.A));
+
+            assertEquals(List.of(
+                    "down:" + Keys.A, "typed:a", "up:" + Keys.A), input.events);
+        } finally {
+            stage.dispose();
+        }
+    }
+
     @Test void clickMapsNestedActorCenterToScreenAndUsesConfiguredProcessor() {
         Stage stage = Scene2dTestSupport.stage();
         try {
@@ -122,6 +165,25 @@ final class Scene2dInputDispatcherTest {
         style.knob.setMinWidth(10);
         style.knob.setMinHeight(10);
         return style;
+    }
+
+    private static final class RecordingKeys extends InputAdapter {
+        private final List<String> events = new ArrayList<>();
+
+        @Override public boolean keyDown(int keycode) {
+            events.add("down:" + keycode);
+            return true;
+        }
+
+        @Override public boolean keyUp(int keycode) {
+            events.add("up:" + keycode);
+            return true;
+        }
+
+        @Override public boolean keyTyped(char character) {
+            events.add("typed:" + character);
+            return true;
+        }
     }
 
 }
