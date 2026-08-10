@@ -284,6 +284,10 @@ public final class HarnessToolHandler implements AutoCloseable {
                     failure, operation, sequence, arguments,
                     "Protocol invocation failed", workflowToken));
         }
+        if ("ui_keyboard_gesture".equals(operation)) {
+            return gestureTranslation(
+                    stage, operation, sequence, arguments, workflowToken);
+        }
         return Mono.fromFuture(stage.toCompletableFuture())
                 .map(execution -> toMcpResult(
                         execution.response(), execution.captures(),
@@ -292,6 +296,47 @@ public final class HarnessToolHandler implements AutoCloseable {
                         failure, operation, sequence, arguments,
                         "Protocol invocation failed", workflowToken)))
                 .toFuture();
+    }
+
+    private CompletionStage<McpSchema.CallToolResult> gestureTranslation(
+            CompletionStage<HarnessProtocolService.Execution> stage,
+            String operation,
+            long sequence,
+            Map<String, Object> arguments,
+            long[] workflowToken) {
+        CompletableFuture<HarnessProtocolService.Execution> source = stage.toCompletableFuture();
+        CompletableFuture<McpSchema.CallToolResult> translated =
+                new CompletableFuture<>() {
+                    private boolean cancellationRequested;
+
+                    @Override public synchronized boolean cancel(
+                            boolean mayInterruptIfRunning) {
+                        if (isDone() || cancellationRequested) {
+                            return false;
+                        }
+                        cancellationRequested = true;
+                        source.cancel(false);
+                        return false;
+                    }
+                };
+        source.whenComplete((execution, failure) -> {
+            if (failure != null) {
+                translated.complete(classifyBoundaryFailure(
+                        failure, operation, sequence, arguments,
+                        "Protocol invocation failed", workflowToken));
+                return;
+            }
+            try {
+                translated.complete(toMcpResult(
+                        execution.response(), execution.captures(),
+                        operation, sequence, arguments, workflowToken));
+            } catch (RuntimeException | Error translationFailure) {
+                translated.complete(classifyBoundaryFailure(
+                        translationFailure, operation, sequence, arguments,
+                        "Result translation failed", workflowToken));
+            }
+        });
+        return translated;
     }
 
     private McpSchema.CallToolResult limitExceeded(
@@ -327,6 +372,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             case "ui_snapshot" -> "snapshot";
             case "ui_query" -> "query";
             case "ui_action" -> "action";
+            case "ui_keyboard_gesture" -> "keyboard-gesture";
             case "ui_assert" -> "assert";
             case "ui_wait" -> "wait";
             case "ui_screenshot" -> "screenshot";
@@ -381,10 +427,13 @@ public final class HarnessToolHandler implements AutoCloseable {
                     HarnessToolCatalog.recoveryPolicy().maxWallTimeMillis(),
                     "success/v1")));
             endWorkflow(sessionKey(arguments), workflowToken[0]);
+            boolean gestureError = success.result()
+                    instanceof HarnessResponse.Result.KeyboardGesture gesture
+                    && !"completed".equals(gesture.gesture().outcome());
             return McpSchema.CallToolResult.builder()
                     .structuredContent(Map.copyOf(content))
                     .addTextContent(compactText(content))
-                    .isError(false)
+                    .isError(gestureError)
                     .build();
         } catch (RuntimeException | Error failure) {
             return classifyBoundaryFailure(
@@ -454,6 +503,14 @@ public final class HarnessToolHandler implements AutoCloseable {
             content.put("observedState", action.observedState());
             content.put("evidence", action.evidence());
             offloadLarge(content, encoded, "application/json", "evidence");
+            return Map.copyOf(content);
+        }
+        if (result instanceof HarnessResponse.Result.KeyboardGesture gesture) {
+            LinkedHashMap<String, Object> content = content("keyboard-gesture-result");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> evidence = COMMAND_MAPPER.convertValue(
+                    gesture.gesture(), Map.class);
+            content.putAll(evidence);
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.Assertion assertion) {
