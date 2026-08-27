@@ -29,6 +29,13 @@ public record CapabilitySet(List<String> capabilities) {
             ProtocolJson.requireIdentifier(capability, "capability");
             ordered.add(capability);
         }
+        if (source.size() > MAX_REGISTERED_CAPABILITIES
+                && (ordered.size() != MAX_ADVERTISED_CAPABILITIES
+                        || !ordered.contains("ui_keyboard_gesture")
+                        || !ordered.contains("ui_keyboard_gesture_v2"))) {
+            throw new IllegalArgumentException(
+                    "65 advertised capabilities require the derived gesture v2 capability");
+        }
         if (ordered.contains("ui_keyboard_gesture")) {
             ordered.add("ui_keyboard_gesture_v2");
         } else if (ordered.contains("ui_keyboard_gesture_v2")) {

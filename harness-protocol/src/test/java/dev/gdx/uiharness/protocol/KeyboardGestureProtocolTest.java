@@ -92,6 +92,41 @@ final class KeyboardGestureProtocolTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new CapabilitySet(callerSupplied65));
     }
+    @Test void responseCapabilityCanonicalizationAcceptsOnlyExactDerived65() {
+        ArrayList<String> validDerived65 = namedCapabilities("valid", 63);
+        validDerived65.add("ui_keyboard_gesture");
+        validDerived65.add("ui_keyboard_gesture_v2");
+        assertEquals(65,
+                new HarnessResponse.Result.Capabilities(validDerived65)
+                        .capabilities().size());
+        assertEquals(65,
+                new HarnessResponse.SessionInfo("game", validDerived65)
+                        .capabilities().size());
+
+        ArrayList<String> arbitrary65 = namedCapabilities("arbitrary", 65);
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.Result.Capabilities(arbitrary65));
+
+        ArrayList<String> missingV2 = namedCapabilities("missing-v2", 64);
+        missingV2.add("ui_keyboard_gesture");
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.Result.Capabilities(missingV2));
+
+        ArrayList<String> missingV1 = namedCapabilities("missing-v1", 64);
+        missingV1.add("ui_keyboard_gesture_v2");
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.Result.Capabilities(missingV1));
+
+        ArrayList<String> registration64WithBoth = namedCapabilities("registered", 62);
+        registration64WithBoth.add("ui_keyboard_gesture");
+        registration64WithBoth.add("ui_keyboard_gesture_v2");
+        assertEquals(64,
+                new CapabilitySet(registration64WithBoth).capabilities().size());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new CapabilitySet(validDerived65));
+    }
+
 
 
 
@@ -272,6 +307,14 @@ final class KeyboardGestureProtocolTest {
     private static String gestureWithVersion(int version, String members) {
         return "{\"type\":\"keyboard-gesture\",\"schemaVersion\":" + version + ","
                 + members + "}";
+    }
+
+    private static ArrayList<String> namedCapabilities(String prefix, int count) {
+        ArrayList<String> capabilities = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            capabilities.add(prefix + "-" + index);
+        }
+        return capabilities;
     }
 
     private static String validSteps() {
