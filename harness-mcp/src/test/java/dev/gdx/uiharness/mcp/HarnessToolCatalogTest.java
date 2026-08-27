@@ -102,11 +102,52 @@ final class HarnessToolCatalogTest {
                 catalog.tool("ui_runtime_observe").inputSchema());
         assertEquals(false, input.at("/additionalProperties").asBoolean());
         assertTrue(input.at("/properties/locator").isMissingNode());
-        JsonNode output = ProtocolJson.mapper().valueToTree(
-                catalog.tool("ui_runtime_observe").outputSchema());
-        assertEquals("runtime-observation-result",
-                output.at("/properties/kind/const").asText());
-        assertEquals(false, output.at("/additionalProperties").asBoolean());
+        Map<String, Object> output = catalog.tool("ui_runtime_observe").outputSchema();
+        Map<String, Object> progress = Map.of(
+                "status", "available", "dimensions", Map.of(), "ruleId", "success/v1");
+        Map<String, Object> recovery = Map.ofEntries(
+                Map.entry("policyVersion", "recovery/v1"),
+                Map.entry("consumedBefore", 0),
+                Map.entry("consumed", 0),
+                Map.entry("limit", 3),
+                Map.entry("remainingBefore", 3),
+                Map.entry("remaining", 3),
+                Map.entry("elapsedMillis", 0),
+                Map.entry("maxWallTimeMillis", 30_000),
+                Map.entry("terminatingRule", "success/v1"));
+        Map<String, Object> available = Map.of(
+                "kind", "runtime-observation-result",
+                "progress", progress,
+                "recovery", recovery,
+                "status", "AVAILABLE",
+                "entityId", "body-1",
+                "propertyId", "angle",
+                "runtimeFrame", 41L,
+                "runtimeRevision", 17L,
+                "value", "1.25",
+                "valueFormatId", "decimal");
+        Map<String, Object> unavailable = Map.of(
+                "kind", "runtime-observation-result",
+                "progress", progress,
+                "recovery", recovery,
+                "status", "UNAVAILABLE",
+                "entityId", "body-1",
+                "propertyId", "angle");
+        Map<String, Object> missingFormat = new java.util.LinkedHashMap<>(available);
+        missingFormat.remove("valueFormatId");
+        var availableValidation =
+                McpJsonDefaults.getSchemaValidator().validate(output, available);
+        assertTrue(availableValidation.valid(), availableValidation.toString());
+        assertTrue(McpJsonDefaults.getSchemaValidator().validate(
+                output, unavailable).valid());
+        assertFalse(McpJsonDefaults.getSchemaValidator().validate(
+                output, missingFormat).valid());
+        assertFalse(McpJsonDefaults.getSchemaValidator().validate(
+                output, with(unavailable, "value", "guessed")).valid());
+        JsonNode outputJson = ProtocolJson.mapper().valueToTree(output);
+        for (JsonNode variant : outputJson.path("oneOf")) {
+            assertEquals(false, variant.path("additionalProperties").asBoolean());
+        }
     }
 
     @Test void keyboardGestureSchemaIsClosedBoundedAndLocatorFree() {

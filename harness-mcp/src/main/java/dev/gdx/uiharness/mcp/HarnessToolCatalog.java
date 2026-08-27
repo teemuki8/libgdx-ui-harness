@@ -364,15 +364,7 @@ public final class HarnessToolCatalog {
                                         1, HarnessRequest.MAX_DEADLINE_MILLIS)),
                                 List.of("entityId", "propertyId", "correlationToken",
                                         "maxDurationMillis")),
-                        output("runtime-observation-result", Map.of(
-                                "status", enumString("AVAILABLE", "UNAVAILABLE"),
-                                "entityId", string(1, MAX_IDENTIFIER),
-                                "propertyId", string(1, MAX_IDENTIFIER),
-                                "runtimeFrame", integer(0, Long.MAX_VALUE),
-                                "runtimeRevision", integer(0, Long.MAX_VALUE),
-                                "value", string(0, ProtocolJson.MAX_STRING_LENGTH),
-                                "valueFormatId", string(1, MAX_IDENTIFIER)),
-                                List.of("status", "entityId", "propertyId"))),
+                        runtimeObservationOutput()),
                 tool(AccessMode.READ_ONLY, "ui_trace_query",
                         "Query compact state-transition summaries from one retained bounded "
                                 + "trace without downloading the archive",
@@ -588,6 +580,29 @@ public final class HarnessToolCatalog {
                 Map.entry("maxDurationMillis", integer(1, 3_600_000))),
                 List.of("traceId", "kinds", "propertyPaths", "maxTransitions",
                         "maxEvidenceBytes", "maxDurationMillis"));
+    }
+
+    private static Map<String, Object> runtimeObservationOutput() {
+        Map<String, Object> available = output(
+                "runtime-observation-result",
+                Map.of(
+                        "status", Map.of("const", "AVAILABLE", "type", "string"),
+                        "entityId", string(1, MAX_IDENTIFIER),
+                        "propertyId", string(1, MAX_IDENTIFIER),
+                        "runtimeFrame", integer(0, Long.MAX_VALUE),
+                        "runtimeRevision", integer(0, Long.MAX_VALUE),
+                        "value", string(0, ProtocolJson.MAX_STRING_LENGTH),
+                        "valueFormatId", string(1, MAX_IDENTIFIER)),
+                List.of("status", "entityId", "propertyId", "runtimeFrame",
+                        "runtimeRevision", "value", "valueFormatId"));
+        Map<String, Object> unavailable = output(
+                "runtime-observation-result",
+                Map.of(
+                        "status", Map.of("const", "UNAVAILABLE", "type", "string"),
+                        "entityId", string(1, MAX_IDENTIFIER),
+                        "propertyId", string(1, MAX_IDENTIFIER)),
+                List.of("status", "entityId", "propertyId"));
+        return Map.of("oneOf", List.of(available, unavailable));
     }
 
     private static Map<String, Object> nullableInt() {

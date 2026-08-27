@@ -27,9 +27,12 @@ public record RuntimeObservationResult(
         if (runtimeRevision != null && runtimeRevision < 0) {
             throw new IllegalArgumentException("runtimeRevision must be non-negative");
         }
-        if (status == Status.AVAILABLE
-                && (runtimeFrame == null || runtimeRevision == null || value == null)) {
-            throw new IllegalArgumentException("available observations require frame, revision, and value");
+        if (status == Status.AVAILABLE) {
+            Objects.requireNonNull(valueFormatId, "valueFormatId");
+            if (runtimeFrame == null || runtimeRevision == null || value == null) {
+                throw new IllegalArgumentException(
+                        "available observations require frame, revision, value, and format");
+            }
         }
         if (status == Status.UNAVAILABLE
                 && (runtimeFrame != null || runtimeRevision != null

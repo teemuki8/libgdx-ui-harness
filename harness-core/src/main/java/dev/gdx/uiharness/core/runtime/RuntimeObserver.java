@@ -6,6 +6,7 @@ import java.util.Optional;
 
 /** Read-only observer for one explicit registered runtime entity property and correlation token. */
 public final class RuntimeObserver {
+    private static final int MAX_IDENTIFIER = 256;
     private final RuntimeObservationSource source;
 
     /** Creates an observer without an installed source; every request is unavailable. */
@@ -31,7 +32,9 @@ public final class RuntimeObserver {
             return RuntimeObservationResult.unavailable(entityId, propertyId);
         }
         RuntimeObservation value = observed.orElseThrow();
-        if (!entityId.equals(value.entityId()) || !propertyId.equals(value.propertyId())) {
+        if (!entityId.equals(value.entityId())
+                || !propertyId.equals(value.propertyId())
+                || !validFormat(value.valueFormatId())) {
             return RuntimeObservationResult.unavailable(entityId, propertyId);
         }
         return new RuntimeObservationResult(
@@ -42,5 +45,11 @@ public final class RuntimeObserver {
                 value.revision(),
                 value.value(),
                 value.valueFormatId());
+    }
+
+    private static boolean validFormat(String valueFormatId) {
+        return valueFormatId != null
+                && !valueFormatId.isBlank()
+                && valueFormatId.length() <= MAX_IDENTIFIER;
     }
 }

@@ -1,6 +1,7 @@
 package dev.gdx.uiharness.protocol;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -30,6 +31,20 @@ final class RuntimeObserveProtocolTest {
                         + "\"propertyId\":\"angle\",\"correlationToken\":\"frame\","
                         + "\"maxDurationMillis\":2000,\"locator\":{}}",
                 Command.RuntimeObserve.class));
+    }
+
+    @Test void unavailableProtocolResultOmitsValueAndFormat() throws Exception {
+        HarnessResponse.Result.RuntimeObserve unavailable =
+                new HarnessResponse.Result.RuntimeObserve(
+                        RuntimeObservationResult.unavailable("body", "angle"));
+
+        String json = ProtocolJson.mapper().writeValueAsString(unavailable);
+
+        assertTrue(json.contains("\"status\":\"UNAVAILABLE\""));
+        assertFalse(json.contains("\"value\""));
+        assertFalse(json.contains("\"valueFormatId\""));
+        assertFalse(json.contains("\"runtimeFrame\""));
+        assertFalse(json.contains("\"runtimeRevision\""));
     }
 
     @Test void runtimeObserveRejectsInvalidBounds() {

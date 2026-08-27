@@ -57,6 +57,39 @@ final class RuntimeObserveMcpTest {
         }
     }
 
+    @Test void unavailableProjectionOmitsEveryAvailableOnlyField() {
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(request ->
+                        CompletableFuture.completedFuture(new HarnessResponse.Success(
+                                ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                new HarnessResponse.Result.RuntimeObserve(
+                                        RuntimeObservationResult.unavailable(
+                                                "body-1", "angle")))),
+                        noArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(
+                    McpSchema.CallToolRequest.builder("ui_runtime_observe").arguments(Map.of(
+                            "sessionId", "game",
+                            "entityId", "body-1",
+                            "propertyId", "angle",
+                            "correlationToken", "render-frame",
+                            "maxDurationMillis", 2_000)).build())
+                    .block(Duration.ofSeconds(5));
+
+            assertFalse(result.isError());
+            @SuppressWarnings("unchecked")
+            Map<String, Object> structured =
+                    (Map<String, Object>) result.structuredContent();
+            assertEquals("UNAVAILABLE", structured.get("status"));
+            assertFalse(structured.containsKey("runtimeFrame"));
+            assertFalse(structured.containsKey("runtimeRevision"));
+            assertFalse(structured.containsKey("value"));
+            assertFalse(structured.containsKey("valueFormatId"));
+            assertTrue(McpJsonDefaults.getSchemaValidator().validate(
+                    new HarnessToolCatalog().tool("ui_runtime_observe").outputSchema(),
+                    structured).valid());
+        }
+    }
+
     private static ArtifactReference.Publisher noArtifacts() {
         return (mediaType, content) -> {
             throw new AssertionError("runtime observations must stay inline");

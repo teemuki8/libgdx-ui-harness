@@ -39,6 +39,19 @@ final class RuntimeObserverTest {
                 mismatched.observe("body-1", "angle", "frame").status());
     }
 
+    @Test void malformedSourceWithoutValueFormatIsUnavailable() {
+        RuntimeObserver observer = new RuntimeObserver(binding -> Optional.of(
+                new RuntimeObservation(binding.entityId(), binding.propertyId(),
+                        1, 1, "1.25", null)));
+
+        RuntimeObservationResult result =
+                observer.observe("body", "angle", "frame");
+
+        assertEquals(RuntimeObservationResult.Status.UNAVAILABLE, result.status());
+        assertEquals(null, result.value());
+        assertEquals(null, result.valueFormatId());
+    }
+
     @Test void explicitIdentifiersAndReturnedValuesRemainBounded() {
         RuntimeObserver observer = new RuntimeObserver(binding -> Optional.empty());
 
@@ -49,6 +62,15 @@ final class RuntimeObserverTest {
         assertThrows(IllegalArgumentException.class, () -> new RuntimeObservationResult(
                 RuntimeObservationResult.Status.AVAILABLE, "body", "angle", 1L, 1L,
                 "x".repeat(16_385), "string"));
+        assertThrows(NullPointerException.class, () -> new RuntimeObservationResult(
+                RuntimeObservationResult.Status.AVAILABLE, "body", "angle", 1L, 1L,
+                "1.25", null));
+        assertThrows(IllegalArgumentException.class, () -> new RuntimeObservationResult(
+                RuntimeObservationResult.Status.AVAILABLE, "body", "angle", 1L, 1L,
+                "1.25", " "));
+        assertThrows(IllegalArgumentException.class, () -> new RuntimeObservationResult(
+                RuntimeObservationResult.Status.AVAILABLE, "body", "angle", 1L, 1L,
+                "1.25", "x".repeat(257)));
     }
 
     @Test void sourceAvailabilityIsRespected() {
