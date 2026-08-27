@@ -1245,6 +1245,39 @@
 }, {
   "inputSchema" : {
     "additionalProperties" : false,
+    "allOf" : [ {
+      "if" : {
+        "properties" : {
+          "schemaVersion" : {
+            "const" : 1
+          }
+        },
+        "required" : [ "schemaVersion" ]
+      },
+      "then" : {
+        "properties" : {
+          "steps" : {
+            "maxItems" : 64
+          }
+        }
+      }
+    }, {
+      "if" : {
+        "properties" : {
+          "schemaVersion" : {
+            "const" : 2
+          }
+        },
+        "required" : [ "schemaVersion" ]
+      },
+      "then" : {
+        "properties" : {
+          "steps" : {
+            "maxItems" : 256
+          }
+        }
+      }
+    } ],
     "properties" : {
       "deadlineMillis" : {
         "maximum" : 120000,
@@ -1335,6 +1368,79 @@
   "name" : "ui_keyboard_gesture",
   "outputSchema" : {
     "additionalProperties" : false,
+    "allOf" : [ {
+      "if" : {
+        "properties" : {
+          "schemaVersion" : {
+            "const" : 1
+          }
+        },
+        "required" : [ "schemaVersion" ]
+      },
+      "then" : {
+        "properties" : {
+          "completedSteps" : {
+            "maximum" : 64,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "failureStep" : {
+            "maximum" : 63,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "requestedSteps" : {
+            "maximum" : 64,
+            "minimum" : 2,
+            "type" : "integer"
+          },
+          "startedSteps" : {
+            "maximum" : 64,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "steps" : {
+            "maxItems" : 64
+          }
+        }
+      }
+    }, {
+      "if" : {
+        "properties" : {
+          "schemaVersion" : {
+            "const" : 2
+          }
+        },
+        "required" : [ "schemaVersion" ]
+      },
+      "then" : {
+        "properties" : {
+          "completedSteps" : {
+            "maximum" : 256,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "failureStep" : {
+            "maximum" : 255,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "requestedSteps" : {
+            "maximum" : 256,
+            "minimum" : 2,
+            "type" : "integer"
+          },
+          "startedSteps" : {
+            "maximum" : 256,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "steps" : {
+            "maxItems" : 256
+          }
+        }
+      }
+    } ],
     "properties" : {
       "cleanup" : {
         "items" : {

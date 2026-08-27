@@ -65,6 +65,16 @@ final class KeyboardGestureResultTest {
                 CleanupStatus.NOT_REQUIRED, List.of(), Optional.empty());
 
         assertEquals(255, result.steps().get(255).index());
+        assertThrows(IllegalArgumentException.class, () -> new KeyboardGestureResult(
+                KeyboardGestureRequest.SCHEMA_VERSION,
+                TerminalOutcome.COMPLETED,
+                KeyboardGestureRequest.MAX_STEPS + 1,
+                KeyboardGestureRequest.MAX_STEPS + 1,
+                KeyboardGestureRequest.MAX_STEPS + 1,
+                10, 20, 266, 276, 4_000,
+                evidence.subList(0, KeyboardGestureRequest.MAX_STEPS + 1),
+                OptionalInt.empty(), Optional.empty(), List.of(),
+                CleanupStatus.NOT_REQUIRED, List.of(), Optional.empty()));
     }
 
 

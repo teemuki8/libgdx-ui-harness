@@ -145,7 +145,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         record Capabilities(List<String> capabilities) implements Result {
             /** Retains canonical capability ordering. */
             public Capabilities {
-                capabilities = new CapabilitySet(capabilities).capabilities();
+                capabilities = CapabilitySet.canonicalAdvertised(capabilities);
             }
         }
 
@@ -866,9 +866,8 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             String traceId) {
         /** Copies all bounded collections and validates stable terminal fields. */
         public KeyboardGestureData {
-            KeyboardGestureRequest.maximumSteps(schemaVersion);
-            if (requestedSteps < 2
-                    || requestedSteps > KeyboardGestureRequest.MAX_STEPS_V2
+            int maximumSteps = KeyboardGestureRequest.maximumSteps(schemaVersion);
+            if (requestedSteps < 2 || requestedSteps > maximumSteps
                     || startedSteps < 0 || startedSteps > requestedSteps
                     || completedSteps < 0 || completedSteps > startedSteps) {
                 throw new IllegalArgumentException("invalid keyboard gesture step counts");
@@ -1315,7 +1314,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         /** Validates session identity and canonicalizes capabilities. */
         public SessionInfo {
             ProtocolJson.requireIdentifier(sessionId, "sessionId");
-            capabilities = new CapabilitySet(capabilities).capabilities();
+            capabilities = CapabilitySet.canonicalAdvertised(capabilities);
         }
     }
 

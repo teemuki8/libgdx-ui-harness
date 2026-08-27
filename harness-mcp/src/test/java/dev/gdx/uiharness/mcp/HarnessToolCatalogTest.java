@@ -103,6 +103,7 @@ final class HarnessToolCatalogTest {
                 catalog.tool("ui_keyboard_gesture").inputSchema());
         assertTrue(input.at("/properties/locator").isMissingNode());
         assertEquals(2, input.at("/properties/steps/minItems").asInt());
+        assertEquals(2, input.at("/allOf").size());
         assertEquals(256, input.at("/properties/steps/maxItems").asInt());
         assertEquals(false, input.at("/additionalProperties").asBoolean());
         for (JsonNode variant : input.at("/properties/steps/items/oneOf")) {
@@ -135,6 +136,8 @@ final class HarnessToolCatalogTest {
                 with(frame, "schemaVersion", 2), "steps", balancedGestureSteps(256)));
         assertInvalid("ui_keyboard_gesture", with(
                 with(frame, "schemaVersion", 2), "steps", balancedGestureSteps(257)));
+        assertInvalid("ui_keyboard_gesture", with(
+                frame, "steps", balancedGestureSteps(65)));
 
 
         JsonNode output = ProtocolJson.mapper().valueToTree(

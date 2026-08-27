@@ -100,10 +100,13 @@ final class KeyboardGestureMcpTest {
                     gestureCall(3, Map.of())).block(Duration.ofSeconds(5));
             McpSchema.CallToolResult unknownField = handler.handle(
                     gestureCall(1, Map.of("surprise", true))).block(Duration.ofSeconds(5));
+            McpSchema.CallToolResult v1TooLong = handler.handle(gestureCall(
+                    1, Map.of("steps", gestureSteps(65)))).block(Duration.ofSeconds(5));
 
             assertTrue(unknownVersion.isError());
             assertTrue(unknownField.isError());
             assertEquals(0, calls.get());
+            assertTrue(v1TooLong.isError());
         }
     }
 
@@ -166,6 +169,19 @@ final class KeyboardGestureMcpTest {
                         Map.of("kind", waitKind, "count", 2),
                         Map.of("kind", "key-up", "keycode", 29)))).build();
     }
+    private static List<Map<String, Object>> gestureSteps(int count) {
+        ArrayList<Map<String, Object>> steps = new ArrayList<>(count);
+        int transitions = count - (count & 1);
+        for (int index = 0; index < transitions; index += 2) {
+            steps.add(Map.of("kind", "key-down", "keycode", 29));
+            steps.add(Map.of("kind", "key-up", "keycode", 29));
+        }
+        if ((count & 1) != 0) {
+            steps.add(steps.size() - 1, Map.of("kind", "wait-frames", "count", 1));
+        }
+        return steps;
+    }
+
     private static McpSchema.CallToolRequest gestureCall(
             int schemaVersion, Map<String, Object> additions) {
         Map<String, Object> arguments = new java.util.LinkedHashMap<>(Map.of(

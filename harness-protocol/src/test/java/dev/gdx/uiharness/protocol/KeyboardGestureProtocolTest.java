@@ -12,6 +12,7 @@ import dev.gdx.uiharness.core.gesture.KeyboardGestureResult.FailureCategory;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureResult.TerminalOutcome;
 import dev.gdx.uiharness.core.time.Deadline;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -61,6 +62,37 @@ final class KeyboardGestureProtocolTest {
                 List.of("ui_keyboard_gesture", "ui_keyboard_gesture_v2"),
                 capabilities.capabilities());
     }
+    @Test void maxRegistrationDerivesV2CapabilityAcrossSessionResponses() {
+        ArrayList<String> registered = new ArrayList<>(64);
+        registered.add("ui_keyboard_gesture");
+        for (int index = 0; index < 63; index++) {
+            registered.add("cap-" + index);
+        }
+        HarnessProtocolService service = service(null, registered);
+
+        HarnessResponse.Success capabilitySuccess = assertInstanceOf(
+                HarnessResponse.Success.class,
+                service.execute(request(new Command.Capabilities()))
+                        .toCompletableFuture().join());
+        HarnessResponse.Result.Capabilities capabilities = assertInstanceOf(
+                HarnessResponse.Result.Capabilities.class, capabilitySuccess.result());
+        assertEquals(65, capabilities.capabilities().size());
+        assertTrue(capabilities.capabilities().contains("ui_keyboard_gesture_v2"));
+
+        HarnessResponse.Success sessionsSuccess = assertInstanceOf(
+                HarnessResponse.Success.class,
+                service.execute(request(new Command.Sessions()))
+                        .toCompletableFuture().join());
+        HarnessResponse.Result.Sessions sessions = assertInstanceOf(
+                HarnessResponse.Result.Sessions.class, sessionsSuccess.result());
+        assertEquals(65, sessions.sessions().getFirst().capabilities().size());
+
+        ArrayList<String> callerSupplied65 = new ArrayList<>(registered);
+        callerSupplied65.add("caller-extra");
+        assertThrows(IllegalArgumentException.class,
+                () -> new CapabilitySet(callerSupplied65));
+    }
+
 
 
     @Test void decodeRejectsUnknownMembersKindsAndEveryCoreBoundBeforeRouting() {
@@ -160,6 +192,23 @@ final class KeyboardGestureProtocolTest {
                         "cancelled", List.of(29, 29), "not-required",
                         List.of(), null));
     }
+    @Test void wireResultUsesTheOriginatingSchemaStepBound() {
+        ArrayList<HarnessResponse.KeyboardGestureStepData> evidence =
+                wireKeyEvidence(KeyboardGestureRequest.MAX_STEPS_V2);
+
+        HarnessResponse.KeyboardGestureData v2 = new HarnessResponse.KeyboardGestureData(
+                2, "completed", 256, 256, 256,
+                0, 0, 256, 255, 1, evidence,
+                null, null, List.of(), "not-required", List.of(), null);
+        assertEquals(256, v2.steps().size());
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new HarnessResponse.KeyboardGestureData(
+                        1, "completed", 65, 65, 65,
+                        0, 0, 65, 64, 1, evidence.subList(0, 65),
+                        null, null, List.of(), "not-required", List.of(), null));
+    }
+
 
     @Test void everyHistoricalSessionConstructorKeepsAnEmptyGestureCoordinator() {
         HarnessProtocolService.Session base = baseSession(List.of());
@@ -254,6 +303,20 @@ final class KeyboardGestureProtocolTest {
                     : "{\"kind\":\"key-up\",\"keycode\":29}");
         }
         return steps.append(']').toString();
+    }
+
+    private static ArrayList<HarnessResponse.KeyboardGestureStepData> wireKeyEvidence(
+            int count) {
+        ArrayList<HarnessResponse.KeyboardGestureStepData> evidence =
+                new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            boolean down = (index & 1) == 0;
+            evidence.add(new HarnessResponse.KeyboardGestureStepData(
+                    index, down ? "key-down" : "key-up", "completed", 29, null,
+                    index, index, index + 1L, index,
+                    down ? List.of(29) : List.of(), null));
+        }
+        return evidence;
     }
 
     private static KeyboardGestureResult rejectedResult() {

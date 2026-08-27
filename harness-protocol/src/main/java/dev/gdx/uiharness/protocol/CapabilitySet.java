@@ -10,24 +10,35 @@ public record CapabilitySet(List<String> capabilities) {
     private static final int MAX_REGISTERED_CAPABILITIES = 64;
     private static final int MAX_ADVERTISED_CAPABILITIES = 65;
 
-    /** Validates, sorts, de-duplicates, and defensively copies capability names. */
+    /** Validates registration bounds and derives canonically ordered advertised capabilities. */
     public CapabilitySet {
-        Objects.requireNonNull(capabilities, "capabilities");
-        if (capabilities.size() > MAX_REGISTERED_CAPABILITIES) {
+        capabilities = normalize(capabilities, MAX_REGISTERED_CAPABILITIES);
+    }
+
+    static List<String> canonicalAdvertised(List<String> capabilities) {
+        return normalize(capabilities, MAX_ADVERTISED_CAPABILITIES);
+    }
+
+    private static List<String> normalize(List<String> source, int maximumInput) {
+        Objects.requireNonNull(source, "capabilities");
+        if (source.size() > maximumInput) {
             throw new IllegalArgumentException("too many capabilities");
         }
         TreeSet<String> ordered = new TreeSet<>();
-        for (String capability : capabilities) {
+        for (String capability : source) {
             ProtocolJson.requireIdentifier(capability, "capability");
             ordered.add(capability);
         }
         if (ordered.contains("ui_keyboard_gesture")) {
             ordered.add("ui_keyboard_gesture_v2");
+        } else if (ordered.contains("ui_keyboard_gesture_v2")) {
+            throw new IllegalArgumentException(
+                    "ui_keyboard_gesture_v2 requires ui_keyboard_gesture");
         }
         if (ordered.size() > MAX_ADVERTISED_CAPABILITIES) {
             throw new IllegalArgumentException("too many capabilities");
         }
-        capabilities = List.copyOf(ordered);
+        return List.copyOf(ordered);
     }
 
     /** Returns whether this set includes the stable capability name. */

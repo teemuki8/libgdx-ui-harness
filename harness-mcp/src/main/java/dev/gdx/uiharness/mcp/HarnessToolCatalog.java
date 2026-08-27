@@ -1247,7 +1247,26 @@ public final class HarnessToolCatalog {
                                         KeyboardGestureRequest.SCHEMA_VERSION,
                                         KeyboardGestureRequest.SCHEMA_VERSION_V2)),
                         "steps", Map.copyOf(steps)),
-                List.of("schemaVersion", "steps", "deadlineMillis"), true, ignored -> {});
+                List.of("schemaVersion", "steps", "deadlineMillis"), true,
+                schema -> schema.put("allOf", List.of(
+                        versionedGestureMaximum(
+                                KeyboardGestureRequest.SCHEMA_VERSION,
+                                KeyboardGestureRequest.MAX_STEPS),
+                        versionedGestureMaximum(
+                                KeyboardGestureRequest.SCHEMA_VERSION_V2,
+                                KeyboardGestureRequest.MAX_STEPS_V2))));
+    }
+
+    private static Map<String, Object> versionedGestureMaximum(
+            int schemaVersion, int maximumSteps) {
+        return Map.of(
+                "if", Map.of(
+                        "properties", Map.of(
+                                "schemaVersion", Map.of("const", schemaVersion)),
+                        "required", List.of("schemaVersion")),
+                "then", Map.of(
+                        "properties", Map.of(
+                                "steps", Map.of("maxItems", maximumSteps))));
     }
 
     private static Map<String, Object> keyboardGestureOutput() {
@@ -1284,7 +1303,8 @@ public final class HarnessToolCatalog {
                 "status", enumString(
                         "released", "dispatch-failed", "deadline-exceeded",
                         "scheduler-rejected")), List.of("keycode", "status"));
-        return output("keyboard-gesture-result", Map.ofEntries(
+        LinkedHashMap<String, Object> schema = new LinkedHashMap<>(output(
+                "keyboard-gesture-result", Map.ofEntries(
                 Map.entry("schemaVersion", Map.of(
                         "type", "integer",
                         "enum", List.of(
@@ -1315,7 +1335,31 @@ public final class HarnessToolCatalog {
                 List.of("schemaVersion", "outcome", "requestedSteps", "startedSteps",
                         "completedSteps", "startRevision", "startFrame", "endRevision",
                         "endFrame", "elapsedNanos", "steps", "heldKeys", "cleanupStatus",
-                        "cleanup"));
+                        "cleanup")));
+        schema.put("allOf", List.of(
+                versionedGestureOutputMaximum(
+                        KeyboardGestureRequest.SCHEMA_VERSION,
+                        KeyboardGestureRequest.MAX_STEPS),
+                versionedGestureOutputMaximum(
+                        KeyboardGestureRequest.SCHEMA_VERSION_V2,
+                        KeyboardGestureRequest.MAX_STEPS_V2)));
+        return Map.copyOf(schema);
+    }
+
+    private static Map<String, Object> versionedGestureOutputMaximum(
+            int schemaVersion, int maximumSteps) {
+        return Map.of(
+                "if", Map.of(
+                        "properties", Map.of(
+                                "schemaVersion", Map.of("const", schemaVersion)),
+                        "required", List.of("schemaVersion")),
+                "then", Map.of(
+                        "properties", Map.of(
+                                "requestedSteps", integer(2, maximumSteps),
+                                "startedSteps", integer(0, maximumSteps),
+                                "completedSteps", integer(0, maximumSteps),
+                                "steps", Map.of("maxItems", maximumSteps),
+                                "failureStep", integer(0, maximumSteps - 1))));
     }
 
     private static Map<String, Object> assertionInput() {

@@ -28,10 +28,9 @@ public record KeyboardGestureResult(
         Optional<String> traceId) {
     /** Validates cross-field terminal invariants and defensively copies all evidence. */
     public KeyboardGestureResult {
-        KeyboardGestureRequest.maximumSteps(schemaVersion);
+        int maximumSteps = KeyboardGestureRequest.maximumSteps(schemaVersion);
         Objects.requireNonNull(outcome, "outcome");
-        if (requestedSteps < 2
-                || requestedSteps > KeyboardGestureRequest.MAX_STEPS_V2) {
+        if (requestedSteps < 2 || requestedSteps > maximumSteps) {
             throw new IllegalArgumentException("requestedSteps is outside the gesture bound");
         }
         if (startedSteps < 0 || startedSteps > requestedSteps) {
