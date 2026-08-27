@@ -445,8 +445,8 @@ public final class HarnessToolHandler implements AutoCloseable {
                     .build();
         } catch (Throwable failure) {
             Throwable root = unwrapBoundaryFailure(failure);
-            if (root instanceof VirtualMachineError) {
-                throw (VirtualMachineError) root;
+            if (root instanceof VirtualMachineError || root instanceof ThreadDeath) {
+                throw (Error) root;
             }
             String code;
             String message;

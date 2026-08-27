@@ -3,6 +3,8 @@ package dev.gdx.uiharness.mcp;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.gdx.uiharness.protocol.HarnessResponse;
@@ -138,6 +140,29 @@ final class ArtifactReadMcpTest {
         assertTrue(String.valueOf(failed.get("message"))
                 .contains("artifact-read-unavailable"));
         assertFalse(failed.toString().contains("/srv/private/artifact.png"));
+    }
+
+    @Test void rethrowsFatalReaderFailuresAndNormalizesOrdinaryErrors() {
+        ThreadDeath death = new ThreadDeath();
+        assertSame(death, assertThrows(ThreadDeath.class,
+                () -> invoke((sessionId, reference, offset, maxBytes) -> {
+                    throw death;
+                }, REFERENCE, 0, 1)));
+
+        OutOfMemoryError virtualMachineFailure = new OutOfMemoryError("fatal");
+        assertSame(virtualMachineFailure, assertThrows(OutOfMemoryError.class,
+                () -> invoke((sessionId, reference, offset, maxBytes) -> {
+                    throw virtualMachineFailure;
+                }, REFERENCE, 0, 1)));
+
+        AssertionError ordinary = new AssertionError("/private/reader/path");
+        Map<String, Object> normalized = invoke(
+                (sessionId, reference, offset, maxBytes) -> {
+                    throw ordinary;
+                }, REFERENCE, 0, 1);
+        assertTrue(String.valueOf(normalized.get("message"))
+                .contains("artifact-read-unavailable"));
+        assertFalse(normalized.toString().contains("/private/reader/path"));
     }
 
     @Test void rejectsReaderMetadataMutationAndOffsetBeyondTotal() {
