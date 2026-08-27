@@ -392,6 +392,74 @@ final class Scene2dKeyboardGestureRunnerTest {
         assertEquals(FailureCategory.EPOCH_CHANGED, failed.failure().orElseThrow());
         assertEquals(CleanupStatus.COMPLETED, failed.cleanupStatus());
     }
+    @Test void v2LongExactTickTimelineRetainsOneRequestLeaseForAll256Steps() {
+        ImmediateTicks ticks = new ImmediateTicks();
+        ArrayList<String> traceEvents = new ArrayList<>();
+        Fixture fixture = new Fixture(
+                Optional.of(ticks),
+                trace -> traceEvents.add(trace.evidence().get("event")));
+        ArrayList<KeyboardGestureRequest.Step> steps = new ArrayList<>();
+        steps.add(new KeyboardGestureRequest.KeyDown(Keys.A));
+        for (int index = 0; index < 254; index++) {
+            steps.add(new KeyboardGestureRequest.WaitTicks(1));
+        }
+        steps.add(new KeyboardGestureRequest.KeyUp(Keys.A));
+
+        CompletableFuture<KeyboardGestureResult> result = fixture.execute(
+                KeyboardGestureRequest.SCHEMA_VERSION_V2, steps);
+        fixture.scheduler.drain();
+        KeyboardGestureResult busy = fixture.execute(List.of(
+                new KeyboardGestureRequest.KeyDown(Keys.B),
+                new KeyboardGestureRequest.KeyUp(Keys.B))).join();
+        fixture.scheduler.drain();
+
+        KeyboardGestureResult completed = result.join();
+        assertEquals(FailureCategory.SESSION_BUSY, busy.failure().orElseThrow());
+        assertEquals(KeyboardGestureRequest.SCHEMA_VERSION_V2, completed.schemaVersion());
+        assertEquals(256, completed.completedSteps());
+        assertEquals(254, ticks.preflightCalls);
+        assertEquals(254, ticks.advanceCalls);
+        assertEquals(1, traceEvents.stream().filter("gesture-accepted"::equals).count());
+        assertEquals(1, traceEvents.stream().filter("gesture-completed"::equals).count());
+    }
+
+    @Test void v2NearMaximumCancellationReleasesSixteenKeysInReversePressOrder() {
+        Fixture fixture = new Fixture();
+        ArrayList<KeyboardGestureRequest.Step> steps = new ArrayList<>();
+        for (int index = 0; index < 111; index++) {
+            steps.add(new KeyboardGestureRequest.KeyDown(Keys.A));
+            steps.add(new KeyboardGestureRequest.KeyUp(Keys.A));
+        }
+        for (int keycode = 100; keycode < 116; keycode++) {
+            steps.add(new KeyboardGestureRequest.KeyDown(keycode));
+        }
+        steps.add(new KeyboardGestureRequest.WaitFrames(10_000));
+        for (int keycode = 115; keycode >= 100; keycode--) {
+            steps.add(new KeyboardGestureRequest.KeyUp(keycode));
+        }
+        assertEquals(255, steps.size());
+
+        CompletableFuture<KeyboardGestureResult> result = fixture.execute(
+                KeyboardGestureRequest.SCHEMA_VERSION_V2, steps);
+        for (int index = 0; index < 238; index++) {
+            fixture.scheduler.drain();
+        }
+        result.cancel(false);
+        for (int index = 0; index < 16; index++) {
+            fixture.scheduler.drain();
+        }
+
+        KeyboardGestureResult cancelled = result.join();
+        assertEquals(KeyboardGestureRequest.SCHEMA_VERSION_V2, cancelled.schemaVersion());
+        assertEquals(239, cancelled.startedSteps());
+        assertEquals(List.of(
+                115, 114, 113, 112, 111, 110, 109, 108,
+                107, 106, 105, 104, 103, 102, 101, 100),
+                cancelled.cleanup().stream()
+                        .map(KeyboardGestureResult.CleanupAttempt::keycode).toList());
+        assertTrue(cancelled.heldKeys().isEmpty());
+    }
+
 
     private static final class Fixture {
         final Thread ownerThread = Thread.currentThread();
@@ -425,8 +493,13 @@ final class Scene2dKeyboardGestureRunnerTest {
 
         CompletableFuture<KeyboardGestureResult> execute(
                 List<KeyboardGestureRequest.Step> steps) {
+            return execute(KeyboardGestureRequest.SCHEMA_VERSION, steps);
+        }
+
+        CompletableFuture<KeyboardGestureResult> execute(
+                int schemaVersion, List<KeyboardGestureRequest.Step> steps) {
             return runner.execute(
-                    "request-1", new KeyboardGestureRequest(1, steps),
+                    "request-1", new KeyboardGestureRequest(schemaVersion, steps),
                     Deadline.after(clock, Duration.ofSeconds(10)))
                     .toCompletableFuture();
         }
@@ -544,6 +617,29 @@ final class Scene2dKeyboardGestureRunnerTest {
             ScheduledSignal(Runnable signal) {
                 this.signal = signal;
             }
+        }
+    }
+
+    private static final class ImmediateTicks implements ExactTickCoordinator {
+        int preflightCalls;
+        int advanceCalls;
+        long tick;
+
+        @Override public TickPreflight preflight(int ticks, Deadline deadline) {
+            preflightCalls++;
+            return new TickPreflight.Ready(10_000);
+        }
+
+        @Override public CompletionStage<TickAdvanceResult> advance(
+                int ticks, Deadline deadline) {
+            advanceCalls++;
+            long start = tick;
+            tick += ticks;
+            return CompletableFuture.completedFuture(new TickAdvanceResult.Completed(
+                    new TickEvidence(
+                            ticks, ticks, start, tick, 1,
+                            OptionalLong.of(start), OptionalLong.of(tick - 1),
+                            OptionalLong.empty(), OptionalLong.empty(), 16_000_000)));
         }
     }
 

@@ -108,7 +108,7 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
         TerminalOutcome outcome = failure == FailureCategory.SESSION_CLOSED
                 ? TerminalOutcome.SESSION_CLOSED : TerminalOutcome.REJECTED;
         return new KeyboardGestureResult(
-                KeyboardGestureRequest.SCHEMA_VERSION, outcome,
+                request.schemaVersion(), outcome,
                 request.steps().size(), 0, 0,
                 revision, frame, revision, frame, deadline.elapsed().toNanos(),
                 List.of(), OptionalInt.empty(), Optional.of(failure), List.of(),
@@ -820,7 +820,7 @@ public final class Scene2dKeyboardGestureRunner implements AutoCloseable {
                 OptionalInt failureStep,
                 CleanupStatus cleanupStatus) {
             return new KeyboardGestureResult(
-                    KeyboardGestureRequest.SCHEMA_VERSION, outcome,
+                    request.schemaVersion(), outcome,
                     request.steps().size(), evidence.size(), completedSteps,
                     startRevision, startFrame,
                     revisions.getAsLong(), frameNumbers.getAsLong(),
