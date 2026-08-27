@@ -98,7 +98,7 @@ Shutdown in this order:
 
 Closing a Scene2D session rejects later work with typed session-closed evidence but does not dispose the application-owned Stage. Never retain a snapshot node ID or Actor across a wait; locators are durable descriptions and re-resolve against a fresh snapshot.
 
-## Artifact publishing
+## Artifact publishing and retrieval
 
 The application owns artifact persistence. `HarnessMcpServer.open(protocol, publisher, System.in, System.out)` takes an `ArtifactReference.Publisher`; the server never writes payload bytes itself. Structured results at or below 64 KiB are inlined in the MCP response; larger structured results, every screenshot, and every diagnostic PNG/JSON evidence payload are published through the injected publisher. Without a publisher (the `ArtifactReference.Publisher.unavailable()` default), a call that needs publishing fails with an `artifact-unavailable` error — a publisher-less server silently works for small structured results and fails for screenshots and large results.
 
@@ -115,8 +115,12 @@ ArtifactReference.Publisher publisher = (mediaType, content) -> {
     return new ArtifactReference("artifact:" + id.value(), mediaType,
             metadata.size(), metadata.sha256());
 };
-HarnessMcpServer server = HarnessMcpServer.open(protocol, publisher, System.in, System.out);
+ArtifactReference.Reader reader = new ArtifactStoreReader(store);
+HarnessMcpServer server =
+        HarnessMcpServer.open(protocol, publisher, reader, System.in, System.out);
 ```
+
+The original publisher-only `open` overload remains valid and makes `ui_artifact_read` return a typed unavailable diagnostic. The reader overload accepts only `sessionId`, an opaque receipt, an offset, and a 1–65,536-byte chunk limit. `ArtifactStoreReader` verifies the complete stored payload against its immutable metadata on every call, closes the store stream on success and failure, and gives unknown, expired, and wrong-session receipts the same fixed not-found result. It does not accept paths, URIs, names, roots, listing, globbing, or deletion.
 
 ## Driving the harness over MCP
 
@@ -130,6 +134,7 @@ MCP runs as JSON-RPC 2.0 over the process stdio transport. The handshake and too
 {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ui_query","arguments":{"sessionId":"cave-flyer-hud","locator":{"kind":"test-id","testId":"score-p1"}}}}
 {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"ui_wait","arguments":{"sessionId":"cave-flyer-hud","locator":{"kind":"test-id","testId":"score-p1"},"condition":"present"}}}
 {"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"ui_screenshot","arguments":{"sessionId":"cave-flyer-hud","maxWidth":960,"maxHeight":540,"maxPixels":518400,"maxPngBytes":4194304}}}
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"ui_artifact_read","arguments":{"sessionId":"cave-flyer-hud","reference":"artifact:0123456789abcdef0123456789abcdef","offset":0,"maxBytes":65536}}}
 ```
 
 `initialize` with protocol version `2025-11-25` is the MCP SDK 2.0.0 handshake. `ui_sessions` takes no arguments and returns the active session IDs; `ui_snapshot` and `ui_query` require `sessionId`; `ui_wait` requires `sessionId`, `locator`, and `condition` (`present` or `visible`) and takes an optional `deadlineMillis` (default 30,000, range 1 through 120,000); `ui_screenshot` requires `sessionId` plus `maxWidth`, `maxHeight`, `maxPixels`, and `maxPngBytes` and takes an optional `locator`. Every tool except `ui_sessions` requires `sessionId`. `ui_wait` is the tool that routes `WaitEngine` snapshots through the render thread (see Threading and frame wiring); the repository's fixture smoke tests lock that scheduler-routed wiring end to end, and the round trip above exercises the same production path.

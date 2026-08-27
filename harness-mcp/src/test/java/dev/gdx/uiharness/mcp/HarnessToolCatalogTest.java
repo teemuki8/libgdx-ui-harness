@@ -20,7 +20,8 @@ import org.junit.jupiter.api.Test;
 
 final class HarnessToolCatalogTest {
     private static final Set<String> APPROVED = Set.of(
-            "ui_sessions", "ui_snapshot", "ui_query", "ui_action", "ui_assert", "ui_wait",
+            "ui_sessions", "ui_artifact_read", "ui_snapshot", "ui_query", "ui_action",
+            "ui_assert", "ui_wait",
             "ui_screenshot", "ui_inspect_compare", "ui_typography_diagnose",
             "ui_layout_diagnose", "ui_trace_start", "ui_trace_stop", "ui_capabilities",
             "ui_scenarios", "ui_scenario_start", "ui_navigation_inspect",
@@ -32,7 +33,7 @@ final class HarnessToolCatalogTest {
 
     @Test void exposesOnlyTheApprovedBoundedTools() {
         assertEquals(APPROVED, catalog.toolNames());
-        assertEquals(24, catalog.tools().size());
+        assertEquals(25, catalog.tools().size());
         for (String name : APPROVED) {
             assertNotNull(catalog.accessMode(name));
         }
@@ -52,6 +53,7 @@ final class HarnessToolCatalogTest {
     @Test void everyAllowlistedToolHasExactlyOneAccessMode() {
         Map<String, HarnessToolCatalog.AccessMode> expected = Map.ofEntries(
                 Map.entry("ui_sessions", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_artifact_read", HarnessToolCatalog.AccessMode.READ_ONLY),
                 Map.entry("ui_snapshot", HarnessToolCatalog.AccessMode.READ_ONLY),
                 Map.entry("ui_query", HarnessToolCatalog.AccessMode.READ_ONLY),
                 Map.entry("ui_action", HarnessToolCatalog.AccessMode.MUTATING),
@@ -79,6 +81,24 @@ final class HarnessToolCatalogTest {
         for (Map.Entry<String, HarnessToolCatalog.AccessMode> entry : expected.entrySet()) {
             assertEquals(entry.getValue(), catalog.accessMode(entry.getKey()));
         }
+    }
+
+    @Test void artifactReadSchemaIsClosedAndChunkBounded() {
+        Map<String, Object> valid = Map.of(
+                "sessionId", "game",
+                "reference", "artifact:opaque",
+                "offset", 0,
+                "maxBytes", ArtifactReference.MAX_CHUNK_BYTES);
+        assertValid("ui_artifact_read", valid);
+        assertInvalid("ui_artifact_read", with(valid, "path", "/tmp/secret"));
+        assertInvalid("ui_artifact_read", with(valid, "maxBytes", 0));
+        assertInvalid("ui_artifact_read", with(valid, "maxBytes",
+                ArtifactReference.MAX_CHUNK_BYTES + 1));
+        assertInvalid("ui_artifact_read", with(valid, "offset", -1));
+        JsonNode output = ProtocolJson.mapper().valueToTree(
+                catalog.tool("ui_artifact_read").outputSchema());
+        assertEquals(87_384, output.at("/properties/data/maxLength").asInt());
+        assertEquals(false, output.at("/additionalProperties").asBoolean());
     }
 
     @Test void keyboardGestureSchemaIsClosedBoundedAndLocatorFree() {

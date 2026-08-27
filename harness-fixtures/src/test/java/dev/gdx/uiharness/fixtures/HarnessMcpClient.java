@@ -5,14 +5,19 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.gdx.uiharness.protocol.ProtocolJson;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.Closeable;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,9 +54,9 @@ final class HarnessMcpClient implements Closeable {
         }
         client.notify("notifications/initialized", Map.of());
         JsonNode listed = client.request("tools/list", Map.of());
-        if (listed.path("tools").size() != 24) {
+        if (listed.path("tools").size() != 25) {
             client.close();
-            throw new IllegalStateException("Expected the twenty-four production tools: " + listed);
+            throw new IllegalStateException("Expected the twenty-five production tools: " + listed);
         }
         return client;
     }
@@ -324,6 +329,42 @@ final class HarnessMcpClient implements Closeable {
                         artifact.path("mediaType").asText(),
                         artifact.path("byteLength").asLong(),
                         artifact.path("sha256").asText()));
+    }
+
+    byte[] readArtifact(String sessionId, Artifact artifact) throws Exception {
+        ByteArrayOutputStream bytes =
+                new ByteArrayOutputStream(Math.toIntExact(artifact.byteLength()));
+        long offset = 0;
+        boolean eof = false;
+        while (!eof) {
+            JsonNode content = call("ui_artifact_read", Map.of(
+                    "sessionId", sessionId,
+                    "reference", artifact.reference(),
+                    "offset", offset,
+                    "maxBytes", 8 * 1_024));
+            requireKind(content, "artifact-chunk");
+            if (!artifact.reference().equals(content.path("reference").asText())
+                    || !artifact.mediaType().equals(content.path("mediaType").asText())
+                    || artifact.byteLength() != content.path("totalByteLength").asLong()
+                    || !artifact.sha256().equals(content.path("sha256").asText())
+                    || offset != content.path("offset").asLong()) {
+                throw new IllegalStateException("Artifact chunk metadata changed during retrieval");
+            }
+            byte[] chunk = Base64.getDecoder().decode(content.path("data").asText());
+            bytes.write(chunk);
+            long nextOffset = content.path("nextOffset").asLong();
+            if (nextOffset != offset + chunk.length) {
+                throw new IllegalStateException("Artifact chunk offset is inconsistent");
+            }
+            offset = nextOffset;
+            eof = content.path("eof").asBoolean();
+        }
+        byte[] result = bytes.toByteArray();
+        if (result.length != artifact.byteLength()
+                || !sha256(result).equals(artifact.sha256())) {
+            throw new IllegalStateException("Reassembled artifact integrity check failed");
+        }
+        return result;
     }
 
     Comparison inspectCompare(String sessionId) throws Exception {
@@ -690,6 +731,15 @@ final class HarnessMcpClient implements Closeable {
         output.write(JSON.writeValueAsString(message));
         output.newLine();
         output.flush();
+    }
+
+    private static String sha256(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("JDK lacks SHA-256", impossible);
+        }
     }
 
     private static JsonNode singleMatch(JsonNode content) {

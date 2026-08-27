@@ -75,7 +75,8 @@ public final class HarnessMcpServer implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
 
     private HarnessMcpServer(HarnessProtocolService protocol,
-            ArtifactReference.Publisher artifacts, InputStream input, OutputStream output) {
+            ArtifactReference.Publisher artifacts, ArtifactReference.Reader artifactReader,
+            InputStream input, OutputStream output) {
         if (OUTER_REQUEST_TIMEOUT.toMillis() <= HarnessRequest.MAX_SCENARIO_DEADLINE_MILLIS) {
             throw new IllegalStateException(
                     "the outer request timeout must exceed the maximum accepted scenario deadline");
@@ -84,7 +85,7 @@ public final class HarnessMcpServer implements AutoCloseable {
         // The server owns one admission and wires it into the handler so every tool call is
         // bounded before protocol dispatch.
         handler = new HarnessToolHandler(
-                protocol, artifacts, RequestAdmission.serverDefaults());
+                protocol, artifacts, artifactReader, RequestAdmission.serverDefaults());
         HarnessToolCatalog catalog = new HarnessToolCatalog();
         McpServer.AsyncSpecification<?> specification = McpServer.async(transport)
                 .serverInfo("libgdx-ui-harness", "1.0.0")
@@ -103,6 +104,22 @@ public final class HarnessMcpServer implements AutoCloseable {
         return new HarnessMcpServer(
                 Objects.requireNonNull(protocol, "protocol"),
                 Objects.requireNonNull(artifacts, "artifacts"),
+                ArtifactReference.Reader.unavailable(),
+                Objects.requireNonNull(input, "input"),
+                Objects.requireNonNull(output, "output"));
+    }
+
+    /**
+     * Opens the default stdio server with bounded retrieval for application-owned opaque
+     * artifact receipts; no network listener is created.
+     */
+    public static HarnessMcpServer open(HarnessProtocolService protocol,
+            ArtifactReference.Publisher artifacts, ArtifactReference.Reader artifactReader,
+            InputStream input, OutputStream output) {
+        return new HarnessMcpServer(
+                Objects.requireNonNull(protocol, "protocol"),
+                Objects.requireNonNull(artifacts, "artifacts"),
+                Objects.requireNonNull(artifactReader, "artifactReader"),
                 Objects.requireNonNull(input, "input"),
                 Objects.requireNonNull(output, "output"));
     }

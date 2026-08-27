@@ -55,6 +55,26 @@ public final class HarnessToolCatalog {
                         output("sessions-result", Map.of(
                                 "sessions", array(sessionSchema(), 65_536),
                                 "artifact", ARTIFACT_SCHEMA), List.of())),
+                tool(AccessMode.READ_ONLY, "ui_artifact_read",
+                        "Read one bounded chunk from a session-owned opaque artifact receipt",
+                        sessionInput(Map.of(
+                                "reference", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                                "offset", integer(0, Long.MAX_VALUE),
+                                "maxBytes", integer(1, ArtifactReference.MAX_CHUNK_BYTES)),
+                                List.of("reference", "offset", "maxBytes")),
+                        output("artifact-chunk", Map.ofEntries(
+                                Map.entry("reference",
+                                        string(1, ProtocolJson.MAX_STRING_LENGTH)),
+                                Map.entry("mediaType", string(1, 256)),
+                                Map.entry("totalByteLength", integer(0, Long.MAX_VALUE)),
+                                Map.entry("sha256", string(64, 64)),
+                                Map.entry("offset", integer(0, Long.MAX_VALUE)),
+                                Map.entry("nextOffset", integer(0, Long.MAX_VALUE)),
+                                Map.entry("eof", Map.of("type", "boolean")),
+                                Map.entry("data", string(
+                                        0, 4 * ((ArtifactReference.MAX_CHUNK_BYTES + 2) / 3)))),
+                                List.of("reference", "mediaType", "totalByteLength", "sha256",
+                                        "offset", "nextOffset", "eof", "data"))),
                 tool(AccessMode.READ_ONLY, "ui_snapshot",
                         "Capture a compact semantic snapshot summary",
                         sessionInput(Map.of(), List.of()),
@@ -947,6 +967,11 @@ public final class HarnessToolCatalog {
                 Map.of("kind", "role", "role", "button");
         LinkedHashMap<String, List<Map<String, Object>>> values = new LinkedHashMap<>();
         values.put("ui_sessions", List.of(Map.of()));
+        values.put("ui_artifact_read", List.of(Map.of(
+                "sessionId", "SESSION",
+                "reference", "artifact:opaque-receipt",
+                "offset", 0,
+                "maxBytes", ArtifactReference.MAX_CHUNK_BYTES)));
         values.put("ui_snapshot", List.of(session));
         values.put("ui_query", List.of(Map.of(
                 "sessionId", "SESSION", "locator", roleButton)));
