@@ -353,6 +353,26 @@ public final class HarnessToolCatalog {
                                 "runtimeFrame", nullableInt()),
                                 List.of("status", "entityId", "propertyId",
                                         "displayedFrame"))),
+                tool(AccessMode.READ_ONLY, "ui_runtime_observe",
+                        "Observe one explicit registered runtime entity property on a "
+                                + "correlated completed frame",
+                        sessionInput(Map.of(
+                                "entityId", string(1, MAX_IDENTIFIER),
+                                "propertyId", string(1, MAX_IDENTIFIER),
+                                "correlationToken", string(1, MAX_IDENTIFIER),
+                                "maxDurationMillis", integer(
+                                        1, HarnessRequest.MAX_DEADLINE_MILLIS)),
+                                List.of("entityId", "propertyId", "correlationToken",
+                                        "maxDurationMillis")),
+                        output("runtime-observation-result", Map.of(
+                                "status", enumString("AVAILABLE", "UNAVAILABLE"),
+                                "entityId", string(1, MAX_IDENTIFIER),
+                                "propertyId", string(1, MAX_IDENTIFIER),
+                                "runtimeFrame", integer(0, Long.MAX_VALUE),
+                                "runtimeRevision", integer(0, Long.MAX_VALUE),
+                                "value", string(0, ProtocolJson.MAX_STRING_LENGTH),
+                                "valueFormatId", string(1, MAX_IDENTIFIER)),
+                                List.of("status", "entityId", "propertyId"))),
                 tool(AccessMode.READ_ONLY, "ui_trace_query",
                         "Query compact state-transition summaries from one retained bounded "
                                 + "trace without downloading the archive",
@@ -1089,6 +1109,12 @@ public final class HarnessToolCatalog {
         values.put("ui_runtime_compare", List.of(Map.of(
                 "sessionId", "SESSION",
                 "locator", roleButton,
+                "maxDurationMillis", 2000)));
+        values.put("ui_runtime_observe", List.of(Map.of(
+                "sessionId", "SESSION",
+                "entityId", "body-1",
+                "propertyId", "angle",
+                "correlationToken", "render-frame",
                 "maxDurationMillis", 2000)));
         values.put("ui_trace_query", List.of(Map.of(
                 "sessionId", "SESSION",

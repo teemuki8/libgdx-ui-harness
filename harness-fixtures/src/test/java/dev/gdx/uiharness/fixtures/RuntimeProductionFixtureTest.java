@@ -30,6 +30,28 @@ final class RuntimeProductionFixtureTest {
             }
         }
     }
+    @Test
+    @Timeout(120)
+    void unboundRegisteredValueIsObservedWithoutAnySemanticNode() throws Exception {
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+            try (HarnessMcpClient client = HarnessMcpClient.connect(app)) {
+                JsonNode observation = client.runtimeObserve(
+                        SESSION_ID, "reference-simulation", "angle",
+                        "reference-ui-frame", 5_000);
+
+                assertEquals("AVAILABLE", observation.path("status").asText());
+                assertEquals("reference-simulation", observation.path("entityId").asText());
+                assertEquals("angle", observation.path("propertyId").asText());
+                assertEquals("1.25", observation.path("value").asText());
+                assertEquals("decimal", observation.path("valueFormatId").asText());
+                assertEquals(observation.path("runtimeFrame").asLong(),
+                        observation.path("runtimeRevision").asLong());
+                assertEquals(0, client.queryText(SESSION_ID, "1.25").size(),
+                        "the unbound runtime value must not have a semantic node");
+            }
+        }
+    }
+
 
     @Test
     @Timeout(120)

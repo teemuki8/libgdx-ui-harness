@@ -26,13 +26,13 @@ final class HarnessToolCatalogTest {
             "ui_scenarios", "ui_scenario_start", "ui_navigation_inspect",
             "ui_navigation_validate", "ui_validate_layout", "ui_matrix_run",
             "ui_matrix_results", "ui_semantic_compare", "ui_trace_query",
-            "ui_runtime_compare", "ui_keyboard_gesture");
+            "ui_runtime_compare", "ui_runtime_observe", "ui_keyboard_gesture");
 
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
 
     @Test void exposesOnlyTheApprovedBoundedTools() {
         assertEquals(APPROVED, catalog.toolNames());
-        assertEquals(24, catalog.tools().size());
+        assertEquals(25, catalog.tools().size());
         for (String name : APPROVED) {
             assertNotNull(catalog.accessMode(name));
         }
@@ -73,12 +73,40 @@ final class HarnessToolCatalogTest {
                 Map.entry("ui_semantic_compare", HarnessToolCatalog.AccessMode.READ_ONLY),
                 Map.entry("ui_trace_query", HarnessToolCatalog.AccessMode.READ_ONLY),
                 Map.entry("ui_runtime_compare", HarnessToolCatalog.AccessMode.READ_ONLY),
+                Map.entry("ui_runtime_observe", HarnessToolCatalog.AccessMode.READ_ONLY),
                 Map.entry("ui_keyboard_gesture", HarnessToolCatalog.AccessMode.MUTATING),
                 Map.entry("ui_capabilities", HarnessToolCatalog.AccessMode.READ_ONLY));
         assertEquals(APPROVED, expected.keySet());
         for (Map.Entry<String, HarnessToolCatalog.AccessMode> entry : expected.entrySet()) {
             assertEquals(entry.getValue(), catalog.accessMode(entry.getKey()));
         }
+    }
+
+    @Test void runtimeObserveSchemaIsClosedBoundedAndLocatorFree() {
+        Map<String, Object> arguments = Map.of(
+                "sessionId", "game",
+                "entityId", "body-1",
+                "propertyId", "angle",
+                "correlationToken", "render-frame",
+                "maxDurationMillis", 2_000);
+
+        assertValid("ui_runtime_observe", arguments);
+        assertInvalid("ui_runtime_observe", with(arguments, "locator", Map.of()));
+        assertInvalid("ui_runtime_observe", with(arguments, "extra", true));
+        assertInvalid("ui_runtime_observe",
+                with(arguments, "entityId", "x".repeat(257)));
+        assertInvalid("ui_runtime_observe",
+                with(arguments, "maxDurationMillis", 3_600_001));
+
+        JsonNode input = ProtocolJson.mapper().valueToTree(
+                catalog.tool("ui_runtime_observe").inputSchema());
+        assertEquals(false, input.at("/additionalProperties").asBoolean());
+        assertTrue(input.at("/properties/locator").isMissingNode());
+        JsonNode output = ProtocolJson.mapper().valueToTree(
+                catalog.tool("ui_runtime_observe").outputSchema());
+        assertEquals("runtime-observation-result",
+                output.at("/properties/kind/const").asText());
+        assertEquals(false, output.at("/additionalProperties").asBoolean());
     }
 
     @Test void keyboardGestureSchemaIsClosedBoundedAndLocatorFree() {

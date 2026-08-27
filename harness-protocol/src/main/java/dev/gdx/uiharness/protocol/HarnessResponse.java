@@ -122,7 +122,8 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(value = Result.MatrixReportData.class, name = "matrix-report"),
         @JsonSubTypes.Type(value = Result.SemanticCompare.class, name = "semantic-compare"),
         @JsonSubTypes.Type(value = Result.TraceQuery.class, name = "trace-query"),
-        @JsonSubTypes.Type(value = Result.RuntimeCompare.class, name = "runtime-compare")
+        @JsonSubTypes.Type(value = Result.RuntimeCompare.class, name = "runtime-compare"),
+        @JsonSubTypes.Type(value = Result.RuntimeObserve.class, name = "runtime-observation-result")
     })
     sealed interface Result permits Result.Sessions, Result.Capabilities, Result.Snapshot,
             Result.Query, Result.Action, Result.KeyboardGesture, Result.Assertion, Result.Wait,
@@ -131,7 +132,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             Result.LayoutDiagnostic, Result.TraceStopped, Result.ScenarioList,
             Result.ScenarioStart, Result.Navigation, Result.LayoutValidation,
             Result.MatrixRunStarted, Result.MatrixReportData, Result.SemanticCompare,
-            Result.TraceQuery, Result.RuntimeCompare {
+            Result.TraceQuery, Result.RuntimeCompare, Result.RuntimeObserve {
         /** Active session catalog. */
         record Sessions(List<SessionInfo> sessions) implements Result {
             /** Defensively copies the session catalog. */
@@ -231,6 +232,15 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             /** Requires a closed comparison. */
             public RuntimeCompare {
                 comparison = Objects.requireNonNull(comparison, "comparison");
+            }
+        }
+
+        /** Bounded typed direct runtime observation. */
+        record RuntimeObserve(dev.gdx.uiharness.core.runtime.RuntimeObservationResult observation)
+                implements Result {
+            /** Requires a closed observation. */
+            public RuntimeObserve {
+                observation = Objects.requireNonNull(observation, "observation");
             }
         }
 
