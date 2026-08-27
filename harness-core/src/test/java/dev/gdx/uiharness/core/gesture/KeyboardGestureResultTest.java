@@ -43,6 +43,30 @@ final class KeyboardGestureResultTest {
         assertThrows(UnsupportedOperationException.class,
                 () -> result.steps().add(frameStep(3, 1, List.of())));
     }
+    @Test void acceptsCompleteV2EvidenceThroughIndex255() {
+        ArrayList<StepEvidence> evidence =
+                new ArrayList<>(KeyboardGestureRequest.MAX_STEPS_V2);
+        for (int index = 0; index < KeyboardGestureRequest.MAX_STEPS_V2; index++) {
+            boolean down = (index & 1) == 0;
+            evidence.add(keyStep(
+                    index,
+                    down ? StepKind.KEY_DOWN : StepKind.KEY_UP,
+                    down ? List.of(29) : List.of()));
+        }
+
+        KeyboardGestureResult result = new KeyboardGestureResult(
+                KeyboardGestureRequest.SCHEMA_VERSION_V2,
+                TerminalOutcome.COMPLETED,
+                KeyboardGestureRequest.MAX_STEPS_V2,
+                KeyboardGestureRequest.MAX_STEPS_V2,
+                KeyboardGestureRequest.MAX_STEPS_V2,
+                10, 20, 266, 276, 4_000,
+                evidence, OptionalInt.empty(), Optional.empty(), List.of(),
+                CleanupStatus.NOT_REQUIRED, List.of(), Optional.empty());
+
+        assertEquals(255, result.steps().get(255).index());
+    }
+
 
     @Test void failedResultRetainsPrimaryFailureAndCleanupEvidence() {
         KeyboardGestureResult result = new KeyboardGestureResult(

@@ -6,10 +6,14 @@ import java.util.Objects;
 
 /** Immutable, structurally balanced keyboard gesture request. */
 public record KeyboardGestureRequest(int schemaVersion, List<Step> steps) {
-    /** Only supported keyboard gesture schema version. */
+    /** Original keyboard gesture schema version. */
     public static final int SCHEMA_VERSION = 1;
-    /** Maximum ordered steps in one gesture. */
+    /** Additive long-timeline keyboard gesture schema version. */
+    public static final int SCHEMA_VERSION_V2 = 2;
+    /** Maximum ordered steps in one V1 gesture. */
     public static final int MAX_STEPS = 64;
+    /** Maximum ordered steps in one V2 gesture. */
+    public static final int MAX_STEPS_V2 = 256;
     /** Maximum libGDX keycode accepted by the V1 contract. */
     public static final int MAX_KEYCODE = 255;
     /** Maximum keys owned by one gesture at the same time. */
@@ -19,16 +23,24 @@ public record KeyboardGestureRequest(int schemaVersion, List<Step> steps) {
 
     /** Validates and defensively copies one complete gesture before execution dependencies exist. */
     public KeyboardGestureRequest {
-        if (schemaVersion != SCHEMA_VERSION) {
-            throw new IllegalArgumentException(
-                    "schemaVersion must be " + SCHEMA_VERSION);
-        }
+        int maximumSteps = maximumSteps(schemaVersion);
         steps = List.copyOf(Objects.requireNonNull(steps, "steps"));
-        if (steps.size() < 2 || steps.size() > MAX_STEPS) {
+        if (steps.size() < 2 || steps.size() > maximumSteps) {
             throw new IllegalArgumentException(
-                    "steps must contain between 2 and " + MAX_STEPS + " entries");
+                    "steps must contain between 2 and " + maximumSteps + " entries");
         }
         validateSequence(steps);
+    }
+
+    /** Returns the ordered-step bound for one supported schema version. */
+    public static int maximumSteps(int schemaVersion) {
+        return switch (schemaVersion) {
+            case SCHEMA_VERSION -> MAX_STEPS;
+            case SCHEMA_VERSION_V2 -> MAX_STEPS_V2;
+            default -> throw new IllegalArgumentException(
+                    "schemaVersion must be " + SCHEMA_VERSION
+                            + " or " + SCHEMA_VERSION_V2);
+        };
     }
 
     private static void validateSequence(List<Step> steps) {
