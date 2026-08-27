@@ -40,7 +40,8 @@ Locator schemas are closed recursive unions. Supported locator kinds are role, t
 ## Keyboard gestures
 
 Capability `ui_keyboard_gesture` enables one atomic, session-scoped keyboard timeline. Capability
-`ui_keyboard_gesture_ticks` additionally reports that the application installed an exact
+`ui_keyboard_gesture_v2` additionally reports the 256-step schema-version-2 bound. Capability
+`ui_keyboard_gesture_ticks` separately reports that the application installed an exact
 controlled-tick coordinator. Capability registration does not prove that the controller is
 currently paused or within its provider limits; every gesture containing `wait-ticks` preflights
 that state before the first key callback. A request with any structural or tick-preflight failure
@@ -74,12 +75,15 @@ Successful tick evidence retains one unchanged execution epoch, exact start/fina
 first/final runtime frames, and UI-frame identities only when both endpoint correlations are
 proven.
 
-The schema version is exactly 1. A request contains 2 through 64 steps, keycodes 0 through 255,
-and at most 16 simultaneously held keys. Each frame or tick wait is 1 through 10,000; cumulative
-frame waits and cumulative tick waits are independently capped at 10,000. Every wait requires at
-least one held key, a key cannot be pressed twice or released before it is held, and the complete
-sequence must release every owned key. The required MCP deadline is 1 through 120,000 ms. An
-installed tick provider may impose a lower tick ceiling.
+Schema version 1 remains unchanged at 2 through 64 steps. Schema version 2 accepts 2 through 256
+steps under the same `ui_keyboard_gesture` tool name; it does not create a cross-request
+transaction. Both versions accept keycodes 0 through 255 and at most 16 simultaneously held keys.
+Each frame or tick wait is 1 through 10,000; cumulative frame waits and cumulative tick waits are
+independently capped at 10,000. Every wait requires at least one held key, a key cannot be pressed
+twice or released before it is held, and the complete sequence must release every owned key. The
+required MCP deadline is 1 through 120,000 ms. An installed tick provider may impose a lower tick
+ceiling. A complete request is preflighted before dispatch and retains one gesture/coordinator
+lease through every step and any abnormal reverse-order cleanup.
 
 Only `completed` is an MCP success. Rejected, failed, timed-out, cancelled, and session-closed
 outcomes remain structured `keyboard-gesture-result` content marked as an MCP error. They retain

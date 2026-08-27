@@ -42,6 +42,26 @@ final class KeyboardGestureProtocolTest {
         assertTrue(json.contains("\"type\":\"keyboard-gesture\""));
         assertTrue(json.contains("\"kind\":\"wait-ticks\""));
     }
+    @Test void v2RoundTrips256StepsWhileV1StillRejects65() {
+        HarnessRequest decoded = decodeRequest(gestureWithVersion(
+                2, "\"steps\":" + repeatedSteps(256)));
+        Command.KeyboardGesture gesture =
+                assertInstanceOf(Command.KeyboardGesture.class, decoded.command());
+
+        assertEquals(2, gesture.schemaVersion());
+        assertEquals(256, gesture.steps().size());
+        assertThrows(RuntimeException.class, () ->
+                decodeRequest(gestureWithVersion(1, "\"steps\":" + repeatedSteps(65))));
+    }
+
+    @Test void gestureCapabilityAdvertisesAdditiveV2Support() {
+        CapabilitySet capabilities = new CapabilitySet(List.of("ui_keyboard_gesture"));
+
+        assertEquals(
+                List.of("ui_keyboard_gesture", "ui_keyboard_gesture_v2"),
+                capabilities.capabilities());
+    }
+
 
     @Test void decodeRejectsUnknownMembersKindsAndEveryCoreBoundBeforeRouting() {
         List<String> invalidCommands = List.of(
@@ -50,7 +70,7 @@ final class KeyboardGestureProtocolTest {
                 gesture("", "[{\"kind\":\"unknown\",\"count\":1}]"),
                 gesture("", "[{\"kind\":\"key-down\",\"keycode\":29,\"extra\":1},"
                         + "{\"kind\":\"key-up\",\"keycode\":29}]"),
-                gestureWithVersion(2, "\"steps\":" + validSteps()),
+                gestureWithVersion(3, "\"steps\":" + validSteps()),
                 gesture("", "[{\"kind\":\"key-down\",\"keycode\":29}]"),
                 gesture("", repeatedSteps(65)),
                 gesture("", "[{\"kind\":\"key-down\",\"keycode\":-1},"
