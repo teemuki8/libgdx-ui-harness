@@ -19,6 +19,7 @@ import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.gesture.ExactTickCoordinator.TickEvidence;
+import dev.gdx.uiharness.core.gesture.KeyboardGestureRequest;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureResult;
 import dev.gdx.uiharness.core.locator.QueryResult;
 import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
@@ -144,7 +145,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         record Capabilities(List<String> capabilities) implements Result {
             /** Retains canonical capability ordering. */
             public Capabilities {
-                capabilities = new CapabilitySet(capabilities).capabilities();
+                capabilities = CapabilitySet.canonicalAdvertised(capabilities);
             }
         }
 
@@ -865,7 +866,8 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             String traceId) {
         /** Copies all bounded collections and validates stable terminal fields. */
         public KeyboardGestureData {
-            if (schemaVersion != 1 || requestedSteps < 2 || requestedSteps > 64
+            int maximumSteps = KeyboardGestureRequest.maximumSteps(schemaVersion);
+            if (requestedSteps < 2 || requestedSteps > maximumSteps
                     || startedSteps < 0 || startedSteps > requestedSteps
                     || completedSteps < 0 || completedSteps > startedSteps) {
                 throw new IllegalArgumentException("invalid keyboard gesture step counts");
@@ -949,7 +951,8 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             KeyboardTickData tick) {
         /** Copies held-key evidence and bounds one step. */
         public KeyboardGestureStepData {
-            if (index < 0 || index >= 64 || beforeRevision < 0 || beforeFrame < 0
+            if (index < 0 || index >= KeyboardGestureRequest.MAX_STEPS_V2
+                    || beforeRevision < 0 || beforeFrame < 0
                     || afterRevision < beforeRevision || afterFrame < beforeFrame) {
                 throw new IllegalArgumentException("invalid keyboard gesture step evidence");
             }
@@ -1311,7 +1314,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         /** Validates session identity and canonicalizes capabilities. */
         public SessionInfo {
             ProtocolJson.requireIdentifier(sessionId, "sessionId");
-            capabilities = new CapabilitySet(capabilities).capabilities();
+            capabilities = CapabilitySet.canonicalAdvertised(capabilities);
         }
     }
 

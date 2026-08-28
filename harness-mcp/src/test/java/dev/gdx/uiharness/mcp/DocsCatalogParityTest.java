@@ -204,6 +204,7 @@ final class DocsCatalogParityTest {
         for (Path document : List.of(readmeFile(), guideFile())) {
             String content = Files.readString(document, StandardCharsets.UTF_8);
             assertTrue(content.contains("ui_keyboard_gesture"), document.toString());
+            assertTrue(content.contains("ui_keyboard_gesture_v2"), document.toString());
             assertTrue(content.contains("ui_keyboard_gesture_ticks"), document.toString());
         }
     }

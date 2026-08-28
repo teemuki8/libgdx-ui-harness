@@ -89,6 +89,12 @@ Complete the frame fence after every rendered frame, regardless of application s
 
 Publish the session in a fixed `HarnessProtocolService.Session` registry before accepting MCP requests. Use stable, non-secret session IDs. Route MCP over its default stdio transport; do not expose an unauthenticated network listener. All queued requests include queue time in their deadline and each session serializes Stage work.
 
+When a session registers `ui_keyboard_gesture`, capability discovery also advertises
+`ui_keyboard_gesture_v2`. Clients keep calling the same `ui_keyboard_gesture` tool: schema version
+1 retains its 64-step maximum, while schema version 2 accepts at most 256 steps in one completely
+preflighted request and one coordinator lease. Register `ui_keyboard_gesture_ticks` separately
+only when the session installs the optional exact-tick coordinator.
+
 Shutdown in this order:
 
 1. stop accepting MCP input and close `HarnessMcpServer`;
