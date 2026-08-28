@@ -391,6 +391,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             case "ui_semantic_compare" -> "semantic-compare";
             case "ui_trace_query" -> "trace-query";
             case "ui_runtime_compare" -> "runtime-compare";
+            case "ui_runtime_observe" -> "runtime-observe";
             case "ui_capabilities" -> "capabilities";
             default -> throw new IllegalArgumentException("Unknown tool: " + toolName);
         };
@@ -759,6 +760,23 @@ public final class HarnessToolHandler implements AutoCloseable {
             content.put("runtimeValue", compare.comparison().runtimeValue());
             content.put("displayedFrame", compare.comparison().displayedFrame());
             content.put("runtimeFrame", compare.comparison().runtimeFrame());
+            return Map.copyOf(content);
+        }
+        if (result instanceof HarnessResponse.Result.RuntimeObserve observe) {
+            var observation = observe.observation();
+            LinkedHashMap<String, Object> content = content("runtime-observation-result");
+            content.put("status", observation.status().name());
+            content.put("entityId", observation.entityId());
+            content.put("propertyId", observation.propertyId());
+            if (observation.status()
+                    == dev.gdx.uiharness.core.runtime.RuntimeObservationResult.Status.AVAILABLE) {
+                content.put("runtimeFrame", observation.runtimeFrame());
+                content.put("runtimeRevision", observation.runtimeRevision());
+                content.put("value", observation.value());
+                if (observation.valueFormatId() != null) {
+                    content.put("valueFormatId", observation.valueFormatId());
+                }
+            }
             return Map.copyOf(content);
         }
         if (result instanceof HarnessResponse.Result.Navigation navigation) {

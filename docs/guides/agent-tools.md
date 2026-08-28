@@ -1,6 +1,6 @@
 # Agent tools and safe operation
 
-The MCP server exposes exactly twenty-four bounded tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms; `ui_assert` and `ui_keyboard_gesture` require it up to 120,000 ms, while `ui_scenario_start` requires it up to 600,000 ms. Deadlines include adapter work and backend queue time. The server's outer request timeout is 630,000 ms (the scenario maximum plus a 30-second translation allowance), so a full scenario deadline is never aborted by the SDK transport timeout; the per-request deadline remains the authoritative bound.
+The MCP server exposes exactly twenty-five bounded tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms; `ui_assert` and `ui_keyboard_gesture` require it up to 120,000 ms, while `ui_scenario_start` requires it up to 600,000 ms. Deadlines include adapter work and backend queue time. The server's outer request timeout is 630,000 ms (the scenario maximum plus a 30-second translation allowance), so a full scenario deadline is never aborted by the SDK transport timeout; the per-request deadline remains the authoritative bound.
 
 `sessionId` is the single envelope field documented by this preamble and omitted from the per-tool rows; the per-tool rows name every other required input and any optional tool-specific input. Each row is `none` or a comma-separated list of `required`/`optional` field tokens, and a schema-parity test fails when a required input appears on either side without the other.
 
@@ -27,6 +27,7 @@ The MCP server exposes exactly twenty-four bounded tools. `tools/list` is the au
 | `ui_matrix_run` | Run one scenario/assertion set across a bounded display matrix | required `spec` | run ID |
 | `ui_matrix_results` | Retrieve one retained matrix run report | required `runId` | bounded report |
 | `ui_runtime_compare` | Compare a bound node's displayed value against its runtime observation | required `maxDurationMillis`, required `locator` | typed comparison with correlation |
+| `ui_runtime_observe` | Observe one explicit registered runtime entity property on a correlated completed frame | required `entityId`, required `propertyId`, required `correlationToken`, required `maxDurationMillis` | typed `AVAILABLE` or `UNAVAILABLE` observation |
 | `ui_trace_query` | Query compact state transitions from a retained trace | required `spec` | bounded transitions |
 | `ui_semantic_compare` | Compare a registered semantic baseline against the current snapshot | required `spec` | matched status and bounded differences |
 | `ui_capabilities` | Discover one session's supported operations | none | bounded capability names, exact operation schemas/examples, diagnostic registry, and recovery policy |

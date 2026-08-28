@@ -8056,6 +8056,268 @@
   "inputSchema" : {
     "additionalProperties" : false,
     "properties" : {
+      "correlationToken" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "entityId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "maxDurationMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "propertyId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "sessionId", "entityId", "propertyId", "correlationToken", "maxDurationMillis" ],
+    "type" : "object"
+  },
+  "name" : "ui_runtime_observe",
+  "outputSchema" : {
+    "oneOf" : [ {
+      "additionalProperties" : false,
+      "properties" : {
+        "entityId" : {
+          "maxLength" : 256,
+          "minLength" : 1,
+          "type" : "string"
+        },
+        "kind" : {
+          "const" : "runtime-observation-result",
+          "type" : "string"
+        },
+        "progress" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "dimensions" : {
+              "additionalProperties" : {
+                "enum" : [ "changed", "unchanged", "unavailable" ],
+                "type" : "string"
+              },
+              "maxProperties" : 32,
+              "type" : "object"
+            },
+            "ruleId" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "status" : {
+              "enum" : [ "available", "unavailable" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "status", "dimensions", "ruleId" ],
+          "type" : "object"
+        },
+        "propertyId" : {
+          "maxLength" : 256,
+          "minLength" : 1,
+          "type" : "string"
+        },
+        "recovery" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "consumed" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "consumedBefore" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "elapsedMillis" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "limit" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 1,
+              "type" : "integer"
+            },
+            "maxWallTimeMillis" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 1,
+              "type" : "integer"
+            },
+            "policyVersion" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "remaining" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "remainingBefore" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "terminatingRule" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            }
+          },
+          "required" : [ "policyVersion", "consumedBefore", "consumed", "limit", "remainingBefore", "remaining", "elapsedMillis", "maxWallTimeMillis", "terminatingRule" ],
+          "type" : "object"
+        },
+        "runtimeFrame" : {
+          "maximum" : 9223372036854775807,
+          "minimum" : 0,
+          "type" : "integer"
+        },
+        "runtimeRevision" : {
+          "maximum" : 9223372036854775807,
+          "minimum" : 0,
+          "type" : "integer"
+        },
+        "status" : {
+          "const" : "AVAILABLE",
+          "type" : "string"
+        },
+        "value" : {
+          "maxLength" : 16384,
+          "minLength" : 0,
+          "type" : "string"
+        },
+        "valueFormatId" : {
+          "maxLength" : 256,
+          "minLength" : 1,
+          "type" : "string"
+        }
+      },
+      "required" : [ "kind", "progress", "recovery", "status", "entityId", "propertyId", "runtimeFrame", "runtimeRevision", "value", "valueFormatId" ],
+      "type" : "object"
+    }, {
+      "additionalProperties" : false,
+      "properties" : {
+        "entityId" : {
+          "maxLength" : 256,
+          "minLength" : 1,
+          "type" : "string"
+        },
+        "kind" : {
+          "const" : "runtime-observation-result",
+          "type" : "string"
+        },
+        "progress" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "dimensions" : {
+              "additionalProperties" : {
+                "enum" : [ "changed", "unchanged", "unavailable" ],
+                "type" : "string"
+              },
+              "maxProperties" : 32,
+              "type" : "object"
+            },
+            "ruleId" : {
+              "maxLength" : 16384,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "status" : {
+              "enum" : [ "available", "unavailable" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "status", "dimensions", "ruleId" ],
+          "type" : "object"
+        },
+        "propertyId" : {
+          "maxLength" : 256,
+          "minLength" : 1,
+          "type" : "string"
+        },
+        "recovery" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "consumed" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "consumedBefore" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "elapsedMillis" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "limit" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 1,
+              "type" : "integer"
+            },
+            "maxWallTimeMillis" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 1,
+              "type" : "integer"
+            },
+            "policyVersion" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            },
+            "remaining" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "remainingBefore" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "terminatingRule" : {
+              "maxLength" : 256,
+              "minLength" : 1,
+              "type" : "string"
+            }
+          },
+          "required" : [ "policyVersion", "consumedBefore", "consumed", "limit", "remainingBefore", "remaining", "elapsedMillis", "maxWallTimeMillis", "terminatingRule" ],
+          "type" : "object"
+        },
+        "status" : {
+          "const" : "UNAVAILABLE",
+          "type" : "string"
+        }
+      },
+      "required" : [ "kind", "progress", "recovery", "status", "entityId", "propertyId" ],
+      "type" : "object"
+    } ]
+  }
+}, {
+  "inputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
       "deadlineMillis" : {
         "maximum" : 120000,
         "minimum" : 1,

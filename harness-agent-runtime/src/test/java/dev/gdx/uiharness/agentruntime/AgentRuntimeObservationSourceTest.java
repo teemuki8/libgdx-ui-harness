@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.gdx.uiharness.core.model.RuntimeBinding;
 import dev.gdx.uiharness.core.runtime.RuntimeObservation;
+import dev.gdx.uiharness.core.runtime.RuntimeObservationResult;
+import dev.gdx.uiharness.core.runtime.RuntimeObserver;
 import io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime;
 import io.github.teemuki8.libgdx.agent.runtime.core.EntityId;
 import io.github.teemuki8.libgdx.agent.runtime.core.EntityType;
@@ -59,6 +61,28 @@ final class AgentRuntimeObservationSourceTest {
         assertTrue(observation.isPresent());
         assertEquals("integer", observation.orElseThrow().valueFormatId());
         assertEquals("7", observation.orElseThrow().value());
+    }
+
+    @Test void directObserverPreservesTypedCorrelationWithoutSemanticNodes() {
+        registerUser("Ada");
+        advanceFrame();
+        recordCorrelation(42, CORRELATION_TOKEN);
+        RuntimeObserver observer =
+                new RuntimeObserver(new AgentRuntimeObservationSource(runtime, UI_SESSION));
+
+        RuntimeObservationResult available =
+                observer.observe("user", "name", CORRELATION_TOKEN);
+        RuntimeObservationResult wrongToken =
+                observer.observe("user", "name", "other-token");
+        RuntimeObservationResult missing =
+                observer.observe("missing", "name", CORRELATION_TOKEN);
+
+        assertEquals(RuntimeObservationResult.Status.AVAILABLE, available.status());
+        assertEquals(42L, available.runtimeFrame());
+        assertEquals("Ada", available.value());
+        assertEquals("string", available.valueFormatId());
+        assertEquals(RuntimeObservationResult.Status.UNAVAILABLE, wrongToken.status());
+        assertEquals(RuntimeObservationResult.Status.UNAVAILABLE, missing.status());
     }
 
     @Test void unmatchedCorrelationTokenIsEmpty() {
