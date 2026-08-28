@@ -21,11 +21,14 @@ import dev.gdx.uiharness.core.typography.GlyphRunObservation;
 import dev.gdx.uiharness.core.typography.TypographyDiagnostic;
 import dev.gdx.uiharness.core.typography.TypographyReport;
 import io.modelcontextprotocol.spec.McpSchema;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.ArrayDeque;
+import java.util.Base64;
 import java.util.Collections;
-import java.util.HexFormat;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -64,6 +67,7 @@ public final class HarnessToolHandler implements AutoCloseable {
 
     private final ExecutionSource protocol;
     private final ArtifactReference.Publisher artifacts;
+    private final ArtifactReference.Reader artifactReader;
     private final ExecutorService executor;
     private final Scheduler scheduler;
     private final int artifactThresholdBytes;
@@ -92,12 +96,31 @@ public final class HarnessToolHandler implements AutoCloseable {
                 System::nanoTime, RequestAdmission.serverDefaults());
     }
 
+    /** Creates a handler with an application-owned artifact publisher and reader. */
+    public HarnessToolHandler(HarnessProtocolService protocol,
+            ArtifactReference.Publisher artifacts, ArtifactReference.Reader artifactReader) {
+        this(Objects.requireNonNull(protocol, "protocol")::executeWithAttachments, artifacts,
+                artifactReader, Executors.newVirtualThreadPerTaskExecutor(),
+                DEFAULT_ARTIFACT_THRESHOLD_BYTES, System::nanoTime,
+                RequestAdmission.serverDefaults(), RecoveryAccounting.MAX_ENTRIES);
+    }
+
     /** Creates a handler for the server with the server-scoped admission. */
     HarnessToolHandler(HarnessProtocolService protocol, ArtifactReference.Publisher artifacts,
             RequestAdmission admission) {
         this(Objects.requireNonNull(protocol, "protocol")::executeWithAttachments, artifacts,
+                ArtifactReference.Reader.unavailable(),
                 Executors.newVirtualThreadPerTaskExecutor(), DEFAULT_ARTIFACT_THRESHOLD_BYTES,
-                System::nanoTime, admission);
+                System::nanoTime, admission, RecoveryAccounting.MAX_ENTRIES);
+    }
+
+    /** Creates a handler for the server with reader and server-scoped admission. */
+    HarnessToolHandler(HarnessProtocolService protocol, ArtifactReference.Publisher artifacts,
+            ArtifactReference.Reader artifactReader, RequestAdmission admission) {
+        this(Objects.requireNonNull(protocol, "protocol")::executeWithAttachments, artifacts,
+                artifactReader, Executors.newVirtualThreadPerTaskExecutor(),
+                DEFAULT_ARTIFACT_THRESHOLD_BYTES, System::nanoTime, admission,
+                RecoveryAccounting.MAX_ENTRIES);
     }
 
     HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
@@ -105,6 +128,14 @@ public final class HarnessToolHandler implements AutoCloseable {
             int artifactThresholdBytes) {
         this(protocol, artifacts, executor, artifactThresholdBytes, System::nanoTime,
                 RequestAdmission.serverDefaults());
+    }
+
+    HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
+            ArtifactReference.Publisher artifacts, ArtifactReference.Reader artifactReader,
+            ExecutorService executor, int artifactThresholdBytes) {
+        this(withEmptyCaptures(protocol), artifacts, artifactReader, executor,
+                artifactThresholdBytes, System::nanoTime, RequestAdmission.serverDefaults(),
+                RecoveryAccounting.MAX_ENTRIES);
     }
 
     HarnessToolHandler(Function<HarnessRequest, CompletionStage<HarnessResponse>> protocol,
@@ -174,9 +205,18 @@ public final class HarnessToolHandler implements AutoCloseable {
             ArtifactReference.Publisher artifacts, ExecutorService executor,
             int artifactThresholdBytes, LongSupplier nanoClock, RequestAdmission admission,
             int recoveryCapacity) {
+        this(protocol, artifacts, ArtifactReference.Reader.unavailable(), executor,
+                artifactThresholdBytes, nanoClock, admission, recoveryCapacity);
+    }
+
+    HarnessToolHandler(ExecutionSource protocol,
+            ArtifactReference.Publisher artifacts, ArtifactReference.Reader artifactReader,
+            ExecutorService executor, int artifactThresholdBytes, LongSupplier nanoClock,
+            RequestAdmission admission, int recoveryCapacity) {
         this.protocol = Objects.requireNonNull(protocol, "protocol");
         this.artifacts = new VerifiedArtifactPublisher(
                 Objects.requireNonNull(artifacts, "artifacts"));
+        this.artifactReader = Objects.requireNonNull(artifactReader, "artifactReader");
         this.executor = Objects.requireNonNull(executor, "executor");
         this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
         if (artifactThresholdBytes <= 0) {
@@ -239,6 +279,19 @@ public final class HarnessToolHandler implements AutoCloseable {
                         "One or more arguments do not match the operation schema",
                         problems, null, workflowToken));
             }
+            if ("ui_artifact_read".equals(call.name())) {
+                CompletionStage<McpSchema.CallToolResult> admitted = admission.submit(
+                        admissionKey(arguments), HarnessToolCatalog.AccessMode.READ_ONLY,
+                        () -> CompletableFuture.completedFuture(readArtifact(
+                                sequence, arguments, workflowToken)));
+                return Mono.fromFuture(admitted.toCompletableFuture())
+                        .onErrorResume(RequestAdmission.LimitExceededException.class,
+                                failure -> Mono.just(diagnostic(
+                                        requestId, sequence, call.name(), arguments,
+                                        DiagnosticCode.LIMIT_EXCEEDED, failure.getMessage(),
+                                        List.of(), null, workflowToken)));
+            }
+
 
             HarnessRequest request;
             try {
@@ -324,6 +377,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                 translated.complete(classifyBoundaryFailure(
                         failure, operation, sequence, arguments,
                         "Protocol invocation failed", workflowToken));
+
                 return;
             }
             try {
@@ -337,6 +391,96 @@ public final class HarnessToolHandler implements AutoCloseable {
             }
         });
         return translated;
+    }
+    private McpSchema.CallToolResult readArtifact(
+            long sequence, Map<String, Object> arguments, long[] workflowToken) {
+        String operation = "ui_artifact_read";
+        String sessionId = (String) arguments.get("sessionId");
+        String reference = (String) arguments.get("reference");
+        long offset = ((Number) arguments.get("offset")).longValue();
+        int maxBytes = ((Number) arguments.get("maxBytes")).intValue();
+        try {
+            ArtifactReference.requireOpaque(reference);
+            ArtifactReference.Chunk chunk = Objects.requireNonNull(
+                    artifactReader.read(sessionId, reference, offset, maxBytes),
+                    "artifact reader chunk");
+            ArtifactReference artifact = chunk.artifact();
+            byte[] bytes = chunk.content();
+            if (!artifact.reference().equals(reference)
+                    || chunk.offset() != offset
+                    || bytes.length > maxBytes
+                    || (offset < artifact.byteLength() && bytes.length == 0)) {
+                throw new ArtifactReference.ArtifactReadUnavailableException(
+                        "Artifact reader returned inconsistent metadata");
+            }
+            if (offset == 0 && chunk.eof()
+                    && !sha256(bytes).equalsIgnoreCase(artifact.sha256())) {
+                throw new ArtifactReference.ArtifactIntegrityException();
+            }
+            LinkedHashMap<String, Object> content = new LinkedHashMap<>();
+            content.put("kind", "artifact-chunk");
+            content.put("reference", artifact.reference());
+            content.put("mediaType", artifact.mediaType());
+            content.put("totalByteLength", artifact.byteLength());
+            content.put("sha256", artifact.sha256().toLowerCase(java.util.Locale.ROOT));
+            content.put("offset", chunk.offset());
+            content.put("nextOffset", chunk.nextOffset());
+            content.put("eof", chunk.eof());
+            content.put("data", Base64.getEncoder().encodeToString(bytes));
+            content.put("progress", encodedProgress(DiagnosticEnvelope.Progress.unavailable()));
+            RecoveryAccounting.Snapshot session =
+                    sessionAccounting.snapshot(sessionKey(arguments));
+            content.put("recovery", encodedRecovery(new DiagnosticEnvelope.Recovery(
+                    dev.gdx.uiharness.protocol.RecoveryPolicy.VERSION,
+                    session.consumed(),
+                    HarnessToolCatalog.recoveryPolicy().maxSchemaRecoveries(),
+                    session.workflowElapsedMillis(),
+                    HarnessToolCatalog.recoveryPolicy().maxWallTimeMillis(),
+                    "success/v1")));
+            endWorkflow(sessionKey(arguments), workflowToken[0]);
+            return McpSchema.CallToolResult.builder()
+                    .structuredContent(Map.copyOf(content))
+                    .addTextContent(compactText(content))
+                    .isError(false)
+                    .build();
+        } catch (Throwable failure) {
+            Throwable root = unwrapBoundaryFailure(failure);
+            if (root instanceof VirtualMachineError || root instanceof ThreadDeath) {
+                throw (Error) root;
+            }
+            String code;
+            String message;
+            if (root instanceof ArtifactReference.InvalidArtifactReferenceException) {
+                code = "invalid-artifact-reference";
+                message = "Artifact reference is not transport-safe";
+            } else if (root instanceof ArtifactReference.InvalidArtifactOffsetException) {
+                code = "invalid-artifact-offset";
+                message = "Artifact offset is outside the payload";
+            } else if (root instanceof ArtifactReference.ArtifactNotFoundException) {
+                code = "artifact-not-found";
+                message = "Artifact is unavailable for this session";
+            } else if (root instanceof ArtifactReference.ArtifactIntegrityException) {
+                code = "artifact-integrity-failed";
+                message = "Artifact integrity verification failed";
+            } else {
+                code = "artifact-read-unavailable";
+                message = "Artifact retrieval is unavailable";
+            }
+            String traceId = internalTraceId();
+            ARTIFACT_LOGGER.log(java.util.logging.Level.FINE,
+                    "artifact reader rejected request " + traceId, (Throwable) null);
+            return localError(operation, sequence, arguments, code, message, traceId,
+                    workflowToken);
+        }
+    }
+
+    private static String sha256(byte[] bytes) {
+        try {
+            return java.util.HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
     }
 
     private McpSchema.CallToolResult limitExceeded(

@@ -135,7 +135,8 @@ final class ReferenceApplicationSmokeTest {
                     assertEquals("image/png", screenshot.artifact().mediaType());
                     assertTrue(screenshot.artifact().byteLength() > 100);
                     assertFalse(screenshot.artifact().reference().contains("/"));
-                    byte[] actualScreenshot = app.readArtifact(screenshot.artifact());
+                    byte[] actualScreenshot =
+                            agent.readArtifact(SESSION_ID, screenshot.artifact());
                     int[] actualPixels =
                             assertPngPixelsMatchGolden(expectedScreenshot, actualScreenshot);
                     if (deterministicScreenshot == null) {

@@ -1,11 +1,15 @@
 package dev.gdx.uiharness.mcp;
 
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.Objects;
 
 /** Opaque reference returned by an injected artifact publisher. */
 public record ArtifactReference(
         String reference, String mediaType, long byteLength, String sha256) {
+    /** Hard byte limit for one artifact-read response chunk. */
+    public static final int MAX_CHUNK_BYTES = 65_536;
+
     /** Validates transport-safe artifact metadata without interpreting the reference as a path. */
     public ArtifactReference {
         requireOpaque(reference);
@@ -65,6 +69,100 @@ public record ArtifactReference(
                 throw new ArtifactUnavailableException(
                         "Artifact persistence is not configured for this server");
             };
+        }
+    }
+
+    /** Resolves only opaque, session-owned artifact receipts into bounded immutable chunks. */
+    @FunctionalInterface
+    public interface Reader {
+        /**
+         * Reads at most {@code maxBytes} beginning at {@code offset}. Implementations own
+         * receipt authorization, expiry, quota, integrity verification, and stream cleanup.
+         */
+        Chunk read(String sessionId, String reference, long offset, int maxBytes);
+
+        /** Reader used when artifact retrieval has not been installed. */
+        static Reader unavailable() {
+            return (sessionId, reference, offset, maxBytes) -> {
+                throw new ArtifactReadUnavailableException(
+                        "Artifact retrieval is not configured for this server");
+            };
+        }
+    }
+
+    /**
+     * One verified bounded artifact region. Byte arrays are copied on construction and access
+     * so an application reader cannot mutate a response after returning it.
+     */
+    public record Chunk(
+            ArtifactReference artifact,
+            long offset,
+            long nextOffset,
+            boolean eof,
+            byte[] content) {
+        /** Validates chunk bounds independently of any reader implementation. */
+        public Chunk {
+            artifact = Objects.requireNonNull(artifact, "artifact");
+            content = Objects.requireNonNull(content, "content").clone();
+            if (offset < 0 || offset > artifact.byteLength()) {
+                throw new IllegalArgumentException("offset must be within the artifact");
+            }
+            if (content.length > MAX_CHUNK_BYTES) {
+                throw new IllegalArgumentException("content exceeds the maximum chunk size");
+            }
+            if (nextOffset < offset
+                    || nextOffset != offset + content.length
+                    || nextOffset > artifact.byteLength()) {
+                throw new IllegalArgumentException("nextOffset must follow the returned content");
+            }
+            if (eof != (nextOffset == artifact.byteLength())) {
+                throw new IllegalArgumentException("eof must identify the end of the artifact");
+            }
+        }
+
+        @Override public byte[] content() {
+            return Arrays.copyOf(content, content.length);
+        }
+    }
+
+    /** Fixed session-safe outcome for an unknown, expired, or differently owned receipt. */
+    @SuppressWarnings("serial")
+    public static final class ArtifactNotFoundException extends RuntimeException {
+        /** Creates the fixed unavailable-for-session outcome. */
+        public ArtifactNotFoundException() {
+            super("Artifact is unavailable for this session");
+        }
+    }
+
+    /** Stable local failure for a server without a usable artifact reader. */
+    @SuppressWarnings("serial")
+    public static final class ArtifactReadUnavailableException extends RuntimeException {
+        /** Creates an unavailable-reader failure. */
+        public ArtifactReadUnavailableException(String message) {
+            super(message);
+        }
+
+        /** Creates an unavailable-reader failure from a delegate failure. */
+        public ArtifactReadUnavailableException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
+    /** Stable local failure for an offset beyond a receipt's total byte length. */
+    @SuppressWarnings("serial")
+    public static final class InvalidArtifactOffsetException extends IllegalArgumentException {
+        /** Creates the fixed offset failure. */
+        public InvalidArtifactOffsetException() {
+            super("Artifact offset is outside the payload");
+        }
+    }
+
+    /** Stable local failure when stored bytes no longer match immutable receipt metadata. */
+    @SuppressWarnings("serial")
+    public static final class ArtifactIntegrityException extends RuntimeException {
+        /** Creates the fixed integrity failure. */
+        public ArtifactIntegrityException() {
+            super("Artifact integrity verification failed");
         }
     }
 

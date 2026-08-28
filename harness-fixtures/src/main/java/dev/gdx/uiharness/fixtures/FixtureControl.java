@@ -78,6 +78,7 @@ import dev.gdx.uiharness.lwjgl3.RegisteredLaunchCoordinator;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3VisualComparator;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3TypographyRasterComparator;
 import dev.gdx.uiharness.mcp.ArtifactReference;
+import dev.gdx.uiharness.mcp.ArtifactStoreReader;
 import dev.gdx.uiharness.mcp.HarnessMcpServer;
 import dev.gdx.uiharness.protocol.ArtifactId;
 import dev.gdx.uiharness.protocol.ArtifactMediaType;
@@ -551,7 +552,7 @@ public final class FixtureControl implements AutoCloseable {
                 Map.of(SESSION_ID, session), Map.of(), Map.of(SESSION_ID, comparison),
                 Map.of(SESSION_ID, typography), Map.of(SESSION_ID, layout),
                 clock, protocolExecutor);
-        server = HarnessMcpServer.open(protocol, publisher, input, output);
+        server = HarnessMcpServer.open(protocol, publisher, publisher, input, output);
         terminationTask = terminationExecutor.submit(() -> {
             server.awaitTermination();
             if (!closed.get()) {
@@ -1271,13 +1272,15 @@ public final class FixtureControl implements AutoCloseable {
     }
 
     private static final class StorePublisher
-            implements ArtifactReference.Publisher, AutoCloseable {
+            implements ArtifactReference.Publisher, ArtifactReference.Reader, AutoCloseable {
         private final FileArtifactStore store;
+        private final ArtifactStoreReader reader;
         private final Path proofRoot;
         private final List<Path> receipts = new ArrayList<>();
 
         StorePublisher(FileArtifactStore store, Path proofRoot) {
             this.store = store;
+            this.reader = new ArtifactStoreReader(store);
             this.proofRoot = proofRoot;
         }
 
@@ -1302,6 +1305,11 @@ public final class FixtureControl implements AutoCloseable {
             }
             receipts.add(receipt);
             return reference;
+        }
+
+        @Override public ArtifactReference.Chunk read(
+                String sessionId, String reference, long offset, int maxBytes) {
+            return reader.read(sessionId, reference, offset, maxBytes);
         }
 
         @Override public synchronized void close() throws IOException {

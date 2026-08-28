@@ -18,7 +18,7 @@ The design brings Playwright-style principles to libGDX: lazy strict locators, a
 - **Faithful input:** click, hover, focus, fill, press, scroll, drag, and pointer actions travel through libGDX input dispatch.
 - **Deterministic synchronization:** monotonic deadlines and frame/state signals replace sleeps and arbitrary delays.
 - **Useful diagnostics:** errors have stable codes; screenshots and replayable traces retain causal evidence.
-- **Agent-ready access:** a bounded stdio MCP server exposes exactly twenty-five typed tools with closed schemas.
+- **Agent-ready access:** a bounded stdio MCP server exposes exactly twenty-six typed tools with closed schemas.
 
 ## Quick start
 
@@ -84,6 +84,7 @@ The server uses stdio and exposes a deliberately small tool surface:
 | Tool | Purpose |
 |---|---|
 | `ui_sessions` | List active harness sessions |
+| `ui_artifact_read` | Retrieve a verified bounded base64 chunk from a session-owned opaque receipt |
 | `ui_snapshot` | Capture a compact immutable semantic snapshot |
 | `ui_query` | Evaluate a lazy locator |
 | `ui_action` | Perform one allowlisted input action |
