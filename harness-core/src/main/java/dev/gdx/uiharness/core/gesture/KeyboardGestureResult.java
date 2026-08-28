@@ -28,12 +28,9 @@ public record KeyboardGestureResult(
         Optional<String> traceId) {
     /** Validates cross-field terminal invariants and defensively copies all evidence. */
     public KeyboardGestureResult {
-        if (schemaVersion != KeyboardGestureRequest.SCHEMA_VERSION) {
-            throw new IllegalArgumentException(
-                    "schemaVersion must be " + KeyboardGestureRequest.SCHEMA_VERSION);
-        }
+        int maximumSteps = KeyboardGestureRequest.maximumSteps(schemaVersion);
         Objects.requireNonNull(outcome, "outcome");
-        if (requestedSteps < 2 || requestedSteps > KeyboardGestureRequest.MAX_STEPS) {
+        if (requestedSteps < 2 || requestedSteps > maximumSteps) {
             throw new IllegalArgumentException("requestedSteps is outside the gesture bound");
         }
         if (startedSteps < 0 || startedSteps > requestedSteps) {
@@ -164,7 +161,7 @@ public record KeyboardGestureResult(
             Optional<TickEvidence> tick) {
         /** Validates the closed shape for the selected step kind. */
         public StepEvidence {
-            if (index < 0 || index >= KeyboardGestureRequest.MAX_STEPS) {
+            if (index < 0 || index >= KeyboardGestureRequest.MAX_STEPS_V2) {
                 throw new IllegalArgumentException("step index is outside the gesture bound");
             }
             Objects.requireNonNull(kind, "kind");

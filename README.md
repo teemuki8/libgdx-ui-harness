@@ -18,7 +18,7 @@ The design brings Playwright-style principles to libGDX: lazy strict locators, a
 - **Faithful input:** click, hover, focus, fill, press, scroll, drag, and pointer actions travel through libGDX input dispatch.
 - **Deterministic synchronization:** monotonic deadlines and frame/state signals replace sleeps and arbitrary delays.
 - **Useful diagnostics:** errors have stable codes; screenshots and replayable traces retain causal evidence.
-- **Agent-ready access:** a bounded stdio MCP server exposes exactly twenty-five typed tools with closed schemas.
+- **Agent-ready access:** a bounded stdio MCP server exposes exactly twenty-six typed tools with closed schemas.
 
 ## Quick start
 
@@ -105,15 +105,18 @@ The server uses stdio and exposes a deliberately small tool surface:
 | `ui_matrix_run` | Run one scenario/assertion set across a bounded display matrix |
 | `ui_matrix_results` | Retrieve one retained matrix run report |
 | `ui_runtime_compare` | Compare a bound node's displayed value against its runtime observation |
+| `ui_runtime_observe` | Observe one explicit registered runtime entity property on a correlated completed frame |
 | `ui_trace_query` | Query compact state transitions from a retained trace |
 | `ui_semantic_compare` | Compare a registered semantic baseline against the current snapshot |
 | `ui_capabilities` | Discover operations supported by a session |
 
 Capability `ui_keyboard_gesture` means the session can dispatch cleanup-safe key-down, frame-wait,
-and key-up timelines through its configured input processor. Capability
-`ui_keyboard_gesture_ticks` additionally means an exact application-owned tick coordinator is
-installed; each request still preflights its current paused state and limits before dispatching
-input. Focus a widget with `ui_action` before starting a gesture that depends on keyboard focus.
+and key-up timelines through its configured input processor. Such sessions additionally advertise
+`ui_keyboard_gesture_v2` for the additive 256-step schema version 2; schema version 1 remains
+limited to 64 steps. Capability `ui_keyboard_gesture_ticks` separately means an exact
+application-owned tick coordinator is installed; each request still preflights its current paused
+state and limits before dispatching input. Focus a widget with `ui_action` before starting a
+gesture that depends on keyboard focus.
 
 All remote requests, responses, recursive locators, strings, regular expressions, screenshots, traces, and artifacts are bounded. The default server accepts no scripts, reflection targets, arbitrary commands, caller-selected file paths, or unauthenticated network listener.
 

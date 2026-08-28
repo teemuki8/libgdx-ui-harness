@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -57,6 +58,43 @@ final class KeyboardGestureProductionFixtureTest {
                     >= tick.path("firstRuntimeFrame").asLong());
         }
     }
+    @Test
+    @Timeout(120)
+    void v2MaximumExactTickTimelineHasNoUncontrolledInterStepTicks() throws Exception {
+        try (ReferenceProcess app = ReferenceProcess.launch();
+                HarnessMcpClient client = HarnessMcpClient.connect(app)) {
+            assertTrue(client.capabilities(SESSION_ID).contains("ui_keyboard_gesture_v2"));
+            ArrayList<Map<String, Object>> steps = new ArrayList<>(256);
+            steps.add(key("key-down"));
+            for (int index = 0; index < 254; index++) {
+                steps.add(waitFor("wait-ticks", 1));
+            }
+            steps.add(key("key-up"));
+
+            JsonNode result = client.keyboardGesture(
+                    SESSION_ID, 2, steps, 10_000);
+
+            assertEquals("completed", result.path("outcome").asText());
+            assertEquals(2, result.path("schemaVersion").asInt());
+            assertEquals(256, result.path("completedSteps").asInt());
+            long previousFinalTick = -1;
+            long executionEpoch = -1;
+            for (int index = 1; index < 255; index++) {
+                JsonNode tick = result.path("steps").get(index).path("tick");
+                assertEquals(1, tick.path("requestedTicks").asInt());
+                assertEquals(1, tick.path("completedTicks").asInt());
+                if (previousFinalTick >= 0) {
+                    assertEquals(previousFinalTick, tick.path("startTick").asLong(),
+                            "controlled tick steps must be contiguous at index " + index);
+                    assertEquals(executionEpoch, tick.path("executionEpoch").asLong());
+                }
+                previousFinalTick = tick.path("finalTick").asLong();
+                executionEpoch = tick.path("executionEpoch").asLong();
+            }
+            assertEquals(0, result.path("heldKeys").size());
+        }
+    }
+
 
     @Test
     @Timeout(120)

@@ -57,10 +57,33 @@ final class KeyboardGestureRequestTest {
                         .mapToInt(step -> ((KeyboardGestureRequest.KeyDown) step).keycode())
                         .findFirst().orElseThrow());
     }
+    @Test void preservesV1BoundsAndAddsIndependentV2Bounds() {
+        assertEquals(64, KeyboardGestureRequest.MAX_STEPS);
+        assertEquals(256, KeyboardGestureRequest.MAX_STEPS_V2);
+        assertEquals(2, KeyboardGestureRequest.SCHEMA_VERSION_V2);
+
+        assertEquals(64, new KeyboardGestureRequest(
+                KeyboardGestureRequest.SCHEMA_VERSION, balancedSteps(64)).steps().size());
+        assertInvalid(KeyboardGestureRequest.SCHEMA_VERSION, balancedSteps(65));
+        assertEquals(256, new KeyboardGestureRequest(
+                KeyboardGestureRequest.SCHEMA_VERSION_V2, balancedSteps(256)).steps().size());
+        assertInvalid(KeyboardGestureRequest.SCHEMA_VERSION_V2, balancedSteps(257));
+        assertInvalid(3, balanced());
+    }
+
+    @Test void appliesSharedSequenceValidationNearTheV2Maximum() {
+        ArrayList<KeyboardGestureRequest.Step> malformed =
+                new ArrayList<>(balancedSteps(254));
+        malformed.add(1, new KeyboardGestureRequest.KeyDown(1));
+        malformed.add(new KeyboardGestureRequest.KeyUp(1));
+
+        assertInvalid(KeyboardGestureRequest.SCHEMA_VERSION_V2, malformed);
+    }
+
 
     @Test void rejectsSchemaListAndStepBounds() {
         assertInvalid(0, balanced());
-        assertInvalid(2, balanced());
+        assertInvalid(3, balanced());
         assertInvalid(1, List.of(new KeyboardGestureRequest.KeyDown(1)));
         ArrayList<KeyboardGestureRequest.Step> tooMany = new ArrayList<>();
         tooMany.add(new KeyboardGestureRequest.KeyDown(1));
@@ -136,6 +159,19 @@ final class KeyboardGestureRequestTest {
         return List.of(
                 new KeyboardGestureRequest.KeyDown(1),
                 new KeyboardGestureRequest.KeyUp(1));
+    }
+
+    private static List<KeyboardGestureRequest.Step> balancedSteps(int count) {
+        ArrayList<KeyboardGestureRequest.Step> steps = new ArrayList<>(count);
+        int transitions = count - (count & 1);
+        for (int index = 0; index < transitions; index += 2) {
+            steps.add(new KeyboardGestureRequest.KeyDown(1));
+            steps.add(new KeyboardGestureRequest.KeyUp(1));
+        }
+        if ((count & 1) != 0) {
+            steps.add(steps.size() - 1, new KeyboardGestureRequest.WaitFrames(1));
+        }
+        return steps;
     }
 
     private static void assertInvalid(

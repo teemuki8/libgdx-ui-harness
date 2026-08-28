@@ -19,6 +19,7 @@ import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.gesture.ExactTickCoordinator.TickEvidence;
+import dev.gdx.uiharness.core.gesture.KeyboardGestureRequest;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureResult;
 import dev.gdx.uiharness.core.locator.QueryResult;
 import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
@@ -122,7 +123,8 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(value = Result.MatrixReportData.class, name = "matrix-report"),
         @JsonSubTypes.Type(value = Result.SemanticCompare.class, name = "semantic-compare"),
         @JsonSubTypes.Type(value = Result.TraceQuery.class, name = "trace-query"),
-        @JsonSubTypes.Type(value = Result.RuntimeCompare.class, name = "runtime-compare")
+        @JsonSubTypes.Type(value = Result.RuntimeCompare.class, name = "runtime-compare"),
+        @JsonSubTypes.Type(value = Result.RuntimeObserve.class, name = "runtime-observation-result")
     })
     sealed interface Result permits Result.Sessions, Result.Capabilities, Result.Snapshot,
             Result.Query, Result.Action, Result.KeyboardGesture, Result.Assertion, Result.Wait,
@@ -131,7 +133,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             Result.LayoutDiagnostic, Result.TraceStopped, Result.ScenarioList,
             Result.ScenarioStart, Result.Navigation, Result.LayoutValidation,
             Result.MatrixRunStarted, Result.MatrixReportData, Result.SemanticCompare,
-            Result.TraceQuery, Result.RuntimeCompare {
+            Result.TraceQuery, Result.RuntimeCompare, Result.RuntimeObserve {
         /** Active session catalog. */
         record Sessions(List<SessionInfo> sessions) implements Result {
             /** Defensively copies the session catalog. */
@@ -144,7 +146,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         record Capabilities(List<String> capabilities) implements Result {
             /** Retains canonical capability ordering. */
             public Capabilities {
-                capabilities = new CapabilitySet(capabilities).capabilities();
+                capabilities = CapabilitySet.canonicalAdvertised(capabilities);
             }
         }
 
@@ -231,6 +233,15 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             /** Requires a closed comparison. */
             public RuntimeCompare {
                 comparison = Objects.requireNonNull(comparison, "comparison");
+            }
+        }
+
+        /** Bounded typed direct runtime observation. */
+        record RuntimeObserve(dev.gdx.uiharness.core.runtime.RuntimeObservationResult observation)
+                implements Result {
+            /** Requires a closed observation. */
+            public RuntimeObserve {
+                observation = Objects.requireNonNull(observation, "observation");
             }
         }
 
@@ -865,7 +876,8 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             String traceId) {
         /** Copies all bounded collections and validates stable terminal fields. */
         public KeyboardGestureData {
-            if (schemaVersion != 1 || requestedSteps < 2 || requestedSteps > 64
+            int maximumSteps = KeyboardGestureRequest.maximumSteps(schemaVersion);
+            if (requestedSteps < 2 || requestedSteps > maximumSteps
                     || startedSteps < 0 || startedSteps > requestedSteps
                     || completedSteps < 0 || completedSteps > startedSteps) {
                 throw new IllegalArgumentException("invalid keyboard gesture step counts");
@@ -949,7 +961,8 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             KeyboardTickData tick) {
         /** Copies held-key evidence and bounds one step. */
         public KeyboardGestureStepData {
-            if (index < 0 || index >= 64 || beforeRevision < 0 || beforeFrame < 0
+            if (index < 0 || index >= KeyboardGestureRequest.MAX_STEPS_V2
+                    || beforeRevision < 0 || beforeFrame < 0
                     || afterRevision < beforeRevision || afterFrame < beforeFrame) {
                 throw new IllegalArgumentException("invalid keyboard gesture step evidence");
             }
@@ -1311,7 +1324,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         /** Validates session identity and canonicalizes capabilities. */
         public SessionInfo {
             ProtocolJson.requireIdentifier(sessionId, "sessionId");
-            capabilities = new CapabilitySet(capabilities).capabilities();
+            capabilities = CapabilitySet.canonicalAdvertised(capabilities);
         }
     }
 

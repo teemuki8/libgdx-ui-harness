@@ -59,7 +59,8 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.MatrixResults.class, name = "matrix-results"),
     @JsonSubTypes.Type(value = Command.SemanticCompare.class, name = "semantic-compare"),
     @JsonSubTypes.Type(value = Command.TraceQuery.class, name = "trace-query"),
-    @JsonSubTypes.Type(value = Command.RuntimeCompare.class, name = "runtime-compare")
+    @JsonSubTypes.Type(value = Command.RuntimeCompare.class, name = "runtime-compare"),
+    @JsonSubTypes.Type(value = Command.RuntimeObserve.class, name = "runtime-observe")
 })
 public sealed interface Command permits Command.Sessions, Command.Capabilities, Command.Snapshot,
         Command.Query, Command.Action, Command.KeyboardGesture, Command.Assert, Command.Wait,
@@ -68,7 +69,7 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
         Command.LayoutDiagnose, Command.TraceStop, Command.ScenarioList, Command.ScenarioStart,
         Command.NavigationInspect, Command.NavigationValidate, Command.LayoutValidate,
         Command.MatrixRun, Command.MatrixResults, Command.SemanticCompare, Command.TraceQuery,
-        Command.RuntimeCompare {
+        Command.RuntimeCompare, Command.RuntimeObserve {
     /** Lists active sessions. */
     record Sessions() implements Command {}
 
@@ -587,6 +588,24 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
         /** Validates the locator and deadline bound. */
         public RuntimeCompare {
             Objects.requireNonNull(locator, "locator");
+            if (maxDurationMillis < 1 || maxDurationMillis > 3_600_000) {
+                throw new IllegalArgumentException(
+                        "maxDurationMillis must be between 1 and 3600000");
+            }
+        }
+    }
+
+    /** Observes one explicit registered runtime entity property on a correlated frame. */
+    record RuntimeObserve(
+            String entityId,
+            String propertyId,
+            String correlationToken,
+            long maxDurationMillis) implements Command {
+        /** Validates explicit binding identifiers and the bounded deadline. */
+        public RuntimeObserve {
+            ProtocolJson.requireIdentifier(entityId, "entityId");
+            ProtocolJson.requireIdentifier(propertyId, "propertyId");
+            ProtocolJson.requireIdentifier(correlationToken, "correlationToken");
             if (maxDurationMillis < 1 || maxDurationMillis > 3_600_000) {
                 throw new IllegalArgumentException(
                         "maxDurationMillis must be between 1 and 3600000");

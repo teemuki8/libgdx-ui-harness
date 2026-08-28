@@ -1,6 +1,6 @@
 # Agent tools and safe operation
 
-The MCP server exposes exactly twenty-five bounded tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms; `ui_assert` and `ui_keyboard_gesture` require it up to 120,000 ms, while `ui_scenario_start` requires it up to 600,000 ms. Deadlines include adapter work and backend queue time. The server's outer request timeout is 630,000 ms (the scenario maximum plus a 30-second translation allowance), so a full scenario deadline is never aborted by the SDK transport timeout; the per-request deadline remains the authoritative bound.
+The MCP server exposes exactly twenty-six bounded tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms; `ui_assert` and `ui_keyboard_gesture` require it up to 120,000 ms, while `ui_scenario_start` requires it up to 600,000 ms. Deadlines include adapter work and backend queue time. The server's outer request timeout is 630,000 ms (the scenario maximum plus a 30-second translation allowance), so a full scenario deadline is never aborted by the SDK transport timeout; the per-request deadline remains the authoritative bound.
 
 `sessionId` is the single envelope field documented by this preamble and omitted from the per-tool rows; the per-tool rows name every other required input and any optional tool-specific input. Each row is `none` or a comma-separated list of `required`/`optional` field tokens, and a schema-parity test fails when a required input appears on either side without the other.
 
@@ -28,6 +28,7 @@ The MCP server exposes exactly twenty-five bounded tools. `tools/list` is the au
 | `ui_matrix_run` | Run one scenario/assertion set across a bounded display matrix | required `spec` | run ID |
 | `ui_matrix_results` | Retrieve one retained matrix run report | required `runId` | bounded report |
 | `ui_runtime_compare` | Compare a bound node's displayed value against its runtime observation | required `maxDurationMillis`, required `locator` | typed comparison with correlation |
+| `ui_runtime_observe` | Observe one explicit registered runtime entity property on a correlated completed frame | required `entityId`, required `propertyId`, required `correlationToken`, required `maxDurationMillis` | typed `AVAILABLE` or `UNAVAILABLE` observation |
 | `ui_trace_query` | Query compact state transitions from a retained trace | required `spec` | bounded transitions |
 | `ui_semantic_compare` | Compare a registered semantic baseline against the current snapshot | required `spec` | matched status and bounded differences |
 | `ui_capabilities` | Discover one session's supported operations | none | bounded capability names, exact operation schemas/examples, diagnostic registry, and recovery policy |
@@ -41,7 +42,8 @@ Locator schemas are closed recursive unions. Supported locator kinds are role, t
 ## Keyboard gestures
 
 Capability `ui_keyboard_gesture` enables one atomic, session-scoped keyboard timeline. Capability
-`ui_keyboard_gesture_ticks` additionally reports that the application installed an exact
+`ui_keyboard_gesture_v2` additionally reports the 256-step schema-version-2 bound. Capability
+`ui_keyboard_gesture_ticks` separately reports that the application installed an exact
 controlled-tick coordinator. Capability registration does not prove that the controller is
 currently paused or within its provider limits; every gesture containing `wait-ticks` preflights
 that state before the first key callback. A request with any structural or tick-preflight failure
@@ -75,12 +77,15 @@ Successful tick evidence retains one unchanged execution epoch, exact start/fina
 first/final runtime frames, and UI-frame identities only when both endpoint correlations are
 proven.
 
-The schema version is exactly 1. A request contains 2 through 64 steps, keycodes 0 through 255,
-and at most 16 simultaneously held keys. Each frame or tick wait is 1 through 10,000; cumulative
-frame waits and cumulative tick waits are independently capped at 10,000. Every wait requires at
-least one held key, a key cannot be pressed twice or released before it is held, and the complete
-sequence must release every owned key. The required MCP deadline is 1 through 120,000 ms. An
-installed tick provider may impose a lower tick ceiling.
+Schema version 1 remains unchanged at 2 through 64 steps. Schema version 2 accepts 2 through 256
+steps under the same `ui_keyboard_gesture` tool name; it does not create a cross-request
+transaction. Both versions accept keycodes 0 through 255 and at most 16 simultaneously held keys.
+Each frame or tick wait is 1 through 10,000; cumulative frame waits and cumulative tick waits are
+independently capped at 10,000. Every wait requires at least one held key, a key cannot be pressed
+twice or released before it is held, and the complete sequence must release every owned key. The
+required MCP deadline is 1 through 120,000 ms. An installed tick provider may impose a lower tick
+ceiling. A complete request is preflighted before dispatch and retains one gesture/coordinator
+lease through every step and any abnormal reverse-order cleanup.
 
 Only `completed` is an MCP success. Rejected, failed, timed-out, cancelled, and session-closed
 outcomes remain structured `keyboard-gesture-result` content marked as an MCP error. They retain

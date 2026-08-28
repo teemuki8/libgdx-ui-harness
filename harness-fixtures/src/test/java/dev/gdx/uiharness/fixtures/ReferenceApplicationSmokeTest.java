@@ -40,11 +40,11 @@ final class ReferenceApplicationSmokeTest {
                                     "action", "compare", "layout", "query", "scenario-list",
                                     "scenario-start", "screenshot", "snapshot", "trace",
                                     "typography", "ui_assert", "ui_keyboard_gesture",
-                                    "ui_keyboard_gesture_ticks", "ui_matrix_results",
-                                    "ui_matrix_run", "ui_navigation_inspect",
+                                    "ui_keyboard_gesture_ticks", "ui_keyboard_gesture_v2",
+                                    "ui_matrix_results", "ui_matrix_run", "ui_navigation_inspect",
                                     "ui_navigation_validate", "ui_runtime_compare",
-                                    "ui_semantic_compare", "ui_trace_query",
-                                    "ui_validate_layout", "wait"),
+                                    "ui_runtime_observe", "ui_semantic_compare",
+                                    "ui_trace_query", "ui_validate_layout", "wait"),
                             agent.capabilities(SESSION_ID));
                     HarnessMcpClient.Layout layout = agent.layout(SESSION_ID);
                     assertEquals("conformant", layout.status(), layout.reports());

@@ -48,6 +48,7 @@ import dev.gdx.uiharness.core.model.SemanticNode;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.runtime.RuntimeComparator;
 import dev.gdx.uiharness.core.runtime.RuntimeObservationSource;
+import dev.gdx.uiharness.core.runtime.RuntimeObserver;
 import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
 import dev.gdx.uiharness.core.scenario.ScenarioLifecycle;
 import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
@@ -157,8 +158,8 @@ public final class FixtureControl implements AutoCloseable {
             "screenshot", "snapshot", "layout", "trace", "typography", "ui_assert", "wait",
             "ui_matrix_run", "ui_matrix_results", "ui_semantic_compare",
             "ui_navigation_inspect", "ui_navigation_validate", "ui_runtime_compare",
-            "ui_trace_query", "ui_validate_layout", "ui_keyboard_gesture",
-            "ui_keyboard_gesture_ticks");
+            "ui_runtime_observe", "ui_trace_query", "ui_validate_layout",
+            "ui_keyboard_gesture", "ui_keyboard_gesture_ticks");
 
     private final Path processRoot;
     private final Path artifactRoot;
@@ -366,6 +367,14 @@ public final class FixtureControl implements AutoCloseable {
                 inspector -> inspector.property("value", () ->
                         io.github.teemuki8.libgdx.agent.runtime.core.RuntimeValues.string(
                                 uiModel.username())));
+        agentRuntime.entities().register(
+                io.github.teemuki8.libgdx.agent.runtime.core.EntityId.of(
+                        "reference-simulation"),
+                io.github.teemuki8.libgdx.agent.runtime.core.EntityType.of("simulation"),
+                () -> "Reference simulation",
+                inspector -> inspector.property("angle", () ->
+                        io.github.teemuki8.libgdx.agent.runtime.core.RuntimeValues.decimal(
+                                "1.25")));
         wireModelToUsernameField();
     }
 
@@ -462,6 +471,12 @@ public final class FixtureControl implements AutoCloseable {
                                 sceneSession.snapshot(clock.revision(), clock.frame()),
                                 locator.toCore(), new StrictResolution()),
                         deadline);
+        RuntimeObserver runtimeObserver = new RuntimeObserver(runtimeSource);
+        HarnessProtocolService.RuntimeObservationCoordinator observationCoordinator =
+                (entityId, propertyId, correlationToken, deadline) -> scheduler.submit(
+                        () -> runtimeObserver.observe(
+                                entityId, propertyId, correlationToken),
+                        deadline);
         SemanticComparator semanticComparator = new SemanticComparator();
         HarnessProtocolService.SemanticCompareCoordinator semanticCoordinator =
                 (spec, deadline) -> scheduler.submit(() -> {
@@ -502,7 +517,8 @@ public final class FixtureControl implements AutoCloseable {
                 Optional.of(navigationCoordinator),
                 Optional.of(layoutCoordinator),
                 Optional.of(matrixCoordinator), Optional.of(semanticCoordinator),
-                Optional.of(runtimeCoordinator), Optional.of(gestureRunner::execute));
+                Optional.of(runtimeCoordinator), Optional.of(observationCoordinator),
+                Optional.of(gestureRunner::execute));
         VisualReference reference = reference();
         VisualPolicy policy = new VisualPolicy(
                 "reference-smoke", 1, 1280L * 720, 0.125, true, true);

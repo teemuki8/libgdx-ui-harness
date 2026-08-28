@@ -54,9 +54,9 @@ final class HarnessMcpClient implements Closeable {
         }
         client.notify("notifications/initialized", Map.of());
         JsonNode listed = client.request("tools/list", Map.of());
-        if (listed.path("tools").size() != 25) {
+        if (listed.path("tools").size() != 26) {
             client.close();
-            throw new IllegalStateException("Expected the twenty-five production tools: " + listed);
+            throw new IllegalStateException("Expected the twenty-six production tools: " + listed);
         }
         return client;
     }
@@ -634,6 +634,24 @@ final class HarnessMcpClient implements Closeable {
         return content;
     }
 
+    JsonNode runtimeObserve(
+            String sessionId,
+            String entityId,
+            String propertyId,
+            String correlationToken,
+            long deadlineMillis) throws Exception {
+        JsonNode content = call("ui_runtime_observe", Map.of(
+                "sessionId", sessionId,
+                "entityId", entityId,
+                "propertyId", propertyId,
+                "correlationToken", correlationToken,
+                "maxDurationMillis", deadlineMillis,
+                "deadlineMillis", deadlineMillis));
+        requireKind(content, "runtime-observation-result");
+        return content;
+    }
+
+
     JsonNode validateLayout(String sessionId, long deadlineMillis) throws Exception {
         Map<String, Object> spec = Map.of(
                 "targetMode", "stage",
@@ -655,9 +673,17 @@ final class HarnessMcpClient implements Closeable {
     JsonNode keyboardGesture(
             String sessionId, List<Map<String, Object>> steps, long deadlineMillis)
             throws Exception {
+        return keyboardGesture(sessionId, 1, steps, deadlineMillis);
+    }
+
+    JsonNode keyboardGesture(
+            String sessionId,
+            int schemaVersion,
+            List<Map<String, Object>> steps,
+            long deadlineMillis) throws Exception {
         JsonNode content = call("ui_keyboard_gesture", Map.of(
                 "sessionId", sessionId,
-                "schemaVersion", 1,
+                "schemaVersion", schemaVersion,
                 "steps", steps,
                 "deadlineMillis", deadlineMillis));
         requireKind(content, "keyboard-gesture-result");

@@ -12,6 +12,7 @@ import dev.gdx.uiharness.core.gesture.KeyboardGestureResult.FailureCategory;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureResult.TerminalOutcome;
 import dev.gdx.uiharness.core.time.Deadline;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -42,6 +43,92 @@ final class KeyboardGestureProtocolTest {
         assertTrue(json.contains("\"type\":\"keyboard-gesture\""));
         assertTrue(json.contains("\"kind\":\"wait-ticks\""));
     }
+    @Test void v2RoundTrips256StepsWhileV1StillRejects65() {
+        HarnessRequest decoded = decodeRequest(gestureWithVersion(
+                2, "\"steps\":" + repeatedSteps(256)));
+        Command.KeyboardGesture gesture =
+                assertInstanceOf(Command.KeyboardGesture.class, decoded.command());
+
+        assertEquals(2, gesture.schemaVersion());
+        assertEquals(256, gesture.steps().size());
+        assertThrows(RuntimeException.class, () ->
+                decodeRequest(gestureWithVersion(1, "\"steps\":" + repeatedSteps(65))));
+    }
+
+    @Test void gestureCapabilityAdvertisesAdditiveV2Support() {
+        CapabilitySet capabilities = new CapabilitySet(List.of("ui_keyboard_gesture"));
+
+        assertEquals(
+                List.of("ui_keyboard_gesture", "ui_keyboard_gesture_v2"),
+                capabilities.capabilities());
+    }
+    @Test void maxRegistrationDerivesV2CapabilityAcrossSessionResponses() {
+        ArrayList<String> registered = new ArrayList<>(64);
+        registered.add("ui_keyboard_gesture");
+        for (int index = 0; index < 63; index++) {
+            registered.add("cap-" + index);
+        }
+        HarnessProtocolService service = service(null, registered);
+
+        HarnessResponse.Success capabilitySuccess = assertInstanceOf(
+                HarnessResponse.Success.class,
+                service.execute(request(new Command.Capabilities()))
+                        .toCompletableFuture().join());
+        HarnessResponse.Result.Capabilities capabilities = assertInstanceOf(
+                HarnessResponse.Result.Capabilities.class, capabilitySuccess.result());
+        assertEquals(65, capabilities.capabilities().size());
+        assertTrue(capabilities.capabilities().contains("ui_keyboard_gesture_v2"));
+
+        HarnessResponse.Success sessionsSuccess = assertInstanceOf(
+                HarnessResponse.Success.class,
+                service.execute(request(new Command.Sessions()))
+                        .toCompletableFuture().join());
+        HarnessResponse.Result.Sessions sessions = assertInstanceOf(
+                HarnessResponse.Result.Sessions.class, sessionsSuccess.result());
+        assertEquals(65, sessions.sessions().getFirst().capabilities().size());
+
+        ArrayList<String> callerSupplied65 = new ArrayList<>(registered);
+        callerSupplied65.add("caller-extra");
+        assertThrows(IllegalArgumentException.class,
+                () -> new CapabilitySet(callerSupplied65));
+    }
+    @Test void responseCapabilityCanonicalizationAcceptsOnlyExactDerived65() {
+        ArrayList<String> validDerived65 = namedCapabilities("valid", 63);
+        validDerived65.add("ui_keyboard_gesture");
+        validDerived65.add("ui_keyboard_gesture_v2");
+        assertEquals(65,
+                new HarnessResponse.Result.Capabilities(validDerived65)
+                        .capabilities().size());
+        assertEquals(65,
+                new HarnessResponse.SessionInfo("game", validDerived65)
+                        .capabilities().size());
+
+        ArrayList<String> arbitrary65 = namedCapabilities("arbitrary", 65);
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.Result.Capabilities(arbitrary65));
+
+        ArrayList<String> missingV2 = namedCapabilities("missing-v2", 64);
+        missingV2.add("ui_keyboard_gesture");
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.Result.Capabilities(missingV2));
+
+        ArrayList<String> missingV1 = namedCapabilities("missing-v1", 64);
+        missingV1.add("ui_keyboard_gesture_v2");
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.Result.Capabilities(missingV1));
+
+        ArrayList<String> registration64WithBoth = namedCapabilities("registered", 62);
+        registration64WithBoth.add("ui_keyboard_gesture");
+        registration64WithBoth.add("ui_keyboard_gesture_v2");
+        assertEquals(64,
+                new CapabilitySet(registration64WithBoth).capabilities().size());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new CapabilitySet(validDerived65));
+    }
+
+
+
 
     @Test void decodeRejectsUnknownMembersKindsAndEveryCoreBoundBeforeRouting() {
         List<String> invalidCommands = List.of(
@@ -50,7 +137,7 @@ final class KeyboardGestureProtocolTest {
                 gesture("", "[{\"kind\":\"unknown\",\"count\":1}]"),
                 gesture("", "[{\"kind\":\"key-down\",\"keycode\":29,\"extra\":1},"
                         + "{\"kind\":\"key-up\",\"keycode\":29}]"),
-                gestureWithVersion(2, "\"steps\":" + validSteps()),
+                gestureWithVersion(3, "\"steps\":" + validSteps()),
                 gesture("", "[{\"kind\":\"key-down\",\"keycode\":29}]"),
                 gesture("", repeatedSteps(65)),
                 gesture("", "[{\"kind\":\"key-down\",\"keycode\":-1},"
@@ -140,6 +227,23 @@ final class KeyboardGestureProtocolTest {
                         "cancelled", List.of(29, 29), "not-required",
                         List.of(), null));
     }
+    @Test void wireResultUsesTheOriginatingSchemaStepBound() {
+        ArrayList<HarnessResponse.KeyboardGestureStepData> evidence =
+                wireKeyEvidence(KeyboardGestureRequest.MAX_STEPS_V2);
+
+        HarnessResponse.KeyboardGestureData v2 = new HarnessResponse.KeyboardGestureData(
+                2, "completed", 256, 256, 256,
+                0, 0, 256, 255, 1, evidence,
+                null, null, List.of(), "not-required", List.of(), null);
+        assertEquals(256, v2.steps().size());
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new HarnessResponse.KeyboardGestureData(
+                        1, "completed", 65, 65, 65,
+                        0, 0, 65, 64, 1, evidence.subList(0, 65),
+                        null, null, List.of(), "not-required", List.of(), null));
+    }
+
 
     @Test void everyHistoricalSessionConstructorKeepsAnEmptyGestureCoordinator() {
         HarnessProtocolService.Session base = baseSession(List.of());
@@ -205,6 +309,14 @@ final class KeyboardGestureProtocolTest {
                 + members + "}";
     }
 
+    private static ArrayList<String> namedCapabilities(String prefix, int count) {
+        ArrayList<String> capabilities = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            capabilities.add(prefix + "-" + index);
+        }
+        return capabilities;
+    }
+
     private static String validSteps() {
         return "[{\"kind\":\"key-down\",\"keycode\":29},"
                 + "{\"kind\":\"key-up\",\"keycode\":29}]";
@@ -234,6 +346,20 @@ final class KeyboardGestureProtocolTest {
                     : "{\"kind\":\"key-up\",\"keycode\":29}");
         }
         return steps.append(']').toString();
+    }
+
+    private static ArrayList<HarnessResponse.KeyboardGestureStepData> wireKeyEvidence(
+            int count) {
+        ArrayList<HarnessResponse.KeyboardGestureStepData> evidence =
+                new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            boolean down = (index & 1) == 0;
+            evidence.add(new HarnessResponse.KeyboardGestureStepData(
+                    index, down ? "key-down" : "key-up", "completed", 29, null,
+                    index, index, index + 1L, index,
+                    down ? List.of(29) : List.of(), null));
+        }
+        return evidence;
     }
 
     private static KeyboardGestureResult rejectedResult() {
