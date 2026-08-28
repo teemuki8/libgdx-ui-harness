@@ -7,10 +7,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.gdx.uiharness.protocol.Command;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
 import dev.gdx.uiharness.protocol.HarnessResponse;
+import dev.gdx.uiharness.protocol.ProtocolJson;
 import dev.gdx.uiharness.protocol.ProtocolVersion;
 import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -55,6 +57,60 @@ final class KeyboardGestureMcpTest {
                     rejectedContent).valid());
         }
     }
+    @Test void maximumV2ResultStaysBelowStructuredResultBound() throws Exception {
+        HarnessResponse.KeyboardGestureData maximum = maximumGesture();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        request -> {
+                            Command.KeyboardGesture gesture =
+                                    (Command.KeyboardGesture) request.command();
+                            assertEquals(2, gesture.schemaVersion());
+                            assertEquals(256, gesture.steps().size());
+                            return CompletableFuture.completedFuture(new HarnessResponse.Success(
+                                    ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                    new HarnessResponse.Result.KeyboardGesture(maximum)));
+                        },
+                        noArtifacts(), executor, 64 * 1_024)) {
+            McpSchema.CallToolResult result = handler.handle(
+                    longGestureCall()).block(Duration.ofSeconds(5));
+
+            assertFalse(result.isError(), String.valueOf(result.structuredContent()));
+            Map<String, Object> content = structured(result);
+            assertEquals(256, ((List<?>) content.get("steps")).size());
+            assertTrue(ProtocolJson.mapper().writeValueAsBytes(content).length
+                    < ProtocolJson.MAX_RESPONSE_BYTES);
+            assertTrue(McpJsonDefaults.getSchemaValidator().validate(
+                    new HarnessToolCatalog().tool("ui_keyboard_gesture").outputSchema(),
+                    content).valid());
+        }
+    }
+    @Test void handlerRejectsUnknownGestureVersionAndTopLevelFieldBeforeProtocol() {
+        AtomicInteger calls = new AtomicInteger();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        request -> {
+                            calls.incrementAndGet();
+                            return CompletableFuture.completedFuture(new HarnessResponse.Success(
+                                    ProtocolVersion.V1, request.requestId(), request.sessionId(),
+                                    new HarnessResponse.Result.KeyboardGesture(
+                                            completedGesture())));
+                        },
+                        noArtifacts(), executor, 64 * 1_024)) {
+            McpSchema.CallToolResult unknownVersion = handler.handle(
+                    gestureCall(3, Map.of())).block(Duration.ofSeconds(5));
+            McpSchema.CallToolResult unknownField = handler.handle(
+                    gestureCall(1, Map.of("surprise", true))).block(Duration.ofSeconds(5));
+            McpSchema.CallToolResult v1TooLong = handler.handle(gestureCall(
+                    1, Map.of("steps", gestureSteps(65)))).block(Duration.ofSeconds(5));
+
+            assertTrue(unknownVersion.isError());
+            assertTrue(unknownField.isError());
+            assertEquals(0, calls.get());
+            assertTrue(v1TooLong.isError());
+        }
+    }
+
+
 
     @Test void cancellationSignalsGestureButRetainsMutationLaneUntilCleanupTerminal()
             throws Exception {
@@ -113,6 +169,46 @@ final class KeyboardGestureMcpTest {
                         Map.of("kind", waitKind, "count", 2),
                         Map.of("kind", "key-up", "keycode", 29)))).build();
     }
+    private static List<Map<String, Object>> gestureSteps(int count) {
+        ArrayList<Map<String, Object>> steps = new ArrayList<>(count);
+        int transitions = count - (count & 1);
+        for (int index = 0; index < transitions; index += 2) {
+            steps.add(Map.of("kind", "key-down", "keycode", 29));
+            steps.add(Map.of("kind", "key-up", "keycode", 29));
+        }
+        if ((count & 1) != 0) {
+            steps.add(steps.size() - 1, Map.of("kind", "wait-frames", "count", 1));
+        }
+        return steps;
+    }
+
+    private static McpSchema.CallToolRequest gestureCall(
+            int schemaVersion, Map<String, Object> additions) {
+        Map<String, Object> arguments = new java.util.LinkedHashMap<>(Map.of(
+                "sessionId", "game",
+                "schemaVersion", schemaVersion,
+                "deadlineMillis", 30_000,
+                "steps", List.of(
+                        Map.of("kind", "key-down", "keycode", 29),
+                        Map.of("kind", "key-up", "keycode", 29))));
+        arguments.putAll(additions);
+        return McpSchema.CallToolRequest.builder("ui_keyboard_gesture")
+                .arguments(arguments).build();
+    }
+
+
+    private static McpSchema.CallToolRequest longGestureCall() {
+        ArrayList<Map<String, Object>> steps = new ArrayList<>(256);
+        for (int index = 0; index < 128; index++) {
+            steps.add(Map.of("kind", "key-down", "keycode", 29));
+            steps.add(Map.of("kind", "key-up", "keycode", 29));
+        }
+        return McpSchema.CallToolRequest.builder("ui_keyboard_gesture").arguments(Map.of(
+                "sessionId", "game",
+                "schemaVersion", 2,
+                "deadlineMillis", 30_000,
+                "steps", steps)).build();
+    }
 
     private static McpSchema.CallToolRequest action(String sessionId) {
         return McpSchema.CallToolRequest.builder("ui_action").arguments(Map.of(
@@ -135,6 +231,28 @@ final class KeyboardGestureMcpTest {
                                 1, "key-up", "completed", 29, null,
                                 2, 1, 3, 1, List.of(), null)),
                 null, null, List.of(), "not-required", List.of(), null);
+    }
+
+    private static HarnessResponse.KeyboardGestureData maximumGesture() {
+        ArrayList<HarnessResponse.KeyboardGestureStepData> steps = new ArrayList<>(256);
+        List<Integer> held = List.of(
+                0, 1, 2, 3, 4, 5, 6, 7,
+                8, 9, 10, 11, 12, 13, 14, 15);
+        for (int index = 0; index < 256; index++) {
+            long identity = 1_000_000_000L + index;
+            steps.add(new HarnessResponse.KeyboardGestureStepData(
+                    index, "wait-ticks", "completed", null, 10_000,
+                    identity, identity, identity + 1, identity + 1,
+                    held, new HarnessResponse.KeyboardTickData(
+                            10_000, 10_000, identity, identity + 10_000,
+                            identity, identity, identity + 9_999,
+                            identity, identity + 9_999, Long.MAX_VALUE)));
+        }
+        return new HarnessResponse.KeyboardGestureData(
+                2, "completed", 256, 256, 256,
+                1_000_000_000L, 1_000_000_000L,
+                1_000_000_256L, 1_000_000_256L, Long.MAX_VALUE, steps,
+                null, null, List.of(), "not-required", List.of(), "t".repeat(256));
     }
 
     private static HarnessResponse.KeyboardGestureData rejectedGesture() {

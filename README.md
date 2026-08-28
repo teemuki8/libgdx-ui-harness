@@ -110,10 +110,12 @@ The server uses stdio and exposes a deliberately small tool surface:
 | `ui_capabilities` | Discover operations supported by a session |
 
 Capability `ui_keyboard_gesture` means the session can dispatch cleanup-safe key-down, frame-wait,
-and key-up timelines through its configured input processor. Capability
-`ui_keyboard_gesture_ticks` additionally means an exact application-owned tick coordinator is
-installed; each request still preflights its current paused state and limits before dispatching
-input. Focus a widget with `ui_action` before starting a gesture that depends on keyboard focus.
+and key-up timelines through its configured input processor. Such sessions additionally advertise
+`ui_keyboard_gesture_v2` for the additive 256-step schema version 2; schema version 1 remains
+limited to 64 steps. Capability `ui_keyboard_gesture_ticks` separately means an exact
+application-owned tick coordinator is installed; each request still preflights its current paused
+state and limits before dispatching input. Focus a widget with `ui_action` before starting a
+gesture that depends on keyboard focus.
 
 All remote requests, responses, recursive locators, strings, regular expressions, screenshots, traces, and artifacts are bounded. The default server accepts no scripts, reflection targets, arbitrary commands, caller-selected file paths, or unauthenticated network listener.
 

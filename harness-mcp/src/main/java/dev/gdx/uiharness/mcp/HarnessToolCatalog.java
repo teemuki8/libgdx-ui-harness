@@ -1,5 +1,6 @@
 package dev.gdx.uiharness.mcp;
 
+import dev.gdx.uiharness.core.gesture.KeyboardGestureRequest;
 import dev.gdx.uiharness.protocol.HarnessRequest;
 import dev.gdx.uiharness.protocol.HarnessResponse;
 import dev.gdx.uiharness.protocol.DiagnosticCode;
@@ -1270,7 +1271,7 @@ public final class HarnessToolCatalog {
         Map<String, Object> steps = new LinkedHashMap<>();
         steps.put("type", "array");
         steps.put("minItems", 2);
-        steps.put("maxItems", 64);
+        steps.put("maxItems", KeyboardGestureRequest.MAX_STEPS_V2);
         steps.put("items", Map.of("oneOf", List.of(
                 tagged("key-down", Map.of("keycode", integer(0, 255)),
                         List.of("keycode")),
@@ -1281,9 +1282,32 @@ public final class HarnessToolCatalog {
                 tagged("key-up", Map.of("keycode", integer(0, 255)),
                         List.of("keycode")))));
         return envelope(Map.of(
-                        "schemaVersion", Map.of("type", "integer", "const", 1),
+                        "schemaVersion", Map.of(
+                                "type", "integer",
+                                "enum", List.of(
+                                        KeyboardGestureRequest.SCHEMA_VERSION,
+                                        KeyboardGestureRequest.SCHEMA_VERSION_V2)),
                         "steps", Map.copyOf(steps)),
-                List.of("schemaVersion", "steps", "deadlineMillis"), true, ignored -> {});
+                List.of("schemaVersion", "steps", "deadlineMillis"), true,
+                schema -> schema.put("allOf", List.of(
+                        versionedGestureMaximum(
+                                KeyboardGestureRequest.SCHEMA_VERSION,
+                                KeyboardGestureRequest.MAX_STEPS),
+                        versionedGestureMaximum(
+                                KeyboardGestureRequest.SCHEMA_VERSION_V2,
+                                KeyboardGestureRequest.MAX_STEPS_V2))));
+    }
+
+    private static Map<String, Object> versionedGestureMaximum(
+            int schemaVersion, int maximumSteps) {
+        return Map.of(
+                "if", Map.of(
+                        "properties", Map.of(
+                                "schemaVersion", Map.of("const", schemaVersion)),
+                        "required", List.of("schemaVersion")),
+                "then", Map.of(
+                        "properties", Map.of(
+                                "steps", Map.of("maxItems", maximumSteps))));
     }
 
     private static Map<String, Object> keyboardGestureOutput() {
@@ -1301,7 +1325,7 @@ public final class HarnessToolCatalog {
                 List.of("requestedTicks", "completedTicks", "startTick", "finalTick",
                         "executionEpoch", "configuredDeltaNanos"));
         Map<String, Object> step = object(Map.ofEntries(
-                Map.entry("index", integer(0, 63)),
+                Map.entry("index", integer(0, KeyboardGestureRequest.MAX_STEPS_V2 - 1)),
                 Map.entry("kind", enumString(
                         "key-down", "wait-frames", "wait-ticks", "key-up")),
                 Map.entry("status", enumString("completed", "failed")),
@@ -1320,21 +1344,26 @@ public final class HarnessToolCatalog {
                 "status", enumString(
                         "released", "dispatch-failed", "deadline-exceeded",
                         "scheduler-rejected")), List.of("keycode", "status"));
-        return output("keyboard-gesture-result", Map.ofEntries(
-                Map.entry("schemaVersion", Map.of("type", "integer", "const", 1)),
+        LinkedHashMap<String, Object> schema = new LinkedHashMap<>(output(
+                "keyboard-gesture-result", Map.ofEntries(
+                Map.entry("schemaVersion", Map.of(
+                        "type", "integer",
+                        "enum", List.of(
+                                KeyboardGestureRequest.SCHEMA_VERSION,
+                                KeyboardGestureRequest.SCHEMA_VERSION_V2))),
                 Map.entry("outcome", enumString(
                         "completed", "rejected", "failed", "timed-out",
                         "cancelled", "session-closed")),
-                Map.entry("requestedSteps", integer(2, 64)),
-                Map.entry("startedSteps", integer(0, 64)),
-                Map.entry("completedSteps", integer(0, 64)),
+                Map.entry("requestedSteps", integer(2, KeyboardGestureRequest.MAX_STEPS_V2)),
+                Map.entry("startedSteps", integer(0, KeyboardGestureRequest.MAX_STEPS_V2)),
+                Map.entry("completedSteps", integer(0, KeyboardGestureRequest.MAX_STEPS_V2)),
                 Map.entry("startRevision", integer(0, Long.MAX_VALUE)),
                 Map.entry("startFrame", integer(0, Long.MAX_VALUE)),
                 Map.entry("endRevision", integer(0, Long.MAX_VALUE)),
                 Map.entry("endFrame", integer(0, Long.MAX_VALUE)),
                 Map.entry("elapsedNanos", integer(0, Long.MAX_VALUE)),
-                Map.entry("steps", array(step, 64)),
-                Map.entry("failureStep", integer(0, 63)),
+                Map.entry("steps", array(step, KeyboardGestureRequest.MAX_STEPS_V2)),
+                Map.entry("failureStep", integer(0, KeyboardGestureRequest.MAX_STEPS_V2 - 1)),
                 Map.entry("failure", enumString(
                         "invalid-request", "unsupported-tick-capability",
                         "invalid-runtime-state", "session-busy", "key-dispatch-failure",
@@ -1347,7 +1376,31 @@ public final class HarnessToolCatalog {
                 List.of("schemaVersion", "outcome", "requestedSteps", "startedSteps",
                         "completedSteps", "startRevision", "startFrame", "endRevision",
                         "endFrame", "elapsedNanos", "steps", "heldKeys", "cleanupStatus",
-                        "cleanup"));
+                        "cleanup")));
+        schema.put("allOf", List.of(
+                versionedGestureOutputMaximum(
+                        KeyboardGestureRequest.SCHEMA_VERSION,
+                        KeyboardGestureRequest.MAX_STEPS),
+                versionedGestureOutputMaximum(
+                        KeyboardGestureRequest.SCHEMA_VERSION_V2,
+                        KeyboardGestureRequest.MAX_STEPS_V2)));
+        return Map.copyOf(schema);
+    }
+
+    private static Map<String, Object> versionedGestureOutputMaximum(
+            int schemaVersion, int maximumSteps) {
+        return Map.of(
+                "if", Map.of(
+                        "properties", Map.of(
+                                "schemaVersion", Map.of("const", schemaVersion)),
+                        "required", List.of("schemaVersion")),
+                "then", Map.of(
+                        "properties", Map.of(
+                                "requestedSteps", integer(2, maximumSteps),
+                                "startedSteps", integer(0, maximumSteps),
+                                "completedSteps", integer(0, maximumSteps),
+                                "steps", Map.of("maxItems", maximumSteps),
+                                "failureStep", integer(0, maximumSteps - 1))));
     }
 
     private static Map<String, Object> assertionInput() {

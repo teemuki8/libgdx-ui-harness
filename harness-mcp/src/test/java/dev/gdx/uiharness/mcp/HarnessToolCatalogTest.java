@@ -13,6 +13,7 @@ import io.modelcontextprotocol.spec.McpSchema;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -158,7 +159,7 @@ final class HarnessToolCatalogTest {
                         Map.of("kind", "wait-frames", "count", 30),
                         Map.of("kind", "key-up", "keycode", 29)));
         Map<String, Object> ticks = Map.of(
-                "sessionId", "game", "schemaVersion", 1, "deadlineMillis", 30_000,
+                "sessionId", "game", "schemaVersion", 2, "deadlineMillis", 30_000,
                 "steps", List.of(
                         Map.of("kind", "key-down", "keycode", 29),
                         Map.of("kind", "wait-ticks", "count", 30),
@@ -171,7 +172,8 @@ final class HarnessToolCatalogTest {
                 catalog.tool("ui_keyboard_gesture").inputSchema());
         assertTrue(input.at("/properties/locator").isMissingNode());
         assertEquals(2, input.at("/properties/steps/minItems").asInt());
-        assertEquals(64, input.at("/properties/steps/maxItems").asInt());
+        assertEquals(2, input.at("/allOf").size());
+        assertEquals(256, input.at("/properties/steps/maxItems").asInt());
         assertEquals(false, input.at("/additionalProperties").asBoolean());
         for (JsonNode variant : input.at("/properties/steps/items/oneOf")) {
             assertEquals(false, variant.at("/additionalProperties").asBoolean());
@@ -179,7 +181,7 @@ final class HarnessToolCatalogTest {
 
         assertInvalid("ui_keyboard_gesture", with(frame, "extra", true));
         assertInvalid("ui_keyboard_gesture", with(frame, "locator", Map.of()));
-        assertInvalid("ui_keyboard_gesture", with(frame, "schemaVersion", 2));
+        assertInvalid("ui_keyboard_gesture", with(frame, "schemaVersion", 3));
         assertInvalid("ui_keyboard_gesture", with(frame, "deadlineMillis", 0));
         assertInvalid("ui_keyboard_gesture", with(frame, "deadlineMillis", 120_001));
         assertInvalid("ui_keyboard_gesture", with(frame, "steps", List.of(
@@ -199,12 +201,19 @@ final class HarnessToolCatalogTest {
                 Map.of("kind", "key-down", "keycode", 29),
                 Map.of("kind", "wait-ticks", "count", 10_001),
                 Map.of("kind", "key-up", "keycode", 29))));
+        assertValid("ui_keyboard_gesture", with(
+                with(frame, "schemaVersion", 2), "steps", balancedGestureSteps(256)));
+        assertInvalid("ui_keyboard_gesture", with(
+                with(frame, "schemaVersion", 2), "steps", balancedGestureSteps(257)));
+        assertInvalid("ui_keyboard_gesture", with(
+                frame, "steps", balancedGestureSteps(65)));
+
 
         JsonNode output = ProtocolJson.mapper().valueToTree(
                 catalog.tool("ui_keyboard_gesture").outputSchema());
         assertEquals("keyboard-gesture-result", output.at("/properties/kind/const").asText());
         assertTrue(output.at("/required").toString().contains("cleanupStatus"));
-        assertEquals(64, output.at("/properties/steps/maxItems").asInt());
+        assertEquals(256, output.at("/properties/steps/maxItems").asInt());
         assertEquals(16, output.at("/properties/cleanup/maxItems").asInt());
         assertEquals(10_000,
                 output.at("/properties/steps/items/properties/tick/properties/requestedTicks/maximum")
@@ -569,6 +578,19 @@ final class HarnessToolCatalogTest {
         }
         assertTrue(json.contains("maxDurationMillis"));
         assertTrue(json.contains("maxPngBytes"));
+    }
+
+    private static List<Map<String, Object>> balancedGestureSteps(int count) {
+        ArrayList<Map<String, Object>> steps = new ArrayList<>(count);
+        int transitions = count - (count & 1);
+        for (int index = 0; index < transitions; index += 2) {
+            steps.add(Map.of("kind", "key-down", "keycode", 29));
+            steps.add(Map.of("kind", "key-up", "keycode", 29));
+        }
+        if ((count & 1) != 0) {
+            steps.add(steps.size() - 1, Map.of("kind", "wait-frames", "count", 1));
+        }
+        return steps;
     }
 
     private static Map<String, Object> with(

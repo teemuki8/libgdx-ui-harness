@@ -632,9 +632,17 @@ final class HarnessMcpClient implements Closeable {
     JsonNode keyboardGesture(
             String sessionId, List<Map<String, Object>> steps, long deadlineMillis)
             throws Exception {
+        return keyboardGesture(sessionId, 1, steps, deadlineMillis);
+    }
+
+    JsonNode keyboardGesture(
+            String sessionId,
+            int schemaVersion,
+            List<Map<String, Object>> steps,
+            long deadlineMillis) throws Exception {
         JsonNode content = call("ui_keyboard_gesture", Map.of(
                 "sessionId", sessionId,
-                "schemaVersion", 1,
+                "schemaVersion", schemaVersion,
                 "steps", steps,
                 "deadlineMillis", deadlineMillis));
         requireKind(content, "keyboard-gesture-result");
