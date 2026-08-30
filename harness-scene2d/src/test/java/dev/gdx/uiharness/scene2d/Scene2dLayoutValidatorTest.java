@@ -11,6 +11,7 @@ import com.badlogic.gdx.graphics.Texture;
 import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.graphics.g2d.BitmapFont.BitmapFontData;
 import com.badlogic.gdx.graphics.g2d.BitmapFont.Glyph;
+import com.badlogic.gdx.graphics.g2d.BitmapFontCache;
 import com.badlogic.gdx.graphics.g2d.TextureRegion;
 import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.Stage;
@@ -30,6 +31,7 @@ import dev.gdx.uiharness.core.layout.LayoutValidationResult;
 import dev.gdx.uiharness.core.layout.LayoutValidationSeverity;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.StrictResolution;
+import dev.gdx.uiharness.core.model.Bounds;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import org.junit.jupiter.api.Test;
 
@@ -311,6 +313,114 @@ final class Scene2dLayoutValidatorTest {
                     1e-6);
         }
     }
+    @Test void wrapEllipsisUsesRenderedSingleLinePlacementWithIndependentLineAlignment() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            ObservedLabel centeredTruncated = fixture.label(
+                    "centered-truncated", "AAAAAA", 100, 40, 50, 20);
+            centeredTruncated.setWrap(true);
+            centeredTruncated.setEllipsis("...");
+            centeredTruncated.setAlignment(Align.center, Align.left);
+            ObservedLabel rightTruncated = fixture.label(
+                    "right-truncated", "AAAAAA", 200, 40, 50, 20);
+            rightTruncated.setWrap(true);
+            rightTruncated.setEllipsis("...");
+            rightTruncated.setAlignment(Align.right, Align.left);
+            ObservedLabel centeredFitting = fixture.label(
+                    "centered-fitting", "AA", 300, 40, 50, 20);
+            centeredFitting.setWrap(true);
+            centeredFitting.setEllipsis("...");
+            centeredFitting.setAlignment(Align.center, Align.left);
+            ObservedLabel rightFitting = fixture.label(
+                    "right-fitting", "AA", 400, 40, 50, 20);
+            rightFitting.setWrap(true);
+            rightFitting.setEllipsis("...");
+            rightFitting.setAlignment(Align.right, Align.left);
+
+            SemanticSnapshot snapshot =
+                    fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame());
+            var evidence = fixture.session.textLayoutEvidence(snapshot);
+            var byTestId = snapshot.nodes().values().stream()
+                    .filter(node -> node.testId() != null)
+                    .collect(java.util.stream.Collectors.toMap(
+                            node -> node.testId(),
+                            node -> evidence.textByNodeId().get(node.id())));
+
+            assertEquals(
+                    100,
+                    byTestId.get("centered-truncated").layoutStageBounds().x(),
+                    1e-6);
+            assertEquals(
+                    centeredTruncated.cachedInkStageBounds(),
+                    byTestId.get("centered-truncated").inkStageBounds());
+            assertEquals(
+                    200,
+                    byTestId.get("right-truncated").layoutStageBounds().x(),
+                    1e-6);
+            assertEquals(
+                    rightTruncated.cachedInkStageBounds(),
+                    byTestId.get("right-truncated").inkStageBounds());
+            assertEquals(
+                    300,
+                    byTestId.get("centered-fitting").layoutStageBounds().x(),
+                    1e-6);
+            assertEquals(
+                    centeredFitting.cachedInkStageBounds(),
+                    byTestId.get("centered-fitting").inkStageBounds());
+            assertEquals(
+                    400,
+                    byTestId.get("right-fitting").layoutStageBounds().x(),
+                    1e-6);
+            assertEquals(
+                    rightFitting.cachedInkStageBounds(),
+                    byTestId.get("right-fitting").inkStageBounds());
+        }
+    }
+
+    @Test void fullWidthWrappedLinesUseRenderedMultilinePlacement() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            ObservedLabel centered = fixture.label(
+                    "centered-full-width-wrap", "AAAA AAAA", 100, 100, 43, 59);
+            centered.setWrap(true);
+            centered.setAlignment(Align.center, Align.center);
+            ObservedLabel right = fixture.label(
+                    "right-full-width-wrap", "AAAA AAAA", 200, 100, 43, 59);
+            right.setWrap(true);
+            right.setAlignment(Align.right, Align.right);
+
+            SemanticSnapshot snapshot =
+                    fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame());
+            var evidence = fixture.session.textLayoutEvidence(snapshot);
+            var byTestId = snapshot.nodes().values().stream()
+                    .filter(node -> node.testId() != null)
+                    .collect(java.util.stream.Collectors.toMap(
+                            node -> node.testId(),
+                            node -> evidence.textByNodeId().get(node.id())));
+
+            assertEquals(2, centered.getGlyphLayout().runs.size);
+            assertEquals(43, centered.getGlyphLayout().width, 1e-6);
+            assertEquals(0, centered.getGlyphLayout().runs.get(0).x, 1e-6);
+            assertEquals(0, centered.getGlyphLayout().runs.get(1).x, 1e-6);
+            assertEquals(0, right.getGlyphLayout().runs.get(0).x, 1e-6);
+            assertEquals(0, right.getGlyphLayout().runs.get(1).x, 1e-6);
+            assertEquals(
+                    centered.cachedInkStageBounds(),
+                    byTestId.get("centered-full-width-wrap").inkStageBounds());
+            assertEquals(
+                    117,
+                    byTestId.get("centered-full-width-wrap").layoutStageBounds().y(),
+                    1e-6);
+            assertEquals(
+                    right.cachedInkStageBounds(),
+                    byTestId.get("right-full-width-wrap").inkStageBounds());
+            assertEquals(
+                    117,
+                    byTestId.get("right-full-width-wrap").layoutStageBounds().y(),
+                    1e-6);
+        }
+    }
+
 
     private static LayoutValidationConfig only(LayoutValidationCheck... checks) {
         LayoutValidationConfig.Builder builder = LayoutValidationConfig.builder();
@@ -365,9 +475,10 @@ final class Scene2dLayoutValidatorTest {
             return button;
         }
 
-        Label label(
+        ObservedLabel label(
                 String testId, String text, float x, float y, float width, float height) {
-            Label label = new Label(text, new LabelStyle(font, Color.WHITE));
+            ObservedLabel label =
+                    new ObservedLabel(text, new LabelStyle(font, Color.WHITE));
             label.setAlignment(Align.left);
             label.setBounds(x, y, width, height);
             stage.addActor(label);
@@ -418,4 +529,31 @@ final class Scene2dLayoutValidatorTest {
             fontTexture.dispose();
         }
     }
+    private static final class ObservedLabel extends Label {
+        ObservedLabel(CharSequence text, LabelStyle style) {
+            super(text, style);
+        }
+
+        Bounds cachedInkStageBounds() {
+            validate();
+            BitmapFontCache cache = getBitmapFontCache();
+            double minX = Double.POSITIVE_INFINITY;
+            double minY = Double.POSITIVE_INFINITY;
+            double maxX = Double.NEGATIVE_INFINITY;
+            double maxY = Double.NEGATIVE_INFINITY;
+            for (int page = 0; page < cache.getPageCount(); page++) {
+                float[] vertices = cache.getVertices(page);
+                for (int index = 0; index < cache.getVertexCount(page); index += 5) {
+                    double x = getX() - cache.getX() + vertices[index];
+                    double y = getY() - cache.getY() + vertices[index + 1];
+                    minX = Math.min(minX, x);
+                    minY = Math.min(minY, y);
+                    maxX = Math.max(maxX, x);
+                    maxY = Math.max(maxY, y);
+                }
+            }
+            return new Bounds(minX, minY, maxX - minX, maxY - minY);
+        }
+    }
+
 }
