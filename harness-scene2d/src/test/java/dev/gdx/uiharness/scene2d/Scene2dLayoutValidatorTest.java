@@ -12,12 +12,14 @@ import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.graphics.g2d.BitmapFont.BitmapFontData;
 import com.badlogic.gdx.graphics.g2d.BitmapFont.Glyph;
 import com.badlogic.gdx.graphics.g2d.TextureRegion;
+import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
 import com.badlogic.gdx.scenes.scene2d.ui.Label.LabelStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane.ScrollPaneStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
+import com.badlogic.gdx.scenes.scene2d.utils.BaseDrawable;
 import com.badlogic.gdx.utils.Align;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.HarnessException;
@@ -240,6 +242,76 @@ final class Scene2dLayoutValidatorTest {
         }
     }
 
+    @Test void scrollClipMatchesInsetActorAreaWithVisibleScrollbarTracks() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            Label scrolled = fixture.label(
+                    "scrolled-actor-area", "AAAA", 0, 0, 100, 60);
+            Group content = new Group();
+            content.setSize(100, 60);
+            content.addActor(scrolled);
+            ScrollPaneStyle style = new ScrollPaneStyle();
+            style.background = drawable(0, 0, 3, 5, 11, 7);
+            style.hScroll = drawable(0, 6, 0, 0, 0, 0);
+            style.hScrollKnob = drawable(4, 4, 0, 0, 0, 0);
+            style.vScroll = drawable(9, 0, 0, 0, 0, 0);
+            style.vScrollKnob = drawable(7, 4, 0, 0, 0, 0);
+            ScrollPane pane = new ScrollPane(content, style);
+            pane.setFadeScrollBars(false);
+            pane.setScrollbarsOnTop(false);
+            pane.setBounds(300, 40, 50, 40);
+            stageAddAndValidate(fixture, pane);
+
+            SemanticSnapshot snapshot =
+                    fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame());
+            var evidence = fixture.session.textLayoutEvidence(snapshot);
+            var node = snapshot.nodes().values().stream()
+                    .filter(value -> "scrolled-actor-area".equals(value.testId()))
+                    .findFirst()
+                    .orElseThrow();
+
+            assertEquals(
+                    new dev.gdx.uiharness.core.model.Bounds(303, 53, 33, 16),
+                    evidence.textByNodeId()
+                            .get(node.id())
+                            .clipChainStageBounds()
+                            .getFirst());
+        }
+    }
+
+    @Test void wrapWithEllipsisUsesSingleLineCenteredAndRightPlacement() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            Label centered = fixture.label(
+                    "centered-wrap-ellipsis", "AAAAAA", 100, 40, 50, 20);
+            centered.setWrap(true);
+            centered.setEllipsis("...");
+            centered.setAlignment(Align.center);
+            Label right = fixture.label(
+                    "right-wrap-ellipsis", "AAAAAA", 200, 40, 50, 20);
+            right.setWrap(true);
+            right.setEllipsis("...");
+            right.setAlignment(Align.right);
+
+            SemanticSnapshot snapshot =
+                    fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame());
+            var evidence = fixture.session.textLayoutEvidence(snapshot);
+            var byTestId = snapshot.nodes().values().stream()
+                    .filter(node -> node.testId() != null)
+                    .collect(java.util.stream.Collectors.toMap(
+                            node -> node.testId(),
+                            node -> evidence.textByNodeId().get(node.id())));
+            assertEquals(
+                    104,
+                    byTestId.get("centered-wrap-ellipsis").inkStageBounds().x(),
+                    1e-6);
+            assertEquals(
+                    208,
+                    byTestId.get("right-wrap-ellipsis").inkStageBounds().x(),
+                    1e-6);
+        }
+    }
+
     private static LayoutValidationConfig only(LayoutValidationCheck... checks) {
         LayoutValidationConfig.Builder builder = LayoutValidationConfig.builder();
         for (LayoutValidationCheck check : LayoutValidationCheck.values()) {
@@ -254,6 +326,23 @@ final class Scene2dLayoutValidatorTest {
     private static void stageAddAndValidate(Fixture fixture, ScrollPane pane) {
         fixture.stage.addActor(pane);
         pane.validate();
+    }
+
+    private static BaseDrawable drawable(
+            float minWidth,
+            float minHeight,
+            float left,
+            float right,
+            float top,
+            float bottom) {
+        BaseDrawable drawable = new BaseDrawable();
+        drawable.setMinWidth(minWidth);
+        drawable.setMinHeight(minHeight);
+        drawable.setLeftWidth(left);
+        drawable.setRightWidth(right);
+        drawable.setTopHeight(top);
+        drawable.setBottomHeight(bottom);
+        return drawable;
     }
 
     private static final class Fixture implements AutoCloseable {

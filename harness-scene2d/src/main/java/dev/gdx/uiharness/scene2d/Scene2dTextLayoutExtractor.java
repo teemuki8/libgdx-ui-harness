@@ -97,12 +97,24 @@ final class Scene2dTextLayoutExtractor {
         for (Actor ancestor = label.getParent();
                 ancestor != null && result.size() < MAX_CLIP_ANCESTORS;
                 ancestor = ancestor.getParent()) {
-            if (ancestor instanceof ScrollPane) {
+            if (ancestor instanceof ScrollPane pane) {
+                pane.validate();
                 result.add(stageBounds(coordinates.typographyBounds(
-                        ancestor, coordinates.localBounds(ancestor), 1.0, 1.0)));
+                        pane, actorArea(pane), 1.0, 1.0)));
             }
         }
         return List.copyOf(result);
+    }
+
+    private static Bounds actorArea(ScrollPane pane) {
+        Actor child = pane.getActor();
+        float x = child.getX()
+                + (pane.isScrollX() ? (int) pane.getVisualScrollX() : 0);
+        float y = child.getY()
+                + (int) (pane.isScrollY()
+                        ? pane.getMaxY() - pane.getVisualScrollY()
+                        : pane.getMaxY());
+        return new Bounds(x, y, pane.getScrollWidth(), pane.getScrollHeight());
     }
 
     private static Bounds stageBounds(List<CoordinateBounds> mapped) {

@@ -27,7 +27,8 @@ final class Scene2dTextGeometry {
             width -= background.getLeftWidth() + background.getRightWidth();
             height -= background.getBottomHeight() + background.getTopHeight();
         }
-        boolean multipleLines = label.getWrap() || label.getText().indexOf("\n") != -1;
+        boolean multipleLines = label.getText().indexOf("\n") != -1
+                || effectivelyWraps(label, layout, width);
         float textWidth = multipleLines ? layout.width : width;
         float scaleY = label.getFontScaleY() / Math.max(font.getScaleY(), 1e-12f);
         float textHeight = multipleLines ? layout.height : font.getCapHeight() * scaleY;
@@ -53,6 +54,27 @@ final class Scene2dTextGeometry {
         Bounds layoutBounds = new Bounds(x, y - layout.height, layout.width, layout.height);
         double baseline = layout.runs.isEmpty() ? y : y + layout.runs.first().y;
         return new Placement(x, y, baseline, layoutBounds, ink);
+    }
+
+    private static boolean effectivelyWraps(
+            Label label, GlyphLayout layout, float availableWidth) {
+        if (!label.getWrap() || layout.runs.isEmpty()) {
+            return false;
+        }
+        int lineAlign = label.getLineAlign();
+        if ((lineAlign & Align.left) != 0) {
+            return true;
+        }
+        GlyphRun widest = layout.runs.first();
+        for (GlyphRun run : layout.runs) {
+            if (run.width > widest.width) {
+                widest = run;
+            }
+        }
+        float singleLineOffset = (lineAlign & Align.right) != 0
+                ? availableWidth - widest.width
+                : (availableWidth - widest.width) / 2;
+        return Math.abs(widest.x - singleLineOffset) > 1e-4f;
     }
 
     private static Bounds inkBounds(
