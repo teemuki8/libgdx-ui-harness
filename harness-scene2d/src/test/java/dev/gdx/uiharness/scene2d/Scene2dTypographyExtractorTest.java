@@ -16,6 +16,7 @@ import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
 import com.badlogic.gdx.scenes.scene2d.ui.Label.LabelStyle;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
+import dev.gdx.uiharness.core.layout.LayoutValidationEvidence;
 import dev.gdx.uiharness.core.typography.Availability;
 import dev.gdx.uiharness.core.typography.CoordinateSpace;
 import dev.gdx.uiharness.core.typography.EvidenceValue;
@@ -69,6 +70,8 @@ final class Scene2dTypographyExtractorTest {
                             800,
                             600,
                             Map.of("title", 0.25)));
+            LayoutValidationEvidence layout = session.textLayoutEvidence(
+                    session.snapshot(4, 9));
 
             TypographyObservation observed = observations.getFirst();
             assertEquals("title", observed.controlId());
@@ -89,6 +92,21 @@ final class Scene2dTypographyExtractorTest {
                     .inkBounds(CoordinateSpace.FRAMEBUFFER)
                     .width() == 0);
             assertTrue(observed.transforms().invertible());
+            var textLayout = layout.textByNodeId().get(observed.actorId());
+            assertEquals(observed.actorId(), textLayout.nodeId());
+            var typographyLayout =
+                    observed.geometry().layoutBounds(CoordinateSpace.STAGE);
+            assertEquals(typographyLayout.x(), textLayout.layoutStageBounds().x(), 1e-6);
+            assertEquals(typographyLayout.y(), textLayout.layoutStageBounds().y(), 1e-6);
+            assertEquals(
+                    typographyLayout.width(), textLayout.layoutStageBounds().width(), 1e-6);
+            assertEquals(
+                    typographyLayout.height(), textLayout.layoutStageBounds().height(), 1e-6);
+            var typographyInk = observed.geometry().inkBounds(CoordinateSpace.STAGE);
+            assertEquals(typographyInk.x(), textLayout.inkStageBounds().x(), 1e-6);
+            assertEquals(typographyInk.y(), textLayout.inkStageBounds().y(), 1e-6);
+            assertEquals(typographyInk.width(), textLayout.inkStageBounds().width(), 1e-6);
+            assertEquals(typographyInk.height(), textLayout.inkStageBounds().height(), 1e-6);
         }
     }
 

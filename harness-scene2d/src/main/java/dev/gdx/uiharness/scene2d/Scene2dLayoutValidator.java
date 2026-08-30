@@ -1,8 +1,10 @@
 package dev.gdx.uiharness.scene2d;
 
 import dev.gdx.uiharness.core.layout.LayoutValidationConfig;
+import dev.gdx.uiharness.core.layout.LayoutValidationEvidence;
 import dev.gdx.uiharness.core.layout.LayoutValidationResult;
 import dev.gdx.uiharness.core.layout.LayoutValidator;
+import dev.gdx.uiharness.core.layout.TextLayoutEvidence;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.model.SemanticNode;
@@ -51,11 +53,13 @@ public final class Scene2dLayoutValidator {
             NavigationResult navigation) {
         Objects.requireNonNull(config, "config");
         SemanticSnapshot snapshot = session.snapshot(revision, frame);
+        LayoutValidationEvidence evidence = session.textLayoutEvidence(snapshot);
         if (subtree != null) {
             SemanticNode root = locators.resolveStrict(snapshot, subtree);
             snapshot = subtreeSnapshot(snapshot, root.id());
+            evidence = subtreeEvidence(snapshot, evidence);
         }
-        return validator.validate(snapshot, config, navigation);
+        return validator.validate(snapshot, config, navigation, evidence);
     }
 
     private static SemanticSnapshot subtreeSnapshot(SemanticSnapshot source, String rootId) {
@@ -72,6 +76,18 @@ public final class Scene2dLayoutValidator {
         }
         return new SemanticSnapshot(
                 source.revision(), source.frame(), rootId, Map.copyOf(byId));
+    }
+
+    private static LayoutValidationEvidence subtreeEvidence(
+            SemanticSnapshot snapshot, LayoutValidationEvidence source) {
+        Map<String, TextLayoutEvidence> retained = new LinkedHashMap<>();
+        for (String nodeId : snapshot.nodes().keySet()) {
+            TextLayoutEvidence evidence = source.textByNodeId().get(nodeId);
+            if (evidence != null) {
+                retained.put(nodeId, evidence);
+            }
+        }
+        return LayoutValidationEvidence.available(Map.copyOf(retained));
     }
 
     private static SemanticNode withoutParent(SemanticNode node) {

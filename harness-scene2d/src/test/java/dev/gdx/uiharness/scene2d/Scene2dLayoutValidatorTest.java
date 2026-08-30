@@ -5,13 +5,27 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.badlogic.gdx.graphics.Color;
+import com.badlogic.gdx.graphics.Pixmap;
+import com.badlogic.gdx.graphics.Texture;
+import com.badlogic.gdx.graphics.g2d.BitmapFont;
+import com.badlogic.gdx.graphics.g2d.BitmapFont.BitmapFontData;
+import com.badlogic.gdx.graphics.g2d.BitmapFont.Glyph;
+import com.badlogic.gdx.graphics.g2d.TextureRegion;
 import com.badlogic.gdx.scenes.scene2d.Stage;
+import com.badlogic.gdx.scenes.scene2d.ui.Label;
+import com.badlogic.gdx.scenes.scene2d.ui.Label.LabelStyle;
+import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
+import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane.ScrollPaneStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
+import com.badlogic.gdx.utils.Align;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.HarnessException;
+import dev.gdx.uiharness.core.layout.LayoutValidationCheck;
 import dev.gdx.uiharness.core.layout.LayoutValidationConfig;
 import dev.gdx.uiharness.core.layout.LayoutValidationReason;
 import dev.gdx.uiharness.core.layout.LayoutValidationResult;
+import dev.gdx.uiharness.core.layout.LayoutValidationSeverity;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.StrictResolution;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
@@ -93,8 +107,159 @@ final class Scene2dLayoutValidatorTest {
         }
     }
 
+    @Test void realGlyphInkDetectsRagduelGameOverCollision() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            fixture.label("screen-value", "GAME_OVER", 466, 502, 82, 20);
+            fixture.label("player-two-health-label", "P2 HEALTH:", 554, 502, 94, 20);
+            LayoutValidationConfig config = LayoutValidationConfig.builder()
+                    .enable(LayoutValidationCheck.CLIPPED_TEXT)
+                    .enable(LayoutValidationCheck.TEXT_COLLISION)
+                    .failOn(LayoutValidationSeverity.ERROR)
+                    .build();
+
+            LayoutValidationResult result = fixture.validator.validate(
+                    fixture.clock.revision(), fixture.clock.frame(), null, config, null);
+
+            assertEquals(LayoutValidationResult.Status.FAIL, result.status());
+            assertTrue(result.findings().stream()
+                    .anyMatch(finding ->
+                            finding.reason() == LayoutValidationReason.CLIPPED_TEXT));
+            assertTrue(result.findings().stream()
+                    .anyMatch(finding ->
+                            finding.reason() == LayoutValidationReason.TEXT_COLLISION));
+        }
+    }
+
+    @Test void realGlyphInkDetectsLongTwoPlayerControlOverflow() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            fixture.label("player-one-controls",
+                    "P1  A/D move | S crouch | F/G punch | H weapon | R block",
+                    33, 463, 430, 24);
+            fixture.label("player-two-controls",
+                    "P2  Arrows move | Down crouch | K/L | Semicolon weapon | O block",
+                    480, 463, 430, 24);
+            LayoutValidationConfig config = LayoutValidationConfig.builder()
+                    .enable(LayoutValidationCheck.CLIPPED_TEXT)
+                    .enable(LayoutValidationCheck.TEXT_COLLISION)
+                    .failOn(LayoutValidationSeverity.ERROR)
+                    .build();
+
+            LayoutValidationResult result = fixture.validator.validate(
+                    fixture.clock.revision(), fixture.clock.frame(), null, config, null);
+
+            assertEquals(LayoutValidationResult.Status.FAIL, result.status());
+            assertTrue(result.findings().stream()
+                    .anyMatch(finding ->
+                            finding.reason() == LayoutValidationReason.CLIPPED_TEXT));
+            assertTrue(result.findings().stream()
+                    .anyMatch(finding ->
+                            finding.reason() == LayoutValidationReason.TEXT_COLLISION));
+        }
+    }
+
+    @Test void fittingRealLabelPassesIntrinsicTextValidation() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            fixture.label("fitting", "OK", 20, 20, 100, 32);
+            LayoutValidationConfig config = only(
+                    LayoutValidationCheck.CLIPPED_TEXT,
+                    LayoutValidationCheck.TEXT_COLLISION);
+
+            LayoutValidationResult result = fixture.validator.validate(
+                    fixture.clock.revision(),
+                    fixture.clock.frame(),
+                    Locator.testId("fitting"),
+                    config,
+                    null);
+
+            assertEquals(
+                    LayoutValidationResult.Status.PASS,
+                    result.status(),
+                    result.findings().toString());
+        }
+    }
+
+    @Test void subtreeModeExcludesExternalIntrinsicTextEvidence() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            fixture.label("outside-label", "OUT", 20, 20, 100, 30);
+            fixture.label("inside-label", "IN", 20, 20, 100, 30);
+            LayoutValidationConfig config = only(LayoutValidationCheck.TEXT_COLLISION);
+            LayoutValidationResult full = fixture.validator.validate(
+                    fixture.clock.revision(), fixture.clock.frame(), null, config, null);
+            LayoutValidationResult subtree = fixture.validator.validate(
+                    fixture.clock.revision(),
+                    fixture.clock.frame(),
+                    Locator.testId("inside-label"),
+                    config,
+                    null);
+
+            assertEquals(LayoutValidationResult.Status.FAIL, full.status());
+            assertEquals(
+                    LayoutValidationResult.Status.PASS,
+                    subtree.status(),
+                    subtree.findings().toString());
+        }
+    }
+
+    @Test void intrinsicEvidenceHandlesAlignmentWrapEllipsisAndScrollClips() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            Label aligned = fixture.label("aligned", "AA", 10, 40, 100, 20);
+            aligned.setAlignment(Align.right);
+            Label wrapped = fixture.label("wrapped", "AAAA", 150, 40, 25, 40);
+            wrapped.setWrap(true);
+            Label ellipsized = fixture.label("ellipsized", "AAAA", 200, 40, 25, 20);
+            ellipsized.setEllipsis("...");
+            Label scrolled = fixture.label("scrolled", "AAAA", 0, 0, 100, 20);
+            ScrollPane pane = new ScrollPane(scrolled, new ScrollPaneStyle());
+            pane.setBounds(300, 40, 30, 20);
+            stageAddAndValidate(fixture, pane);
+
+            SemanticSnapshot snapshot =
+                    fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame());
+            var evidence = fixture.session.textLayoutEvidence(snapshot);
+            var byTestId = snapshot.nodes().values().stream()
+                    .filter(node -> node.testId() != null)
+                    .collect(java.util.stream.Collectors.toMap(
+                            node -> node.testId(),
+                            node -> evidence.textByNodeId().get(node.id())));
+
+            assertEquals(89, byTestId.get("aligned").inkStageBounds().x(), 1e-6);
+            assertTrue(byTestId.get("wrapped").layoutStageBounds().height() > 10);
+            assertTrue(byTestId.get("ellipsized").inkStageBounds().width() < 43);
+            assertEquals(1, byTestId.get("scrolled").clipChainStageBounds().size());
+            assertEquals(
+                    30,
+                    byTestId.get("scrolled").clipChainStageBounds().getFirst().width(),
+                    1e-6);
+            evidence.textByNodeId().forEach(
+                    (nodeId, text) -> assertEquals(nodeId, text.nodeId()));
+        }
+    }
+
+    private static LayoutValidationConfig only(LayoutValidationCheck... checks) {
+        LayoutValidationConfig.Builder builder = LayoutValidationConfig.builder();
+        for (LayoutValidationCheck check : LayoutValidationCheck.values()) {
+            builder.disable(check);
+        }
+        for (LayoutValidationCheck check : checks) {
+            builder.enable(check);
+        }
+        return builder.failOn(LayoutValidationSeverity.ERROR).build();
+    }
+
+    private static void stageAddAndValidate(Fixture fixture, ScrollPane pane) {
+        fixture.stage.addActor(pane);
+        pane.validate();
+    }
+
     private static final class Fixture implements AutoCloseable {
         final Stage stage = Scene2dTestSupport.stage();
+        final Texture fontTexture = new Texture(64, 64, Pixmap.Format.RGBA8888);
+        final BitmapFont font = printableAsciiFont(fontTexture);
         final ControlledStageClock clock = new ControlledStageClock(stage,
                 java.time.Duration.ofMillis(16));
         final Scene2dSession session = new Scene2dSession(stage);
@@ -111,16 +276,57 @@ final class Scene2dLayoutValidatorTest {
             return button;
         }
 
+        Label label(
+                String testId, String text, float x, float y, float width, float height) {
+            Label label = new Label(text, new LabelStyle(font, Color.WHITE));
+            label.setAlignment(Align.left);
+            label.setBounds(x, y, width, height);
+            stage.addActor(label);
+            session.semantics().setTestId(label, testId);
+            return label;
+        }
+
+        void viewport(int width, int height) {
+            stage.getViewport().setWorldSize(width, height);
+            stage.getViewport().setScreenBounds(0, 0, width, height);
+            stage.getCamera().position.set(width / 2f, height / 2f, 0);
+            stage.getCamera().update();
+        }
+
         LayoutValidationResult validate(SemanticSnapshot snapshot, Locator subtree) {
             return validator.validate(
                     snapshot.revision(), snapshot.frame(), subtree,
                     LayoutValidationConfig.defaults(), null);
         }
 
+
+        private static BitmapFont printableAsciiFont(Texture texture) {
+            BitmapFontData data = new BitmapFontData();
+            data.name = "printable-ascii-fixture";
+            data.lineHeight = 15;
+            data.capHeight = 10;
+            data.xHeight = 7;
+            data.ascent = 0;
+            data.descent = -3;
+            data.down = -15;
+            data.spaceXadvance = 11;
+            for (char value = 32; value <= 126; value++) {
+                Glyph glyph = new Glyph();
+                glyph.id = value;
+                glyph.width = 10;
+                glyph.height = 10;
+                glyph.xadvance = 11;
+                data.setGlyph(value, glyph);
+            }
+            texture.setFilter(Texture.TextureFilter.Nearest, Texture.TextureFilter.Nearest);
+            return new BitmapFont(data, new TextureRegion(texture), false);
+        }
         @Override public void close() {
             session.close();
             clock.close();
             stage.dispose();
+            font.dispose();
+            fontTexture.dispose();
         }
     }
 }

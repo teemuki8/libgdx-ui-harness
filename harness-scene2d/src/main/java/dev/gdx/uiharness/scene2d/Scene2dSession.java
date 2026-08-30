@@ -2,20 +2,21 @@ package dev.gdx.uiharness.scene2d;
 
 import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Stage;
+import dev.gdx.uiharness.core.contract.StateActionContract;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
+import dev.gdx.uiharness.core.layout.LayoutValidationEvidence;
 import dev.gdx.uiharness.core.limits.HarnessLimits;
-import dev.gdx.uiharness.core.contract.StateActionContract;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
+import dev.gdx.uiharness.core.typography.TypographyObservation;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.List;
 import java.util.function.Supplier;
-import dev.gdx.uiharness.core.typography.TypographyObservation;
 
 /** Non-owning semantic extraction session attached to one Scene2D stage. */
 public final class Scene2dSession implements AutoCloseable {
@@ -26,6 +27,7 @@ public final class Scene2dSession implements AutoCloseable {
     private final Scene2dSnapshotter snapshotter;
     private final Scene2dContractSnapshotter contractSnapshotter;
     private final Scene2dTypographyExtractor typographyExtractor;
+    private final Scene2dTextLayoutExtractor textLayoutExtractor;
     private final ActorTokens actorTokens = new ActorTokens();
     private volatile boolean open = true;
 
@@ -43,6 +45,7 @@ public final class Scene2dSession implements AutoCloseable {
         contractSnapshotter =
                 new Scene2dContractSnapshotter(stage, semantics, adapters, snapshotter);
         typographyExtractor = new Scene2dTypographyExtractor(stage, semantics, snapshotter);
+        textLayoutExtractor = new Scene2dTextLayoutExtractor(stage, semantics, snapshotter);
     }
 
     /** Returns the metadata facade owned by this session. */
@@ -108,6 +111,12 @@ public final class Scene2dSession implements AutoCloseable {
         requireOwnerThread("typography");
         requireOpen();
         return typographyExtractor.extract(revision, frame, context);
+    }
+
+    LayoutValidationEvidence textLayoutEvidence(SemanticSnapshot snapshot) {
+        requireOwnerThread("textLayoutEvidence");
+        requireOpen();
+        return textLayoutExtractor.extract(snapshot);
     }
 
     /** Captures selected actor-attributed layout evidence after a completed frame. */
