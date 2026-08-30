@@ -35,6 +35,7 @@ public record LayoutValidationConfig(
     public static final Set<LayoutValidationCheck> DEFAULT_CHECKS = Set.of(
             LayoutValidationCheck.OUTSIDE_VIEWPORT,
             LayoutValidationCheck.CLIPPED_TEXT,
+            LayoutValidationCheck.TEXT_COLLISION,
             LayoutValidationCheck.INTERACTIVE_OVERLAP,
             LayoutValidationCheck.ZERO_SIZE,
             LayoutValidationCheck.DUPLICATE_TEST_ID,

@@ -3,7 +3,8 @@ package dev.gdx.uiharness.core.layout;
 /** Closed reason codes for whole-stage layout findings. */
 public enum LayoutValidationReason {
     OUTSIDE_VIEWPORT(LayoutValidationCheck.OUTSIDE_VIEWPORT, LayoutValidationSeverity.ERROR),
-    CLIPPED_TEXT(LayoutValidationCheck.CLIPPED_TEXT, LayoutValidationSeverity.WARNING),
+    CLIPPED_TEXT(LayoutValidationCheck.CLIPPED_TEXT, LayoutValidationSeverity.ERROR),
+    TEXT_COLLISION(LayoutValidationCheck.TEXT_COLLISION, LayoutValidationSeverity.ERROR),
     INTERACTIVE_OVERLAP(
             LayoutValidationCheck.INTERACTIVE_OVERLAP, LayoutValidationSeverity.ERROR),
     ZERO_SIZE(LayoutValidationCheck.ZERO_SIZE, LayoutValidationSeverity.ERROR),
@@ -22,7 +23,7 @@ public enum LayoutValidationReason {
             LayoutValidationCheck.INCONSISTENT_ALIGNMENT, LayoutValidationSeverity.WARNING),
     INCONSISTENT_SPACING(
             LayoutValidationCheck.INCONSISTENT_SPACING, LayoutValidationSeverity.WARNING),
-    CHECK_UNAVAILABLE(null, LayoutValidationSeverity.INFO);
+    CHECK_UNAVAILABLE(null, LayoutValidationSeverity.ERROR);
 
     private final LayoutValidationCheck check;
     private final LayoutValidationSeverity defaultSeverity;

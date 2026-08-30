@@ -6,6 +6,8 @@ public enum LayoutValidationCheck {
     OUTSIDE_VIEWPORT,
     /** Visible text is clipped by a container. */
     CLIPPED_TEXT,
+    /** Visible glyph ink from distinct text actors overlaps. */
+    TEXT_COLLISION,
     /** Two interactive controls overlap. */
     INTERACTIVE_OVERLAP,
     /** Control has zero width or height. */

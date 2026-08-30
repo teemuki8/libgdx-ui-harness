@@ -27,14 +27,26 @@ public final class LayoutValidator {
     private static final Set<Role> INTERACTIVE_ROLES = Set.of(
             Role.BUTTON, Role.CHECKBOX, Role.RADIO_BUTTON, Role.TEXT_FIELD, Role.TEXT_AREA,
             Role.SELECT, Role.SLIDER, Role.LIST_ITEM, Role.MENU_ITEM);
+    private static final double TEXT_EDGE_EPSILON = 0.5;
 
-    /** Validates the supplied immutable observation. */
+    /** Validates the supplied immutable observation without backend intrinsic evidence. */
     public LayoutValidationResult validate(
             SemanticSnapshot snapshot,
             LayoutValidationConfig config,
             NavigationResult navigation) {
+        return validate(
+                snapshot, config, navigation, LayoutValidationEvidence.unavailable());
+    }
+
+    /** Validates the supplied immutable observation and backend intrinsic evidence. */
+    public LayoutValidationResult validate(
+            SemanticSnapshot snapshot,
+            LayoutValidationConfig config,
+            NavigationResult navigation,
+            LayoutValidationEvidence evidence) {
         Objects.requireNonNull(snapshot, "snapshot");
         Objects.requireNonNull(config, "config");
+        Objects.requireNonNull(evidence, "evidence");
         List<SemanticNode> ordered = documentOrder(snapshot);
         boolean coverageLimited = ordered.size() > config.maxNodes();
         List<SemanticNode> examined = coverageLimited
@@ -43,13 +55,18 @@ public final class LayoutValidator {
         Sink findings = new Sink(config.maxFindings());
         boolean truncated = coverageLimited;
         Map<LayoutValidationCheck, Boolean> availability = new LinkedHashMap<>();
-        checkAvailability(availability, config, navigation);
+        checkAvailability(availability, config, navigation, evidence);
 
         if (config.isEnabled(LayoutValidationCheck.OUTSIDE_VIEWPORT)) {
             checkOutsideViewport(examined, findings, config);
         }
-        if (config.isEnabled(LayoutValidationCheck.CLIPPED_TEXT)) {
-            checkClippedText(examined, findings, config);
+        if (config.isEnabled(LayoutValidationCheck.CLIPPED_TEXT)
+                && availability.get(LayoutValidationCheck.CLIPPED_TEXT) == Boolean.TRUE) {
+            checkClippedText(snapshot, examined, evidence, findings);
+        }
+        if (config.isEnabled(LayoutValidationCheck.TEXT_COLLISION)
+                && availability.get(LayoutValidationCheck.TEXT_COLLISION) == Boolean.TRUE) {
+            checkTextCollision(snapshot, examined, evidence, findings);
         }
         if (config.isEnabled(LayoutValidationCheck.ZERO_SIZE)) {
             checkZeroSize(examined, findings, config);
@@ -83,11 +100,12 @@ public final class LayoutValidator {
             if (availability.get(check) == Boolean.FALSE) {
                 findings.add(new LayoutFinding(
                         LayoutValidationReason.CHECK_UNAVAILABLE,
-                        LayoutValidationSeverity.INFO,
+                        LayoutValidationSeverity.ERROR,
                         snapshot.rootId(),
                         null,
                         boundsOf(snapshot.nodes().get(snapshot.rootId())),
-                        "check unavailable: " + check.name().toLowerCase()));
+                        "check unavailable: "
+                                + check.name().toLowerCase(java.util.Locale.ROOT)));
             }
         }
 
@@ -96,7 +114,8 @@ public final class LayoutValidator {
                         .comparingInt((LayoutFinding finding) -> finding.reason().ordinal())
                         .thenComparing(LayoutFinding::nodeId)
                         .thenComparing(finding -> finding.relatedActorId() == null
-                                ? "" : finding.relatedActorId()))
+                                ? "" : finding.relatedActorId())
+                        .thenComparing(LayoutFinding::evidence))
                 .toList();
         truncated = truncated || findings.overflow();
         boolean gateHit = orderedFindings.stream()
@@ -113,7 +132,16 @@ public final class LayoutValidator {
     private static void checkAvailability(
             Map<LayoutValidationCheck, Boolean> availability,
             LayoutValidationConfig config,
-            NavigationResult navigation) {
+            NavigationResult navigation,
+            LayoutValidationEvidence evidence) {
+        if (config.isEnabled(LayoutValidationCheck.CLIPPED_TEXT)) {
+            availability.put(
+                    LayoutValidationCheck.CLIPPED_TEXT, evidence.textGeometryAvailable());
+        }
+        if (config.isEnabled(LayoutValidationCheck.TEXT_COLLISION)) {
+            availability.put(
+                    LayoutValidationCheck.TEXT_COLLISION, evidence.textGeometryAvailable());
+        }
         if (config.isEnabled(LayoutValidationCheck.KEYBOARD_UNREACHABLE)) {
             availability.put(LayoutValidationCheck.KEYBOARD_UNREACHABLE, navigation != null);
         }
@@ -139,15 +167,65 @@ public final class LayoutValidator {
     }
 
     private static void checkClippedText(
-            List<SemanticNode> nodes, Sink findings,
-            LayoutValidationConfig config) {
+            SemanticSnapshot snapshot,
+            List<SemanticNode> nodes,
+            LayoutValidationEvidence evidence,
+            Sink findings) {
+        Bounds viewport = boundsOf(snapshot.nodes().get(snapshot.rootId()));
         for (SemanticNode node : nodes) {
-            if (node.state().clipped() && textBearing(node)) {
+            TextLayoutEvidence text = evidence.textByNodeId().get(node.id());
+            if (!node.state().visible() || !textBearing(node) || text == null) {
+                continue;
+            }
+            EdgeOverflow overflow = new EdgeOverflow();
+            overflow.include(node.stageBounds(), text.layoutStageBounds());
+            overflow.include(node.stageBounds(), text.inkStageBounds());
+            overflow.include(viewport, text.layoutStageBounds());
+            overflow.include(viewport, text.inkStageBounds());
+            for (Bounds clip : text.clipChainStageBounds()) {
+                overflow.include(clip, text.layoutStageBounds());
+                overflow.include(clip, text.inkStageBounds());
+            }
+            if (overflow.exceeds(TEXT_EDGE_EPSILON)) {
                 findings.add(new LayoutFinding(
                         LayoutValidationReason.CLIPPED_TEXT,
-                        LayoutValidationSeverity.WARNING,
+                        LayoutValidationSeverity.ERROR,
                         node.id(), null, node.stageBounds(),
-                        "text-bearing actor is clipped by a container"));
+                        "text ink exceeds actor/clip/viewport bounds: "
+                                + "left=" + overflow.left(TEXT_EDGE_EPSILON)
+                                + ", right=" + overflow.right(TEXT_EDGE_EPSILON)
+                                + ", bottom=" + overflow.bottom(TEXT_EDGE_EPSILON)
+                                + ", top=" + overflow.top(TEXT_EDGE_EPSILON)));
+            }
+        }
+    }
+
+    private static void checkTextCollision(
+            SemanticSnapshot snapshot,
+            List<SemanticNode> nodes,
+            LayoutValidationEvidence evidence,
+            Sink findings) {
+        for (int index = 0; index < nodes.size(); index++) {
+            SemanticNode earlier = nodes.get(index);
+            TextLayoutEvidence earlierText = evidence.textByNodeId().get(earlier.id());
+            if (!earlier.state().visible() || !textBearing(earlier) || earlierText == null) {
+                continue;
+            }
+            for (int other = index + 1; other < nodes.size(); other++) {
+                SemanticNode later = nodes.get(other);
+                TextLayoutEvidence laterText = evidence.textByNodeId().get(later.id());
+                if (!later.state().visible() || !textBearing(later) || laterText == null
+                        || ancestorOf(snapshot, earlier, later)
+                        || ancestorOf(snapshot, later, earlier)) {
+                    continue;
+                }
+                if (overlaps(earlierText.inkStageBounds(), laterText.inkStageBounds())) {
+                    findings.add(new LayoutFinding(
+                            LayoutValidationReason.TEXT_COLLISION,
+                            LayoutValidationSeverity.ERROR,
+                            earlier.id(), later.id(), earlier.stageBounds(),
+                            "visible text ink overlaps related actor"));
+                }
             }
         }
     }
@@ -382,6 +460,26 @@ public final class LayoutValidator {
                 && first.y() < second.y() + second.height()
                 && second.y() < first.y() + first.height();
     }
+    private static boolean contains(Bounds outer, Bounds inner, double epsilon) {
+        return inner.x() >= outer.x() - epsilon
+                && inner.y() >= outer.y() - epsilon
+                && inner.x() + inner.width() <= outer.x() + outer.width() + epsilon
+                && inner.y() + inner.height() <= outer.y() + outer.height() + epsilon;
+    }
+
+    private static boolean ancestorOf(
+            SemanticSnapshot snapshot, SemanticNode candidate, SemanticNode node) {
+        String parentId = node.parentId();
+        while (parentId != null) {
+            if (candidate.id().equals(parentId)) {
+                return true;
+            }
+            SemanticNode parent = snapshot.nodes().get(parentId);
+            parentId = parent == null ? null : parent.parentId();
+        }
+        return false;
+    }
+
 
     private static String identity(SemanticNode node) {
         if (node.testId() != null) {
@@ -400,6 +498,47 @@ public final class LayoutValidator {
 
     private static Bounds boundsOf(SemanticNode node) {
         return node == null ? new Bounds(0, 0, 0, 0) : node.stageBounds();
+    }
+
+    private static final class EdgeOverflow {
+        private double left;
+        private double right;
+        private double bottom;
+        private double top;
+
+        void include(Bounds outer, Bounds inner) {
+            if (contains(outer, inner, TEXT_EDGE_EPSILON)) {
+                return;
+            }
+            left = Math.max(left, outer.x() - inner.x());
+            right = Math.max(
+                    right,
+                    inner.x() + inner.width() - outer.x() - outer.width());
+            bottom = Math.max(bottom, outer.y() - inner.y());
+            top = Math.max(
+                    top,
+                    inner.y() + inner.height() - outer.y() - outer.height());
+        }
+
+        boolean exceeds(double epsilon) {
+            return left > epsilon || right > epsilon || bottom > epsilon || top > epsilon;
+        }
+
+        double left(double epsilon) {
+            return left > epsilon ? left : 0.0;
+        }
+
+        double right(double epsilon) {
+            return right > epsilon ? right : 0.0;
+        }
+
+        double bottom(double epsilon) {
+            return bottom > epsilon ? bottom : 0.0;
+        }
+
+        double top(double epsilon) {
+            return top > epsilon ? top : 0.0;
+        }
     }
 
     /** Bounded finding collector that records overflow without unbounded growth. */
