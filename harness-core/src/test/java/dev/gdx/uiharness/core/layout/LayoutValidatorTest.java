@@ -210,6 +210,25 @@ final class LayoutValidatorTest {
         assertEquals("p2", collision.relatedActorId());
     }
 
+    @Test void zeroAreaTextInkDoesNotCollide() {
+        SemanticSnapshot snapshot = snapshot(
+                node("label", Role.LABEL, "Label", bounds(10, 10, 100, 20),
+                        "label", visible(false, false, true)),
+                node("empty", Role.LABEL, "", bounds(20, 15, 10, 10),
+                        "empty", visible(false, false, true)));
+        LayoutValidationEvidence evidence = LayoutValidationEvidence.available(Map.of(
+                "label", text("label", bounds(10, 10, 100, 20)),
+                "empty", text("empty", bounds(20, 15, 0, 10))));
+
+        LayoutValidationResult result = validator.validate(
+                snapshot, only(LayoutValidationCheck.TEXT_COLLISION), null, evidence);
+
+        assertEquals(LayoutValidationResult.Status.PASS, result.status());
+        assertFalse(result.findings().stream()
+                .anyMatch(finding ->
+                        finding.reason() == LayoutValidationReason.TEXT_COLLISION));
+    }
+
     @Test void missingRequestedTextGeometryIsAnErrorNotAPass() {
         SemanticSnapshot snapshot = snapshot(node(
                 "label", Role.LABEL, "Label", bounds(10, 10, 100, 20), "label",

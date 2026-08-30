@@ -455,7 +455,11 @@ public final class LayoutValidator {
     }
 
     private static boolean overlaps(Bounds first, Bounds second) {
-        return first.x() < second.x() + second.width()
+        return first.width() > 0
+                && first.height() > 0
+                && second.width() > 0
+                && second.height() > 0
+                && first.x() < second.x() + second.width()
                 && second.x() < first.x() + first.width()
                 && first.y() < second.y() + second.height()
                 && second.y() < first.y() + first.height();
