@@ -56,6 +56,7 @@ import dev.gdx.uiharness.protocol.LocatorSuggestionSpec;
 import dev.gdx.uiharness.protocol.ProtocolJson;
 import dev.gdx.uiharness.protocol.ProtocolError;
 import dev.gdx.uiharness.protocol.ProtocolVersion;
+import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -307,20 +308,69 @@ final class HarnessMcpServerContractTest {
         }
     }
 
+    @Test void layoutValidationPublishesNegativeStageCoordinates() {
+        AtomicReference<Command> observed = new AtomicReference<>();
+        HarnessProtocolService service = layoutService(observed, new LayoutValidationResult(
+                LayoutValidationResult.Status.FAIL,
+                List.of(new LayoutFinding(
+                        LayoutValidationReason.OUTSIDE_VIEWPORT,
+                        LayoutValidationSeverity.ERROR,
+                        "offscreen-label",
+                        null,
+                        new Bounds(-12.5, -7.25, 100, 20),
+                        "visible actor extends outside the viewport")),
+                1,
+                false,
+                LayoutValidationConfig.defaults()));
+        Map<String, Object> spec = Map.ofEntries(
+                Map.entry("targetMode", "stage"),
+                Map.entry("enabledChecks", List.of("zero-size", "duplicate-test-id")),
+                Map.entry("minTargetWidth", 64.0),
+                Map.entry("minTargetHeight", 64.0),
+                Map.entry("maxAlignmentDelta", 1.0),
+                Map.entry("minSpacing", 1.0),
+                Map.entry("failOn", "error"),
+                Map.entry("maxFindings", 256),
+                Map.entry("maxNodes", 10000),
+                Map.entry("maxDurationMillis", 2200));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                HarnessToolHandler handler = new HarnessToolHandler(
+                        service::execute, new RecordingArtifacts(), executor, 1024)) {
+            McpSchema.CallToolResult result = handler.handle(call(
+                    "ui_validate_layout",
+                    Map.of("sessionId", "game", "spec", spec)))
+                    .block(Duration.ofSeconds(10));
+
+            assertFalse(result.isError(), result.toString());
+            Map<String, Object> content = structured(result);
+            var schemaValidation = McpJsonDefaults.getSchemaValidator().validate(
+                    new HarnessToolCatalog().tool("ui_validate_layout").outputSchema(), content);
+            assertTrue(schemaValidation.valid(), schemaValidation.toString());
+            @SuppressWarnings("unchecked")
+            Map<String, Object> validation = (Map<String, Object>) content.get("result");
+            assertEquals("FAIL", validation.get("status"));
+        }
+    }
+
     private static HarnessProtocolService layoutService(AtomicReference<Command> observed) {
+        return layoutService(observed, new LayoutValidationResult(
+                LayoutValidationResult.Status.FAIL,
+                List.of(new LayoutFinding(
+                        LayoutValidationReason.ZERO_SIZE,
+                        LayoutValidationSeverity.ERROR,
+                        "btn-zero", null, new Bounds(0, 0, 0, 0),
+                        "actor has zero width or height")),
+                1, false, LayoutValidationConfig.defaults()));
+    }
+
+    private static HarnessProtocolService layoutService(
+            AtomicReference<Command> observed, LayoutValidationResult result) {
         HarnessProtocolService.LayoutValidationCoordinator coordinator =
                 new HarnessProtocolService.LayoutValidationCoordinator() {
                     @Override public CompletionStage<LayoutValidationResult> validate(
                             Command.LayoutValidationSpec spec, Deadline deadline) {
                         observed.set(new Command.LayoutValidate(spec));
-                        return CompletableFuture.completedFuture(new LayoutValidationResult(
-                                LayoutValidationResult.Status.FAIL,
-                                List.of(new LayoutFinding(
-                                        LayoutValidationReason.ZERO_SIZE,
-                                        LayoutValidationSeverity.ERROR,
-                                        "btn-zero", null, new Bounds(0, 0, 0, 0),
-                                        "actor has zero width or height")),
-                                1, false, LayoutValidationConfig.defaults()));
+                        return CompletableFuture.completedFuture(result);
                     }
                 };
         HarnessProtocolService.Session session = new HarnessProtocolService.Session(

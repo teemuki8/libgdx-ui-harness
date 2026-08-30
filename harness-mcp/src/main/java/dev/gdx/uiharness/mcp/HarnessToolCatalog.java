@@ -527,8 +527,8 @@ public final class HarnessToolCatalog {
         findingProperties.put("nodeId", string(1, ProtocolJson.MAX_STRING_LENGTH));
         findingProperties.put("relatedActorId", nullableString());
         findingProperties.put("stageBounds", object(Map.of(
-                "x", number(0.0, Double.MAX_VALUE),
-                "y", number(0.0, Double.MAX_VALUE),
+                "x", number(-Double.MAX_VALUE, Double.MAX_VALUE),
+                "y", number(-Double.MAX_VALUE, Double.MAX_VALUE),
                 "width", number(0.0, Double.MAX_VALUE),
                 "height", number(0.0, Double.MAX_VALUE)),
                 List.of("x", "y", "width", "height")));
