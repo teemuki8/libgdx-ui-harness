@@ -417,8 +417,9 @@ public final class LayoutValidator {
                                 LayoutValidationReason.INCONSISTENT_ALIGNMENT,
                                 LayoutValidationSeverity.WARNING,
                                 sibling.id(), siblings.getFirst().id(), sibling.stageBounds(),
-                                "layout-group " + group.getKey().id()
-                                        + " perpendicular center deviates from alignment"));
+                                layoutGroupEvidence(
+                                        group.getKey().id(),
+                                        " perpendicular center deviates from alignment")));
                     }
                 }
             }
@@ -455,13 +456,31 @@ public final class LayoutValidator {
                                 LayoutValidationReason.INCONSISTENT_SPACING,
                                 LayoutValidationSeverity.WARNING,
                                 current.id(), previous.id(), current.stageBounds(),
-                                "layout-group " + group.getKey().id()
-                                        + " axial gap deviates from spacing"));
+                                layoutGroupEvidence(
+                                        group.getKey().id(),
+                                        " axial gap deviates from spacing")));
                     }
                 }
             }
         }
         return available;
+    }
+
+    private static String layoutGroupEvidence(String groupId, String suffix) {
+        String prefix = "layout-group ";
+        int groupEnd = Math.min(
+                groupId.length(),
+                LayoutFinding.MAX_EVIDENCE_LENGTH - prefix.length() - suffix.length());
+        if (groupEnd < groupId.length()
+                && groupEnd > 0
+                && Character.isHighSurrogate(groupId.charAt(groupEnd - 1))) {
+            groupEnd--;
+        }
+        return new StringBuilder(LayoutFinding.MAX_EVIDENCE_LENGTH)
+                .append(prefix)
+                .append(groupId, 0, groupEnd)
+                .append(suffix)
+                .toString();
     }
 
     private static LinkedHashMap<String, LinkedHashMap<GroupKey, List<SemanticNode>>>

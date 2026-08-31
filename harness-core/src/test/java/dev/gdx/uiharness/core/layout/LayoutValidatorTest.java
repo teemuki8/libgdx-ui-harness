@@ -196,6 +196,43 @@ final class LayoutValidatorTest {
                 });
     }
 
+    @Test void longUnicodeLayoutGroupEvidenceIsBoundedForAlignmentAndSpacing() {
+        String groupId = "group-" + "\uD83D\uDE00".repeat(8_189);
+        assertEquals(16_384, groupId.length());
+        Map<String, String> properties =
+                Map.of("layout-group", groupId, "layout-axis", "vertical");
+        SemanticSnapshot snapshot = snapshot(
+                node("first", "root", List.of(), Role.LABEL, "First",
+                        bounds(10, 10, 20, 20), null,
+                        visible(false, false, true), 0, properties),
+                node("second", "root", List.of(), Role.LABEL, "Second",
+                        bounds(10, 40, 20, 20), null,
+                        visible(false, false, true), 0, properties),
+                node("third", "root", List.of(), Role.LABEL, "Third",
+                        bounds(14, 75, 20, 20), null,
+                        visible(false, false, true), 0, properties));
+
+        LayoutValidationResult result = validator.validate(
+                snapshot,
+                only(
+                        LayoutValidationCheck.INCONSISTENT_ALIGNMENT,
+                        LayoutValidationCheck.INCONSISTENT_SPACING),
+                null);
+
+        LayoutFinding alignment =
+                finding(result, "third", LayoutValidationReason.INCONSISTENT_ALIGNMENT);
+        LayoutFinding spacing =
+                finding(result, "third", LayoutValidationReason.INCONSISTENT_SPACING);
+        assertBoundedGroupEvidence(alignment, "first", "alignment");
+        assertBoundedGroupEvidence(spacing, "second", "spacing");
+        assertEquals(result.findings(), validator.validate(
+                snapshot,
+                only(
+                        LayoutValidationCheck.INCONSISTENT_ALIGNMENT,
+                        LayoutValidationCheck.INCONSISTENT_SPACING),
+                null).findings());
+    }
+
     @Test void duplicateTestIdsAndMissingAccessibleNamesAreDistinct() {
         SemanticSnapshot snapshot = snapshot(
                 node("a", Role.BUTTON, "First", bounds(10, 10, 100, 50), "dup",
@@ -461,6 +498,25 @@ final class LayoutValidatorTest {
                         && finding.reason() == reason),
                 "expected " + reason + " for " + nodeId + " in " + result.findings());
     }
+
+    private static void assertBoundedGroupEvidence(
+            LayoutFinding finding, String relatedActorId, String checkName) {
+        assertEquals(relatedActorId, finding.relatedActorId());
+        assertTrue(finding.evidence().length() <= LayoutFinding.MAX_EVIDENCE_LENGTH);
+        assertTrue(finding.evidence().startsWith("layout-group group-"));
+        assertTrue(finding.evidence().endsWith(" deviates from " + checkName));
+        for (int index = 0; index < finding.evidence().length(); index++) {
+            char current = finding.evidence().charAt(index);
+            if (Character.isHighSurrogate(current)) {
+                assertTrue(index + 1 < finding.evidence().length()
+                        && Character.isLowSurrogate(finding.evidence().charAt(index + 1)));
+            } else if (Character.isLowSurrogate(current)) {
+                assertTrue(index > 0
+                        && Character.isHighSurrogate(finding.evidence().charAt(index - 1)));
+            }
+        }
+    }
+
     private static LayoutFinding finding(
             LayoutValidationResult result, String nodeId, LayoutValidationReason reason) {
         return result.findings().stream()
@@ -470,6 +526,7 @@ final class LayoutValidatorTest {
                 .orElseThrow(() -> new AssertionError(
                         "expected " + reason + " for " + nodeId + " in " + result.findings()));
     }
+
 
     private static LayoutValidationConfig only(LayoutValidationCheck... checks) {
         return onlyAt(LayoutValidationSeverity.ERROR, checks);

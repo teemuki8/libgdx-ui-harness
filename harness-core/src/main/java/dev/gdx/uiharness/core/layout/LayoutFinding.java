@@ -20,7 +20,7 @@ public record LayoutFinding(
         String relatedActorId,
         Bounds stageBounds,
         String evidence) {
-    private static final int MAX_EVIDENCE_LENGTH = 512;
+    static final int MAX_EVIDENCE_LENGTH = 512;
 
     /** Validates and bounds the finding. */
     public LayoutFinding {
