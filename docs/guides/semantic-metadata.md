@@ -60,6 +60,37 @@ Node IDs are snapshot-local and may change after actor replacement. Store locato
 
 Strict actions require exactly one fresh match. Zero matches yield `not-found`; multiple matches yield `strictness-violation`; both carry bounded candidate summaries. Metadata should make those diagnostics more discriminating rather than force callers to choose an arbitrary index.
 
+## Layout qualification metadata
+
+Alignment and spacing cohorts are explicit metadata, not inferred style. Assign both properties to
+each participating actor:
+
+```java
+semantics.setProperty(valueLabel, "layout-group", "hud-values");
+semantics.setProperty(valueLabel, "layout-axis", "vertical");
+```
+
+`layout-group` must be nonblank. `layout-axis` must be exactly `horizontal` or `vertical`.
+Participants qualify only when they are visible siblings with the same parent, group value, and
+axis value. Horizontal cohorts compare vertical centers and x-axis gaps; vertical cohorts compare
+horizontal centers and y-axis gaps. Alignment requires at least two qualifying actors; spacing
+requires at least three. If an enabled group check has no qualifying cohort, validation emits an
+error-severity `CHECK_UNAVAILABLE` rather than comparing unrelated siblings or reporting a pass.
+
+Target-size qualification is role-aware: it applies only to actors exposed as `button`,
+`checkbox`, `text-field`, `select`, or `slider`. `obscured` is opt-in and ignores
+ancestor/descendant composition. These roles and properties describe diagnostic intent; the
+harness does not generate component styles, spacing, or layout.
+
+Intrinsic `clipped-text` and `text-collision` evidence is not semantic metadata and cannot be
+supplied by setting properties. During `ui_validate_layout`, the Scene2D adapter reads each real,
+visible `Label`'s public glyph layout, ink geometry, actor bounds, root viewport, and ancestor
+`ScrollPane` actor areas on the owning render thread, then publishes immutable bounded evidence.
+Callers must not read Actors or fonts from their own thread. A `Label` placement is accepted only
+when its effective wrap/ellipsis state is publicly observable or both possibilities produce the
+same exact origin. Otherwise intrinsic text evidence is hard unavailable: each requested
+intrinsic check emits error-severity `CHECK_UNAVAILABLE`, and the normal error gate fails.
+
 ## Evaluator-complete state and action contracts
 
 `SemanticSnapshot` remains the locator-oriented observation. Applications that need an

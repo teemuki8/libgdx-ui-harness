@@ -52,6 +52,10 @@ final class DocsCatalogParityTest {
         return repositoryFile("docs/guides/agent-tools.md");
     }
 
+    private static Path gettingStartedFile() {
+        return repositoryFile("docs/guides/getting-started.md");
+    }
+
     private static Path readmeFile() {
         return repositoryFile("README.md");
     }
@@ -231,6 +235,34 @@ final class DocsCatalogParityTest {
         assertTrue(McpJsonDefaults.getSchemaValidator().validate(
                         catalog.tool("ui_keyboard_gesture").inputSchema(), arguments).valid(),
                 waitKind + " example must satisfy the live input schema");
+    }
+
+    @Test void strictVisualLayoutExampleUsesClosedCatalogValues() throws Exception {
+        String content = Files.readString(gettingStartedFile(), StandardCharsets.UTF_8);
+        Matcher example = Pattern.compile(
+                "(?s)### Strict visual-layout qualification\\R.*?```json\\R(\\{.*?\\})\\R```")
+                .matcher(content);
+        assertTrue(example.find(), "missing strict visual-layout qualification example");
+
+        JsonNode configuration = ProtocolJson.mapper().readTree(example.group(1));
+        assertEquals(ProtocolJson.mapper().valueToTree(List.of(
+                        "outside-viewport",
+                        "clipped-text",
+                        "text-collision",
+                        "interactive-overlap",
+                        "zero-size",
+                        "duplicate-test-id",
+                        "missing-accessible-name")),
+                configuration.path("enabledChecks"));
+        assertEquals("error", configuration.path("failOn").asText());
+
+        JsonNode checkEnum = ProtocolJson.mapper().valueToTree(
+                catalog.tool("ui_validate_layout").inputSchema())
+                .at("/properties/spec/properties/enabledChecks/items/enum");
+        for (JsonNode check : configuration.path("enabledChecks")) {
+            assertTrue(checkEnum.valueStream().anyMatch(check::equals),
+                    check.asText() + " must remain a closed catalog check");
+        }
     }
 
     @Test void documentedRequiredInputsMatchCatalogSchemasForEveryTool() throws Exception {

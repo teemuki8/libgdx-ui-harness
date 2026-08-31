@@ -95,6 +95,33 @@ When a session registers `ui_keyboard_gesture`, capability discovery also advert
 preflighted request and one coordinator lease. Register `ui_keyboard_gesture_ticks` separately
 only when the session installs the optional exact-tick coordinator.
 
+### Strict visual-layout qualification
+
+Use this `ui_validate_layout` configuration inside the request `spec` when visual layout must
+qualify on the high-confidence checks:
+
+```json
+{
+  "enabledChecks": [
+    "outside-viewport",
+    "clipped-text",
+    "text-collision",
+    "interactive-overlap",
+    "zero-size",
+    "duplicate-test-id",
+    "missing-accessible-name"
+  ],
+  "failOn": "error"
+}
+```
+
+Supply the remaining required bounds, thresholds, target mode, and duration from the live closed
+tool schema. The `Scene2dLayoutValidator` captures the semantic snapshot and real Label glyph,
+actor, viewport, and ancestor `ScrollPane` evidence through the `Scene2dSession` on its owning
+render thread. Callers configure checks and consume immutable findings; they do not read Actors or
+fonts. If exact intrinsic placement cannot be observed, the requested text checks fail with
+error-severity `CHECK_UNAVAILABLE` rather than guess or pass.
+
 Shutdown in this order:
 
 1. stop accepting MCP input and close `HarnessMcpServer`;

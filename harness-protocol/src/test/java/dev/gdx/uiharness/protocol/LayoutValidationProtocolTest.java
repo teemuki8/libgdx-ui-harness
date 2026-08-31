@@ -22,9 +22,9 @@ import org.junit.jupiter.api.Test;
 final class LayoutValidationProtocolTest {
     private final Command.LayoutValidationSpec stageSpec = new Command.LayoutValidationSpec(
             "stage", null,
-            List.of("outside-viewport", "clipped-text", "interactive-overlap", "zero-size",
-                    "duplicate-test-id", "missing-accessible-name", "keyboard-unreachable",
-                    "obscured"),
+            List.of("outside-viewport", "clipped-text", "text-collision",
+                    "interactive-overlap", "zero-size", "duplicate-test-id",
+                    "missing-accessible-name", "keyboard-unreachable", "obscured"),
             64.0, 64.0, 1.0, 1.0, "error", 256, 10_000, 2_000);
 
     @Test void layoutValidationCommandRoundTripsThroughTheClosedSchema() throws Exception {
@@ -69,6 +69,10 @@ final class LayoutValidationProtocolTest {
         LayoutValidationResult result = assertInstanceOf(
                 HarnessResponse.Result.LayoutValidation.class, success.result()).result();
         assertEquals(LayoutValidationResult.Status.FAIL, result.status());
+        assertEquals(LayoutValidationReason.CHECK_UNAVAILABLE,
+                result.findings().getFirst().reason());
+        assertEquals(LayoutValidationSeverity.ERROR,
+                result.findings().getFirst().severity());
         assertEquals(1, coordinator.calls.get());
     }
 
@@ -76,12 +80,12 @@ final class LayoutValidationProtocolTest {
         LayoutValidationResult result = new LayoutValidationResult(
                 LayoutValidationResult.Status.FAIL,
                 List.of(new LayoutFinding(
-                        LayoutValidationReason.ZERO_SIZE,
+                        LayoutValidationReason.TEXT_COLLISION,
                         LayoutValidationSeverity.ERROR,
-                        "btn-zero",
-                        null,
-                        new Bounds(0, 0, 0, 0),
-                        "actor has zero width or height")),
+                        "label-left",
+                        "label-right",
+                        new Bounds(-4, -2, 20, 10),
+                        "visible text ink overlaps related actor")),
                 42,
                 false,
                 LayoutValidationConfig.defaults());
@@ -94,7 +98,7 @@ final class LayoutValidationProtocolTest {
 
         assertEquals(result.status(), decoded.result().status());
         assertEquals(1, decoded.result().findings().size());
-        assertEquals("ZERO_SIZE",
+        assertEquals("TEXT_COLLISION",
                 ProtocolJson.mapper().readTree(json).at("/result/findings/0/reason").asText());
     }
 
@@ -133,10 +137,10 @@ final class LayoutValidationProtocolTest {
             return CompletableFuture.completedFuture(new LayoutValidationResult(
                     LayoutValidationResult.Status.FAIL,
                     List.of(new LayoutFinding(
-                            LayoutValidationReason.ZERO_SIZE,
+                            LayoutValidationReason.CHECK_UNAVAILABLE,
                             LayoutValidationSeverity.ERROR,
-                            "btn-zero", null, new Bounds(0, 0, 0, 0),
-                            "actor has zero width or height")),
+                            "root", null, new Bounds(0, 0, 960, 540),
+                            "check unavailable: clipped_text")),
                     1, false, LayoutValidationConfig.defaults()));
         }
     }

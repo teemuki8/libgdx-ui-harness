@@ -493,8 +493,9 @@ public final class HarnessToolCatalog {
                 Map.entry("targetMode", enumString("stage", "subtree")),
                 Map.entry("locator", nullableLocator()),
                 Map.entry("enabledChecks", array(enumString(
-                        "outside-viewport", "clipped-text", "interactive-overlap", "zero-size",
-                        "below-target-size", "duplicate-test-id", "missing-accessible-name",
+                        "outside-viewport", "clipped-text", "text-collision",
+                        "interactive-overlap", "zero-size", "below-target-size",
+                        "duplicate-test-id", "missing-accessible-name",
                         "keyboard-unreachable", "obscured", "invalid-clip-scroll",
                         "inconsistent-alignment", "inconsistent-spacing"), 32)),
                 Map.entry("minTargetWidth", number(0, Double.MAX_VALUE)),

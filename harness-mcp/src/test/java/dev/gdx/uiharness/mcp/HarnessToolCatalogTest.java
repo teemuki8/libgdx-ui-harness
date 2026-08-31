@@ -263,6 +263,27 @@ final class HarnessToolCatalogTest {
                 "maxPngBytes", 4_194_304));
     }
 
+    @Test void layoutValidationSchemaExposesClosedIntrinsicChecksAndReasons() {
+        JsonNode input = ProtocolJson.mapper().valueToTree(
+                catalog.tool("ui_validate_layout").inputSchema());
+        JsonNode output = ProtocolJson.mapper().valueToTree(
+                catalog.tool("ui_validate_layout").outputSchema());
+
+        JsonNode layoutCheckEnum =
+                input.at("/properties/spec/properties/enabledChecks/items/enum");
+        JsonNode layoutReasonEnum =
+                output.at("/properties/result/properties/findings/items/properties/reason/enum");
+
+        assertTrue(layoutCheckEnum.isArray());
+        assertTrue(layoutCheckEnum.valueStream()
+                .anyMatch(value -> value.asText().equals("text-collision")));
+        assertTrue(layoutReasonEnum.isArray());
+        assertTrue(layoutReasonEnum.valueStream()
+                .anyMatch(value -> value.asText().equals("TEXT_COLLISION")));
+        assertTrue(layoutReasonEnum.valueStream()
+                .anyMatch(value -> value.asText().equals("CHECK_UNAVAILABLE")));
+    }
+
     @Test void typographySchemaRequiresBoundedNamedReferenceAndViewport() {
         assertValid("ui_typography_diagnose", Map.of(
                 "sessionId", "game",

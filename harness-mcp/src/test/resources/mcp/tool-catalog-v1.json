@@ -7057,7 +7057,7 @@
         "properties" : {
           "enabledChecks" : {
             "items" : {
-              "enum" : [ "outside-viewport", "clipped-text", "interactive-overlap", "zero-size", "below-target-size", "duplicate-test-id", "missing-accessible-name", "keyboard-unreachable", "obscured", "invalid-clip-scroll", "inconsistent-alignment", "inconsistent-spacing" ],
+              "enum" : [ "outside-viewport", "clipped-text", "text-collision", "interactive-overlap", "zero-size", "below-target-size", "duplicate-test-id", "missing-accessible-name", "keyboard-unreachable", "obscured", "invalid-clip-scroll", "inconsistent-alignment", "inconsistent-spacing" ],
               "type" : "string"
             },
             "maxItems" : 32,
@@ -7213,7 +7213,7 @@
             "properties" : {
               "enabledChecks" : {
                 "items" : {
-                  "enum" : [ "OUTSIDE_VIEWPORT", "CLIPPED_TEXT", "INTERACTIVE_OVERLAP", "ZERO_SIZE", "BELOW_TARGET_SIZE", "DUPLICATE_TEST_ID", "MISSING_ACCESSIBLE_NAME", "KEYBOARD_UNREACHABLE", "OBSCURED", "INVALID_CLIP_SCROLL", "INCONSISTENT_ALIGNMENT", "INCONSISTENT_SPACING" ],
+                  "enum" : [ "OUTSIDE_VIEWPORT", "CLIPPED_TEXT", "TEXT_COLLISION", "INTERACTIVE_OVERLAP", "ZERO_SIZE", "BELOW_TARGET_SIZE", "DUPLICATE_TEST_ID", "MISSING_ACCESSIBLE_NAME", "KEYBOARD_UNREACHABLE", "OBSCURED", "INVALID_CLIP_SCROLL", "INCONSISTENT_ALIGNMENT", "INCONSISTENT_SPACING" ],
                   "type" : "string"
                 },
                 "maxItems" : 32,
@@ -7277,7 +7277,7 @@
                   "type" : "string"
                 },
                 "reason" : {
-                  "enum" : [ "OUTSIDE_VIEWPORT", "CLIPPED_TEXT", "INTERACTIVE_OVERLAP", "ZERO_SIZE", "BELOW_TARGET_SIZE", "DUPLICATE_TEST_ID", "MISSING_ACCESSIBLE_NAME", "KEYBOARD_UNREACHABLE", "OBSCURED", "INVALID_CLIP_SCROLL", "INCONSISTENT_ALIGNMENT", "INCONSISTENT_SPACING", "CHECK_UNAVAILABLE" ],
+                  "enum" : [ "OUTSIDE_VIEWPORT", "CLIPPED_TEXT", "TEXT_COLLISION", "INTERACTIVE_OVERLAP", "ZERO_SIZE", "BELOW_TARGET_SIZE", "DUPLICATE_TEST_ID", "MISSING_ACCESSIBLE_NAME", "KEYBOARD_UNREACHABLE", "OBSCURED", "INVALID_CLIP_SCROLL", "INCONSISTENT_ALIGNMENT", "INCONSISTENT_SPACING", "CHECK_UNAVAILABLE" ],
                   "type" : "string"
                 },
                 "relatedActorId" : {
