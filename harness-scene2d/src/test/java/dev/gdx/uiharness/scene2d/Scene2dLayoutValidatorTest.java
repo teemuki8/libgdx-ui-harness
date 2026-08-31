@@ -343,6 +343,27 @@ final class Scene2dLayoutValidatorTest {
             assertEquals(0, observed.inkStageBounds().height());
         }
     }
+    @Test void negativeBlankLineScaleUsesSignedAdvanceForFlippedAndNonFlippedFonts() {
+        for (boolean flipped : new boolean[] {false, true}) {
+            try (Fixture fixture = new Fixture(flipped)) {
+                fixture.font.getData().blankLineScale = -0.5f;
+                ObservedLabel label =
+                        fixture.label("negative-blank-line-scale", "\n\n", 0, 20, 100, 100);
+                label.setFontScale(3, 2);
+                label.setAlignment(Align.top, Align.left);
+
+                SemanticSnapshot snapshot =
+                        fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame());
+                var evidence = fixture.session.textLayoutEvidence(snapshot);
+
+                assertEquals(flipped, fixture.font.isFlipped());
+                assertEquals(flipped ? 15 : -15, fixture.font.getData().down);
+                assertEquals(50, label.getGlyphLayout().height);
+                assertTrue(evidence.textGeometryAvailable());
+            }
+        }
+    }
+
 
     @Test void exactPlacementPreservesHalfUnitOrigin() {
         try (Fixture fixture = new Fixture()) {
@@ -627,12 +648,20 @@ final class Scene2dLayoutValidatorTest {
     private static final class Fixture implements AutoCloseable {
         final Stage stage = Scene2dTestSupport.stage();
         final Texture fontTexture = new Texture(64, 64, Pixmap.Format.RGBA8888);
-        final BitmapFont font = printableAsciiFont(fontTexture);
+        final BitmapFont font;
         final ControlledStageClock clock = new ControlledStageClock(stage,
                 java.time.Duration.ofMillis(16));
         final Scene2dSession session = new Scene2dSession(stage);
         final Scene2dLayoutValidator validator =
                 new Scene2dLayoutValidator(session, new StrictResolution());
+
+        Fixture() {
+            this(false);
+        }
+
+        Fixture(boolean flipped) {
+            font = printableAsciiFont(fontTexture, flipped);
+        }
 
         TextButton button(String testId, String label, float x, float y) {
             TextButton button = new TextButton(label, WidgetStyles.textButton());
@@ -669,7 +698,7 @@ final class Scene2dLayoutValidatorTest {
         }
 
 
-        private static BitmapFont printableAsciiFont(Texture texture) {
+        private static BitmapFont printableAsciiFont(Texture texture, boolean flipped) {
             BitmapFontData data = new BitmapFontData();
             data.name = "printable-ascii-fixture";
             data.lineHeight = 15;
@@ -677,8 +706,9 @@ final class Scene2dLayoutValidatorTest {
             data.xHeight = 7;
             data.ascent = 0;
             data.descent = -3;
-            data.down = -15;
+            data.down = flipped ? 15 : -15;
             data.spaceXadvance = 11;
+            data.flipped = flipped;
             for (char value = 32; value <= 126; value++) {
                 Glyph glyph = new Glyph();
                 glyph.id = value;

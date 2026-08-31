@@ -156,10 +156,8 @@ final class Scene2dTextGeometry {
     private static Optional<EffectiveFontMetrics> effectiveFontMetrics(
             Label label, GlyphLayout layout) {
         BitmapFont font = label.getStyle().font;
-        float lastBaselineDistance = 0;
-        for (GlyphRun run : layout.runs) {
-            lastBaselineDistance = Math.max(lastBaselineDistance, Math.abs(run.y));
-        }
+        float lastBaselineAdvance =
+                layout.runs.isEmpty() ? 0 : layout.runs.peek().y;
         int trailingBlankLines = trailingBlankLines(label.getText());
 
         EffectiveFontMetrics current = new EffectiveFontMetrics(
@@ -167,25 +165,25 @@ final class Scene2dTextGeometry {
                 font.getScaleY(),
                 font.getDescent(),
                 font.getCapHeight(),
-                Math.abs(font.getData().down));
+                font.getData().down);
         float labelScaleY = label.getFontScaleY() / font.getScaleY();
         EffectiveFontMetrics labelScaled = new EffectiveFontMetrics(
                 label.getFontScaleX(),
                 label.getFontScaleY(),
                 font.getDescent() * labelScaleY,
                 font.getCapHeight() * labelScaleY,
-                Math.abs(font.getData().down * labelScaleY));
+                font.getData().down * labelScaleY);
 
         boolean currentMatches = matchesLayoutHeight(
                 layout,
-                lastBaselineDistance,
+                lastBaselineAdvance,
                 trailingBlankLines,
                 label.getText().length(),
                 font.getData().blankLineScale,
                 current);
         boolean labelMatches = matchesLayoutHeight(
                 layout,
-                lastBaselineDistance,
+                lastBaselineAdvance,
                 trailingBlankLines,
                 label.getText().length(),
                 font.getData().blankLineScale,
@@ -201,21 +199,21 @@ final class Scene2dTextGeometry {
 
     private static boolean matchesLayoutHeight(
             GlyphLayout layout,
-            float lastBaselineDistance,
+            float lastBaselineAdvance,
             int trailingBlankLines,
             int textLength,
             float blankLineScale,
             EffectiveFontMetrics metrics) {
-        float expectedBaselineDistance = lastBaselineDistance;
+        float accumulatedAdvance = lastBaselineAdvance;
         int scaledBlankLines = trailingBlankLines;
         if (trailingBlankLines > 0 && trailingBlankLines < textLength) {
-            expectedBaselineDistance += metrics.lineAdvance();
+            accumulatedAdvance += metrics.lineAdvance();
             scaledBlankLines--;
         }
         for (int line = 0; line < scaledBlankLines; line++) {
-            expectedBaselineDistance += metrics.lineAdvance() * blankLineScale;
+            accumulatedAdvance += metrics.lineAdvance() * blankLineScale;
         }
-        float expectedHeight = metrics.capHeight() + expectedBaselineDistance;
+        float expectedHeight = metrics.capHeight() + Math.abs(accumulatedAdvance);
         return Float.compare(layout.height, expectedHeight) == 0;
     }
 
