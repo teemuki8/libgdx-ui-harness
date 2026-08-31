@@ -87,7 +87,9 @@ public final class Scene2dLayoutValidator {
                 retained.put(nodeId, evidence);
             }
         }
-        return LayoutValidationEvidence.available(Map.copyOf(retained));
+        return source.textGeometryAvailable()
+                ? LayoutValidationEvidence.available(Map.copyOf(retained))
+                : LayoutValidationEvidence.unavailable();
     }
 
     private static SemanticNode withoutParent(SemanticNode node) {

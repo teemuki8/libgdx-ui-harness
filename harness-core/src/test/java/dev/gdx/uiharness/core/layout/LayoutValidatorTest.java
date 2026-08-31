@@ -360,6 +360,30 @@ final class LayoutValidatorTest {
         assertEquals("check unavailable: clipped_text", unavailable.evidence());
     }
 
+    @Test void unavailableCheckFailsEvenWhenFindingCapacityIsAlreadyFull() {
+        SemanticSnapshot snapshot = snapshot(node(
+                "small", Role.BUTTON, "Small", bounds(10, 10, 10, 10), "small",
+                visible(true, false, true)));
+        LayoutValidationConfig.Builder builder = LayoutValidationConfig.builder();
+        LayoutValidationConfig.DEFAULT_CHECKS.forEach(builder::disable);
+        LayoutValidationConfig config = builder
+                .enable(LayoutValidationCheck.BELOW_TARGET_SIZE)
+                .enable(LayoutValidationCheck.CLIPPED_TEXT)
+                .failOn(LayoutValidationSeverity.ERROR)
+                .maxFindings(1)
+                .build();
+
+        LayoutValidationResult result = validator.validate(
+                snapshot, config, null, LayoutValidationEvidence.unavailable());
+
+        assertEquals(LayoutValidationResult.Status.FAIL, result.status());
+        assertEquals(1, result.findings().size());
+        assertEquals(
+                LayoutValidationReason.BELOW_TARGET_SIZE,
+                result.findings().getFirst().reason());
+        assertTrue(result.truncated());
+    }
+
     @Test void textEvidenceIsDefensivelyCopiedAndBounded() {
         List<Bounds> clips = new java.util.ArrayList<>();
         clips.add(bounds(0, 0, 100, 100));

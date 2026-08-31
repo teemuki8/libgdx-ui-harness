@@ -265,6 +265,35 @@ final class Scene2dLayoutValidatorTest {
         }
     }
 
+    @Test void ambiguousLabelEvidenceRemainsUnavailableInSelectedSubtree() {
+        try (Fixture fixture = new Fixture()) {
+            Group subtree = new Group();
+            subtree.setBounds(80, 20, 100, 60);
+            fixture.stage.addActor(subtree);
+            fixture.session.semantics().setTestId(subtree, "ambiguous-subtree");
+            ObservedLabel label = fixture.label(
+                    "ambiguous-child", "AA", 10, 10, 50, 20);
+            label.remove();
+            subtree.addActor(label);
+            label.setWrap(true);
+            label.setAlignment(Align.center, Align.left);
+
+            LayoutValidationResult result = fixture.validator.validate(
+                    fixture.clock.revision(),
+                    fixture.clock.frame(),
+                    Locator.testId("ambiguous-subtree"),
+                    only(
+                            LayoutValidationCheck.CLIPPED_TEXT,
+                            LayoutValidationCheck.TEXT_COLLISION),
+                    null);
+
+            assertEquals(LayoutValidationResult.Status.FAIL, result.status());
+            assertTrue(result.findings().stream().anyMatch(finding ->
+                    finding.reason() == LayoutValidationReason.CHECK_UNAVAILABLE
+                            && finding.severity() == LayoutValidationSeverity.ERROR));
+        }
+    }
+
     @Test void nearlyFullWidthCenteredWrapUsesExactWrappedPlacement() {
         try (Fixture fixture = new Fixture()) {
             float textWidth = 43;

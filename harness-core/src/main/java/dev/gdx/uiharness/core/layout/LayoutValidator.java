@@ -129,9 +129,7 @@ public final class LayoutValidator {
                         .thenComparing(LayoutFinding::evidence))
                 .toList();
         truncated = truncated || findings.overflow();
-        boolean gateHit = orderedFindings.stream()
-                .anyMatch(finding -> finding.severity().ordinal()
-                        >= config.failOn().ordinal());
+        boolean gateHit = findings.reaches(config.failOn());
         LayoutValidationResult.Status status = truncated && orderedFindings.isEmpty()
                 ? LayoutValidationResult.Status.INCOMPLETE
                 : gateHit ? LayoutValidationResult.Status.FAIL
@@ -620,6 +618,7 @@ public final class LayoutValidator {
         private final List<LayoutFinding> findings;
         private final int maximum;
         private boolean overflow;
+        private LayoutValidationSeverity highestSeverity;
 
         Sink(int maximum) {
             findings = new ArrayList<>(Math.min(maximum, 64));
@@ -627,6 +626,10 @@ public final class LayoutValidator {
         }
 
         void add(LayoutFinding finding) {
+            if (highestSeverity == null
+                    || finding.severity().ordinal() > highestSeverity.ordinal()) {
+                highestSeverity = finding.severity();
+            }
             if (findings.size() < maximum) {
                 findings.add(finding);
             } else {
@@ -636,6 +639,11 @@ public final class LayoutValidator {
 
         List<LayoutFinding> list() {
             return List.copyOf(findings);
+        }
+
+        boolean reaches(LayoutValidationSeverity threshold) {
+            return highestSeverity != null
+                    && highestSeverity.ordinal() >= threshold.ordinal();
         }
 
         boolean overflow() {
