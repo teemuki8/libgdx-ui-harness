@@ -43,11 +43,13 @@ final class Scene2dTextLayoutExtractor {
         IdentityHashMap<Actor, String> actorIds = actorIds();
         CoordinateMapper coordinates = new CoordinateMapper(stage);
         Map<String, TextLayoutEvidence> result = new LinkedHashMap<>();
-        collect(stage.getRoot(), true, snapshot, actorIds, coordinates, result);
+        if (!collect(stage.getRoot(), true, snapshot, actorIds, coordinates, result)) {
+            return LayoutValidationEvidence.unavailable();
+        }
         return LayoutValidationEvidence.available(Map.copyOf(result));
     }
 
-    private void collect(
+    private boolean collect(
             Actor actor,
             boolean ancestorsVisible,
             SemanticSnapshot snapshot,
@@ -56,7 +58,7 @@ final class Scene2dTextLayoutExtractor {
             Map<String, TextLayoutEvidence> result) {
         boolean visible = ancestorsVisible && actor.isVisible();
         if (result.size() >= MAX_TEXT_NODES) {
-            return;
+            return true;
         }
         if (visible
                 && actor instanceof Label label
@@ -65,14 +67,17 @@ final class Scene2dTextLayoutExtractor {
             SemanticNode node = snapshot.nodes().get(nodeId);
             if (node != null) {
                 label.validate();
-                Scene2dTextGeometry.Placement placement =
-                        Scene2dTextGeometry.placement(label);
+                var placement = Scene2dTextGeometry.placement(label);
+                if (placement.isEmpty()) {
+                    return false;
+                }
+                Scene2dTextGeometry.Placement exact = placement.orElseThrow();
                 TextLayoutEvidence observed = new TextLayoutEvidence(
                         node.id(),
                         stageBounds(coordinates.typographyBounds(
-                                label, placement.layoutBounds(), 1.0, 1.0)),
+                                label, exact.layoutBounds(), 1.0, 1.0)),
                         stageBounds(coordinates.typographyBounds(
-                                label, placement.inkBounds(), 1.0, 1.0)),
+                                label, exact.inkBounds(), 1.0, 1.0)),
                         clipStageBounds(label, coordinates));
                 result.put(node.id(), observed);
             }
@@ -80,15 +85,18 @@ final class Scene2dTextLayoutExtractor {
         if (actor instanceof Group group) {
             SnapshotArray<Actor> children = group.getChildren();
             for (int index = 0; index < children.size; index++) {
-                collect(
+                if (!collect(
                         children.get(index),
                         visible,
                         snapshot,
                         actorIds,
                         coordinates,
-                        result);
+                        result)) {
+                    return false;
+                }
             }
         }
+        return true;
     }
 
     private static List<Bounds> clipStageBounds(

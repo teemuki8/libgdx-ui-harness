@@ -11,6 +11,7 @@ import com.badlogic.gdx.graphics.Texture;
 import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.graphics.g2d.BitmapFont.BitmapFontData;
 import com.badlogic.gdx.graphics.g2d.BitmapFont.Glyph;
+import com.badlogic.gdx.graphics.g2d.Batch;
 import com.badlogic.gdx.graphics.g2d.BitmapFontCache;
 import com.badlogic.gdx.graphics.g2d.TextureRegion;
 import com.badlogic.gdx.scenes.scene2d.Group;
@@ -185,6 +186,89 @@ final class Scene2dLayoutValidatorTest {
         }
     }
 
+    @Test void validationNeverInvokesLabelOrBackgroundDraw() {
+        try (Fixture fixture = new Fixture()) {
+            DrawRejectingDrawable background = new DrawRejectingDrawable();
+            DrawRejectingLabel label = new DrawRejectingLabel(
+                    "AA", new LabelStyle(fixture.font, Color.WHITE));
+            label.getStyle().background = background;
+            label.setBounds(20, 20, 100, 30);
+            fixture.stage.addActor(label);
+            fixture.session.semantics().setTestId(label, "no-draw");
+
+            fixture.validator.validate(
+                    fixture.clock.revision(),
+                    fixture.clock.frame(),
+                    null,
+                    only(LayoutValidationCheck.CLIPPED_TEXT),
+                    null);
+
+            assertFalse(label.drawInvoked);
+            assertFalse(background.drawInvoked);
+        }
+    }
+
+    @Test void fittingOneLineWrapWithAmbiguousBlockPlacementIsHardUnavailable() {
+        try (Fixture fixture = new Fixture()) {
+            Label label = fixture.label("ambiguous-wrap", "AA", 100, 40, 50, 20);
+            label.setWrap(true);
+            label.setAlignment(Align.center, Align.left);
+
+            LayoutValidationResult result = fixture.validator.validate(
+                    fixture.clock.revision(),
+                    fixture.clock.frame(),
+                    null,
+                    only(LayoutValidationCheck.CLIPPED_TEXT),
+                    null);
+
+            assertEquals(LayoutValidationResult.Status.FAIL, result.status());
+            assertTrue(result.findings().stream().anyMatch(finding ->
+                    finding.reason() == LayoutValidationReason.CHECK_UNAVAILABLE
+                            && finding.severity() == LayoutValidationSeverity.ERROR));
+        }
+    }
+
+    @Test void exactPlacementPreservesHalfUnitOrigin() {
+        try (Fixture fixture = new Fixture()) {
+            BaseDrawable inset = drawable(0, 0, 0.5f, 0, 0, 0);
+            Label label = fixture.label("half-unit", "AA", 10, 20, 100, 20);
+            label.getStyle().background = inset;
+
+            SemanticSnapshot snapshot =
+                    fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame());
+            var evidence = fixture.session.textLayoutEvidence(snapshot);
+            var node = snapshot.nodes().values().stream()
+                    .filter(value -> "half-unit".equals(value.testId()))
+                    .findFirst().orElseThrow();
+
+            assertTrue(evidence.textGeometryAvailable());
+            assertEquals(
+                    10.5,
+                    evidence.textByNodeId().get(node.id()).layoutStageBounds().x(),
+                    1e-6);
+        }
+    }
+
+    @Test void exactPlacementPlacesZeroGlyphAtConceptualOrigin() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.label("zero-glyph", "\u0001", 200, 30, 100, 20);
+
+            SemanticSnapshot snapshot =
+                    fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame());
+            var evidence = fixture.session.textLayoutEvidence(snapshot);
+            var node = snapshot.nodes().values().stream()
+                    .filter(value -> "zero-glyph".equals(value.testId()))
+                    .findFirst().orElseThrow();
+            Bounds ink = evidence.textByNodeId().get(node.id()).inkStageBounds();
+
+            assertTrue(evidence.textGeometryAvailable());
+            assertEquals(200, ink.x(), 1e-6);
+            assertEquals(45, ink.y(), 1e-6);
+            assertEquals(0, ink.width(), 1e-6);
+            assertEquals(0, ink.height(), 1e-6);
+        }
+    }
+
     @Test void subtreeModeExcludesExternalIntrinsicTextEvidence() {
         try (Fixture fixture = new Fixture()) {
             fixture.viewport(960, 540);
@@ -313,67 +397,36 @@ final class Scene2dLayoutValidatorTest {
                     1e-6);
         }
     }
-    @Test void wrapEllipsisUsesRenderedSingleLinePlacementWithIndependentLineAlignment() {
+    @Test void wrapEllipsisWithIndependentLineAlignmentIsUnavailable() {
         try (Fixture fixture = new Fixture()) {
             fixture.viewport(960, 540);
-            ObservedLabel centeredTruncated = fixture.label(
-                    "centered-truncated", "AAAAAA", 100, 40, 50, 20);
-            centeredTruncated.setWrap(true);
-            centeredTruncated.setEllipsis("...");
-            centeredTruncated.setAlignment(Align.center, Align.left);
-            ObservedLabel rightTruncated = fixture.label(
-                    "right-truncated", "AAAAAA", 200, 40, 50, 20);
-            rightTruncated.setWrap(true);
-            rightTruncated.setEllipsis("...");
-            rightTruncated.setAlignment(Align.right, Align.left);
-            ObservedLabel centeredFitting = fixture.label(
-                    "centered-fitting", "AA", 300, 40, 50, 20);
-            centeredFitting.setWrap(true);
-            centeredFitting.setEllipsis("...");
-            centeredFitting.setAlignment(Align.center, Align.left);
-            ObservedLabel rightFitting = fixture.label(
-                    "right-fitting", "AA", 400, 40, 50, 20);
-            rightFitting.setWrap(true);
-            rightFitting.setEllipsis("...");
-            rightFitting.setAlignment(Align.right, Align.left);
+            Label truncated = fixture.label(
+                    "truncated", "AAAAAA", 100, 40, 50, 20);
+            truncated.setWrap(true);
+            truncated.setEllipsis("...");
+            truncated.setAlignment(Align.center, Align.left);
+            Label fitting = fixture.label(
+                    "fitting", "AA", 300, 40, 50, 20);
+            fitting.setWrap(true);
+            fitting.setEllipsis("...");
+            fitting.setAlignment(Align.right, Align.left);
 
             SemanticSnapshot snapshot =
                     fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame());
             var evidence = fixture.session.textLayoutEvidence(snapshot);
-            var byTestId = snapshot.nodes().values().stream()
-                    .filter(node -> node.testId() != null)
-                    .collect(java.util.stream.Collectors.toMap(
-                            node -> node.testId(),
-                            node -> evidence.textByNodeId().get(node.id())));
+            LayoutValidationResult result = fixture.validator.validate(
+                    fixture.clock.revision(),
+                    fixture.clock.frame(),
+                    null,
+                    only(LayoutValidationCheck.CLIPPED_TEXT),
+                    null);
 
-            assertEquals(
-                    100,
-                    byTestId.get("centered-truncated").layoutStageBounds().x(),
-                    1e-6);
-            assertEquals(
-                    centeredTruncated.cachedInkStageBounds(),
-                    byTestId.get("centered-truncated").inkStageBounds());
-            assertEquals(
-                    200,
-                    byTestId.get("right-truncated").layoutStageBounds().x(),
-                    1e-6);
-            assertEquals(
-                    rightTruncated.cachedInkStageBounds(),
-                    byTestId.get("right-truncated").inkStageBounds());
-            assertEquals(
-                    300,
-                    byTestId.get("centered-fitting").layoutStageBounds().x(),
-                    1e-6);
-            assertEquals(
-                    centeredFitting.cachedInkStageBounds(),
-                    byTestId.get("centered-fitting").inkStageBounds());
-            assertEquals(
-                    400,
-                    byTestId.get("right-fitting").layoutStageBounds().x(),
-                    1e-6);
-            assertEquals(
-                    rightFitting.cachedInkStageBounds(),
-                    byTestId.get("right-fitting").inkStageBounds());
+            assertFalse(evidence.textGeometryAvailable());
+            assertTrue(evidence.textByNodeId().isEmpty());
+            assertEquals(LayoutValidationResult.Status.FAIL, result.status());
+            assertTrue(result.findings().stream().anyMatch(finding ->
+                    finding.reason() == LayoutValidationReason.CHECK_UNAVAILABLE
+                            && finding.severity() == LayoutValidationSeverity.ERROR));
         }
     }
 
@@ -529,6 +582,28 @@ final class Scene2dLayoutValidatorTest {
             fontTexture.dispose();
         }
     }
+    private static final class DrawRejectingLabel extends Label {
+        private boolean drawInvoked;
+
+        DrawRejectingLabel(CharSequence text, LabelStyle style) {
+            super(text, style);
+        }
+
+        @Override public void draw(Batch batch, float parentAlpha) {
+            drawInvoked = true;
+            super.draw(batch, parentAlpha);
+        }
+    }
+
+    private static final class DrawRejectingDrawable extends BaseDrawable {
+        private boolean drawInvoked;
+
+        @Override public void draw(
+                Batch batch, float x, float y, float width, float height) {
+            drawInvoked = true;
+        }
+    }
+
     private static final class ObservedLabel extends Label {
         ObservedLabel(CharSequence text, LabelStyle style) {
             super(text, style);

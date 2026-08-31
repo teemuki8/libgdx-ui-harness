@@ -11,10 +11,13 @@ import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.graphics.g2d.BitmapFont.BitmapFontData;
 import com.badlogic.gdx.graphics.g2d.BitmapFont.Glyph;
 import com.badlogic.gdx.graphics.g2d.TextureRegion;
+import com.badlogic.gdx.graphics.g2d.Batch;
 import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
 import com.badlogic.gdx.scenes.scene2d.ui.Label.LabelStyle;
+import com.badlogic.gdx.scenes.scene2d.utils.BaseDrawable;
+import com.badlogic.gdx.utils.Align;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
 import dev.gdx.uiharness.core.layout.LayoutValidationEvidence;
 import dev.gdx.uiharness.core.typography.Availability;
@@ -172,6 +175,83 @@ final class Scene2dTypographyExtractorTest {
         }
     }
 
+    @Test void typographyNeverInvokesLabelOrBackgroundDraw() {
+        Stage stage = Scene2dTestSupport.stage();
+        Label template = label("AA");
+        DrawRejectingDrawable background = new DrawRejectingDrawable();
+        DrawRejectingLabel observed = new DrawRejectingLabel(
+                "AA", new LabelStyle(template.getStyle().font, Color.WHITE));
+        observed.getStyle().background = background;
+        observed.setBounds(10, 20, 100, 20);
+        stage.addActor(observed);
+        try (Scene2dSession session = new Scene2dSession(stage)) {
+            session.semantics().setTestId(observed, "no-draw");
+
+            session.typography(
+                    1, 2, captureContext(Map.of("no-draw", 0.0)));
+
+            assertFalse(observed.drawInvoked);
+            assertFalse(background.drawInvoked);
+        }
+    }
+
+    @Test void typographyPreservesHalfUnitConceptualOrigin() {
+        Stage stage = Scene2dTestSupport.stage();
+        Label observed = label("AA");
+        BaseDrawable background = new BaseDrawable();
+        background.setLeftWidth(0.5f);
+        observed.getStyle().background = background;
+        observed.setBounds(10, 20, 100, 20);
+        stage.addActor(observed);
+        try (Scene2dSession session = new Scene2dSession(stage)) {
+            session.semantics().setTestId(observed, "half-unit");
+
+            TypographyObservation observation = session.typography(
+                    1, 2, captureContext(Map.of("half-unit", 0.0))).getFirst();
+
+            assertEquals(
+                    0.5,
+                    observation.geometry().origins().stream()
+                            .filter(point -> point.space() == CoordinateSpace.LOCAL)
+                            .findFirst().orElseThrow().x(),
+                    1e-6);
+        }
+    }
+
+    @Test void typographyPlacesZeroGlyphAtConceptualOrigin() {
+        Stage stage = Scene2dTestSupport.stage();
+        Label observed = label("\u0001");
+        observed.setBounds(200, 30, 100, 20);
+        stage.addActor(observed);
+        try (Scene2dSession session = new Scene2dSession(stage)) {
+            session.semantics().setTestId(observed, "zero-glyph");
+
+            TypographyObservation observation = session.typography(
+                    1, 2, captureContext(Map.of("zero-glyph", 0.0))).getFirst();
+            var ink = observation.geometry().inkBounds(CoordinateSpace.LOCAL);
+
+            assertEquals(0, ink.x(), 1e-6);
+            assertEquals(15, ink.y(), 1e-6);
+            assertEquals(0, ink.width(), 1e-6);
+            assertEquals(0, ink.height(), 1e-6);
+        }
+    }
+
+    @Test void typographyDeclinesAmbiguousOneLineWrapPlacement() {
+        Stage stage = Scene2dTestSupport.stage();
+        Label ambiguous = label("AA");
+        ambiguous.setBounds(100, 40, 50, 20);
+        ambiguous.setWrap(true);
+        ambiguous.setAlignment(Align.center, Align.left);
+        stage.addActor(ambiguous);
+        try (Scene2dSession session = new Scene2dSession(stage)) {
+            session.semantics().setTestId(ambiguous, "ambiguous");
+
+            assertTrue(session.typography(
+                    1, 2, captureContext(Map.of("ambiguous", 0.0))).isEmpty());
+        }
+    }
+
     @Test
     void aLikeTitleRetainsIdentityAndMappingsAcrossFiveFramesAtBothViewports() {
         Scene2dTestSupport.stage().dispose();
@@ -226,6 +306,42 @@ final class Scene2dTypographyExtractorTest {
                     }
                 }
             }
+        }
+    }
+
+    private static TypographyCaptureContext captureContext(
+            Map<String, Double> rasterResiduals) {
+        return new TypographyCaptureContext(
+                "fixture-app",
+                "initial-800x600",
+                "current-title",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                800,
+                600,
+                800,
+                600,
+                rasterResiduals);
+    }
+
+    private static final class DrawRejectingLabel extends Label {
+        private boolean drawInvoked;
+
+        DrawRejectingLabel(CharSequence text, LabelStyle style) {
+            super(text, style);
+        }
+
+        @Override public void draw(Batch batch, float parentAlpha) {
+            drawInvoked = true;
+            super.draw(batch, parentAlpha);
+        }
+    }
+
+    private static final class DrawRejectingDrawable extends BaseDrawable {
+        private boolean drawInvoked;
+
+        @Override public void draw(
+                Batch batch, float x, float y, float width, float height) {
+            drawInvoked = true;
         }
     }
 

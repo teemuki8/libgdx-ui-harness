@@ -28,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Optional;
 import java.util.HexFormat;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -105,7 +106,7 @@ final class Scene2dTypographyExtractor {
             if (node != null
                     && node.testId() != null
                     && context.rasterResiduals().containsKey(node.testId())) {
-                result.add(observe(
+                observe(
                         label,
                         actorId,
                         node.testId(),
@@ -115,7 +116,7 @@ final class Scene2dTypographyExtractor {
                         scaleX,
                         scaleY,
                         revision,
-                        frame));
+                        frame).ifPresent(result::add);
             }
         }
         if (actor instanceof Group group) {
@@ -138,7 +139,7 @@ final class Scene2dTypographyExtractor {
         }
     }
 
-    private TypographyObservation observe(
+    private Optional<TypographyObservation> observe(
             Label label,
             String actorId,
             String controlId,
@@ -163,30 +164,34 @@ final class Scene2dTypographyExtractor {
                 coordinates.parentToStageTransform(label),
                 coordinates.stageToScreenTransform(),
                 CoordinateMapper.screenToFramebufferTransform(scaleX, scaleY));
-        Scene2dTextGeometry.Placement placement = Scene2dTextGeometry.placement(label);
+        var placement = Scene2dTextGeometry.placement(label);
+        if (placement.isEmpty()) {
+            return Optional.empty();
+        }
+        Scene2dTextGeometry.Placement exact = placement.orElseThrow();
         TypographyGeometry geometry = geometry(
-                label, coordinates, placement, transforms, scaleX, scaleY);
+                label, coordinates, exact, transforms, scaleX, scaleY);
         String text = label.getText().toString();
         List<GlyphRunObservation> glyphRuns = List.of(new GlyphRunObservation(
                 0,
                 text.length(),
                 text,
                 new CoordinatePoint(
-                        CoordinateSpace.LOCAL, placement.originX(), placement.originY()),
+                        CoordinateSpace.LOCAL, exact.originX(), exact.originY()),
                 new CoordinatePoint(
-                        CoordinateSpace.LOCAL, placement.originX(), placement.baselineY()),
+                        CoordinateSpace.LOCAL, exact.originX(), exact.baselineY()),
                 new CoordinateBounds(
                         CoordinateSpace.LOCAL,
-                        placement.inkBounds().x(),
-                        placement.inkBounds().y(),
-                        placement.inkBounds().width(),
-                        placement.inkBounds().height())));
+                        exact.inkBounds().x(),
+                        exact.inkBounds().y(),
+                        exact.inkBounds().width(),
+                        exact.inkBounds().height())));
         List<String> mechanisms = mechanisms(fontObservation);
         List<String> hypotheses = fontObservation.bitmapScaleX() == 1
                         && fontObservation.bitmapScaleY() == 1
                 ? List.of()
                 : List.of("bitmap magnification may alter raster sharpness");
-        return new TypographyObservation(
+        return Optional.of(new TypographyObservation(
                 "typography/v1",
                 controlId,
                 actorId,
@@ -205,7 +210,7 @@ final class Scene2dTypographyExtractor {
                 geometry,
                 rasterResidual,
                 mechanisms,
-                hypotheses);
+                hypotheses));
     }
 
     private static FontObservation fontObservation(
