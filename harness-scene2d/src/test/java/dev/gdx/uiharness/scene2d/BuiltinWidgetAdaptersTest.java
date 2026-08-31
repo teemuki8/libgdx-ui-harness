@@ -4,30 +4,20 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.badlogic.gdx.graphics.Color;
-import com.badlogic.gdx.graphics.g2d.BitmapFont;
-import com.badlogic.gdx.graphics.g2d.BitmapFont.BitmapFontData;
-import com.badlogic.gdx.graphics.g2d.TextureRegion;
 import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.CheckBox;
-import com.badlogic.gdx.scenes.scene2d.ui.CheckBox.CheckBoxStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.Dialog;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
-import com.badlogic.gdx.scenes.scene2d.ui.Label.LabelStyle;
-import com.badlogic.gdx.scenes.scene2d.ui.List.ListStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane.ScrollPaneStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.SelectBox;
-import com.badlogic.gdx.scenes.scene2d.ui.SelectBox.SelectBoxStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.Slider;
 import com.badlogic.gdx.scenes.scene2d.ui.Slider.SliderStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton.TextButtonStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.TextField;
-import com.badlogic.gdx.scenes.scene2d.ui.TextField.TextFieldStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.Window;
-import com.badlogic.gdx.scenes.scene2d.ui.Window.WindowStyle;
 import com.badlogic.gdx.utils.viewport.FitViewport;
 import dev.gdx.uiharness.core.model.Role;
 import dev.gdx.uiharness.core.model.SemanticNode;
@@ -37,7 +27,6 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
-@SuppressWarnings("auxiliaryclass")
 final class BuiltinWidgetAdaptersTest {
     @Test void dispatchesAllBuiltInWidgetRolesAndVisibleText() {
         Stage stage = stage();
@@ -164,62 +153,5 @@ final class BuiltinWidgetAdaptersTest {
         SpecialButton(String text, TextButtonStyle style) {
             super(text, style);
         }
-    }
-}
-
-final class WidgetStyles {
-    private static final BitmapFont FONT =
-            new BitmapFont(new BitmapFontData(), new TextureRegion(), false);
-
-    private WidgetStyles() {}
-
-    static LabelStyle label() {
-        return new LabelStyle(FONT, Color.WHITE);
-    }
-
-    static TextButtonStyle textButton() {
-        TextButtonStyle style = new TextButtonStyle();
-        style.font = FONT;
-        style.fontColor = Color.WHITE;
-        return style;
-    }
-
-    static CheckBoxStyle checkBox() {
-        CheckBoxStyle style = new CheckBoxStyle();
-        style.font = FONT;
-        style.fontColor = Color.WHITE;
-        return style;
-    }
-
-    static TextFieldStyle textField() {
-        TextFieldStyle style = new TextFieldStyle();
-        style.font = FONT;
-        style.fontColor = Color.WHITE;
-        return style;
-    }
-
-    static ListStyle list() {
-        ListStyle style = new ListStyle();
-        style.font = FONT;
-        style.fontColorSelected = Color.WHITE;
-        style.fontColorUnselected = Color.WHITE;
-        style.selection = new com.badlogic.gdx.scenes.scene2d.utils.BaseDrawable();
-        return style;
-    }
-
-    static SelectBoxStyle selectBox() {
-        SelectBoxStyle style = new SelectBoxStyle();
-        style.font = FONT;
-        style.fontColor = Color.WHITE;
-        style.scrollStyle = new ScrollPaneStyle();
-        style.listStyle = list();
-        return style;
-    }
-
-    static WindowStyle window() {
-        WindowStyle style = new WindowStyle();
-        style.titleFont = FONT;
-        style.titleFontColor = Color.WHITE;
-        return style;
     }
 }
