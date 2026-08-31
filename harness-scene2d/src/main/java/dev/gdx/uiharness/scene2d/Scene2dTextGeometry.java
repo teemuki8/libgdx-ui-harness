@@ -176,10 +176,20 @@ final class Scene2dTextGeometry {
                 font.getCapHeight() * labelScaleY,
                 Math.abs(font.getData().down * labelScaleY));
 
-        boolean currentMatches =
-                matchesLayoutHeight(layout, lastBaselineDistance, trailingBlankLines, current);
-        boolean labelMatches =
-                matchesLayoutHeight(layout, lastBaselineDistance, trailingBlankLines, labelScaled);
+        boolean currentMatches = matchesLayoutHeight(
+                layout,
+                lastBaselineDistance,
+                trailingBlankLines,
+                label.getText().length(),
+                font.getData().blankLineScale,
+                current);
+        boolean labelMatches = matchesLayoutHeight(
+                layout,
+                lastBaselineDistance,
+                trailingBlankLines,
+                label.getText().length(),
+                font.getData().blankLineScale,
+                labelScaled);
         if (currentMatches && labelMatches && !samePlacementMetrics(current, labelScaled)) {
             return Optional.empty();
         }
@@ -193,10 +203,20 @@ final class Scene2dTextGeometry {
             GlyphLayout layout,
             float lastBaselineDistance,
             int trailingBlankLines,
+            int textLength,
+            float blankLineScale,
             EffectiveFontMetrics metrics) {
-        float blankLineAdvance = trailingBlankLines * metrics.lineAdvance();
-        float effectiveCapHeight = layout.height - lastBaselineDistance - blankLineAdvance;
-        return Float.compare(effectiveCapHeight, metrics.capHeight()) == 0;
+        float expectedBaselineDistance = lastBaselineDistance;
+        int scaledBlankLines = trailingBlankLines;
+        if (trailingBlankLines > 0 && trailingBlankLines < textLength) {
+            expectedBaselineDistance += metrics.lineAdvance();
+            scaledBlankLines--;
+        }
+        for (int line = 0; line < scaledBlankLines; line++) {
+            expectedBaselineDistance += metrics.lineAdvance() * blankLineScale;
+        }
+        float expectedHeight = metrics.capHeight() + expectedBaselineDistance;
+        return Float.compare(layout.height, expectedHeight) == 0;
     }
 
     private static boolean samePlacementMetrics(
