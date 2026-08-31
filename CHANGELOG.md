@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.0.0 - 2026-08-31
+
 ### Added
 
 - Added signed `x`/`y` layout-finding positions while retaining non-negative width and height, plus
