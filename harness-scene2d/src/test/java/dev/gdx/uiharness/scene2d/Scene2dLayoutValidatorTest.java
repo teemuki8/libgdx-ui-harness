@@ -277,6 +277,48 @@ final class Scene2dLayoutValidatorTest {
         }
     }
 
+    @Test void trailingBlankLineUsesExactCurrentFontMetrics() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.font.getData().setScale(2);
+            ObservedLabel label =
+                    fixture.label("trailing-blank-line", "A\n", 0, 20, 100, 80);
+            label.setAlignment(Align.top, Align.left);
+
+            SemanticSnapshot snapshot =
+                    fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame());
+            var evidence = fixture.session.textLayoutEvidence(snapshot);
+            var node = snapshot.nodes().values().stream()
+                    .filter(value -> "trailing-blank-line".equals(value.testId()))
+                    .findFirst().orElseThrow();
+            var observed = evidence.textByNodeId().get(node.id());
+
+            assertTrue(evidence.textGeometryAvailable());
+            assertEquals(label.getGlyphLayout().height, observed.layoutStageBounds().height());
+            assertEquals(label.cachedInkStageBounds(), observed.inkStageBounds());
+        }
+    }
+
+    @Test void multipleTrailingBlankLinesUseExactLabelScaleMetrics() {
+        try (Fixture fixture = new Fixture()) {
+            ObservedLabel label =
+                    fixture.label("trailing-blank-lines", "A\n\n", 0, 20, 100, 100);
+            label.setFontScale(3, 2);
+            label.setAlignment(Align.top, Align.left);
+
+            SemanticSnapshot snapshot =
+                    fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame());
+            var evidence = fixture.session.textLayoutEvidence(snapshot);
+            var node = snapshot.nodes().values().stream()
+                    .filter(value -> "trailing-blank-lines".equals(value.testId()))
+                    .findFirst().orElseThrow();
+            var observed = evidence.textByNodeId().get(node.id());
+
+            assertTrue(evidence.textGeometryAvailable());
+            assertEquals(label.getGlyphLayout().height, observed.layoutStageBounds().height());
+            assertEquals(label.cachedInkStageBounds(), observed.inkStageBounds());
+        }
+    }
+
     @Test void exactPlacementPreservesHalfUnitOrigin() {
         try (Fixture fixture = new Fixture()) {
             BaseDrawable inset = drawable(0, 0, 0.5f, 0, 0, 0);

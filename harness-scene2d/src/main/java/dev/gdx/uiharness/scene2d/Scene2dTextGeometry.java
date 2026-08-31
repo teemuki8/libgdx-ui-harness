@@ -160,23 +160,62 @@ final class Scene2dTextGeometry {
         for (GlyphRun run : layout.runs) {
             lastBaselineDistance = Math.max(lastBaselineDistance, Math.abs(run.y));
         }
-        float effectiveCapHeight = layout.height - lastBaselineDistance;
-        if (Float.compare(effectiveCapHeight, font.getCapHeight()) == 0) {
-            return Optional.of(new EffectiveFontMetrics(
-                    font.getScaleX(), font.getScaleY(), font.getDescent()));
-        }
+        int trailingBlankLines = trailingBlankLines(label.getText());
 
-        float scaleY = label.getFontScaleY() / font.getScaleY();
-        if (Float.compare(effectiveCapHeight, font.getCapHeight() * scaleY) != 0) {
-            return Optional.empty();
-        }
-        return Optional.of(new EffectiveFontMetrics(
+        EffectiveFontMetrics current = new EffectiveFontMetrics(
+                font.getScaleX(),
+                font.getScaleY(),
+                font.getDescent(),
+                font.getCapHeight(),
+                Math.abs(font.getData().down));
+        float labelScaleY = label.getFontScaleY() / font.getScaleY();
+        EffectiveFontMetrics labelScaled = new EffectiveFontMetrics(
                 label.getFontScaleX(),
                 label.getFontScaleY(),
-                font.getDescent() * scaleY));
+                font.getDescent() * labelScaleY,
+                font.getCapHeight() * labelScaleY,
+                Math.abs(font.getData().down * labelScaleY));
+
+        boolean currentMatches =
+                matchesLayoutHeight(layout, lastBaselineDistance, trailingBlankLines, current);
+        boolean labelMatches =
+                matchesLayoutHeight(layout, lastBaselineDistance, trailingBlankLines, labelScaled);
+        if (currentMatches && labelMatches && !samePlacementMetrics(current, labelScaled)) {
+            return Optional.empty();
+        }
+        if (currentMatches) {
+            return Optional.of(current);
+        }
+        return labelMatches ? Optional.of(labelScaled) : Optional.empty();
     }
 
-    private record EffectiveFontMetrics(float scaleX, float scaleY, float descent) {}
+    private static boolean matchesLayoutHeight(
+            GlyphLayout layout,
+            float lastBaselineDistance,
+            int trailingBlankLines,
+            EffectiveFontMetrics metrics) {
+        float blankLineAdvance = trailingBlankLines * metrics.lineAdvance();
+        float effectiveCapHeight = layout.height - lastBaselineDistance - blankLineAdvance;
+        return Float.compare(effectiveCapHeight, metrics.capHeight()) == 0;
+    }
+
+    private static boolean samePlacementMetrics(
+            EffectiveFontMetrics first, EffectiveFontMetrics second) {
+        return Float.compare(first.scaleX(), second.scaleX()) == 0
+                && Float.compare(first.scaleY(), second.scaleY()) == 0
+                && Float.compare(first.descent(), second.descent()) == 0;
+    }
+
+    private static int trailingBlankLines(CharSequence text) {
+        int count = 0;
+        for (int index = text.length() - 1; index >= 0 && text.charAt(index) == '\n'; index--) {
+            count++;
+        }
+        return count;
+    }
+
+    private record EffectiveFontMetrics(
+            float scaleX, float scaleY, float descent, float capHeight, float lineAdvance) {}
 
     record Placement(
             double originX,

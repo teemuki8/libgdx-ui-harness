@@ -252,6 +252,27 @@ final class Scene2dTypographyExtractorTest {
         }
     }
 
+    @Test void typographyDeclinesXScaleAmbiguousWithRestoredFontMetrics() {
+        Stage stage = Scene2dTestSupport.stage();
+        Label ambiguous = label("A");
+        BitmapFont font = ambiguous.getStyle().font;
+        font.getData().setScale(2, 2);
+        ambiguous.setFontScale(3, 2);
+        ambiguous.setBounds(100, 40, 100, 40);
+        stage.addActor(ambiguous);
+        try (Scene2dSession session = new Scene2dSession(stage)) {
+            session.semantics().setTestId(ambiguous, "ambiguous-x-scale");
+
+            LayoutValidationEvidence layout =
+                    session.textLayoutEvidence(session.snapshot(1, 2));
+
+            assertFalse(layout.textGeometryAvailable());
+            assertTrue(layout.textByNodeId().isEmpty());
+            assertTrue(session.typography(
+                    1, 2, captureContext(Map.of("ambiguous-x-scale", 0.0))).isEmpty());
+        }
+    }
+
     @Test
     void aLikeTitleRetainsIdentityAndMappingsAcrossFiveFramesAtBothViewports() {
         Scene2dTestSupport.stage().dispose();
