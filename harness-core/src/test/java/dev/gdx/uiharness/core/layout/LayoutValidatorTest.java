@@ -38,8 +38,9 @@ final class LayoutValidatorTest {
                         LayoutValidationCheck.CLIPPED_TEXT,
                         LayoutValidationCheck.ZERO_SIZE),
                 null,
-                LayoutValidationEvidence.available(Map.of(
-                        "clip", text("clip", bounds(10, 10, 101, 20)))));
+                LayoutValidationEvidence.available(
+                        bounds(0, 0, 1280, 720),
+                        Map.of("clip", text("clip", bounds(10, 10, 101, 20)))));
 
         assertEquals(LayoutValidationResult.Status.FAIL, result.status());
         assertReason(result, "out", LayoutValidationReason.OUTSIDE_VIEWPORT);
@@ -182,6 +183,17 @@ final class LayoutValidatorTest {
                         LayoutValidationCheck.INCONSISTENT_ALIGNMENT,
                         LayoutValidationCheck.INCONSISTENT_SPACING),
                 null).findings());
+
+        findings.findings().stream()
+                .filter(finding -> finding.reason()
+                        == LayoutValidationReason.INCONSISTENT_ALIGNMENT
+                        || finding.reason() == LayoutValidationReason.INCONSISTENT_SPACING)
+                .forEach(finding -> {
+                    assertTrue(grouped.nodes().containsKey(finding.relatedActorId()));
+                    assertTrue(finding.evidence().contains("layout-group"));
+                    assertTrue(finding.evidence().contains(
+                            finding.nodeId().startsWith("v") ? "hud-values" : "control-row"));
+                });
     }
 
     @Test void duplicateTestIdsAndMissingAccessibleNamesAreDistinct() {
@@ -301,9 +313,11 @@ final class LayoutValidatorTest {
                         "screen-value", visible(false, false, true)),
                 node("p2", Role.LABEL, "P2 HEALTH:", bounds(554, 502, 94, 20),
                         "player-two-health-label", visible(false, false, true)));
-        LayoutValidationEvidence evidence = LayoutValidationEvidence.available(Map.of(
-                "state", text("state", bounds(467, 502, 97, 13)),
-                "p2", text("p2", bounds(554, 502, 91, 13))));
+        LayoutValidationEvidence evidence = LayoutValidationEvidence.available(
+                bounds(0, 0, 1280, 720),
+                Map.of(
+                        "state", text("state", bounds(467, 502, 97, 13)),
+                        "p2", text("p2", bounds(554, 502, 91, 13))));
         LayoutValidationConfig config = only(
                 LayoutValidationCheck.CLIPPED_TEXT,
                 LayoutValidationCheck.TEXT_COLLISION);
@@ -331,9 +345,11 @@ final class LayoutValidatorTest {
                         "label", visible(false, false, true)),
                 node("empty", Role.LABEL, "", bounds(20, 15, 10, 10),
                         "empty", visible(false, false, true)));
-        LayoutValidationEvidence evidence = LayoutValidationEvidence.available(Map.of(
-                "label", text("label", bounds(10, 10, 100, 20)),
-                "empty", text("empty", bounds(20, 15, 0, 10))));
+        LayoutValidationEvidence evidence = LayoutValidationEvidence.available(
+                bounds(0, 0, 1280, 720),
+                Map.of(
+                        "label", text("label", bounds(10, 10, 100, 20)),
+                        "empty", text("empty", bounds(20, 15, 0, 10))));
 
         LayoutValidationResult result = validator.validate(
                 snapshot, only(LayoutValidationCheck.TEXT_COLLISION), null, evidence);
@@ -392,11 +408,14 @@ final class LayoutValidatorTest {
         clips.clear();
         Map<String, TextLayoutEvidence> byNode = new LinkedHashMap<>();
         byNode.put("label", text);
-        LayoutValidationEvidence evidence = LayoutValidationEvidence.available(byNode);
+        Bounds viewport = bounds(-10, -20, 1280, 720);
+        LayoutValidationEvidence evidence =
+                LayoutValidationEvidence.available(viewport, byNode);
         byNode.clear();
 
         assertEquals(1, text.clipChainStageBounds().size());
         assertEquals(Map.of("label", text), evidence.textByNodeId());
+        assertEquals(viewport, evidence.stageViewportBounds());
         assertThrows(UnsupportedOperationException.class,
                 () -> text.clipChainStageBounds().clear());
         assertThrows(UnsupportedOperationException.class,
@@ -406,10 +425,18 @@ final class LayoutValidatorTest {
                         "label", bounds(0, 0, 1, 1), bounds(0, 0, 1, 1),
                         java.util.Collections.nCopies(129, bounds(0, 0, 1, 1))));
         assertThrows(IllegalArgumentException.class,
-                () -> LayoutValidationEvidence.available(Map.of(
-                        "other", text)));
+                () -> LayoutValidationEvidence.available(
+                        viewport, Map.of("other", text)));
+        assertThrows(NullPointerException.class,
+                () -> LayoutValidationEvidence.available(null, Map.of()));
         assertThrows(IllegalArgumentException.class,
-                () -> new LayoutValidationEvidence(false, Map.of("label", text)));
+                () -> new LayoutValidationEvidence(false, viewport, Map.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new LayoutValidationEvidence(
+                        false, null, Map.of("label", text)));
+        LayoutValidationEvidence unavailable = LayoutValidationEvidence.unavailable();
+        assertEquals(null, unavailable.stageViewportBounds());
+        assertTrue(unavailable.textByNodeId().isEmpty());
     }
 
     @Test void compatibilityOverloadReportsUnavailableIntrinsicChecks() {

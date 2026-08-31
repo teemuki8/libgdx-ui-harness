@@ -180,7 +180,7 @@ public final class LayoutValidator {
             List<SemanticNode> nodes,
             LayoutValidationEvidence evidence,
             Sink findings) {
-        Bounds viewport = boundsOf(snapshot.nodes().get(snapshot.rootId()));
+        Bounds viewport = evidence.stageViewportBounds();
         for (SemanticNode node : nodes) {
             TextLayoutEvidence text = evidence.textByNodeId().get(node.id());
             if (!node.state().visible() || !textBearing(node) || text == null) {
@@ -416,8 +416,9 @@ public final class LayoutValidator {
                         findings.add(new LayoutFinding(
                                 LayoutValidationReason.INCONSISTENT_ALIGNMENT,
                                 LayoutValidationSeverity.WARNING,
-                                sibling.id(), group.getKey().id(), sibling.stageBounds(),
-                                "perpendicular center deviates from layout-group alignment"));
+                                sibling.id(), siblings.getFirst().id(), sibling.stageBounds(),
+                                "layout-group " + group.getKey().id()
+                                        + " perpendicular center deviates from alignment"));
                     }
                 }
             }
@@ -453,8 +454,9 @@ public final class LayoutValidator {
                         findings.add(new LayoutFinding(
                                 LayoutValidationReason.INCONSISTENT_SPACING,
                                 LayoutValidationSeverity.WARNING,
-                                current.id(), group.getKey().id(), current.stageBounds(),
-                                "axial gap deviates from layout-group spacing"));
+                                current.id(), previous.id(), current.stageBounds(),
+                                "layout-group " + group.getKey().id()
+                                        + " axial gap deviates from spacing"));
                     }
                 }
             }

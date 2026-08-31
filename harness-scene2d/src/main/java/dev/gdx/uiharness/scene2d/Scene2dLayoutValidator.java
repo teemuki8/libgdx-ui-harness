@@ -88,7 +88,8 @@ public final class Scene2dLayoutValidator {
             }
         }
         return source.textGeometryAvailable()
-                ? LayoutValidationEvidence.available(Map.copyOf(retained))
+                ? LayoutValidationEvidence.available(
+                        source.stageViewportBounds(), Map.copyOf(retained))
                 : LayoutValidationEvidence.unavailable();
     }
 

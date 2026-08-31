@@ -14,6 +14,7 @@ import com.badlogic.gdx.graphics.g2d.BitmapFont.Glyph;
 import com.badlogic.gdx.graphics.g2d.Batch;
 import com.badlogic.gdx.graphics.g2d.BitmapFontCache;
 import com.badlogic.gdx.graphics.g2d.TextureRegion;
+import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.Touchable;
@@ -32,13 +33,16 @@ import dev.gdx.uiharness.core.layout.LayoutValidationConfig;
 import dev.gdx.uiharness.core.layout.LayoutValidationReason;
 import dev.gdx.uiharness.core.layout.LayoutValidationResult;
 import dev.gdx.uiharness.core.layout.LayoutValidationSeverity;
+import dev.gdx.uiharness.core.layout.LayoutValidator;
+import dev.gdx.uiharness.core.limits.HarnessLimits;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.StrictResolution;
+import dev.gdx.uiharness.core.model.Bounds;
+import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.navigation.NavigationPath;
 import dev.gdx.uiharness.core.navigation.NavigationReason;
 import dev.gdx.uiharness.core.navigation.NavigationResult;
-import dev.gdx.uiharness.core.model.Bounds;
-import dev.gdx.uiharness.core.model.SemanticSnapshot;
+import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 final class Scene2dLayoutValidatorTest {
@@ -220,6 +224,99 @@ final class Scene2dLayoutValidatorTest {
                     LayoutValidationResult.Status.PASS,
                     result.status(),
                     result.findings().toString());
+        }
+    }
+
+    @Test void intrinsicValidationUsesStageViewportForWholeStageAndSubtrees() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            fixture.stage.getRoot().setSize(0, 0);
+            fixture.label("fitting-zero-root", "OK", 20, 20, 100, 32);
+            LayoutValidationConfig config = only(LayoutValidationCheck.CLIPPED_TEXT);
+            LayoutValidationResult wholeStage = fixture.validator.validate(
+                    fixture.clock.revision(),
+                    fixture.clock.frame(),
+                    null,
+                    config,
+                    null);
+            fixture.label("off-viewport-zero-root", "OFF", 970, 20, 100, 32);
+
+            LayoutValidationResult fitting = fixture.validator.validate(
+                    fixture.clock.revision(),
+                    fixture.clock.frame(),
+                    Locator.testId("fitting-zero-root"),
+                    config,
+                    null);
+            LayoutValidationResult offViewport = fixture.validator.validate(
+                    fixture.clock.revision(),
+                    fixture.clock.frame(),
+                    Locator.testId("off-viewport-zero-root"),
+                    config,
+                    null);
+
+            assertEquals(LayoutValidationResult.Status.PASS, wholeStage.status(),
+                    wholeStage.findings().toString());
+            assertEquals(LayoutValidationResult.Status.PASS, fitting.status(),
+                    fitting.findings().toString());
+            assertEquals(LayoutValidationResult.Status.FAIL, offViewport.status());
+            assertTrue(offViewport.findings().stream().anyMatch(finding ->
+                    finding.reason() == LayoutValidationReason.CLIPPED_TEXT));
+        }
+    }
+
+    @Test void clipChainBeyondBoundMakesAllIntrinsicEvidenceUnavailable() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            Actor actor = fixture.label("deeply-clipped", "AA", 0, 0, 100, 20);
+            actor.remove();
+            for (int depth = 0; depth < 129; depth++) {
+                ScrollPane pane = new ScrollPane(actor, new ScrollPaneStyle());
+                pane.setBounds(0, 0, 200, 100);
+                actor = pane;
+            }
+            fixture.stage.addActor(actor);
+
+            HarnessLimits limits = new HarnessLimits(
+                    10_000, 256, 1_000, 16_384, 1_048_576, Duration.ofSeconds(30));
+            Scene2dSnapshotter snapshotter = new Scene2dSnapshotter(limits);
+            SemanticSnapshot snapshot = snapshotter.snapshot(
+                    fixture.stage, fixture.clock.revision(), fixture.clock.frame());
+            var evidence = new Scene2dTextLayoutExtractor(
+                    fixture.stage, snapshotter.semantics(), snapshotter).extract(snapshot);
+            LayoutValidationResult result = new LayoutValidator().validate(
+                    snapshot, only(LayoutValidationCheck.CLIPPED_TEXT), null, evidence);
+
+            assertFalse(evidence.textGeometryAvailable());
+            assertTrue(evidence.textByNodeId().isEmpty());
+            assertEquals(LayoutValidationResult.Status.FAIL, result.status());
+            assertTrue(result.findings().stream().anyMatch(finding ->
+                    finding.reason() == LayoutValidationReason.CHECK_UNAVAILABLE));
+        }
+    }
+
+    @Test void mirroredBitmapFontScalesNeverPublishReversedBoundsOrThrow() {
+        float[][] scales = {{-1, 1}, {1, -1}, {-1, -1}};
+        for (float[] scale : scales) {
+            try (Fixture fixture = new Fixture()) {
+                fixture.font.getData().setScale(scale[0], scale[1]);
+                fixture.label("mirrored", "AA", 20, 20, 100, 40);
+                SemanticSnapshot snapshot =
+                        fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame());
+
+                var evidence = org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                        () -> fixture.session.textLayoutEvidence(snapshot));
+
+                if (evidence.textGeometryAvailable()) {
+                    evidence.textByNodeId().values().forEach(text -> {
+                        assertTrue(text.layoutStageBounds().width() >= 0);
+                        assertTrue(text.layoutStageBounds().height() >= 0);
+                        assertTrue(text.inkStageBounds().width() >= 0);
+                        assertTrue(text.inkStageBounds().height() >= 0);
+                    });
+                } else {
+                    assertTrue(evidence.textByNodeId().isEmpty());
+                }
+            }
         }
     }
 
@@ -752,9 +849,7 @@ final class Scene2dLayoutValidatorTest {
 
         void viewport(int width, int height) {
             stage.getViewport().setWorldSize(width, height);
-            stage.getViewport().setScreenBounds(0, 0, width, height);
-            stage.getCamera().position.set(width / 2f, height / 2f, 0);
-            stage.getCamera().update();
+            stage.getViewport().update(width, height, true);
         }
 
         LayoutValidationResult validate(SemanticSnapshot snapshot, Locator subtree) {

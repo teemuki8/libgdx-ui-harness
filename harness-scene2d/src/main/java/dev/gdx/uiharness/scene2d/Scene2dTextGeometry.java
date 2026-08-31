@@ -120,7 +120,8 @@ final class Scene2dTextGeometry {
 
         Bounds ink = inkBounds(
                 layout, x, y, metrics.scaleX(), metrics.scaleY());
-        Bounds layoutBounds = new Bounds(x, y - layout.height, layout.width, layout.height);
+        Bounds layoutBounds =
+                normalizedBounds(x, y - layout.height, x + layout.width, y);
         double baseline = layout.runs.isEmpty() ? y : y + layout.runs.first().y;
         return new Placement(x, y, baseline, layoutBounds, ink);
     }
@@ -137,19 +138,28 @@ final class Scene2dTextGeometry {
             for (int index = 0; index < run.glyphs.size; index++) {
                 glyphX += run.xAdvances.get(index);
                 Glyph glyph = run.glyphs.get(index);
-                double left = glyphX + glyph.xoffset * scaleX;
-                double bottom = glyphY + glyph.yoffset * scaleY;
-                double right = left + glyph.width * scaleX;
-                double top = bottom + glyph.height * scaleY;
-                minX = Math.min(minX, left);
-                minY = Math.min(minY, bottom);
-                maxX = Math.max(maxX, right);
-                maxY = Math.max(maxY, top);
+                double firstX = glyphX + glyph.xoffset * scaleX;
+                double firstY = glyphY + glyph.yoffset * scaleY;
+                double secondX = firstX + glyph.width * scaleX;
+                double secondY = firstY + glyph.height * scaleY;
+                minX = Math.min(minX, Math.min(firstX, secondX));
+                minY = Math.min(minY, Math.min(firstY, secondY));
+                maxX = Math.max(maxX, Math.max(firstX, secondX));
+                maxY = Math.max(maxY, Math.max(firstY, secondY));
             }
         }
         if (!Double.isFinite(minX)) {
             return new Bounds(originX, originY, 0, 0);
         }
+        return normalizedBounds(minX, minY, maxX, maxY);
+    }
+
+    private static Bounds normalizedBounds(
+            double firstX, double firstY, double secondX, double secondY) {
+        double minX = Math.min(firstX, secondX);
+        double minY = Math.min(firstY, secondY);
+        double maxX = Math.max(firstX, secondX);
+        double maxY = Math.max(firstY, secondY);
         return new Bounds(minX, minY, maxX - minX, maxY - minY);
     }
 

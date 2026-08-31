@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /** Extracts bounded immutable intrinsic Label geometry on the owning render thread. */
 final class Scene2dTextLayoutExtractor {
@@ -46,7 +47,8 @@ final class Scene2dTextLayoutExtractor {
         if (!collect(stage.getRoot(), true, snapshot, actorIds, coordinates, result)) {
             return LayoutValidationEvidence.unavailable();
         }
-        return LayoutValidationEvidence.available(Map.copyOf(result));
+        return LayoutValidationEvidence.available(
+                coordinates.stageViewportBounds(), Map.copyOf(result));
     }
 
     private boolean collect(
@@ -72,13 +74,17 @@ final class Scene2dTextLayoutExtractor {
                     return false;
                 }
                 Scene2dTextGeometry.Placement exact = placement.orElseThrow();
+                Optional<List<Bounds>> clips = clipStageBounds(label, coordinates);
+                if (clips.isEmpty()) {
+                    return false;
+                }
                 TextLayoutEvidence observed = new TextLayoutEvidence(
                         node.id(),
                         stageBounds(coordinates.typographyBounds(
                                 label, exact.layoutBounds(), 1.0, 1.0)),
                         stageBounds(coordinates.typographyBounds(
                                 label, exact.inkBounds(), 1.0, 1.0)),
-                        clipStageBounds(label, coordinates));
+                        clips.orElseThrow());
                 result.put(node.id(), observed);
             }
         }
@@ -99,19 +105,22 @@ final class Scene2dTextLayoutExtractor {
         return true;
     }
 
-    private static List<Bounds> clipStageBounds(
+    private static Optional<List<Bounds>> clipStageBounds(
             Label label, CoordinateMapper coordinates) {
         List<Bounds> result = new ArrayList<>();
         for (Actor ancestor = label.getParent();
-                ancestor != null && result.size() < MAX_CLIP_ANCESTORS;
+                ancestor != null;
                 ancestor = ancestor.getParent()) {
             if (ancestor instanceof ScrollPane pane) {
+                if (result.size() == MAX_CLIP_ANCESTORS) {
+                    return Optional.empty();
+                }
                 pane.validate();
                 result.add(stageBounds(coordinates.typographyBounds(
                         pane, actorArea(pane), 1.0, 1.0)));
             }
         }
-        return List.copyOf(result);
+        return Optional.of(List.copyOf(result));
     }
 
     private static Bounds actorArea(ScrollPane pane) {

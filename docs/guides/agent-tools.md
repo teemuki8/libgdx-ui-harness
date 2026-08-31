@@ -165,8 +165,10 @@ fonts themselves. The request remains bounded by `maxDurationMillis`, `maxNodes`
 The closed checks have these qualification rules:
 
 - `clipped-text` requires real visible `Label` glyph layout and ink bounds. It reports layout or
-  ink outside the Label actor, the root viewport, or any effective ancestor `ScrollPane` actor
-  area. It does not reuse or reinterpret the semantic node's container-clipped flag.
+  ink outside the Label actor, the real Stage viewport, or any effective ancestor `ScrollPane`
+  actor area. The same Stage viewport evidence is retained for subtree validation; actor or
+  subtree-root bounds are never substituted for it. It does not reuse or reinterpret the
+  semantic node's container-clipped flag.
 - `text-collision` reports overlapping visible glyph ink from distinct, non-ancestral Label
   actors. `CLIPPED_TEXT` and `TEXT_COLLISION` findings have `ERROR` severity.
 - `below-target-size` applies only to the canonical target roles `button`, `checkbox`,
@@ -177,15 +179,19 @@ The closed checks have these qualification rules:
   share a nonblank `layout-group` and the exact same `layout-axis` value, either `horizontal` or
   `vertical`. Horizontal cohorts compare vertical centers and x-axis gaps; vertical cohorts
   compare horizontal centers and y-axis gaps. Alignment requires at least two actors and spacing
-  at least three.
+  at least three. A resulting `relatedActorId` names a resolvable peer node; the cohort's
+  `layout-group` value remains descriptive evidence, not node identity.
 
 Every enabled check is a requested qualification check, including defaults. When required
 navigation, grouping, clip, or intrinsic text evidence is absent, the result contains an
 error-severity `CHECK_UNAVAILABLE`; at the normal `failOn=error` gate the status is `FAIL`, never
-`PASS`. For a libGDX `Label` whose effective wrap-versus-ellipsis state cannot be determined from
-public state, placement is published only when both possible states produce the same exact origin;
-otherwise all requested intrinsic text checks are hard unavailable. The adapter does not use
-private reflection, infer a likely placement, or capture side effects from `Label.draw`.
+`PASS`. More than 128 effective clip ancestors makes the complete intrinsic evidence unavailable
+rather than publishing a truncated clip chain. For a libGDX `Label` whose effective
+wrap-versus-ellipsis state cannot be determined from public state, placement is published only
+when both possible states produce the same exact origin; otherwise all requested intrinsic text
+checks are hard unavailable. Mirrored font scales publish normalized non-negative exact bounds
+or likewise decline the complete intrinsic evidence. The adapter does not use private reflection,
+infer a likely placement, or capture side effects from `Label.draw`.
 
 These checks qualify observable invariants; they do not choose fonts, spacing, colors, component
 styles, or layout remedies. The harness is a diagnostic engine, not a style generator, and visual
