@@ -147,6 +147,7 @@ final class KeyboardGestureMcpTest {
             assertFalse(sameSessionActionStarted.isDone());
 
             first.cancel(false);
+            gesture.cancellationObserved.get(5, TimeUnit.SECONDS);
             assertEquals(1, gesture.cancelCalls.get());
             assertFalse(sameSessionActionStarted.isDone(),
                     "transport cancellation must not release the mutation lane");
@@ -295,9 +296,11 @@ final class KeyboardGestureMcpTest {
     private static final class CancellationTransparentSource
             extends CompletableFuture<HarnessProtocolService.Execution> {
         private final AtomicInteger cancelCalls = new AtomicInteger();
+        private final CompletableFuture<Void> cancellationObserved = new CompletableFuture<>();
 
         @Override public boolean cancel(boolean mayInterruptIfRunning) {
             cancelCalls.incrementAndGet();
+            cancellationObserved.complete(null);
             return false;
         }
     }
