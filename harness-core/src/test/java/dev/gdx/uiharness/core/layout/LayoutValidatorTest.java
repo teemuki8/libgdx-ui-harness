@@ -69,6 +69,121 @@ final class LayoutValidatorTest {
                         && "first".equals(finding.nodeId())));
     }
 
+    @Test void ancestorChildCompositionIsNotObscuration() {
+        SemanticNode label = node(
+                "label", "button", List.of(), Role.LABEL, "Play",
+                bounds(30, 30, 80, 20), null, visible(false, false, true), 3, Map.of());
+        SemanticNode button = node(
+                "button", "table", List.of("label"), Role.BUTTON, "Play",
+                bounds(20, 20, 100, 40), "play", visible(true, false, true), 2, Map.of());
+        SemanticNode table = node(
+                "table", "root", List.of("button"), Role.GROUP, null,
+                bounds(10, 10, 200, 100), null, visible(false, false, true), 1, Map.of());
+
+        LayoutValidationResult composition = validator.validate(
+                snapshot(List.of(table, button, label)),
+                only(LayoutValidationCheck.OBSCURED),
+                null);
+
+        assertFalse(composition.findings().stream()
+                .anyMatch(finding -> finding.reason() == LayoutValidationReason.OBSCURED),
+                composition.findings().toString());
+
+        SemanticNode overlay = node(
+                "overlay", "table", List.of(), Role.IMAGE, null,
+                bounds(20, 20, 100, 40), null, visible(false, false, true), 3, Map.of());
+        SemanticNode tableWithOverlay = node(
+                "table", "root", List.of("button", "overlay"), Role.GROUP, null,
+                bounds(10, 10, 200, 100), null, visible(false, false, true), 1, Map.of());
+
+        LayoutValidationResult obscured = validator.validate(
+                snapshot(List.of(tableWithOverlay, button, label, overlay)),
+                only(LayoutValidationCheck.OBSCURED),
+                null);
+
+        assertEquals(List.of("button->overlay"), obscured.findings().stream()
+                .filter(finding -> finding.reason() == LayoutValidationReason.OBSCURED)
+                .map(finding -> finding.nodeId() + "->" + finding.relatedActorId())
+                .toList());
+    }
+
+    @Test void targetSizeIgnoresLabelsAndChecksInteractiveControls() {
+        SemanticSnapshot snapshot = snapshot(
+                node("decorative", Role.LABEL, "Status", bounds(10, 10, 100, 20), null,
+                        visible(false, false, true)),
+                node("control", Role.BUTTON, "Play", bounds(10, 40, 100, 20), "play",
+                        visible(true, false, true)));
+
+        LayoutValidationResult result = validator.validate(
+                snapshot, only(LayoutValidationCheck.BELOW_TARGET_SIZE), null);
+
+        assertFalse(result.findings().stream()
+                .anyMatch(finding -> "decorative".equals(finding.nodeId())
+                        && finding.reason() == LayoutValidationReason.BELOW_TARGET_SIZE));
+        assertReason(result, "control", LayoutValidationReason.BELOW_TARGET_SIZE);
+    }
+
+    @Test void alignmentAndSpacingRequireExplicitHomogeneousGroup() {
+        SemanticSnapshot ungrouped = snapshot(
+                node("title", Role.LABEL, "Title", bounds(10, 10, 80, 20), null,
+                        visible(false, false, true)),
+                node("value", Role.LABEL, "Value", bounds(25, 40, 80, 20), null,
+                        visible(false, false, true)),
+                node("action", Role.BUTTON, "Action", bounds(10, 75, 80, 20), "action",
+                        visible(true, false, true)));
+
+        LayoutValidationResult unavailable = validator.validate(
+                ungrouped,
+                only(
+                        LayoutValidationCheck.INCONSISTENT_ALIGNMENT,
+                        LayoutValidationCheck.INCONSISTENT_SPACING),
+                null);
+
+        assertEquals(LayoutValidationResult.Status.FAIL, unavailable.status());
+        assertEquals(2, unavailable.findings().stream()
+                .filter(finding -> finding.reason() == LayoutValidationReason.CHECK_UNAVAILABLE
+                        && finding.severity() == LayoutValidationSeverity.ERROR)
+                .count());
+
+        Map<String, String> vertical =
+                Map.of("layout-group", "hud-values", "layout-axis", "vertical");
+        Map<String, String> horizontal =
+                Map.of("layout-group", "control-row", "layout-axis", "horizontal");
+        SemanticSnapshot grouped = snapshot(
+                node("v1", "root", List.of(), Role.LABEL, "One",
+                        bounds(10, 10, 20, 20), null, visible(false, false, true), 0, vertical),
+                node("v2", "root", List.of(), Role.LABEL, "Two",
+                        bounds(10, 40, 20, 20), null, visible(false, false, true), 0, vertical),
+                node("v3", "root", List.of(), Role.LABEL, "Three",
+                        bounds(14, 75, 20, 20), null, visible(false, false, true), 0, vertical),
+                node("h1", "root", List.of(), Role.BUTTON, "One",
+                        bounds(100, 10, 20, 20), "h1", visible(true, false, true), 0, horizontal),
+                node("h2", "root", List.of(), Role.BUTTON, "Two",
+                        bounds(130, 10, 20, 20), "h2", visible(true, false, true), 0, horizontal),
+                node("h3", "root", List.of(), Role.BUTTON, "Three",
+                        bounds(165, 14, 20, 20), "h3", visible(true, false, true), 0, horizontal));
+
+        LayoutValidationResult findings = validator.validate(
+                grouped,
+                only(
+                        LayoutValidationCheck.INCONSISTENT_ALIGNMENT,
+                        LayoutValidationCheck.INCONSISTENT_SPACING),
+                null);
+
+        assertReason(findings, "v3", LayoutValidationReason.INCONSISTENT_ALIGNMENT);
+        assertReason(findings, "v3", LayoutValidationReason.INCONSISTENT_SPACING);
+        assertReason(findings, "h3", LayoutValidationReason.INCONSISTENT_ALIGNMENT);
+        assertReason(findings, "h3", LayoutValidationReason.INCONSISTENT_SPACING);
+        assertFalse(findings.findings().stream()
+                .anyMatch(finding -> finding.reason() == LayoutValidationReason.CHECK_UNAVAILABLE));
+        assertEquals(findings.findings(), validator.validate(
+                grouped,
+                only(
+                        LayoutValidationCheck.INCONSISTENT_ALIGNMENT,
+                        LayoutValidationCheck.INCONSISTENT_SPACING),
+                null).findings());
+    }
+
     @Test void duplicateTestIdsAndMissingAccessibleNamesAreDistinct() {
         SemanticSnapshot snapshot = snapshot(
                 node("a", Role.BUTTON, "First", bounds(10, 10, 100, 50), "dup",
@@ -335,6 +450,16 @@ final class LayoutValidatorTest {
                 state, local, stage, stage, zIndex, Map.of());
     }
 
+    private static SemanticNode node(
+            String id, String parentId, List<String> childIds, Role role, String name,
+            Bounds stage, String testId, SemanticState state, int zIndex,
+            Map<String, String> properties) {
+        Bounds local = new Bounds(0, 0, stage.width(), stage.height());
+        return new SemanticNode(
+                id, parentId, childIds, role, name, name, null, testId, null, null,
+                state, local, stage, stage, zIndex, properties);
+    }
+
     private static SemanticState visible(boolean touchable, boolean clipped,
             boolean viewportIntersecting) {
         return new SemanticState(
@@ -354,6 +479,23 @@ final class LayoutValidatorTest {
     private static SemanticSnapshot snapshot(SemanticNode... nodes) {
         SemanticNode root = new SemanticNode("root", null,
                 java.util.stream.Stream.of(nodes).map(SemanticNode::id).toList(),
+                Role.GROUP, "root", "", null, null, null, null,
+                visible(false, false, true), new Bounds(0, 0, 1280, 720),
+                new Bounds(0, 0, 1280, 720), new Bounds(0, 0, 1280, 720), 0, Map.of());
+        var byId = new LinkedHashMap<String, SemanticNode>();
+        byId.put("root", root);
+        for (SemanticNode node : nodes) {
+            byId.put(node.id(), node);
+        }
+        return new SemanticSnapshot(1, 1, "root", byId);
+    }
+
+    private static SemanticSnapshot snapshot(List<SemanticNode> nodes) {
+        List<String> rootChildren = nodes.stream()
+                .filter(node -> "root".equals(node.parentId()))
+                .map(SemanticNode::id)
+                .toList();
+        SemanticNode root = new SemanticNode("root", null, rootChildren,
                 Role.GROUP, "root", "", null, null, null, null,
                 visible(false, false, true), new Bounds(0, 0, 1280, 720),
                 new Bounds(0, 0, 1280, 720), new Bounds(0, 0, 1280, 720), 0, Map.of());

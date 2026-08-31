@@ -27,6 +27,8 @@ public final class LayoutValidator {
     private static final Set<Role> INTERACTIVE_ROLES = Set.of(
             Role.BUTTON, Role.CHECKBOX, Role.RADIO_BUTTON, Role.TEXT_FIELD, Role.TEXT_AREA,
             Role.SELECT, Role.SLIDER, Role.LIST_ITEM, Role.MENU_ITEM);
+    private static final Set<Role> TARGET_SIZE_ROLES = Set.of(
+            Role.BUTTON, Role.CHECKBOX, Role.TEXT_FIELD, Role.SELECT, Role.SLIDER);
     private static final double TEXT_EDGE_EPSILON = 0.5;
 
     /** Validates the supplied immutable observation without backend intrinsic evidence. */
@@ -81,7 +83,7 @@ public final class LayoutValidator {
             checkMissingAccessibleName(examined, findings, config);
         }
         if (config.isEnabled(LayoutValidationCheck.OBSCURED)) {
-            checkObscured(examined, findings, config);
+            checkObscured(snapshot, examined, findings, config);
         }
         if (config.isEnabled(LayoutValidationCheck.INTERACTIVE_OVERLAP)) {
             checkInteractiveOverlap(examined, findings, config);
@@ -90,11 +92,20 @@ public final class LayoutValidator {
                 && availability.get(LayoutValidationCheck.KEYBOARD_UNREACHABLE) == Boolean.TRUE) {
             checkKeyboardUnreachable(examined, findings, config, Objects.requireNonNull(navigation));
         }
-        if (config.isEnabled(LayoutValidationCheck.INCONSISTENT_ALIGNMENT)) {
-            checkConsistentAlignment(snapshot, examined, findings, config);
-        }
-        if (config.isEnabled(LayoutValidationCheck.INCONSISTENT_SPACING)) {
-            checkConsistentSpacing(snapshot, examined, findings, config);
+        if (config.isEnabled(LayoutValidationCheck.INCONSISTENT_ALIGNMENT)
+                || config.isEnabled(LayoutValidationCheck.INCONSISTENT_SPACING)) {
+            LinkedHashMap<String, LinkedHashMap<GroupKey, List<SemanticNode>>> explicitGroups =
+                    explicitSiblingGroups(examined);
+            if (config.isEnabled(LayoutValidationCheck.INCONSISTENT_ALIGNMENT)) {
+                availability.put(
+                        LayoutValidationCheck.INCONSISTENT_ALIGNMENT,
+                        checkConsistentAlignment(explicitGroups, findings, config));
+            }
+            if (config.isEnabled(LayoutValidationCheck.INCONSISTENT_SPACING)) {
+                availability.put(
+                        LayoutValidationCheck.INCONSISTENT_SPACING,
+                        checkConsistentSpacing(explicitGroups, findings, config));
+            }
         }
         for (LayoutValidationCheck check : availability.keySet()) {
             if (availability.get(check) == Boolean.FALSE) {
@@ -248,6 +259,9 @@ public final class LayoutValidator {
             List<SemanticNode> nodes, Sink findings,
             LayoutValidationConfig config) {
         for (SemanticNode node : nodes) {
+            if (!TARGET_SIZE_ROLES.contains(node.role())) {
+                continue;
+            }
             Bounds bounds = node.stageBounds();
             if (bounds.width() < config.minTargetWidth()
                     || bounds.height() < config.minTargetHeight()) {
@@ -302,7 +316,7 @@ public final class LayoutValidator {
     }
 
     private static void checkObscured(
-            List<SemanticNode> nodes, Sink findings,
+            SemanticSnapshot snapshot, List<SemanticNode> nodes, Sink findings,
             LayoutValidationConfig config) {
         for (int index = 0; index < nodes.size(); index++) {
             SemanticNode lower = nodes.get(index);
@@ -314,7 +328,9 @@ public final class LayoutValidator {
                     continue;
                 }
                 SemanticNode higher = nodes.get(other);
-                if (!higher.state().visible() || higher.zIndex() <= lower.zIndex()) {
+                if (!higher.state().visible() || higher.zIndex() <= lower.zIndex()
+                        || ancestorOf(snapshot, lower, higher)
+                        || ancestorOf(snapshot, higher, lower)) {
                     continue;
                 }
                 if (overlaps(lower.stageBounds(), higher.stageBounds())) {
@@ -380,69 +396,123 @@ public final class LayoutValidator {
         }
     }
 
-    private static void checkConsistentAlignment(
-            SemanticSnapshot snapshot,
-            List<SemanticNode> nodes,
+    private static boolean checkConsistentAlignment(
+            LinkedHashMap<String, LinkedHashMap<GroupKey, List<SemanticNode>>> explicitGroups,
             Sink findings,
             LayoutValidationConfig config) {
-        Map<String, List<SemanticNode>> siblingGroups = siblingGroups(snapshot, nodes);
-        for (Map.Entry<String, List<SemanticNode>> group : siblingGroups.entrySet()) {
-            List<SemanticNode> siblings = group.getValue();
-            if (siblings.size() < 2) {
-                continue;
-            }
-            double reference = siblings.getFirst().stageBounds().x();
-            for (SemanticNode sibling : siblings) {
-                if (Math.abs(sibling.stageBounds().x() - reference) > config.maxAlignmentDelta()) {
-                    findings.add(new LayoutFinding(
-                            LayoutValidationReason.INCONSISTENT_ALIGNMENT,
-                            LayoutValidationSeverity.WARNING,
-                            sibling.id(), group.getKey(), sibling.stageBounds(),
-                            "left edge deviates from sibling alignment"));
+        boolean available = false;
+        for (LinkedHashMap<GroupKey, List<SemanticNode>> siblingGroups
+                : explicitGroups.values()) {
+            for (Map.Entry<GroupKey, List<SemanticNode>> group : siblingGroups.entrySet()) {
+                List<SemanticNode> siblings = group.getValue();
+                if (siblings.size() < 2) {
+                    continue;
+                }
+                available = true;
+                double reference = perpendicularCenter(
+                        siblings.getFirst().stageBounds(), group.getKey().axis());
+                for (SemanticNode sibling : siblings) {
+                    double center = perpendicularCenter(
+                            sibling.stageBounds(), group.getKey().axis());
+                    if (Math.abs(center - reference) > config.maxAlignmentDelta()) {
+                        findings.add(new LayoutFinding(
+                                LayoutValidationReason.INCONSISTENT_ALIGNMENT,
+                                LayoutValidationSeverity.WARNING,
+                                sibling.id(), group.getKey().id(), sibling.stageBounds(),
+                                "perpendicular center deviates from layout-group alignment"));
+                    }
                 }
             }
         }
+        return available;
     }
 
-    private static void checkConsistentSpacing(
-            SemanticSnapshot snapshot,
-            List<SemanticNode> nodes,
+    private static boolean checkConsistentSpacing(
+            LinkedHashMap<String, LinkedHashMap<GroupKey, List<SemanticNode>>> explicitGroups,
             Sink findings,
             LayoutValidationConfig config) {
-        Map<String, List<SemanticNode>> siblingGroups = siblingGroups(snapshot, nodes);
-        for (Map.Entry<String, List<SemanticNode>> group : siblingGroups.entrySet()) {
-            List<SemanticNode> siblings = new ArrayList<>(group.getValue());
-            siblings.sort(Comparator.comparingDouble(node -> node.stageBounds().x()));
-            if (siblings.size() < 3) {
-                continue;
-            }
-            Double referenceGap = null;
-            for (int index = 1; index < siblings.size(); index++) {
-                SemanticNode previous = siblings.get(index - 1);
-                SemanticNode current = siblings.get(index);
-                double gap = current.stageBounds().x()
-                        - (previous.stageBounds().x() + previous.stageBounds().width());
-                if (referenceGap == null) {
-                    referenceGap = gap;
-                } else if (Math.abs(gap - referenceGap) > config.minSpacing()) {
-                    findings.add(new LayoutFinding(
-                            LayoutValidationReason.INCONSISTENT_SPACING,
-                            LayoutValidationSeverity.WARNING,
-                            current.id(), group.getKey(), current.stageBounds(),
-                            "gap deviates from sibling spacing"));
+        boolean available = false;
+        for (LinkedHashMap<GroupKey, List<SemanticNode>> siblingGroups
+                : explicitGroups.values()) {
+            for (Map.Entry<GroupKey, List<SemanticNode>> group : siblingGroups.entrySet()) {
+                List<SemanticNode> siblings = new ArrayList<>(group.getValue());
+                if (siblings.size() < 3) {
+                    continue;
+                }
+                available = true;
+                Axis axis = group.getKey().axis();
+                siblings.sort(Comparator.comparingDouble(node -> axialStart(
+                        node.stageBounds(), axis)));
+                Double referenceGap = null;
+                for (int index = 1; index < siblings.size(); index++) {
+                    SemanticNode previous = siblings.get(index - 1);
+                    SemanticNode current = siblings.get(index);
+                    double gap = axialStart(current.stageBounds(), axis)
+                            - axialEnd(previous.stageBounds(), axis);
+                    if (referenceGap == null) {
+                        referenceGap = gap;
+                    } else if (Math.abs(gap - referenceGap) > config.minSpacing()) {
+                        findings.add(new LayoutFinding(
+                                LayoutValidationReason.INCONSISTENT_SPACING,
+                                LayoutValidationSeverity.WARNING,
+                                current.id(), group.getKey().id(), current.stageBounds(),
+                                "axial gap deviates from layout-group spacing"));
+                    }
                 }
             }
         }
+        return available;
     }
 
-    private static Map<String, List<SemanticNode>> siblingGroups(
-            SemanticSnapshot snapshot, List<SemanticNode> nodes) {
-        Map<String, List<SemanticNode>> groups = new HashMap<>();
+    private static LinkedHashMap<String, LinkedHashMap<GroupKey, List<SemanticNode>>>
+            explicitSiblingGroups(List<SemanticNode> nodes) {
+        LinkedHashMap<String, LinkedHashMap<GroupKey, List<SemanticNode>>> byParent =
+                new LinkedHashMap<>();
         for (SemanticNode node : nodes) {
-            String key = node.parentId() == null ? "root" : node.parentId();
-            groups.computeIfAbsent(key, ignored -> new ArrayList<>()).add(node);
+            if (!node.state().visible()) {
+                continue;
+            }
+            String id = node.properties().get("layout-group");
+            Axis axis = Axis.from(node.properties().get("layout-axis"));
+            if (id == null || id.isBlank() || axis == null) {
+                continue;
+            }
+            LinkedHashMap<GroupKey, List<SemanticNode>> siblingGroups =
+                    byParent.computeIfAbsent(node.parentId(), ignored -> new LinkedHashMap<>());
+            siblingGroups.computeIfAbsent(
+                    new GroupKey(id, axis), ignored -> new ArrayList<>()).add(node);
         }
-        return groups;
+        return byParent;
+    }
+
+    private static double perpendicularCenter(Bounds bounds, Axis axis) {
+        return axis == Axis.HORIZONTAL
+                ? bounds.y() + bounds.height() / 2.0
+                : bounds.x() + bounds.width() / 2.0;
+    }
+
+    private static double axialStart(Bounds bounds, Axis axis) {
+        return axis == Axis.HORIZONTAL ? bounds.x() : bounds.y();
+    }
+
+    private static double axialEnd(Bounds bounds, Axis axis) {
+        return axialStart(bounds, axis)
+                + (axis == Axis.HORIZONTAL ? bounds.width() : bounds.height());
+    }
+
+    private record GroupKey(String id, Axis axis) {}
+
+    private enum Axis {
+        HORIZONTAL,
+        VERTICAL;
+
+        private static Axis from(String value) {
+            return switch (value) {
+                case "horizontal" -> HORIZONTAL;
+                case "vertical" -> VERTICAL;
+                case null, default -> null;
+            };
+        }
     }
 
     private static boolean textBearing(SemanticNode node) {

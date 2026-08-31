@@ -16,10 +16,12 @@ import com.badlogic.gdx.graphics.g2d.BitmapFontCache;
 import com.badlogic.gdx.graphics.g2d.TextureRegion;
 import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.Stage;
+import com.badlogic.gdx.scenes.scene2d.Touchable;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
 import com.badlogic.gdx.scenes.scene2d.ui.Label.LabelStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane.ScrollPaneStyle;
+import com.badlogic.gdx.scenes.scene2d.ui.Table;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
 import com.badlogic.gdx.scenes.scene2d.utils.BaseDrawable;
 import com.badlogic.gdx.utils.Align;
@@ -32,6 +34,9 @@ import dev.gdx.uiharness.core.layout.LayoutValidationResult;
 import dev.gdx.uiharness.core.layout.LayoutValidationSeverity;
 import dev.gdx.uiharness.core.locator.Locator;
 import dev.gdx.uiharness.core.locator.StrictResolution;
+import dev.gdx.uiharness.core.navigation.NavigationPath;
+import dev.gdx.uiharness.core.navigation.NavigationReason;
+import dev.gdx.uiharness.core.navigation.NavigationResult;
 import dev.gdx.uiharness.core.model.Bounds;
 import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import org.junit.jupiter.api.Test;
@@ -53,6 +58,38 @@ final class Scene2dLayoutValidatorTest {
             assertTrue(result.findings().stream()
                     .anyMatch(finding -> finding.reason() == LayoutValidationReason.ZERO_SIZE
                             && finding.nodeId().equals(zeroNodeId)));
+        }
+    }
+
+    @Test void nestedTableAndLabelPassDefaultStructuralValidation() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            fixture.stage.getRoot().setSize(960, 540);
+            fixture.stage.getRoot().setTouchable(Touchable.disabled);
+            Table table = new Table();
+            table.setBounds(40, 40, 300, 160);
+            table.setTouchable(Touchable.disabled);
+            Label label = new Label("Decorative", new LabelStyle(fixture.font, Color.WHITE));
+            label.setTouchable(Touchable.disabled);
+            table.add(label).size(120, 30);
+            fixture.stage.addActor(table);
+            table.validate();
+            NavigationResult navigation = new NavigationResult(
+                    1,
+                    new NavigationPath(
+                            1, null, java.util.List.of(),
+                            NavigationReason.COMPLETE),
+                    java.util.List.of(), java.util.List.of(), false);
+
+            LayoutValidationResult result = fixture.validator.validate(
+                    fixture.clock.revision(),
+                    fixture.clock.frame(),
+                    null,
+                    LayoutValidationConfig.defaults(),
+                    navigation);
+
+            assertEquals(LayoutValidationResult.Status.PASS, result.status(),
+                    result.findings().toString());
         }
     }
 

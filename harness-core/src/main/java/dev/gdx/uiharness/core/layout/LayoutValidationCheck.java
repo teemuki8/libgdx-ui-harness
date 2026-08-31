@@ -20,12 +20,12 @@ public enum LayoutValidationCheck {
     MISSING_ACCESSIBLE_NAME,
     /** A focusable control is not reachable by keyboard navigation. */
     KEYBOARD_UNREACHABLE,
-    /** A control is obscured by a higher-z actor. */
+    /** A non-ancestral actor is obscured by a higher-z actor. */
     OBSCURED,
     /** Clipping or scroll configuration is invalid. */
     INVALID_CLIP_SCROLL,
-    /** Sibling controls deviate from a consistent alignment. */
+    /** Same-parent actors in an explicit layout group deviate from axis alignment. */
     INCONSISTENT_ALIGNMENT,
-    /** Sibling controls deviate from consistent spacing. */
+    /** Same-parent actors in an explicit layout group deviate from axis spacing. */
     INCONSISTENT_SPACING
 }

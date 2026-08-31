@@ -10,8 +10,8 @@ import java.util.Set;
  * @param enabledChecks checks that run; false-positive-prone checks are opt-ins
  * @param minTargetWidth minimum stage width for {@code BELOW_TARGET_SIZE}
  * @param minTargetHeight minimum stage height for {@code BELOW_TARGET_SIZE}
- * @param maxAlignmentDelta maximum sibling left-edge deviation for alignment checks
- * @param minSpacing minimum sibling gap for spacing checks
+ * @param maxAlignmentDelta maximum perpendicular-center deviation within an explicit layout group
+ * @param minSpacing maximum allowed axial-gap deviation within an explicit layout group
  * @param failOn severity threshold that fails the CI gate
  * @param maxFindings maximum retained findings before truncation
  * @param maxNodes maximum examined nodes before incomplete coverage
@@ -40,8 +40,7 @@ public record LayoutValidationConfig(
             LayoutValidationCheck.ZERO_SIZE,
             LayoutValidationCheck.DUPLICATE_TEST_ID,
             LayoutValidationCheck.MISSING_ACCESSIBLE_NAME,
-            LayoutValidationCheck.KEYBOARD_UNREACHABLE,
-            LayoutValidationCheck.OBSCURED);
+            LayoutValidationCheck.KEYBOARD_UNREACHABLE);
 
     /** Validates bounds and defensively copies the enabled check set. */
     public LayoutValidationConfig {
