@@ -228,6 +228,55 @@ final class Scene2dLayoutValidatorTest {
         }
     }
 
+    @Test void nearlyFullWidthCenteredWrapUsesExactWrappedPlacement() {
+        try (Fixture fixture = new Fixture()) {
+            float textWidth = 43;
+            float availableWidth = Math.nextUp(textWidth);
+            ObservedLabel label =
+                    fixture.label("near-full-width-wrap", "AAAA", 0, 40, availableWidth, 20);
+            label.setWrap(true);
+            label.setAlignment(Align.center, Align.center);
+
+            SemanticSnapshot snapshot =
+                    fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame());
+            var evidence = fixture.session.textLayoutEvidence(snapshot);
+            var node = snapshot.nodes().values().stream()
+                    .filter(value -> "near-full-width-wrap".equals(value.testId()))
+                    .findFirst().orElseThrow();
+            var observed = evidence.textByNodeId().get(node.id());
+
+            assertTrue(availableWidth - textWidth > 0);
+            assertTrue(availableWidth - textWidth <= 1e-4f);
+            assertEquals(0, label.getGlyphLayout().runs.first().x);
+            assertTrue(evidence.textGeometryAvailable());
+            assertEquals((availableWidth - textWidth) / 2, observed.layoutStageBounds().x());
+            assertEquals((availableWidth - textWidth) / 2, observed.inkStageBounds().x());
+        }
+    }
+
+    @Test void preScaledFontUsesFinalLayoutScaleForVerticalPlacement() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.font.getData().setScale(2);
+            ObservedLabel label =
+                    fixture.label("pre-scaled-font", "AA", 0, 20, 100, 60);
+            label.setAlignment(Align.top, Align.left);
+
+            SemanticSnapshot snapshot =
+                    fixture.session.snapshot(fixture.clock.revision(), fixture.clock.frame());
+            var evidence = fixture.session.textLayoutEvidence(snapshot);
+            var node = snapshot.nodes().values().stream()
+                    .filter(value -> "pre-scaled-font".equals(value.testId()))
+                    .findFirst().orElseThrow();
+            var observed = evidence.textByNodeId().get(node.id());
+
+            assertEquals(1, label.getFontScaleY());
+            assertEquals(2, fixture.font.getScaleY());
+            assertTrue(evidence.textGeometryAvailable());
+            assertEquals(54, observed.layoutStageBounds().y());
+            assertEquals(label.cachedInkStageBounds(), observed.inkStageBounds());
+        }
+    }
+
     @Test void exactPlacementPreservesHalfUnitOrigin() {
         try (Fixture fixture = new Fixture()) {
             BaseDrawable inset = drawable(0, 0, 0.5f, 0, 0, 0);

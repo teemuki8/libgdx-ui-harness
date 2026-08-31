@@ -25,18 +25,23 @@ final class Scene2dTextGeometry {
 
     static Optional<Placement> placement(Label label) {
         GlyphLayout layout = label.getGlyphLayout();
+        Optional<EffectiveFontMetrics> metrics = effectiveFontMetrics(label, layout);
+        if (metrics.isEmpty()) {
+            return Optional.empty();
+        }
         boolean explicitNewline = label.getText().indexOf("\n") != -1;
         if (!label.getWrap() || explicitNewline || hasMultipleVisualLines(layout)) {
-            return Optional.of(placement(label, layout, explicitNewline || label.getWrap()));
+            return Optional.of(placement(
+                    label, layout, explicitNewline || label.getWrap(), metrics.get()));
         }
 
         Boolean effectiveWrap = effectiveWrapFromLineOffset(label, layout);
         if (effectiveWrap != null) {
-            return Optional.of(placement(label, layout, effectiveWrap));
+            return Optional.of(placement(label, layout, effectiveWrap, metrics.get()));
         }
 
-        Placement wrapped = placement(label, layout, true);
-        Placement ellipsized = placement(label, layout, false);
+        Placement wrapped = placement(label, layout, true, metrics.get());
+        Placement ellipsized = placement(label, layout, false, metrics.get());
         if (Float.compare((float) wrapped.originX(), (float) ellipsized.originX()) != 0
                 || Float.compare((float) wrapped.originY(), (float) ellipsized.originY()) != 0) {
             return Optional.empty();
@@ -71,11 +76,14 @@ final class Scene2dTextGeometry {
         float unwrappedOffset = (lineAlign & Align.right) != 0
                 ? availableWidth - run.width
                 : (availableWidth - run.width) / 2;
-        return Math.abs(run.x - unwrappedOffset) > 1e-4f;
+        return Float.compare(run.x, unwrappedOffset) != 0;
     }
 
     private static Placement placement(
-            Label label, GlyphLayout layout, boolean multipleLines) {
+            Label label,
+            GlyphLayout layout,
+            boolean multipleLines,
+            EffectiveFontMetrics metrics) {
         BitmapFont font = label.getStyle().font;
         float width = label.getWidth();
         float height = label.getHeight();
@@ -90,8 +98,7 @@ final class Scene2dTextGeometry {
         }
 
         float textWidth = multipleLines ? layout.width : width;
-        float scaleY = label.getFontScaleY() / Math.max(font.getScaleY(), 1e-12f);
-        float textHeight = multipleLines ? layout.height : font.getCapHeight() * scaleY;
+        float textHeight = layout.height;
         int alignment = label.getLabelAlign();
         if (multipleLines && (alignment & Align.left) == 0) {
             x += (alignment & Align.right) != 0
@@ -100,10 +107,10 @@ final class Scene2dTextGeometry {
         }
         if ((alignment & Align.top) != 0) {
             y += font.isFlipped() ? 0 : height - textHeight;
-            y += font.getDescent() * scaleY;
+            y += metrics.descent();
         } else if ((alignment & Align.bottom) != 0) {
             y += font.isFlipped() ? height - textHeight : 0;
-            y -= font.getDescent() * scaleY;
+            y -= metrics.descent();
         } else {
             y += (height - textHeight) / 2;
         }
@@ -112,7 +119,7 @@ final class Scene2dTextGeometry {
         }
 
         Bounds ink = inkBounds(
-                layout, x, y, label.getFontScaleX(), label.getFontScaleY());
+                layout, x, y, metrics.scaleX(), metrics.scaleY());
         Bounds layoutBounds = new Bounds(x, y - layout.height, layout.width, layout.height);
         double baseline = layout.runs.isEmpty() ? y : y + layout.runs.first().y;
         return new Placement(x, y, baseline, layoutBounds, ink);
@@ -145,6 +152,31 @@ final class Scene2dTextGeometry {
         }
         return new Bounds(minX, minY, maxX - minX, maxY - minY);
     }
+
+    private static Optional<EffectiveFontMetrics> effectiveFontMetrics(
+            Label label, GlyphLayout layout) {
+        BitmapFont font = label.getStyle().font;
+        float lastBaselineDistance = 0;
+        for (GlyphRun run : layout.runs) {
+            lastBaselineDistance = Math.max(lastBaselineDistance, Math.abs(run.y));
+        }
+        float effectiveCapHeight = layout.height - lastBaselineDistance;
+        if (Float.compare(effectiveCapHeight, font.getCapHeight()) == 0) {
+            return Optional.of(new EffectiveFontMetrics(
+                    font.getScaleX(), font.getScaleY(), font.getDescent()));
+        }
+
+        float scaleY = label.getFontScaleY() / font.getScaleY();
+        if (Float.compare(effectiveCapHeight, font.getCapHeight() * scaleY) != 0) {
+            return Optional.empty();
+        }
+        return Optional.of(new EffectiveFontMetrics(
+                label.getFontScaleX(),
+                label.getFontScaleY(),
+                font.getDescent() * scaleY));
+    }
+
+    private record EffectiveFontMetrics(float scaleX, float scaleY, float descent) {}
 
     record Placement(
             double originX,
