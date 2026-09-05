@@ -91,6 +91,12 @@ when its effective wrap/ellipsis state is publicly observable or both possibilit
 same exact origin. Otherwise intrinsic text evidence is hard unavailable: each requested
 intrinsic check emits error-severity `CHECK_UNAVAILABLE`, and the normal error gate fails.
 
+The unreleased [complete-coverage change](../adr/0039-complete-layout-coverage.md) additionally
+reports node-located unavailability for visible nonempty semantic text lacking exact geometry.
+TextButton/CheckBox geometry is attributed through the actual owned Label, not inferred from
+matching text on arbitrary children. Declaring semantic text does not manufacture geometry for
+TextFields, Lists, SelectBoxes, or custom paint; their required intrinsic checks remain unavailable.
+
 ## Evaluator-complete state and action contracts
 
 `SemanticSnapshot` remains the locator-oriented observation. Applications that need an

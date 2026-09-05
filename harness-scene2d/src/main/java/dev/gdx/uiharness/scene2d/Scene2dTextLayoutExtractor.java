@@ -5,6 +5,7 @@ import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
+import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
 import com.badlogic.gdx.utils.SnapshotArray;
 import dev.gdx.uiharness.core.layout.LayoutValidationEvidence;
 import dev.gdx.uiharness.core.layout.TextLayoutEvidence;
@@ -86,6 +87,21 @@ final class Scene2dTextLayoutExtractor {
                                 label, exact.inkBounds(), 1.0, 1.0)),
                         clips.orElseThrow());
                 result.put(node.id(), observed);
+                // BuiltinWidgetAdapters deliberately exposes TextButton/CheckBox text only on
+                // the parent. Attach the actual owned Label geometry to that semantic owner.
+                // Never infer ownership from an arbitrary matching descendant string.
+                if (label.getParent() instanceof TextButton button
+                        && button.getLabel() == label) {
+                    SemanticNode owner = snapshot.nodes().get(actorIds.get(button));
+                    if (owner != null && Objects.equals(owner.text(), label.getText().toString())) {
+                        if (result.size() >= MAX_TEXT_NODES) {
+                            return false;
+                        }
+                        result.put(owner.id(), new TextLayoutEvidence(owner.id(),
+                                observed.layoutStageBounds(), observed.inkStageBounds(),
+                                observed.clipChainStageBounds()));
+                    }
+                }
             }
         }
         if (actor instanceof Group group) {

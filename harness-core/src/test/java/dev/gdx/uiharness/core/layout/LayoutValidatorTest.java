@@ -323,6 +323,48 @@ final class LayoutValidatorTest {
         assertEquals(first.findings(), second.findings());
     }
 
+    @Test void retainedWarningCannotPassWhenLaterNodesWereNotExamined() {
+        SemanticSnapshot snapshot = snapshot(
+                node("warning", Role.BUTTON, null, bounds(10, 10, 100, 50), null,
+                        visible(true, false, true)),
+                node("unexamined", Role.IMAGE, null, bounds(20, 20, 0, 0), null,
+                        visible(false, false, true)));
+        LayoutValidationConfig.Builder builder = LayoutValidationConfig.builder();
+        LayoutValidationConfig.DEFAULT_CHECKS.forEach(builder::disable);
+        LayoutValidationConfig config = builder
+                .enable(LayoutValidationCheck.MISSING_ACCESSIBLE_NAME)
+                .enable(LayoutValidationCheck.ZERO_SIZE)
+                .maxNodes(2)
+                .failOn(LayoutValidationSeverity.ERROR).build();
+
+        LayoutValidationResult result = validator.validate(snapshot, config, null);
+
+        assertEquals(1, result.findings().size());
+        assertEquals(LayoutValidationSeverity.WARNING, result.findings().getFirst().severity());
+        assertTrue(result.truncated());
+        assertEquals(LayoutValidationResult.Status.INCOMPLETE, result.status());
+    }
+
+    @Test void warningFindingOverflowCannotPassButObservedFailureStillFails() {
+        SemanticSnapshot snapshot = snapshot(
+                node("first", Role.BUTTON, null, bounds(10, 10, 100, 50), null,
+                        visible(true, false, true)),
+                node("second", Role.BUTTON, null, bounds(200, 10, 100, 50), null,
+                        visible(true, false, true)));
+        LayoutValidationConfig.Builder builder = LayoutValidationConfig.builder();
+        LayoutValidationConfig.DEFAULT_CHECKS.forEach(builder::disable);
+        builder.enable(LayoutValidationCheck.MISSING_ACCESSIBLE_NAME).maxFindings(1);
+
+        LayoutValidationResult incomplete = validator.validate(
+                snapshot, builder.failOn(LayoutValidationSeverity.ERROR).build(), null);
+        assertTrue(incomplete.truncated());
+        assertEquals(LayoutValidationResult.Status.INCOMPLETE, incomplete.status());
+        LayoutValidationResult failed = validator.validate(
+                snapshot, builder.failOn(LayoutValidationSeverity.WARNING).build(), null);
+        assertTrue(failed.truncated());
+        assertEquals(LayoutValidationResult.Status.FAIL, failed.status());
+    }
+
     @Test void severityGateDrivesTheCiStatus() {
         SemanticSnapshot snapshot = snapshot(
                 node("missing", Role.BUTTON, null, bounds(10, 10, 100, 50), null,

@@ -7,7 +7,8 @@ import java.util.Objects;
 /**
  * Optional backend evidence augmenting one atomic semantic layout observation.
  *
- * @param textGeometryAvailable whether the complete bounded intrinsic observation is available
+ * @param textGeometryAvailable whether the bounded intrinsic capture and viewport are available;
+ *        individual visible text nodes must also have evidence to qualify
  * @param stageViewportBounds exact Stage viewport bounds, or {@code null} when unavailable
  * @param textByNodeId immutable text evidence keyed by snapshot node identity
  */

@@ -24,6 +24,8 @@ import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane.ScrollPaneStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.Table;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
+import com.badlogic.gdx.scenes.scene2d.ui.TextField;
+import com.badlogic.gdx.scenes.scene2d.ui.SelectBox;
 import com.badlogic.gdx.scenes.scene2d.utils.BaseDrawable;
 import com.badlogic.gdx.utils.Align;
 import dev.gdx.uiharness.core.error.ErrorCode;
@@ -46,6 +48,82 @@ import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 final class Scene2dLayoutValidatorTest {
+    @Test void unsupportedVisibleTextWidgetsProduceLocatedUnavailableFindings() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            TextField.TextFieldStyle fieldStyle = WidgetStyles.textField();
+            fieldStyle.font = fixture.font;
+            TextField field = new TextField("Player name", fieldStyle);
+            SelectBox<String> select = new SelectBox<>(WidgetStyles.selectBox());
+            select.setItems("Difficulty");
+            com.badlogic.gdx.scenes.scene2d.ui.List<String> list =
+                    new com.badlogic.gdx.scenes.scene2d.ui.List<>(WidgetStyles.list());
+            list.setItems("Saved game");
+            Actor custom = new Actor();
+            java.util.List<Actor> widgets = java.util.List.of(field, select, list, custom);
+            for (int index = 0; index < widgets.size(); index++) {
+                Actor widget = widgets.get(index);
+                widget.setBounds(20, 40 + index * 60, 160, 40);
+                fixture.stage.addActor(widget);
+                fixture.session.semantics().setTestId(widget, "widget-" + index);
+            }
+            fixture.session.semantics().setText(custom, "Custom painted text");
+            fixture.label("observable", "OK", 400, 40, 100, 32);
+            SemanticSnapshot snapshot = fixture.session.snapshot(1, 1);
+
+            LayoutValidationResult result = fixture.validator.validate(1, 1, null,
+                    only(LayoutValidationCheck.CLIPPED_TEXT,
+                            LayoutValidationCheck.TEXT_COLLISION), null);
+
+            assertEquals(LayoutValidationResult.Status.FAIL, result.status());
+            for (int index = 0; index < widgets.size(); index++) {
+                String testId = "widget-" + index;
+                String nodeId = snapshot.nodes().values().stream()
+                        .filter(node -> testId.equals(node.testId()))
+                        .findFirst().orElseThrow().id();
+                assertEquals(2, result.findings().stream()
+                        .filter(finding -> finding.nodeId().equals(nodeId)
+                                && finding.reason() == LayoutValidationReason.CHECK_UNAVAILABLE
+                                && finding.severity() == LayoutValidationSeverity.ERROR).count(),
+                        testId + ": " + result.findings());
+            }
+        }
+    }
+
+    @Test void childLabelCoversTextButtonAndHiddenOrEmptyTextNeedsNoGeometry() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            TextButton.TextButtonStyle style = new TextButton.TextButtonStyle();
+            style.font = fixture.font;
+            style.fontColor = Color.WHITE;
+            TextButton button = new TextButton("Play", style);
+            button.setBounds(20, 20, 160, 40);
+            fixture.stage.addActor(button);
+            button.validate();
+            TextField hidden = new TextField("Hidden", WidgetStyles.textField());
+            hidden.setBounds(20, 100, 160, 40);
+            hidden.setVisible(false);
+            fixture.stage.addActor(hidden);
+            TextField empty = new TextField("", WidgetStyles.textField());
+            empty.setBounds(20, 150, 160, 40);
+            fixture.stage.addActor(empty);
+
+            LayoutValidationResult result = fixture.validator.validate(1, 1, null,
+                    only(LayoutValidationCheck.CLIPPED_TEXT,
+                            LayoutValidationCheck.TEXT_COLLISION), null);
+
+            assertEquals(LayoutValidationResult.Status.PASS, result.status(),
+                    result.findings().toString());
+
+            fixture.session.semantics().setText(button, "Not the rendered label");
+            LayoutValidationResult mismatched = fixture.validator.validate(1, 1, null,
+                    only(LayoutValidationCheck.CLIPPED_TEXT), null);
+            assertEquals(LayoutValidationResult.Status.FAIL, mismatched.status());
+            assertTrue(mismatched.findings().stream().anyMatch(finding ->
+                    finding.reason() == LayoutValidationReason.CHECK_UNAVAILABLE));
+        }
+    }
+
     @Test void fullStageValidationCapturesOneAtomicObservation() {
         try (Fixture fixture = new Fixture()) {
             fixture.button("good", "Good", 100, 100);

@@ -21,9 +21,6 @@ import java.util.Set;
  * Execution never reads backend state and never dispatches input.
  */
 public final class LayoutValidator {
-    private static final Set<Role> TEXT_BEARING_ROLES = Set.of(
-            Role.LABEL, Role.BUTTON, Role.TEXT_FIELD, Role.TEXT_AREA, Role.MENU_ITEM,
-            Role.LIST_ITEM, Role.CHECKBOX, Role.RADIO_BUTTON, Role.SELECT, Role.SLIDER);
     private static final Set<Role> INTERACTIVE_ROLES = Set.of(
             Role.BUTTON, Role.CHECKBOX, Role.RADIO_BUTTON, Role.TEXT_FIELD, Role.TEXT_AREA,
             Role.SELECT, Role.SLIDER, Role.LIST_ITEM, Role.MENU_ITEM);
@@ -64,10 +61,14 @@ public final class LayoutValidator {
         }
         if (config.isEnabled(LayoutValidationCheck.CLIPPED_TEXT)
                 && availability.get(LayoutValidationCheck.CLIPPED_TEXT) == Boolean.TRUE) {
+            checkTextCoverage(examined, evidence, findings,
+                    LayoutValidationCheck.CLIPPED_TEXT);
             checkClippedText(snapshot, examined, evidence, findings);
         }
         if (config.isEnabled(LayoutValidationCheck.TEXT_COLLISION)
                 && availability.get(LayoutValidationCheck.TEXT_COLLISION) == Boolean.TRUE) {
+            checkTextCoverage(examined, evidence, findings,
+                    LayoutValidationCheck.TEXT_COLLISION);
             checkTextCollision(snapshot, examined, evidence, findings);
         }
         if (config.isEnabled(LayoutValidationCheck.ZERO_SIZE)) {
@@ -130,9 +131,8 @@ public final class LayoutValidator {
                 .toList();
         truncated = truncated || findings.overflow();
         boolean gateHit = findings.reaches(config.failOn());
-        LayoutValidationResult.Status status = truncated && orderedFindings.isEmpty()
-                ? LayoutValidationResult.Status.INCOMPLETE
-                : gateHit ? LayoutValidationResult.Status.FAIL
+        LayoutValidationResult.Status status = gateHit ? LayoutValidationResult.Status.FAIL
+                : truncated ? LayoutValidationResult.Status.INCOMPLETE
                         : LayoutValidationResult.Status.PASS;
         return new LayoutValidationResult(
                 status, orderedFindings, examined.size(), truncated, config);
@@ -161,6 +161,25 @@ public final class LayoutValidator {
         }
     }
 
+    private static void checkTextCoverage(
+            List<SemanticNode> nodes,
+            LayoutValidationEvidence evidence,
+            Sink findings,
+            LayoutValidationCheck check) {
+        for (SemanticNode node : nodes) {
+            if (!node.state().visible() || node.text() == null || node.text().isEmpty()
+                    || evidence.textByNodeId().containsKey(node.id())) {
+                continue;
+            }
+            findings.add(new LayoutFinding(
+                    LayoutValidationReason.CHECK_UNAVAILABLE,
+                    LayoutValidationSeverity.ERROR,
+                    node.id(), null, node.stageBounds(),
+                    "check unavailable: " + check.name().toLowerCase(java.util.Locale.ROOT)
+                            + "; intrinsic text geometry missing for this node"));
+        }
+    }
+
     private static void checkOutsideViewport(
             List<SemanticNode> nodes, Sink findings,
             LayoutValidationConfig config) {
@@ -183,7 +202,7 @@ public final class LayoutValidator {
         Bounds viewport = evidence.stageViewportBounds();
         for (SemanticNode node : nodes) {
             TextLayoutEvidence text = evidence.textByNodeId().get(node.id());
-            if (!node.state().visible() || !textBearing(node) || text == null) {
+            if (!node.state().visible() || text == null) {
                 continue;
             }
             EdgeOverflow overflow = new EdgeOverflow();
@@ -217,13 +236,13 @@ public final class LayoutValidator {
         for (int index = 0; index < nodes.size(); index++) {
             SemanticNode earlier = nodes.get(index);
             TextLayoutEvidence earlierText = evidence.textByNodeId().get(earlier.id());
-            if (!earlier.state().visible() || !textBearing(earlier) || earlierText == null) {
+            if (!earlier.state().visible() || earlierText == null) {
                 continue;
             }
             for (int other = index + 1; other < nodes.size(); other++) {
                 SemanticNode later = nodes.get(other);
                 TextLayoutEvidence laterText = evidence.textByNodeId().get(later.id());
-                if (!later.state().visible() || !textBearing(later) || laterText == null
+                if (!later.state().visible() || laterText == null
                         || ancestorOf(snapshot, earlier, later)
                         || ancestorOf(snapshot, later, earlier)) {
                     continue;
@@ -532,11 +551,6 @@ public final class LayoutValidator {
                 case null, default -> null;
             };
         }
-    }
-
-    private static boolean textBearing(SemanticNode node) {
-        return node.text() != null && !node.text().isEmpty()
-                || TEXT_BEARING_ROLES.contains(node.role());
     }
 
     private static boolean interactive(SemanticNode node) {

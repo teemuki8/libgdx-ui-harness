@@ -162,6 +162,19 @@ session-owning render thread. Callers receive immutable bounded evidence and nev
 fonts themselves. The request remains bounded by `maxDurationMillis`, `maxNodes`, and
 `maxFindings`.
 
+Unreleased coverage hardening ([ADR 0039](../adr/0039-complete-layout-coverage.md)) keeps the
+existing result schema. Any truncated run is `INCOMPLETE`, unless an observed finding reaches
+`failOn`, in which case it is `FAIL`. `PASS` therefore requires complete node and finding output.
+For each requested intrinsic check, visible nonempty semantic text without exact geometry yields
+an error-severity `CHECK_UNAVAILABLE` at that node's identity and bounds. A successful Label
+capture elsewhere does not qualify text fields, selects, lists, or custom painted text.
+The Scene2D extractor explicitly attributes a TextButton/CheckBox's owned Label geometry to
+its parent only when their text agrees, preserving composed buttons without inferring coverage
+from arbitrary descendant strings. Observed child Label ink remains checked even when its
+semantic text is suppressed to keep locators unambiguous. Empty or hidden semantic text does
+not itself request geometry. Text that has neither semantic metadata nor supported backend
+evidence is outside this coverage contract; this is not a computer-vision audit.
+
 The closed checks have these qualification rules:
 
 - `clipped-text` requires real visible `Label` glyph layout and ink bounds. It reports layout or

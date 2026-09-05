@@ -664,6 +664,11 @@ final class HarnessMcpClient implements Closeable {
                 "maxFindings", 256,
                 "maxNodes", 10000,
                 "maxDurationMillis", 2000);
+        return validateLayout(sessionId, spec, deadlineMillis);
+    }
+
+    JsonNode validateLayout(String sessionId, Map<String, Object> spec, long deadlineMillis)
+            throws Exception {
         JsonNode content = call("ui_validate_layout", Map.of(
                 "sessionId", sessionId, "spec", spec, "deadlineMillis", deadlineMillis));
         requireKind(content, "layout-validation-result");

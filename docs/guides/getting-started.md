@@ -8,14 +8,14 @@ Add only the layers the application uses. For a Scene2D desktop harness and MCP 
 
 ```kotlin
 dependencies {
-    implementation("io.github.teemuki8:harness-lwjgl3:1.3.0")
-    implementation("io.github.teemuki8:harness-mcp:1.3.0")
+    implementation("io.github.teemuki8:harness-lwjgl3:2.0.0")
+    implementation("io.github.teemuki8:harness-mcp:2.0.0")
 }
 ```
 
 `harness-lwjgl3` brings in `harness-scene2d` and `harness-core`; `harness-mcp` brings in `harness-protocol` and core. The published modules require Java 25. Fixtures and benchmarks have no Maven publication. An optional published `harness-agent-runtime` module implements runtime-value comparison for the ADR 0025 SPI.
 
-For new agentic UI construction, add `io.github.teemuki8:libgdx-ui-markup:0.4.1` and its
+For new agentic UI construction, add `io.github.teemuki8:libgdx-ui-markup:0.6.0` and its
 `libgdx-ui-markup-harness` adapter. Declare semantic identity in XML and pass a
 `HarnessSemanticSink` into the markup builder. Bootstrap and benchmark workflows support this one
 markup-only actor-construction path; controller code binds behavior to the resulting `BuiltUi`
@@ -121,6 +121,14 @@ actor, viewport, and ancestor `ScrollPane` evidence through the `Scene2dSession`
 render thread. Callers configure checks and consume immutable findings; they do not read Actors or
 fonts. If exact intrinsic placement cannot be observed, the requested text checks fail with
 error-severity `CHECK_UNAVAILABLE` rather than guess or pass.
+
+For qualification, require `status=PASS` and `truncated=false`. The coverage hardening in
+[ADR 0039](../adr/0039-complete-layout-coverage.md) is an unreleased source change beyond 2.0.0:
+truncated runs become `INCOMPLETE` unless an observed finding already fails the severity gate,
+and missing geometry on visible nonempty semantic text produces node-located
+`CHECK_UNAVAILABLE`. Text fields, selects, lists, and custom painted text do not acquire exact
+geometry merely because a Label elsewhere was observed. Do not claim these new guarantees from
+the published dependency above until consuming a release that includes ADR 0039.
 
 Shutdown in this order:
 

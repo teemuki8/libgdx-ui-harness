@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -13,6 +15,29 @@ import org.junit.jupiter.api.Timeout;
  */
 final class LayoutValidationProductionFixtureTest {
     private static final String SESSION_ID = "reference-ui";
+
+    @Test
+    @Timeout(120)
+    void intrinsicTextCoverageCannotPassUnobservableWidgetsThroughMcp() throws Exception {
+        try (ReferenceProcess app = ReferenceProcess.launch();
+                HarnessMcpClient client = HarnessMcpClient.connect(app)) {
+            client.fillByLabel(SESSION_ID, "Username", "Layout coverage");
+            JsonNode result = client.validateLayout(SESSION_ID, Map.of(
+                    "targetMode", "stage",
+                    "enabledChecks", List.of("clipped-text", "text-collision"),
+                    "minTargetWidth", 64.0, "minTargetHeight", 64.0,
+                    "maxAlignmentDelta", 1.0, "minSpacing", 1.0,
+                    "failOn", "error", "maxFindings", 256, "maxNodes", 10000,
+                    "maxDurationMillis", 2000), 5_000).path("result");
+
+            assertEquals("FAIL", result.path("status").asText(), result.toPrettyString());
+            String usernameNode = client.singleEvidenceByTestId(SESSION_ID, "username").nodeId();
+            assertEquals(2, result.path("findings").valueStream().filter(finding ->
+                    "CHECK_UNAVAILABLE".equals(finding.path("reason").asText())
+                            && finding.path("nodeId").asText().equals(usernameNode)).count(),
+                    result.toPrettyString());
+        }
+    }
 
     @Test
     @Timeout(120)
