@@ -8,6 +8,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 CURRENT_RELEASE = "1.3.0"
 PREVIOUS_RELEASE = "1.2.1"
+# The deterministic treatment fixture remains pinned independently of consumer docs.
+DOCUMENTED_RELEASE = "2.0.0"
 release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -123,17 +125,17 @@ require(
     "dependency review must require an explicit repository capability flag",
 )
 
-require(f"`{CURRENT_RELEASE}` is the current release" in readme,
-        f"README must identify {CURRENT_RELEASE} as the current release")
+require(f"`{DOCUMENTED_RELEASE}` is the current release" in readme,
+        f"README must identify {DOCUMENTED_RELEASE} as the current release")
 require(f"`{PREVIOUS_RELEASE}` is the current release" not in readme,
         f"README contains stale {PREVIOUS_RELEASE} current-release text")
 for document_name, document in (("README", readme),
                                 ("getting-started", getting_started)):
     require(document.count(
-            f"io.github.teemuki8:harness-lwjgl3:{CURRENT_RELEASE}") == 1,
+            f"io.github.teemuki8:harness-lwjgl3:{DOCUMENTED_RELEASE}") == 1,
             f"{document_name} must show the current harness-lwjgl3 coordinate")
     require(document.count(
-            f"io.github.teemuki8:harness-mcp:{CURRENT_RELEASE}") == 1,
+            f"io.github.teemuki8:harness-mcp:{DOCUMENTED_RELEASE}") == 1,
             f"{document_name} must show the current harness-mcp coordinate")
 for marker in (
         "ui_keyboard_gesture", "ui_keyboard_gesture_ticks",
