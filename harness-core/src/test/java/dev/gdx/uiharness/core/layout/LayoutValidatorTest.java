@@ -22,6 +22,18 @@ import org.junit.jupiter.api.Test;
 final class LayoutValidatorTest {
     private final LayoutValidator validator = new LayoutValidator();
 
+    @Test void hiddenInteractiveRolesDoNotOverlapVisibleControlsInEitherOrder() {
+        SemanticState hidden = new SemanticState(false, true, Optional.of(true), Optional.empty(),
+                Optional.empty(), Optional.empty(), Optional.empty(), false, true, 1.0, false, true, false);
+        SemanticNode first = node("first", Role.BUTTON, "First", bounds(10,10,100,50), "first", hidden);
+        SemanticNode second = node("second", Role.BUTTON, "Second", bounds(10,10,100,50), "second",
+                visible(true,false,true));
+        for (SemanticSnapshot snapshot : List.of(snapshot(first,second),snapshot(second,first))) {
+            var result = validator.validate(snapshot,only(LayoutValidationCheck.INTERACTIVE_OVERLAP),null);
+            assertEquals(LayoutValidationResult.Status.PASS,result.status(),result.findings().toString());
+        }
+    }
+
     @Test void outsideViewportClippedTextAndZeroSizeAreReported() {
         SemanticSnapshot snapshot = snapshot(
                 node("out", Role.BUTTON, "Out", bounds(2000, 0, 100, 100), "btn-out",

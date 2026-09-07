@@ -48,6 +48,45 @@ import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 final class Scene2dLayoutValidatorTest {
+    @Test void hiddenAncestorExcludesButtonOverlapUntilItIsShown() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960,540);
+            fixture.button("visible","Visible",100,100).getLabel().setTouchable(Touchable.disabled);
+            Group hidden = new Group();
+            hidden.setTouchable(Touchable.childrenOnly);
+            fixture.stage.addActor(hidden);
+            TextButton hiddenButton = fixture.button("hidden","Hidden",100,100);
+            hiddenButton.getLabel().setTouchable(Touchable.disabled);
+            hidden.addActor(hiddenButton);
+            hidden.setVisible(false);
+            var config = only(LayoutValidationCheck.INTERACTIVE_OVERLAP);
+            var result = fixture.validator.validate(1,1,null,config,null);
+            assertEquals(LayoutValidationResult.Status.PASS,result.status(),result.findings().toString());
+            hidden.setVisible(true);
+            var revealed = fixture.validator.validate(2,2,null,config,null);
+            assertEquals(LayoutValidationResult.Status.FAIL,revealed.status());
+            assertTrue(revealed.findings().stream().anyMatch(finding ->
+                    finding.reason() == LayoutValidationReason.INTERACTIVE_OVERLAP));
+        }
+    }
+
+    @Test void ownedButtonTextGeometryUsesTheSameWhitespaceNormalizationAsSemantics() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960,540);
+            TextButton button = fixture.button("pause","Pause",100,100);
+            button.setSize(400,180);
+            for (String text : java.util.List.of("Esc   Pause", "  Esc Pause  ", "Esc\tPause", "Esc\nPause", "Esc\u00a0Pause")) {
+                button.setText(text);
+                button.validate();
+                var result = fixture.validator.validate(1,1,null,
+                        only(LayoutValidationCheck.CLIPPED_TEXT,LayoutValidationCheck.TEXT_COLLISION),null);
+                assertEquals(LayoutValidationResult.Status.PASS,result.status(),text+": "+result.findings());
+            }
+            fixture.session.semantics().setText(button,"Different rendered content");
+            var mismatch=fixture.validator.validate(1,1,null,only(LayoutValidationCheck.CLIPPED_TEXT),null);
+            assertTrue(mismatch.findings().stream().anyMatch(f->f.reason()==LayoutValidationReason.CHECK_UNAVAILABLE));
+        }
+    }
     @Test void unsupportedVisibleTextWidgetsProduceLocatedUnavailableFindings() {
         try (Fixture fixture = new Fixture()) {
             fixture.viewport(960, 540);

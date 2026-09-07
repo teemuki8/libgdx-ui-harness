@@ -151,7 +151,7 @@ final class SemanticNodeBuilder implements ActorSemanticAdapter.Target {
                         "limit", limitValue)));
     }
 
-    private static String normalizeVisibleText(String value) {
+    static String normalizeVisibleText(String value) {
         if (value == null || value.isEmpty()) {
             return value;
         }
