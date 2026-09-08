@@ -22,6 +22,30 @@ import org.junit.jupiter.api.Test;
 final class LayoutValidatorTest {
     private final LayoutValidator validator = new LayoutValidator();
 
+    @Test void zeroSizeOnlyReportsVisibleControls() {
+        SemanticState hidden = new SemanticState(false, true, Optional.of(true), Optional.empty(),
+                Optional.empty(), Optional.empty(), Optional.empty(), false, true, 1.0, false, true, false);
+        var dormant = node("dormant", Role.BUTTON, "Dormant", bounds(0,0,0,0), "dormant", hidden);
+        var shown = node("shown", Role.BUTTON, "Shown", bounds(0,0,0,0), "shown", visible(true,false,true));
+        var config = only(LayoutValidationCheck.ZERO_SIZE);
+        assertEquals(LayoutValidationResult.Status.PASS, validator.validate(snapshot(dormant),config,null).status());
+        var result = validator.validate(snapshot(dormant,shown),config,null);
+        assertEquals(LayoutValidationResult.Status.FAIL,result.status());
+        assertEquals(List.of("shown"),result.findings().stream().map(LayoutFinding::nodeId).toList());
+    }
+
+    @Test void hiddenInteractiveRolesDoNotOverlapVisibleControlsInEitherOrder() {
+        SemanticState hidden = new SemanticState(false, true, Optional.of(true), Optional.empty(),
+                Optional.empty(), Optional.empty(), Optional.empty(), false, true, 1.0, false, true, false);
+        SemanticNode first = node("first", Role.BUTTON, "First", bounds(10,10,100,50), "first", hidden);
+        SemanticNode second = node("second", Role.BUTTON, "Second", bounds(10,10,100,50), "second",
+                visible(true,false,true));
+        for (SemanticSnapshot snapshot : List.of(snapshot(first,second),snapshot(second,first))) {
+            var result = validator.validate(snapshot,only(LayoutValidationCheck.INTERACTIVE_OVERLAP),null);
+            assertEquals(LayoutValidationResult.Status.PASS,result.status(),result.findings().toString());
+        }
+    }
+
     @Test void outsideViewportClippedTextAndZeroSizeAreReported() {
         SemanticSnapshot snapshot = snapshot(
                 node("out", Role.BUTTON, "Out", bounds(2000, 0, 100, 100), "btn-out",

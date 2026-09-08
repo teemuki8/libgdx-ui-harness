@@ -93,7 +93,8 @@ final class Scene2dTextLayoutExtractor {
                 if (label.getParent() instanceof TextButton button
                         && button.getLabel() == label) {
                     SemanticNode owner = snapshot.nodes().get(actorIds.get(button));
-                    if (owner != null && Objects.equals(owner.text(), label.getText().toString())) {
+                    if (owner != null && Objects.equals(owner.text(),
+                            SemanticNodeBuilder.normalizeVisibleText(label.getText().toString()))) {
                         if (result.size() >= MAX_TEXT_NODES) {
                             return false;
                         }

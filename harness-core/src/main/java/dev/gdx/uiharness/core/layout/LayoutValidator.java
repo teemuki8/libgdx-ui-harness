@@ -262,7 +262,8 @@ public final class LayoutValidator {
             List<SemanticNode> nodes, Sink findings,
             LayoutValidationConfig config) {
         for (SemanticNode node : nodes) {
-            if (node.stageBounds().width() == 0.0 || node.stageBounds().height() == 0.0) {
+            if (node.state().visible()
+                    && (node.stageBounds().width() == 0.0 || node.stageBounds().height() == 0.0)) {
                 findings.add(new LayoutFinding(
                         LayoutValidationReason.ZERO_SIZE,
                         LayoutValidationSeverity.ERROR,
@@ -367,12 +368,12 @@ public final class LayoutValidator {
             LayoutValidationConfig config) {
         for (int index = 0; index < nodes.size(); index++) {
             SemanticNode first = nodes.get(index);
-            if (!interactive(first)) {
+            if (!first.state().visible() || !interactive(first)) {
                 continue;
             }
             for (int other = index + 1; other < nodes.size(); other++) {
                 SemanticNode second = nodes.get(other);
-                if (!interactive(second)) {
+                if (!second.state().visible() || !interactive(second)) {
                     continue;
                 }
                 if (overlaps(first.stageBounds(), second.stageBounds())) {
