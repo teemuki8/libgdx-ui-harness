@@ -262,7 +262,8 @@ public final class LayoutValidator {
             List<SemanticNode> nodes, Sink findings,
             LayoutValidationConfig config) {
         for (SemanticNode node : nodes) {
-            if (node.stageBounds().width() == 0.0 || node.stageBounds().height() == 0.0) {
+            if (node.state().visible()
+                    && (node.stageBounds().width() == 0.0 || node.stageBounds().height() == 0.0)) {
                 findings.add(new LayoutFinding(
                         LayoutValidationReason.ZERO_SIZE,
                         LayoutValidationSeverity.ERROR,
