@@ -241,7 +241,7 @@ def write_fake_omp(path):
                       "parentConfigBytes": -1}
             ),
             "cwd": os.getcwd(),
-            "started": time.time(),
+            "started": time.monotonic(),
             "profileHome": os.environ["HOME"],
             "cacheRoot": os.environ["XDG_CACHE_HOME"],
             "runtimeRoot": os.environ["XDG_RUNTIME_DIR"],
@@ -253,10 +253,22 @@ def write_fake_omp(path):
                     "SSH_AUTH_SOCK", "GIT_ASKPASS", "AWS_SHARED_CREDENTIALS_FILE",
                     "GOOGLE_APPLICATION_CREDENTIALS", "DOCKER_CONFIG"}),
         }
-        (artifacts / "invocation.json").write_text(json.dumps(invocation))
         with (output / "fake-events.jsonl").open("a") as stream:
             stream.write(json.dumps({"event": "start", "pair": pair,
                 "treatment": treatment, "time": invocation["started"]}) + "\n")
+
+        # Every fixture process must be alive together before any can finish.
+        # A serial runner times out here; host scheduling latency is not a failure.
+        ready = output / "fake-concurrency"
+        ready.mkdir(exist_ok=True)
+        (ready / f"{pair}-{treatment}").touch(exist_ok=False)
+        deadline = time.monotonic() + 10
+        while len(list(ready.iterdir())) < 6:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("six fixture processes did not overlap")
+            time.sleep(0.01)
+        invocation["concurrentReady"] = time.monotonic()
+        (artifacts / "invocation.json").write_text(json.dumps(invocation))
 
         gate = os.environ["BENCHMARK_ROUND_GATE"]
         def mark(number):
@@ -1172,7 +1184,8 @@ class SupervisionTest(unittest.TestCase):
             starts = [json.loads(line)["time"]
                       for line in (output / "fake-events.jsonl").read_text().splitlines()]
             self.assertEqual(len(starts), 6)
-            self.assertLess(max(starts) - min(starts), 0.25)
+            self.assertLessEqual(max(starts), min(
+                entry["concurrentReady"] for entry in invocations))
 
 
             malformed_run = next(run for run in manifest["runs"]
