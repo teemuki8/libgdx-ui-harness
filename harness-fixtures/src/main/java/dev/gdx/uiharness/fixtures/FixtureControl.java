@@ -2,6 +2,11 @@ package dev.gdx.uiharness.fixtures;
 
 import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.Input;
+import com.badlogic.gdx.InputProcessor;
+import com.badlogic.gdx.InputMultiplexer;
+import com.badlogic.gdx.InputAdapter;
+import dev.gdx.uiharness.scene2d.RelativePointerAdapter;
+import dev.gdx.uiharness.scene2d.Scene2dInputGestureRunner;
 import com.badlogic.gdx.scenes.scene2d.InputEvent;
 import com.badlogic.gdx.scenes.scene2d.InputListener;
 import com.badlogic.gdx.scenes.scene2d.Stage;
@@ -195,6 +200,10 @@ public final class FixtureControl implements AutoCloseable {
     private final io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime agentRuntime;
     private final AgentRuntimeTickCoordinator tickCoordinator;
     private final Scene2dKeyboardGestureRunner gestureRunner;
+    private final Scene2dInputGestureRunner inputGestureRunner;
+    private final PointerInput pointerInput = new PointerInput();
+    private final InputProcessor productionInput;
+
     private final AtomicBoolean gestureKeyHeld = new AtomicBoolean();
     private String gestureMarkerPreviousText;
     private final ReferenceUiModel uiModel = new ReferenceUiModel("Ada", "");
@@ -348,6 +357,7 @@ public final class FixtureControl implements AutoCloseable {
                     if (deltaNanos != FIXED_STEP.toNanos()) {
                         throw new IllegalStateException("unexpected controlled tick delta");
                     }
+                    pointerInput.tick();
                     if (!gestureKeyHeld.get()) {
                         throw new IllegalStateException(
                                 "controlled tick ran without callback-owned held key");
@@ -357,9 +367,13 @@ public final class FixtureControl implements AutoCloseable {
         agentRuntime.controls().control(true, "fixture-pause", Duration.ofSeconds(5));
         tickCoordinator = new AgentRuntimeTickCoordinator(
                 agentRuntime, SESSION_ID, FIXED_STEP.toNanos(), fence, deadlineScheduler);
+        productionInput = new InputMultiplexer(pointerInput, stage);
         gestureRunner = new Scene2dKeyboardGestureRunner(
-                SESSION_ID, stage, scheduler, fence, clock::revision, clock::frame,
+                SESSION_ID, productionInput, scheduler, fence, clock::revision, clock::frame,
                 deadlineScheduler, Optional.of(tickCoordinator), traces::gesture);
+        inputGestureRunner = new Scene2dInputGestureRunner(
+                SESSION_ID, productionInput, scheduler, fence, clock::revision, clock::frame,
+                deadlineScheduler, Optional.of(tickCoordinator), traces::gesture, pointerInput);
         agentRuntime.entities().register(
                 io.github.teemuki8.libgdx.agent.runtime.core.EntityId.of("reference-ui-user"),
                 io.github.teemuki8.libgdx.agent.runtime.core.EntityType.of("user"),
@@ -375,7 +389,54 @@ public final class FixtureControl implements AutoCloseable {
                 inspector -> inspector.property("angle", () ->
                         io.github.teemuki8.libgdx.agent.runtime.core.RuntimeValues.decimal(
                                 "1.25")));
+        agentRuntime.entities().register(
+                io.github.teemuki8.libgdx.agent.runtime.core.EntityId.of("reference-input"),
+                io.github.teemuki8.libgdx.agent.runtime.core.EntityType.of("input"),
+                () -> "Production pointer input",
+                inspector -> inspector.property("state", () ->
+                        io.github.teemuki8.libgdx.agent.runtime.core.RuntimeValues.string(
+                                pointerInput.state())));
         wireModelToUsernameField();
+    }
+
+    /** Returns the same production processor installed for physical backend callbacks. */
+    public InputProcessor productionInput() {
+        return productionInput;
+    }
+
+    private static final class PointerInput extends InputAdapter implements RelativePointerAdapter {
+        private int x;
+        private int y;
+        private int aimX;
+        private int aimY;
+        private int firingTicks;
+        private boolean firing;
+
+        @Override public Position position() { return new Position(x, y); }
+        @Override public Position moveRelative(int dx, int dy) {
+            return new Position(Math.addExact(x, dx), Math.addExact(y, dy));
+        }
+        @Override public boolean mouseMoved(int nextX, int nextY) {
+            aimX += nextX - x;
+            aimY += nextY - y;
+            x = nextX;
+            y = nextY;
+            return false;
+        }
+        @Override public boolean touchDown(int screenX, int screenY, int pointer, int button) {
+            if (button == 0) { firing = true; }
+            return false;
+        }
+        @Override public boolean touchUp(int screenX, int screenY, int pointer, int button) {
+            if (button == 0) { firing = false; }
+            return false;
+        }
+        void tick() {
+            if (firing) { firingTicks++; }
+        }
+        String state() {
+            return aimX + ":" + aimY + ":" + firingTicks + ":" + firing;
+        }
     }
 
     /** Returns semantic metadata for actor tagging after session construction. */
@@ -518,7 +579,7 @@ public final class FixtureControl implements AutoCloseable {
                 Optional.of(layoutCoordinator),
                 Optional.of(matrixCoordinator), Optional.of(semanticCoordinator),
                 Optional.of(runtimeCoordinator), Optional.of(observationCoordinator),
-                Optional.of(gestureRunner::execute));
+                Optional.of(gestureRunner::execute)).withInputGestures(inputGestureRunner::execute);
         VisualReference reference = reference();
         VisualPolicy policy = new VisualPolicy(
                 "reference-smoke", 1, 1280L * 720, 0.125, true, true);
@@ -712,8 +773,10 @@ public final class FixtureControl implements AutoCloseable {
             return;
         }
         RuntimeException failure = null;
-        CompletionStage<Void> gestureStop = gestureRunner.stop();
-        for (int attempt = 0; attempt <= 16
+        CompletionStage<Void> gestureStop = CompletableFuture.allOf(
+                gestureRunner.stop().toCompletableFuture(),
+                inputGestureRunner.stop().toCompletableFuture());
+        for (int attempt = 0; attempt <= 37
                 && !gestureStop.toCompletableFuture().isDone(); attempt++) {
             scheduler.drain();
         }
@@ -737,6 +800,7 @@ public final class FixtureControl implements AutoCloseable {
         failure = closeResource(waits, failure);
         failure = closeResource(capture, failure);
         failure = closeResource(gestureRunner, failure);
+        failure = closeResource(inputGestureRunner, failure);
         failure = closeResource(tickCoordinator, failure);
         failure = closeResource(fence, failure);
         failure = closeResource(replacementCoordinator, failure);

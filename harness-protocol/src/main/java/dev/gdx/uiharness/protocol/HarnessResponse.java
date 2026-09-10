@@ -20,6 +20,8 @@ import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.gesture.ExactTickCoordinator.TickEvidence;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureRequest;
+import dev.gdx.uiharness.core.gesture.InputGestureRequest;
+import dev.gdx.uiharness.core.gesture.InputGestureResult;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureResult;
 import dev.gdx.uiharness.core.locator.QueryResult;
 import dev.gdx.uiharness.core.scenario.ScenarioDefinition;
@@ -105,6 +107,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(value = Result.Query.class, name = "query"),
         @JsonSubTypes.Type(value = Result.Action.class, name = "action"),
         @JsonSubTypes.Type(value = Result.KeyboardGesture.class, name = "keyboard-gesture"),
+        @JsonSubTypes.Type(value = Result.InputGesture.class, name = "input-gesture"),
         @JsonSubTypes.Type(value = Result.Assertion.class, name = "assertion"),
         @JsonSubTypes.Type(value = Result.Wait.class, name = "wait"),
         @JsonSubTypes.Type(value = Result.Screenshot.class, name = "screenshot"),
@@ -127,7 +130,7 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
         @JsonSubTypes.Type(value = Result.RuntimeObserve.class, name = "runtime-observation-result")
     })
     sealed interface Result permits Result.Sessions, Result.Capabilities, Result.Snapshot,
-            Result.Query, Result.Action, Result.KeyboardGesture, Result.Assertion, Result.Wait,
+            Result.Query, Result.Action, Result.KeyboardGesture, Result.InputGesture, Result.Assertion, Result.Wait,
             Result.Screenshot,
             Result.TraceStarted, Result.InspectCompare, Result.TypographyDiagnostic,
             Result.LayoutDiagnostic, Result.TraceStopped, Result.ScenarioList,
@@ -298,6 +301,18 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
 
             static KeyboardGesture fromCore(KeyboardGestureResult result) {
                 return new KeyboardGesture(KeyboardGestureData.fromCore(result));
+            }
+        }
+
+        /** Terminal bounded evidence for one atomic combined input gesture. */
+        record InputGesture(InputGestureData gesture) implements Result {
+            /** Requires the protocol-owned projection. */
+            public InputGesture {
+                gesture = Objects.requireNonNull(gesture, "gesture");
+            }
+
+            static InputGesture fromCore(InputGestureResult result) {
+                return new InputGesture(InputGestureData.fromCore(result));
             }
         }
 
@@ -943,6 +958,158 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
                     result.heldKeys(), wire(result.cleanupStatus().name()),
                     result.cleanup().stream().map(KeyboardCleanupData::fromCore).toList(),
                     result.traceId().orElse(null));
+        }
+    }
+
+    /** Immutable protocol-owned terminal combined input gesture projection. */
+    record InputGestureData(
+            int schemaVersion,
+            String outcome,
+            int requestedSteps,
+            int startedSteps,
+            int completedSteps,
+            long startRevision,
+            long startFrame,
+            long endRevision,
+            long endFrame,
+            long elapsedNanos,
+            List<InputGestureStepData> steps,
+            Integer failureStep,
+            String failure,
+            List<InputControlData> heldInputs,
+            String cleanupStatus,
+            List<InputCleanupData> cleanup,
+            String traceId) {
+        /** Copies all bounded collections and validates stable terminal fields. */
+        public InputGestureData {
+            int maximumSteps = InputGestureRequest.maximumSteps(schemaVersion);
+            if (requestedSteps < 1 || requestedSteps > maximumSteps
+                    || startedSteps < 0 || startedSteps > requestedSteps
+                    || completedSteps < 0 || completedSteps > startedSteps) {
+                throw new IllegalArgumentException("invalid combined input gesture step counts");
+            }
+            ProtocolJson.requireText(outcome, "outcome");
+            requireWireValue(
+                    outcome, "outcome", InputGestureResult.TerminalOutcome.values());
+            if (startRevision < 0 || startFrame < 0 || endRevision < startRevision
+                    || endFrame < startFrame || elapsedNanos < 0) {
+                throw new IllegalArgumentException("invalid combined input gesture identities");
+            }
+            steps = List.copyOf(Objects.requireNonNull(steps, "steps"));
+            heldInputs = List.copyOf(Objects.requireNonNull(heldInputs, "heldInputs"));
+            cleanup = List.copyOf(Objects.requireNonNull(cleanup, "cleanup"));
+            if (steps.size() != startedSteps || heldInputs.size() > 21 || cleanup.size() > 21) {
+                throw new IllegalArgumentException("invalid combined input gesture evidence bounds");
+            }
+            if (failureStep != null
+                    && (failureStep < 0 || failureStep >= requestedSteps)) {
+                throw new IllegalArgumentException("failureStep is outside the gesture");
+            }
+            if (failure != null) {
+                ProtocolJson.requireText(failure, "failure");
+                requireWireValue(
+                        failure, "failure", InputGestureResult.FailureCategory.values());
+            }
+            ProtocolJson.requireText(cleanupStatus, "cleanupStatus");
+            requireWireValue(
+                    cleanupStatus, "cleanupStatus",
+                    InputGestureResult.CleanupStatus.values());
+            if (traceId != null) {
+                ProtocolJson.requireIdentifier(traceId, "traceId");
+            }
+            new InputGestureResult(
+                    schemaVersion,
+                    fromWire(outcome, InputGestureResult.TerminalOutcome.class),
+                    requestedSteps, startedSteps, completedSteps,
+                    startRevision, startFrame, endRevision, endFrame, elapsedNanos,
+                    steps.stream().map(InputGestureStepData::toCore).toList(),
+                    failureStep == null
+                            ? OptionalInt.empty() : OptionalInt.of(failureStep),
+                    failure == null
+                            ? Optional.empty()
+                            : Optional.of(fromWire(
+                                    failure, InputGestureResult.FailureCategory.class)),
+                    heldInputs.stream().map(InputControlData::toCore).toList(),
+                    fromWire(cleanupStatus, InputGestureResult.CleanupStatus.class),
+                    cleanup.stream().map(InputCleanupData::toCore).toList(),
+                    Optional.ofNullable(traceId));
+        }
+
+        static InputGestureData fromCore(InputGestureResult result) {
+            Objects.requireNonNull(result, "result");
+            return new InputGestureData(
+                    result.schemaVersion(), wire(result.outcome().name()),
+                    result.requestedSteps(), result.startedSteps(), result.completedSteps(),
+                    result.startRevision(), result.startFrame(),
+                    result.endRevision(), result.endFrame(), result.elapsedNanos(),
+                    result.steps().stream().map(InputGestureStepData::fromCore).toList(),
+                    result.failureStep().isPresent()
+                            ? result.failureStep().getAsInt() : null,
+                    result.failure().map(value -> wire(value.name())).orElse(null),
+                    result.heldInputs().stream().map(InputControlData::fromCore).toList(), wire(result.cleanupStatus().name()),
+                    result.cleanup().stream().map(InputCleanupData::fromCore).toList(),
+                    result.traceId().orElse(null));
+        }
+    }
+
+    /** Device-qualified owned input identity. */
+    record InputControlData(String device, int code) {
+        /** Validates the closed device and code. */
+        public InputControlData {
+            new InputGestureRequest.Control(fromWire(device, InputGestureRequest.Device.class), code);
+        }
+        static InputControlData fromCore(InputGestureRequest.Control control) {
+            return new InputControlData(wire(control.device().name()), control.code());
+        }
+        InputGestureRequest.Control toCore() {
+            return new InputGestureRequest.Control(fromWire(device, InputGestureRequest.Device.class), code);
+        }
+    }
+
+    /** Started input step with exact timing and owned-control evidence. */
+    record InputGestureStepData(int index, Command.InputGestureStep step, String status,
+            long beforeRevision, long beforeFrame, long afterRevision, long afterFrame,
+            List<InputControlData> heldInputs, KeyboardTickData tick) {
+        /** Copies and validates one bounded step. */
+        public InputGestureStepData {
+            heldInputs = List.copyOf(heldInputs);
+            new InputGestureResult.StepEvidence(index, step.toCore(),
+                    fromWire(status, InputGestureResult.StepStatus.class),
+                    beforeRevision, beforeFrame, afterRevision, afterFrame,
+                    heldInputs.stream().map(InputControlData::toCore).toList(),
+                    tick == null ? Optional.empty() : Optional.of(tick.toCore()));
+        }
+        static InputGestureStepData fromCore(InputGestureResult.StepEvidence evidence) {
+            return new InputGestureStepData(evidence.index(),
+                    Command.InputGestureStep.fromCore(evidence.step()), wire(evidence.status().name()),
+                    evidence.beforeRevision(), evidence.beforeFrame(),
+                    evidence.afterRevision(), evidence.afterFrame(),
+                    evidence.heldInputs().stream().map(InputControlData::fromCore).toList(),
+                    evidence.tick().map(KeyboardTickData::fromCore).orElse(null));
+        }
+        InputGestureResult.StepEvidence toCore() {
+            return new InputGestureResult.StepEvidence(index, step.toCore(),
+                    fromWire(status, InputGestureResult.StepStatus.class),
+                    beforeRevision, beforeFrame, afterRevision, afterFrame,
+                    heldInputs.stream().map(InputControlData::toCore).toList(),
+                    tick == null ? Optional.empty() : Optional.of(tick.toCore()));
+        }
+    }
+
+    /** One reverse-order abnormal input release attempt. */
+    record InputCleanupData(InputControlData control, String status) {
+        /** Validates the control and closed status. */
+        public InputCleanupData {
+            Objects.requireNonNull(control, "control");
+            fromWire(status, InputGestureResult.CleanupAttemptStatus.class);
+        }
+        static InputCleanupData fromCore(InputGestureResult.CleanupAttempt attempt) {
+            return new InputCleanupData(InputControlData.fromCore(attempt.control()),
+                    wire(attempt.status().name()));
+        }
+        InputGestureResult.CleanupAttempt toCore() {
+            return new InputGestureResult.CleanupAttempt(control.toCore(),
+                    fromWire(status, InputGestureResult.CleanupAttemptStatus.class));
         }
     }
 

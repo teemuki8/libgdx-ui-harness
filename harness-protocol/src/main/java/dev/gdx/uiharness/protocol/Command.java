@@ -6,6 +6,7 @@ import dev.gdx.uiharness.core.assertion.AssertionRequest;
 import dev.gdx.uiharness.core.assertion.UiAssertion;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureRequest;
+import dev.gdx.uiharness.core.gesture.InputGestureRequest;
 import dev.gdx.uiharness.core.locator.ActorField;
 import dev.gdx.uiharness.core.locator.ActorLocator;
 import dev.gdx.uiharness.core.locator.EntityLocator;
@@ -42,6 +43,7 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.Query.class, name = "query"),
     @JsonSubTypes.Type(value = Command.Action.class, name = "action"),
     @JsonSubTypes.Type(value = Command.KeyboardGesture.class, name = "keyboard-gesture"),
+    @JsonSubTypes.Type(value = Command.InputGesture.class, name = "input-gesture"),
     @JsonSubTypes.Type(value = Command.Assert.class, name = "assert"),
     @JsonSubTypes.Type(value = Command.Wait.class, name = "wait"),
     @JsonSubTypes.Type(value = Command.Screenshot.class, name = "screenshot"),
@@ -63,7 +65,7 @@ import java.util.Objects;
     @JsonSubTypes.Type(value = Command.RuntimeObserve.class, name = "runtime-observe")
 })
 public sealed interface Command permits Command.Sessions, Command.Capabilities, Command.Snapshot,
-        Command.Query, Command.Action, Command.KeyboardGesture, Command.Assert, Command.Wait,
+        Command.Query, Command.Action, Command.KeyboardGesture, Command.InputGesture, Command.Assert, Command.Wait,
         Command.Screenshot,
         Command.TraceStart, Command.InspectCompare, Command.TypographyDiagnose,
         Command.LayoutDiagnose, Command.TraceStop, Command.ScenarioList, Command.ScenarioStart,
@@ -132,6 +134,102 @@ public sealed interface Command permits Command.Sessions, Command.Capabilities, 
         record KeyUp(int keycode) implements KeyboardGestureStep {
             @Override public KeyboardGestureRequest.Step toCore() {
                 return new KeyboardGestureRequest.KeyUp(keycode);
+            }
+        }
+    }
+
+    /** One bounded atomic real-input combined input timeline. */
+    record InputGesture(int schemaVersion, List<InputGestureStep> steps)
+            implements Command {
+        /** Copies and fully validates the closed timeline before routing. */
+        public InputGesture {
+            steps = List.copyOf(Objects.requireNonNull(steps, "steps"));
+            new InputGestureRequest(
+                    schemaVersion, steps.stream().map(InputGestureStep::toCore).toList());
+        }
+
+        /** Projects the protocol-owned step DTOs to the backend-neutral core request. */
+        public InputGestureRequest toCore() {
+            return new InputGestureRequest(
+                    schemaVersion, steps.stream().map(InputGestureStep::toCore).toList());
+        }
+    }
+
+    /** Closed tagged combined input gesture step union. */
+    @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "kind")
+    @JsonSubTypes({
+        @JsonSubTypes.Type(value = InputGestureStep.KeyDown.class, name = "key-down"),
+        @JsonSubTypes.Type(value = InputGestureStep.WaitFrames.class, name = "wait-frames"),
+        @JsonSubTypes.Type(value = InputGestureStep.WaitTicks.class, name = "wait-ticks"),
+        @JsonSubTypes.Type(value = InputGestureStep.KeyUp.class, name = "key-up"),
+        @JsonSubTypes.Type(value = InputGestureStep.MouseMove.class, name = "mouse-move"),
+        @JsonSubTypes.Type(value = InputGestureStep.MouseDown.class, name = "mouse-down"),
+        @JsonSubTypes.Type(value = InputGestureStep.MouseUp.class, name = "mouse-up")
+    })
+    sealed interface InputGestureStep permits InputGestureStep.KeyDown,
+            InputGestureStep.WaitFrames, InputGestureStep.WaitTicks,
+            InputGestureStep.KeyUp, InputGestureStep.MouseMove,
+            InputGestureStep.MouseDown, InputGestureStep.MouseUp {
+        /** Projects one protocol step without backend types. */
+        InputGestureRequest.Step toCore();
+
+        /** Projects one core step to its closed protocol shape. */
+        static InputGestureStep fromCore(InputGestureRequest.Step step) {
+            return switch (step) {
+                case InputGestureRequest.KeyDown value -> new KeyDown(value.keycode());
+                case InputGestureRequest.KeyUp value -> new KeyUp(value.keycode());
+                case InputGestureRequest.MouseMove value -> new MouseMove(value.deltaX(), value.deltaY());
+                case InputGestureRequest.MouseDown value -> new MouseDown(value.button());
+                case InputGestureRequest.MouseUp value -> new MouseUp(value.button());
+                case InputGestureRequest.WaitFrames value -> new WaitFrames(value.count());
+                case InputGestureRequest.WaitTicks value -> new WaitTicks(value.count());
+            };
+        }
+
+        /** One bounded relative mouse movement. */
+        record MouseMove(int deltaX, int deltaY) implements InputGestureStep {
+            @Override public InputGestureRequest.Step toCore() {
+                return new InputGestureRequest.MouseMove(deltaX, deltaY);
+            }
+        }
+        /** One primary-pointer mouse press. */
+        record MouseDown(int button) implements InputGestureStep {
+            @Override public InputGestureRequest.Step toCore() {
+                return new InputGestureRequest.MouseDown(button);
+            }
+        }
+        /** One primary-pointer mouse release. */
+        record MouseUp(int button) implements InputGestureStep {
+            @Override public InputGestureRequest.Step toCore() {
+                return new InputGestureRequest.MouseUp(button);
+            }
+        }
+
+        /** One key-down transition. */
+        record KeyDown(int keycode) implements InputGestureStep {
+            @Override public InputGestureRequest.Step toCore() {
+                return new InputGestureRequest.KeyDown(keycode);
+            }
+        }
+
+        /** One completed-frame wait. */
+        record WaitFrames(int count) implements InputGestureStep {
+            @Override public InputGestureRequest.Step toCore() {
+                return new InputGestureRequest.WaitFrames(count);
+            }
+        }
+
+        /** One exact controlled-tick wait. */
+        record WaitTicks(int count) implements InputGestureStep {
+            @Override public InputGestureRequest.Step toCore() {
+                return new InputGestureRequest.WaitTicks(count);
+            }
+        }
+
+        /** One key-up transition. */
+        record KeyUp(int keycode) implements InputGestureStep {
+            @Override public InputGestureRequest.Step toCore() {
+                return new InputGestureRequest.KeyUp(keycode);
             }
         }
     }

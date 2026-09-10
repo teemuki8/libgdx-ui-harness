@@ -54,9 +54,9 @@ final class HarnessMcpClient implements Closeable {
         }
         client.notify("notifications/initialized", Map.of());
         JsonNode listed = client.request("tools/list", Map.of());
-        if (listed.path("tools").size() != 26) {
+        if (listed.path("tools").size() != 27) {
             client.close();
-            throw new IllegalStateException("Expected the twenty-six production tools: " + listed);
+            throw new IllegalStateException("Expected the twenty-seven production tools: " + listed);
         }
         return client;
     }
@@ -695,6 +695,20 @@ final class HarnessMcpClient implements Closeable {
         return content;
     }
 
+    JsonNode inputGesture(
+            String sessionId,
+            int schemaVersion,
+            List<Map<String, Object>> steps,
+            long deadlineMillis) throws Exception {
+        JsonNode content = call("ui_input_gesture", Map.of(
+                "sessionId", sessionId,
+                "schemaVersion", schemaVersion,
+                "steps", steps,
+                "deadlineMillis", deadlineMillis));
+        requireKind(content, "input-gesture-result");
+        return content;
+    }
+
     long beginKeyboardGesture(
             String sessionId, List<Map<String, Object>> steps, long deadlineMillis)
             throws Exception {
@@ -705,6 +719,24 @@ final class HarnessMcpClient implements Closeable {
                 "method", "tools/call",
                 "params", Map.of(
                         "name", "ui_keyboard_gesture",
+                        "arguments", Map.of(
+                                "sessionId", sessionId,
+                                "schemaVersion", 1,
+                                "steps", steps,
+                                "deadlineMillis", deadlineMillis))));
+        return id;
+    }
+
+    long beginInputGesture(
+            String sessionId, List<Map<String, Object>> steps, long deadlineMillis)
+            throws Exception {
+        long id = ++requestId;
+        send(Map.of(
+                "jsonrpc", "2.0",
+                "id", id,
+                "method", "tools/call",
+                "params", Map.of(
+                        "name", "ui_input_gesture",
                         "arguments", Map.of(
                                 "sessionId", sessionId,
                                 "schemaVersion", 1,

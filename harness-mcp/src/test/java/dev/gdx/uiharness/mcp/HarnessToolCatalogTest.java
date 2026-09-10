@@ -28,13 +28,13 @@ final class HarnessToolCatalogTest {
             "ui_scenarios", "ui_scenario_start", "ui_navigation_inspect",
             "ui_navigation_validate", "ui_validate_layout", "ui_matrix_run",
             "ui_matrix_results", "ui_semantic_compare", "ui_trace_query",
-            "ui_runtime_compare", "ui_runtime_observe", "ui_keyboard_gesture");
+            "ui_runtime_compare", "ui_runtime_observe", "ui_keyboard_gesture", "ui_input_gesture");
 
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
 
     @Test void exposesOnlyTheApprovedBoundedTools() {
         assertEquals(APPROVED, catalog.toolNames());
-        assertEquals(26, catalog.tools().size());
+        assertEquals(27, catalog.tools().size());
         for (String name : APPROVED) {
             assertNotNull(catalog.accessMode(name));
         }
@@ -78,6 +78,7 @@ final class HarnessToolCatalogTest {
                 Map.entry("ui_runtime_compare", HarnessToolCatalog.AccessMode.READ_ONLY),
                 Map.entry("ui_runtime_observe", HarnessToolCatalog.AccessMode.READ_ONLY),
                 Map.entry("ui_keyboard_gesture", HarnessToolCatalog.AccessMode.MUTATING),
+                Map.entry("ui_input_gesture", HarnessToolCatalog.AccessMode.MUTATING),
                 Map.entry("ui_capabilities", HarnessToolCatalog.AccessMode.READ_ONLY));
         assertEquals(APPROVED, expected.keySet());
         for (Map.Entry<String, HarnessToolCatalog.AccessMode> entry : expected.entrySet()) {

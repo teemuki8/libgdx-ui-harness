@@ -8,6 +8,8 @@ import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
 import dev.gdx.uiharness.core.error.HarnessException;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureRequest;
+import dev.gdx.uiharness.core.gesture.InputGestureRequest;
+import dev.gdx.uiharness.core.gesture.InputGestureResult;
 import dev.gdx.uiharness.core.gesture.KeyboardGestureResult;
 import dev.gdx.uiharness.core.locator.LocatorEngine;
 import dev.gdx.uiharness.core.scenario.ScenarioRegistry;
@@ -346,6 +348,20 @@ public final class HarnessProtocolService {
                     result -> RoutedValue.plain(
                             HarnessResponse.Result.KeyboardGesture.fromCore(result)));
         }
+        if (command instanceof Command.InputGesture gesture) {
+            requireCapability(session, capability(command));
+            if (session.inputGestureCoordinator().isEmpty()) {
+                throw new HarnessException(
+                        ErrorCode.UNSUPPORTED_CAPABILITY,
+                        "Input gestures are unavailable for this session",
+                        ErrorEvidence.empty());
+            }
+            return RoutedOperation.map(
+                    session.inputGestureCoordinator().orElseThrow().execute(
+                            request.requestId(), gesture.toCore(), deadline),
+                    result -> RoutedValue.plain(
+                            HarnessResponse.Result.InputGesture.fromCore(result)));
+        }
 
 
         requireCapability(session, capability(command));
@@ -503,6 +519,9 @@ public final class HarnessProtocolService {
         }
         if (command instanceof Command.KeyboardGesture) {
             return "ui_keyboard_gesture";
+        }
+        if (command instanceof Command.InputGesture) {
+            return "ui_input_gesture";
         }
         if (command instanceof Command.Query) {
             return "query";
@@ -971,7 +990,44 @@ public final class HarnessProtocolService {
             Optional<SemanticCompareCoordinator> semanticCompareCoordinator,
             Optional<RuntimeCompareCoordinator> runtimeCompareCoordinator,
             Optional<RuntimeObservationCoordinator> runtimeObservationCoordinator,
+            Optional<KeyboardGestureCoordinator> keyboardGestureCoordinator,
+            Optional<InputGestureCoordinator> inputGestureCoordinator) {
+        /** Retains binary and source compatibility for keyboard-only sessions. */
+        public Session(
+            Harness harness,
+            LocatorEngine locators,
+            WaitEngine waits,
+            ScreenCapture capture,
+            CapabilitySet capabilities,
+            TraceController traces,
+            Optional<ScenarioRegistry> scenarioRegistry,
+            Optional<ScenarioCoordinator> scenarioCoordinator,
+            Optional<NavigationCoordinator> navigationCoordinator,
+            Optional<LayoutValidationCoordinator> layoutValidationCoordinator,
+            Optional<MatrixCoordinator> matrixCoordinator,
+            Optional<SemanticCompareCoordinator> semanticCompareCoordinator,
+            Optional<RuntimeCompareCoordinator> runtimeCompareCoordinator,
+            Optional<RuntimeObservationCoordinator> runtimeObservationCoordinator,
             Optional<KeyboardGestureCoordinator> keyboardGestureCoordinator) {
+            this(harness, locators, waits, capture, capabilities, traces,
+                    scenarioRegistry, scenarioCoordinator, navigationCoordinator,
+                    layoutValidationCoordinator, matrixCoordinator, semanticCompareCoordinator,
+                    runtimeCompareCoordinator, runtimeObservationCoordinator,
+                    keyboardGestureCoordinator, Optional.empty());
+        }
+
+        /** Adds the application-owned input runner and advertises its installed capability. */
+        public Session withInputGestures(InputGestureCoordinator coordinator) {
+            java.util.ArrayList<String> names = new java.util.ArrayList<>(capabilities.capabilities());
+            names.remove("ui_keyboard_gesture_v2");
+            if (!names.contains("ui_input_gesture")) { names.add("ui_input_gesture"); }
+            return new Session(harness, locators, waits, capture, new CapabilitySet(names), traces,
+                    scenarioRegistry, scenarioCoordinator, navigationCoordinator,
+                    layoutValidationCoordinator, matrixCoordinator, semanticCompareCoordinator,
+                    runtimeCompareCoordinator, runtimeObservationCoordinator,
+                    keyboardGestureCoordinator, Optional.of(coordinator));
+        }
+
         /** Retains source compatibility for sessions without scenario lifecycle registration. */
         public Session(
                 Harness harness,
@@ -1144,6 +1200,10 @@ public final class HarnessProtocolService {
                     runtimeObservationCoordinator, "runtimeObservationCoordinator");
             keyboardGestureCoordinator = Objects.requireNonNull(
                     keyboardGestureCoordinator, "keyboardGestureCoordinator");
+            inputGestureCoordinator = Objects.requireNonNull(inputGestureCoordinator, "inputGestureCoordinator");
+            if (capabilities.supports("ui_input_gesture") != inputGestureCoordinator.isPresent()) {
+                throw new IllegalArgumentException("input gesture capability requires installed coordinator");
+            }
         }
     }
 
@@ -1231,6 +1291,14 @@ public final class HarnessProtocolService {
                 String propertyId,
                 String correlationToken,
                 Deadline deadline);
+    }
+
+    /** Application-owned combined input execution boundary, installed only with a pointer adapter. */
+    @FunctionalInterface
+    public interface InputGestureCoordinator {
+        /** Executes one prevalidated timeline and completes only after abnormal cleanup. */
+        CompletionStage<InputGestureResult> execute(
+                String requestId, InputGestureRequest request, Deadline deadline);
     }
 
     /** Optional application-owned atomic keyboard gesture boundary for one session. */
