@@ -48,6 +48,59 @@ import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 final class Scene2dLayoutValidatorTest {
+    @Test void transparentSiblingLayoutTablesDoNotObscureTheirSeparateContent() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            Table hud = new Table();
+            hud.setBounds(0, 0, 960, 540);
+            fixture.stage.addActor(hud);
+            Label status = fixture.label("status", "Health", 20, 20, 120, 30);
+            status.setTouchable(Touchable.disabled);
+            hud.addActor(status);
+            Table menu = new Table();
+            menu.setBounds(0, 0, 960, 540);
+            fixture.stage.addActor(menu);
+            Label title = fixture.label("title", "Menu", 200, 200, 120, 30);
+            title.setTouchable(Touchable.disabled);
+            menu.addActor(title);
+            var result = fixture.validator.validate(1, 1, null,
+                    only(LayoutValidationCheck.OBSCURED), null);
+            assertTrue(result.findings().isEmpty(), result.findings().toString());
+        }
+    }
+
+    @Test void backgroundAndInteractiveTablesStillObscureLowerControls() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            fixture.button("target", "Target", 100, 100);
+            Table overlay = new Table();
+            overlay.setBounds(90, 90, 200, 100);
+            overlay.setBackground(new BaseDrawable());
+            fixture.stage.addActor(overlay);
+            var config = only(LayoutValidationCheck.OBSCURED);
+            assertFalse(fixture.validator.validate(1, 1, null, config, null).findings().isEmpty());
+            overlay.setBackground((com.badlogic.gdx.scenes.scene2d.utils.Drawable) null);
+            overlay.setTouchable(Touchable.enabled);
+            assertFalse(fixture.validator.validate(2, 2, null, config, null).findings().isEmpty());
+            overlay.setTouchable(Touchable.childrenOnly);
+            assertTrue(fixture.validator.validate(3, 3, null, config, null).findings().isEmpty());
+        }
+    }
+
+    @Test void customTableCannotClaimAdapterOwnedNonpaintingEvidence() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            fixture.button("target", "Target", 100, 100);
+            Table custom = new Table() { };
+            custom.setBounds(90, 90, 200, 100);
+            fixture.stage.addActor(custom);
+            fixture.session.semantics().setProperty(custom, "scene2d.layoutOnly", "true");
+            var result = fixture.validator.validate(1, 1, null,
+                    only(LayoutValidationCheck.OBSCURED), null);
+            assertFalse(result.findings().isEmpty());
+        }
+    }
+
     @Test void hiddenAncestorExcludesButtonOverlapUntilItIsShown() {
         try (Fixture fixture = new Fixture()) {
             fixture.viewport(960,540);

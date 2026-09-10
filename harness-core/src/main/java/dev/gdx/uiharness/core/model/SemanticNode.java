@@ -10,7 +10,7 @@ import java.util.Objects;
  *
  * @param id snapshot-local identifier
  * @param parentId parent identifier, or {@code null} for the root
- * @param childIds ordered child identifiers
+ * @param childIds child identifiers in drawing order (used by layout obscuration checks)
  * @param role semantic role
  * @param accessibleName accessible name, when available
  * @param text normalized visible text, when available
