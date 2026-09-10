@@ -163,6 +163,8 @@ public final class Scene2dInputGestureRunner implements AutoCloseable {
         private int completedSteps;
         private ActiveFrameWait activeFrameWait;
         private CompletableFuture<TickAdvanceResult> activeTick;
+        private PendingTick pendingTick;
+        private boolean invokingTick;
         private DeadlineScheduler.Cancellation requestDeadline;
         private DeadlineScheduler.Cancellation cleanupDeadline;
         private Terminal terminal;
@@ -184,7 +186,9 @@ public final class Scene2dInputGestureRunner implements AutoCloseable {
             if (!preflightTicks()) {
                 return;
             }
-            armRequestDeadline();
+            if (!armRequestDeadline()) {
+                return;
+            }
             safeTrace("gesture-accepted", null, null);
             synchronized (this) {
                 if (phase != Phase.NORMAL) {
@@ -227,11 +231,17 @@ public final class Scene2dInputGestureRunner implements AutoCloseable {
             return true;
         }
 
-        private void armRequestDeadline() {
-            DeadlineScheduler.Cancellation armed = deadlines.schedule(
-                    deadline.remaining(), () -> requestTermination(
-                            TerminalOutcome.TIMED_OUT, FailureCategory.TIMEOUT,
-                            OptionalInt.of(currentStepIndex())));
+        private boolean armRequestDeadline() {
+            DeadlineScheduler.Cancellation armed;
+            try {
+                armed = deadlines.schedule(deadline.remaining(), () -> requestTermination(
+                        TerminalOutcome.TIMED_OUT, FailureCategory.TIMEOUT,
+                        OptionalInt.of(currentStepIndex())));
+            } catch (RuntimeException | Error failure) {
+                requestTermination(TerminalOutcome.REJECTED,
+                        FailureCategory.DEADLINE_SCHEDULER_FAILURE, OptionalInt.empty());
+                return false;
+            }
             boolean cancel;
             synchronized (this) {
                 cancel = phase != Phase.NORMAL;
@@ -242,6 +252,7 @@ public final class Scene2dInputGestureRunner implements AutoCloseable {
             if (cancel) {
                 armed.cancel();
             }
+            return !cancel;
         }
 
         private synchronized int currentStepIndex() {
@@ -279,10 +290,22 @@ public final class Scene2dInputGestureRunner implements AutoCloseable {
             int tickStep = currentStepIndex();
             long beforeRevision = revisions.getAsLong();
             long beforeFrame = frameNumbers.getAsLong();
+            synchronized (this) {
+                if (phase != Phase.NORMAL) { return; }
+                pendingTick = new PendingTick(count, beforeRevision, beforeFrame);
+                invokingTick = true;
+            }
             CompletableFuture<TickAdvanceResult> submitted;
             try {
                 submitted = ticks.orElseThrow().advance(count, deadline).toCompletableFuture();
             } catch (RuntimeException | Error failure) {
+                synchronized (this) {
+                    invokingTick = false;
+                    if (phase != Phase.NORMAL) {
+                        if (phase == Phase.CLEANING) { beginCleanup(); }
+                        return;
+                    }
+                }
                 addFailedTickEvidence(
                         count, beforeRevision, beforeFrame,
                         revisions.getAsLong(), frameNumbers.getAsLong());
@@ -292,8 +315,10 @@ public final class Scene2dInputGestureRunner implements AutoCloseable {
                 return;
             }
             synchronized (this) {
+                invokingTick = false;
                 if (phase != Phase.NORMAL) {
                     submitted.cancel(false);
+                    if (phase == Phase.CLEANING) { beginCleanup(); }
                     return;
                 }
                 activeTick = submitted;
@@ -332,6 +357,7 @@ public final class Scene2dInputGestureRunner implements AutoCloseable {
                     if (phase != Phase.NORMAL || stepIndex != tickStep) {
                         return;
                     }
+                    pendingTick = null;
                     evidence.add(new StepEvidence(
                             stepIndex, request.steps().get(stepIndex), StepStatus.COMPLETED,
                             beforeRevision, beforeFrame,
@@ -355,6 +381,7 @@ public final class Scene2dInputGestureRunner implements AutoCloseable {
                 if (phase != Phase.NORMAL) {
                     return;
                 }
+                pendingTick = null;
                 evidence.add(new StepEvidence(
                         stepIndex, request.steps().get(stepIndex), StepStatus.FAILED,
                         beforeRevision, beforeFrame, afterRevision, afterFrame,
@@ -629,10 +656,12 @@ public final class Scene2dInputGestureRunner implements AutoCloseable {
             ActiveFrameWait frameWait;
             CompletableFuture<TickAdvanceResult> tickAdvance;
             DeadlineScheduler.Cancellation requestCancellation;
+            boolean deferCleanup;
             synchronized (this) {
                 if (phase != Phase.NORMAL) {
                     return;
                 }
+                deferCleanup = invokingTick;
                 if (activeFrameWait != null) {
                     ActiveFrameWait waiting = activeFrameWait;
                     evidence.add(new StepEvidence(
@@ -642,6 +671,16 @@ public final class Scene2dInputGestureRunner implements AutoCloseable {
                             List.copyOf(held), Optional.empty()));
                     safeTrace("gesture-step", stepIndex, "wait-frames-failed");
                     stepIndex++;
+                }
+                if (pendingTick != null) {
+                    evidence.add(new StepEvidence(
+                            stepIndex, request.steps().get(stepIndex), StepStatus.FAILED,
+                            pendingTick.beforeRevision(), pendingTick.beforeFrame(),
+                            revisions.getAsLong(), frameNumbers.getAsLong(),
+                            List.copyOf(held), Optional.empty()));
+                    safeTrace("gesture-step", stepIndex, "wait-ticks-failed");
+                    stepIndex++;
+                    pendingTick = null;
                 }
                 phase = Phase.CLEANING;
                 terminal = new Terminal(outcome, failure, failureStep);
@@ -662,7 +701,9 @@ public final class Scene2dInputGestureRunner implements AutoCloseable {
             }
             safeTrace("gesture-failed", failureStep.isPresent()
                     ? failureStep.getAsInt() : null, failure.name().toLowerCase());
-            beginCleanup();
+            if (!deferCleanup) {
+                beginCleanup();
+            }
         }
 
         private void beginCleanup() {
@@ -673,8 +714,20 @@ public final class Scene2dInputGestureRunner implements AutoCloseable {
                 }
             }
             Deadline cleanupBound = Deadline.after(deadline.clock(), CLEANUP_TIMEOUT);
-            DeadlineScheduler.Cancellation armed = deadlines.schedule(
-                    CLEANUP_TIMEOUT, this::cleanupTimedOut);
+            DeadlineScheduler.Cancellation armed;
+            try {
+                armed = deadlines.schedule(CLEANUP_TIMEOUT, this::cleanupTimedOut);
+            } catch (RuntimeException | Error failure) {
+                synchronized (this) {
+                    if (phase != Phase.CLEANING) { return; }
+                    while (cleanupIndex < cleanupOrder.size()) {
+                        cleanup.add(new CleanupAttempt(cleanupOrder.get(cleanupIndex++),
+                                CleanupAttemptStatus.SCHEDULER_REJECTED));
+                    }
+                }
+                finishTerminal(CleanupStatus.FAILED);
+                return;
+            }
             boolean cancel;
             synchronized (this) {
                 cancel = phase != Phase.CLEANING;
@@ -910,6 +963,8 @@ public final class Scene2dInputGestureRunner implements AutoCloseable {
         CLEANING,
         TERMINAL
     }
+
+    private record PendingTick(int count, long beforeRevision, long beforeFrame) {}
 
     private record Terminal(
             TerminalOutcome outcome,

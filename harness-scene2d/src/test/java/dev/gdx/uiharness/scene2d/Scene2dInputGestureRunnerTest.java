@@ -81,6 +81,74 @@ final class Scene2dInputGestureRunnerTest {
         assertEquals(List.of("mouse-down:0", "mouse-up:0"), fixture.input.events);
     }
 
+    @Test void rejectedRequestDeadlineReturnsTerminalAndDoesNotLeakSessionLease() {
+        Fixture fixture = new Fixture();
+        fixture.deadlines.reject = true;
+        var request = List.<InputGestureRequest.Step>of(new InputGestureRequest.MouseMove(1, 0));
+        var rejected = fixture.execute(request);
+        assertEquals(TerminalOutcome.REJECTED, rejected.join().outcome());
+        assertTrue(fixture.input.events.isEmpty());
+        fixture.deadlines.reject = false;
+        var next = fixture.execute(request);
+        fixture.scheduler.drain();
+        assertEquals(TerminalOutcome.COMPLETED, next.join().outcome());
+    }
+
+    @Test void rejectedCleanupDeadlineReturnsExplicitFailedCleanupWithoutHanging() {
+        Fixture fixture = new Fixture();
+        var result = fixture.execute(List.of(new InputGestureRequest.MouseDown(0),
+                new InputGestureRequest.WaitFrames(30), new InputGestureRequest.MouseUp(0)));
+        fixture.scheduler.drain();
+        fixture.deadlines.reject = true;
+        result.cancel(false);
+        assertTrue(result.isDone());
+        assertEquals(CleanupStatus.FAILED, result.join().cleanupStatus());
+        assertEquals(1, result.join().heldInputs().size());
+        assertEquals(InputGestureResult.CleanupAttemptStatus.SCHEDULER_REJECTED,
+                result.join().cleanup().getFirst().status());
+    }
+
+    @Test void cancelledPendingTickHasStartedFailedEvidence() {
+        Fixture fixture = new Fixture(new FakeTicks());
+        var result = fixture.execute(List.of(new InputGestureRequest.MouseMove(1, 0),
+                new InputGestureRequest.WaitTicks(30)));
+        fixture.scheduler.drain();
+        result.cancel(false);
+        assertEquals(2, result.join().startedSteps());
+        assertEquals(new InputGestureRequest.WaitTicks(30), result.join().steps().get(1).step());
+        assertEquals(InputGestureResult.StepStatus.FAILED, result.join().steps().get(1).status());
+        assertTrue(result.join().steps().get(1).tick().isEmpty());
+    }
+
+    @Test void cancellationWaitsForInFlightTickInvocationBeforePublishingTerminal() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExactTickCoordinator ticks = new ExactTickCoordinator() {
+            @Override public TickPreflight preflight(int count, Deadline deadline) {
+                return new TickPreflight.Ready(10_000);
+            }
+            @Override public CompletionStage<TickAdvanceResult> advance(int count, Deadline deadline) {
+                entered.countDown();
+                await(release);
+                return new CompletableFuture<>();
+            }
+        };
+        Fixture fixture = new Fixture(ticks);
+        var result = fixture.execute(List.of(new InputGestureRequest.MouseMove(1, 0),
+                new InputGestureRequest.WaitTicks(30)));
+        var terminalBeforeReturn = new java.util.concurrent.atomic.AtomicBoolean();
+        Thread canceller = Thread.ofPlatform().start(() -> {
+            await(entered);
+            result.cancel(false);
+            terminalBeforeReturn.set(result.isDone());
+            release.countDown();
+        });
+        fixture.scheduler.drain();
+        canceller.join();
+        assertFalse(terminalBeforeReturn.get());
+        assertEquals(TerminalOutcome.CANCELLED, result.join().outcome());
+    }
+
     private static final class Fixture {
         final Thread ownerThread = Thread.currentThread();
         final ManualClock clock = new ManualClock();
@@ -234,8 +302,10 @@ final class Scene2dInputGestureRunnerTest {
 
     private static final class ManualDeadlines implements DeadlineScheduler {
         private final List<ScheduledSignal> signals = new ArrayList<>();
+        boolean reject;
 
         @Override public Cancellation schedule(Duration delay, Runnable signal) {
+            if (reject) { throw new java.util.concurrent.RejectedExecutionException("deadline closed"); }
             ScheduledSignal scheduled = new ScheduledSignal(signal);
             signals.add(scheduled);
             return () -> scheduled.cancelled = true;

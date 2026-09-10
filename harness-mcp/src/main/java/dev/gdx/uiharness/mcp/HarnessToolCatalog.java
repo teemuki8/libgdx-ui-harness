@@ -1330,7 +1330,7 @@ public final class HarnessToolCatalog {
         properties.put("requestedSteps", integer(1, 256));
         properties.put("heldInputs", array(control, 21));
         properties.put("failure", enumString("invalid-request", "unsupported-tick-capability",
-                "invalid-runtime-state", "session-busy", "input-dispatch-failure",
+                "invalid-runtime-state", "session-busy", "input-dispatch-failure", "deadline-scheduler-failure",
                 "frame-source-closed", "tick-advance-failure", "epoch-changed", "timeout",
                 "cancelled", "session-closed", "cleanup-failure"));
         Map<String, Object> oldStep = (Map<String, Object>) ((Map<String, Object>) properties.get("steps")).get("items");

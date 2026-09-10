@@ -229,6 +229,8 @@ public record InputGestureResult(
         SESSION_BUSY,
         /** A configured input callback failed. */
         INPUT_DISPATCH_FAILURE,
+        /** Request deadline infrastructure rejected scheduling before input. */
+        DEADLINE_SCHEDULER_FAILURE,
         /** The completed-frame source closed during a wait. */
         FRAME_SOURCE_CLOSED,
         /** Exact controlled tick advancement failed. */

@@ -1602,7 +1602,7 @@
         "type" : "integer"
       },
       "failure" : {
-        "enum" : [ "invalid-request", "unsupported-tick-capability", "invalid-runtime-state", "session-busy", "input-dispatch-failure", "frame-source-closed", "tick-advance-failure", "epoch-changed", "timeout", "cancelled", "session-closed", "cleanup-failure" ],
+        "enum" : [ "invalid-request", "unsupported-tick-capability", "invalid-runtime-state", "session-busy", "input-dispatch-failure", "deadline-scheduler-failure", "frame-source-closed", "tick-advance-failure", "epoch-changed", "timeout", "cancelled", "session-closed", "cleanup-failure" ],
         "type" : "string"
       },
       "failureStep" : {

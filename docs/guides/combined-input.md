@@ -47,3 +47,15 @@ controls from physical input. Harness requests do not inspect or rewrite backend
 
 The native fixture demonstrates actual input callbacks and independently observes pointer
 aim and firing ticks with `ui_runtime_observe`; see `InputGestureProductionFixtureTest`.
+
+If the request deadline scheduler rejects admission, the runner returns
+`deadline-scheduler-failure` before input. If the required cleanup alarm cannot be scheduled,
+the runner terminates with failed cleanup and `scheduler-rejected` release attempts, retaining
+the unresolved held controls in evidence. No untracked post-terminal cleanup is launched;
+the application must treat the session as unusable and reset its own input state on disposal.
+
+A started exact-tick step receives failed step evidence when cancelled before completion.
+If cancellation arrives during the coordinator's synchronous `advance` invocation, terminal
+cleanup waits for that admitted invocation to return and cancels its returned future. The
+application coordinator must itself obey its deadline; the runner never publishes a terminal
+result while that invocation can still begin authoritative work.
