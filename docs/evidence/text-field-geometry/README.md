@@ -8,6 +8,7 @@ ACL-provider-specific test. The skipped `TraceRecorderTest.aclOwnerOnlyEnforcedW
 requires a different filesystem provider. Existing javac warnings in baseline fixtures remain;
 this result is not a claim that javac ran with `-Werror` or that the repository is warning-free.
 See [verification.json](verification.json) and [full-gate.log](full-gate.log).
+Retained logs have trailing whitespace removed; their diagnostic content is preserved.
 
 The wrapper and command are recorded in [ADR 0042](../../adr/0042-standard-text-field-geometry.md).
 The gate includes Scene2D geometry, production native/MCP fixtures, protocol/MCP contracts,

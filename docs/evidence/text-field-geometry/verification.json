@@ -69,14 +69,15 @@
     "TextArea, custom field/font subclasses, placeholders, incompatible runtime/private access, invalid metrics, unsupported transforms and oversized text remain outside supported field geometry."
   ],
   "sha256": {
-    "cache-rounding-red.log": "08b2ed815e1864c074236c810f0b20f07fac946ffb07a6f742c9bacac30ba7f6",
+    "cache-rounding-red.log": "4b20fe87b311e129cffb57f8a1eb40c87e0e52de4a933b3a3931073fbd699c5f",
     "field-0.json": "a25da048799091f87585c9dc9c1ac5849b859d6027ddb26ef68ae71594f9ebbf",
     "field-0.png": "f8c881d12e92a09e54d561305a0c7d67ff140617ad0fdc8148ea954262900a56",
     "field-1.json": "a385c66faf5b53cb76aad7ea0d9ba51ec73b8a4edc2e92b2be93362b08cad990",
     "field-1.png": "fb8d53ec0263cf374585cf392ec9a577d357138254035426878074e04757b87a",
-    "full-gate.log": "34fae07ae1c08cf1e1c5a4ddf8b0d5f2f8074606328bf1bc2a7374b66e720bdc",
-    "glyph-ascent-red.log": "7492f486409ebee79b6c80d060a67178fc41d9075710c20e1d6c3df2c40893f9",
-    "invalid-metrics-red.log": "f7c26702c8ba42cdd49d681004430bc3ff70c00750afee6537ca606614c80a11",
-    "nullable-locator-red.log": "18c956057fbf5001965541f1cb23f2155489d41abdb94b88be1742100e38395e"
-  }
+    "full-gate.log": "b6804e861b12df42020254ee1e00a04155ae07ed0f8073a89112896887c49121",
+    "glyph-ascent-red.log": "e512771e712ed58423cbb6ccb12ab68ce702217d2c042c421a6fb6648291ef82",
+    "invalid-metrics-red.log": "89e18ad23ec2eb8c954426d286d104e14264ca58dedce31555657193a5bd8149",
+    "nullable-locator-red.log": "ed41ca73d994ba38e65b8c1882532a837fd9ae3711599d52967762a83f8db62b"
+  },
+  "logNormalization": "Trailing whitespace stripped; log lines and diagnostic content preserved."
 }
