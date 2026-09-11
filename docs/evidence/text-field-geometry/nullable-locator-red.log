@@ -1,0 +1,77 @@
+Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/tjaaskel/.m2/repository/org/projectlombok/lombok/1.18.42/lombok-1.18.42.jar
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/9.6.1/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :harness-core:compileJava UP-TO-DATE
+> Task :harness-core:processResources NO-SOURCE
+> Task :harness-core:classes UP-TO-DATE
+> Task :harness-core:jar UP-TO-DATE
+> Task :harness-protocol:compileJava UP-TO-DATE
+> Task :harness-mcp:compileJava UP-TO-DATE
+> Task :harness-mcp:processResources NO-SOURCE
+> Task :harness-mcp:classes UP-TO-DATE
+
+> Task :harness-mcp:compileTestJava
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-mcp/src/test/java/dev/gdx/uiharness/mcp/ArtifactReadMcpTest.java:146: warning: [removal] ThreadDeath in java.lang has been deprecated and marked for removal
+        ThreadDeath death = new ThreadDeath();
+        ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-mcp/src/test/java/dev/gdx/uiharness/mcp/ArtifactReadMcpTest.java:146: warning: [removal] ThreadDeath in java.lang has been deprecated and marked for removal
+        ThreadDeath death = new ThreadDeath();
+                                ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-mcp/src/test/java/dev/gdx/uiharness/mcp/ArtifactReadMcpTest.java:147: warning: [removal] ThreadDeath in java.lang has been deprecated and marked for removal
+        assertSame(death, assertThrows(ThreadDeath.class,
+                                       ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-mcp/src/test/java/dev/gdx/uiharness/mcp/HarnessMcpServerContractTest.java:645: warning: [removal] ThreadDeath in java.lang has been deprecated and marked for removal
+        ThreadDeath death = new ThreadDeath();
+        ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-mcp/src/test/java/dev/gdx/uiharness/mcp/HarnessMcpServerContractTest.java:645: warning: [removal] ThreadDeath in java.lang has been deprecated and marked for removal
+        ThreadDeath death = new ThreadDeath();
+                                ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-mcp/src/test/java/dev/gdx/uiharness/mcp/HarnessMcpServerContractTest.java:649: warning: [removal] ThreadDeath in java.lang has been deprecated and marked for removal
+        assertSame(death, assertThrows(ThreadDeath.class,
+                                       ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-mcp/src/test/java/dev/gdx/uiharness/mcp/HarnessMcpServerContractTest.java:2477: warning: [try] auto-closeable resource server is never referenced in body of corresponding try statement
+                HarnessMcpServer server = HarnessMcpServer.open(
+                                 ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-mcp/src/test/java/dev/gdx/uiharness/mcp/HarnessMcpServerContractTest.java:2596: warning: [try] auto-closeable resource server is never referenced in body of corresponding try statement
+                HarnessMcpServer server = HarnessMcpServer.open(
+                                 ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-mcp/src/test/java/dev/gdx/uiharness/mcp/HarnessMcpServerContractTest.java:2685: warning: [try] auto-closeable resource server is never referenced in body of corresponding try statement
+                HarnessMcpServer server = HarnessMcpServer.open(
+                                 ^
+9 warnings
+
+> Task :harness-mcp:processTestResources
+> Task :harness-mcp:testClasses
+> Task :harness-protocol:processResources UP-TO-DATE
+> Task :harness-protocol:classes UP-TO-DATE
+> Task :harness-protocol:jar UP-TO-DATE
+
+> Task :harness-mcp:test
+Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/tjaaskel/.m2/repository/org/projectlombok/lombok/1.18.42/lombok-1.18.42.jar
+
+SchemaDiagnosticsTest > nullableLayoutLocatorAcceptsValidSubtreeAndExplicitNull() FAILED
+    org.opentest4j.AssertionFailedError at SchemaDiagnosticsTest.java:25
+
+SchemaDiagnosticsTest > nullableLocatorStillReportsUnknownKindAndUnknownProperties() FAILED
+    org.opentest4j.AssertionFailedError at SchemaDiagnosticsTest.java:38
+
+SchemaDiagnosticsTest > nullablePrimitiveRetainsTypeAndRangeValidation() FAILED
+    org.opentest4j.AssertionFailedError at SchemaDiagnosticsTest.java:61
+
+3 tests completed, 3 failed
+
+> Task :harness-mcp:test FAILED
+
+[Incubating] Problems report is available at: file:///home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':harness-mcp:test'.
+> There were failing tests. See the report at: file:///home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-mcp/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+
+BUILD FAILED in 10s
+9 actionable tasks: 3 executed, 6 up-to-date

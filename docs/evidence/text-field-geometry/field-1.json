@@ -1,0 +1,27 @@
+{
+  "status" : "FAIL",
+  "findings" : [ {
+    "reason" : "CLIPPED_TEXT",
+    "severity" : "ERROR",
+    "nodeId" : "n5",
+    "stageBounds" : {
+      "x" : 92.0,
+      "y" : 462.0,
+      "width" : 444.0,
+      "height" : 44.0
+    },
+    "evidence" : "text ink exceeds actor/clip/viewport bounds: left=1.0, right=1.0, bottom=0.0, top=0.0"
+  } ],
+  "examinedNodes" : 1,
+  "truncated" : false,
+  "appliedConfig" : {
+    "enabledChecks" : [ "CLIPPED_TEXT", "TEXT_COLLISION" ],
+    "minTargetWidth" : 64.0,
+    "minTargetHeight" : 64.0,
+    "maxAlignmentDelta" : 1.0,
+    "minSpacing" : 1.0,
+    "failOn" : "ERROR",
+    "maxFindings" : 256,
+    "maxNodes" : 10000
+  }
+}

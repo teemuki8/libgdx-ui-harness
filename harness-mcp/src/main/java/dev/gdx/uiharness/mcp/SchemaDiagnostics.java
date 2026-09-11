@@ -51,7 +51,10 @@ final class SchemaDiagnostics {
         Map<String, Object> resolved = resolve(schema, rootSchema);
         Object variants = resolved.get("oneOf");
         if (variants instanceof List<?> list) {
-            Map<String, Object> selected = selectVariant(list, value, rootSchema);
+            Map<String, Object> selected = selectNullableVariant(list, value, rootSchema);
+            if (selected == null) {
+                selected = selectVariant(list, value, rootSchema);
+            }
             if (selected == null) {
                 List<String> kinds = variantKinds(list, rootSchema);
                 add(problems, DiagnosticCode.INVALID_ENUM_VALUE,
@@ -134,6 +137,23 @@ final class SchemaDiagnostics {
                         lengthRange(resolved), minimalExample);
             }
         }
+    }
+
+    private static Map<String, Object> selectNullableVariant(
+            List<?> variants, Object value, Map<String, Object> rootSchema) {
+        if (variants.size() != 2) {
+            return null;
+        }
+        Map<String, Object> first = resolve(map(variants.get(0)), rootSchema);
+        Map<String, Object> second = resolve(map(variants.get(1)), rootSchema);
+        boolean firstNull = "null".equals(first.get("type"));
+        boolean secondNull = "null".equals(second.get("type"));
+        if (firstNull == secondNull) {
+            return null;
+        }
+        // Nullable schemas wrap primitives or a nested tagged union; validate the chosen
+        // branch normally, preserving depth/problem bounds and its own strict discriminator.
+        return (value == null) == firstNull ? first : second;
     }
 
     private static Map<String, Object> selectVariant(
@@ -273,6 +293,7 @@ final class SchemaDiagnostics {
             case "array" -> value instanceof List<?>;
             case "string" -> value instanceof String;
             case "boolean" -> value instanceof Boolean;
+            case "null" -> value == null;
             case "integer" -> value instanceof Number number
                     && Double.isFinite(number.doubleValue())
                     && number.doubleValue() == Math.rint(number.doubleValue());

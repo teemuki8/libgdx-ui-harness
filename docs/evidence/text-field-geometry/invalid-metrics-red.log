@@ -1,0 +1,44 @@
+Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/tjaaskel/.m2/repository/org/projectlombok/lombok/1.18.42/lombok-1.18.42.jar
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/9.6.1/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :harness-core:compileJava UP-TO-DATE
+> Task :harness-core:processResources NO-SOURCE
+> Task :harness-core:classes UP-TO-DATE
+> Task :harness-core:jar UP-TO-DATE
+> Task :harness-protocol:compileJava UP-TO-DATE
+> Task :harness-mcp:compileJava UP-TO-DATE
+> Task :harness-mcp:processResources NO-SOURCE
+> Task :harness-mcp:classes UP-TO-DATE
+> Task :harness-mcp:jar UP-TO-DATE
+> Task :harness-protocol:processResources UP-TO-DATE
+> Task :harness-protocol:classes UP-TO-DATE
+> Task :harness-protocol:jar UP-TO-DATE
+> Task :harness-scene2d:compileJava UP-TO-DATE
+> Task :harness-scene2d:processResources NO-SOURCE
+> Task :harness-scene2d:classes UP-TO-DATE
+> Task :harness-scene2d:compileTestJava
+> Task :harness-scene2d:processTestResources NO-SOURCE
+> Task :harness-scene2d:testClasses
+
+> Task :harness-scene2d:test FAILED
+Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/tjaaskel/.m2/repository/org/projectlombok/lombok/1.18.42/lombok-1.18.42.jar
+
+Scene2dTextFieldGeometryTest > observedInkMatchesActualDrawAcrossFontAndScrollStates() FAILED
+    org.opentest4j.AssertionFailedError at Scene2dTextFieldGeometryTest.java:38
+
+Scene2dTextFieldGeometryTest > invalidMetricsAndUnknownActorTransformsAreUnavailable() FAILED
+    java.lang.IllegalArgumentException at Scene2dTextFieldGeometryTest.java:94
+
+4 tests completed, 2 failed
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':harness-scene2d:test'.
+> There were failing tests. See the report at: file:///home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-scene2d/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+
+BUILD FAILED in 8s
+10 actionable tasks: 2 executed, 8 up-to-date

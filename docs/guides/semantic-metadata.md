@@ -95,7 +95,12 @@ The unreleased [complete-coverage change](../adr/0039-complete-layout-coverage.m
 reports node-located unavailability for visible nonempty semantic text lacking exact geometry.
 TextButton/CheckBox geometry is attributed through the actual owned Label, not inferred from
 matching text on arbitrary children. Declaring semantic text does not manufacture geometry for
-TextFields, Lists, SelectBoxes, or custom paint; their required intrinsic checks remain unavailable.
+Lists, SelectBoxes, or custom paint; their required intrinsic checks remain unavailable.
+[ADR 0042](../adr/0042-standard-text-field-geometry.md) separately adds exact standard TextField
+visible-slice geometry for libGDX 1.14.2 through five fixed read-only internal handles. Cursor,
+selection, scroll and font state are preserved. TextArea, custom subclasses, incompatible
+versions/module access, invalid metrics, unsupported transforms and oversized text remain
+unavailable. Empty-field placeholders are not qualified by semantic text coverage.
 
 ## Evaluator-complete state and action contracts
 

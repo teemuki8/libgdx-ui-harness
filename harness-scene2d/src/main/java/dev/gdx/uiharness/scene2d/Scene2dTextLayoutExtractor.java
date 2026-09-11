@@ -6,6 +6,7 @@ import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
+import com.badlogic.gdx.scenes.scene2d.ui.TextField;
 import com.badlogic.gdx.utils.SnapshotArray;
 import dev.gdx.uiharness.core.layout.LayoutValidationEvidence;
 import dev.gdx.uiharness.core.layout.TextLayoutEvidence;
@@ -22,7 +23,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
-/** Extracts bounded immutable intrinsic Label geometry on the owning render thread. */
+/** Extracts bounded immutable intrinsic Label and standard TextField geometry on the owning render thread. */
 final class Scene2dTextLayoutExtractor {
     private static final int MAX_TEXT_NODES = 10_000;
     private static final int MAX_CLIP_ANCESTORS = 128;
@@ -62,6 +63,20 @@ final class Scene2dTextLayoutExtractor {
         boolean visible = ancestorsVisible && actor.isVisible();
         if (result.size() >= MAX_TEXT_NODES) {
             return true;
+        }
+        if (visible && actor instanceof TextField field && !field.getText().isEmpty()) {
+            SemanticNode node = snapshot.nodes().get(actorIds.get(actor));
+            if (node != null && Objects.equals(node.text(),
+                    SemanticNodeBuilder.normalizeVisibleText(field.getText()))) {
+                var placement = Scene2dTextFieldGeometry.placement(field);
+                var clips = clipStageBounds(field, coordinates);
+                if (placement.isPresent() && clips.isPresent()) {
+                    var exact = placement.orElseThrow();
+                    result.put(node.id(), new TextLayoutEvidence(node.id(),
+                            stageBounds(coordinates.typographyBounds(field, exact.layoutBounds(), 1.0, 1.0)),
+                            stageBounds(coordinates.typographyBounds(field, exact.inkBounds(), 1.0, 1.0)), clips.orElseThrow()));
+                }
+            }
         }
         if (visible
                 && actor instanceof Label label
@@ -123,9 +138,9 @@ final class Scene2dTextLayoutExtractor {
     }
 
     private static Optional<List<Bounds>> clipStageBounds(
-            Label label, CoordinateMapper coordinates) {
+            Actor actor, CoordinateMapper coordinates) {
         List<Bounds> result = new ArrayList<>();
-        for (Actor ancestor = label.getParent();
+        for (Actor ancestor = actor.getParent();
                 ancestor != null;
                 ancestor = ancestor.getParent()) {
             if (ancestor instanceof ScrollPane pane) {
