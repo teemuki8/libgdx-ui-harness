@@ -271,18 +271,21 @@ public sealed interface HarnessResponse permits HarnessResponse.Success, Harness
             }
         }
 
-        /** Result of an input action. */
+        /** Result of an input action; observed text may be empty after clearing a field. */
         record Action(
                 long beforeRevision,
                 long afterRevision,
                 String observedState,
                 Map<String, String> evidence) implements Result {
-            /** Validates revisions and copies evidence. */
+            /** Validates revisions and bounded, possibly empty state, then copies evidence. */
             public Action {
                 if (beforeRevision < 0 || afterRevision <= beforeRevision) {
                     throw new IllegalArgumentException("invalid action revisions");
                 }
-                ProtocolJson.requireText(observedState, "observedState");
+                Objects.requireNonNull(observedState, "observedState");
+                if (observedState.length() > ProtocolJson.MAX_STRING_LENGTH) {
+                    throw new IllegalArgumentException("observedState exceeds protocol string limit");
+                }
                 evidence = copyBoundedMap(evidence, "action evidence");
             }
 

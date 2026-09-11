@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.gdx.uiharness.mcp.HarnessToolCatalogTest" tests="1" skipped="0" failures="1" errors="0" timestamp="2026-09-11T20:43:40.113Z" hostname="nobsa" time="0.578">
+  <properties/>
+  <testcase name="actionObservedStateSchemaAllowsEmptyWithoutRemovingItsBound()" classname="dev.gdx.uiharness.mcp.HarnessToolCatalogTest" time="0.541">
+    <failure message="org.opentest4j.AssertionFailedError: ValidationResponse[valid=false, errorMessage=Validation failed: JSON schema validation errors: [/observedState: must be at least 1 characters long], jsonStructuredOutput=null] ==&gt; expected: &lt;true&gt; but was: &lt;false&gt;" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: ValidationResponse[valid=false, errorMessage=Validation failed: JSON schema validation errors: [/observedState: must be at least 1 characters long], jsonStructuredOutput=null] ==&gt; expected: &lt;true&gt; but was: &lt;false&gt;
+	at org.junit.jupiter.api.Assertions.assertTrue(Assertions.java:232)
+	at dev.gdx.uiharness.mcp.HarnessToolCatalogTest.actionObservedStateSchemaAllowsEmptyWithoutRemovingItsBound(HarnessToolCatalogTest.java:52)
+</failure>
+  </testcase>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

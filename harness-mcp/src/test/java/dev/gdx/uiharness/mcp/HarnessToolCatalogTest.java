@@ -32,6 +32,36 @@ final class HarnessToolCatalogTest {
 
     private final HarnessToolCatalog catalog = new HarnessToolCatalog();
 
+    @Test void actionObservedStateSchemaAllowsEmptyWithoutRemovingItsBound() {
+        Map<String, Object> output = catalog.tool("ui_action").outputSchema();
+        Map<String, Object> action = Map.of(
+                "kind", "action-result",
+                "beforeRevision", 1, "afterRevision", 2,
+                "observedState", "",
+                "progress", Map.of("status", "available", "dimensions", Map.of(),
+                        "ruleId", "success/v1"),
+                "recovery", Map.ofEntries(
+                        Map.entry("policyVersion", "recovery/v1"),
+                        Map.entry("consumedBefore", 0), Map.entry("consumed", 0),
+                        Map.entry("limit", 3), Map.entry("remainingBefore", 3),
+                        Map.entry("remaining", 3), Map.entry("elapsedMillis", 0),
+                        Map.entry("maxWallTimeMillis", 30_000),
+                        Map.entry("terminatingRule", "success/v1")));
+        var validator = McpJsonDefaults.getSchemaValidator();
+        var empty = validator.validate(output, action);
+        assertTrue(empty.valid(), empty.toString());
+        assertTrue(validator.validate(output, with(action, "observedState", " ")).valid());
+        assertTrue(validator.validate(output, with(action, "observedState",
+                "x".repeat(ProtocolJson.MAX_STRING_LENGTH))).valid());
+        assertFalse(validator.validate(output, with(action, "observedState",
+                "x".repeat(ProtocolJson.MAX_STRING_LENGTH + 1))).valid());
+        var nullState = new java.util.LinkedHashMap<>(action);
+        nullState.put("observedState", null);
+        assertFalse(validator.validate(output, nullState).valid());
+        nullState.remove("observedState");
+        assertFalse(validator.validate(output, nullState).valid());
+    }
+
     @Test void exposesOnlyTheApprovedBoundedTools() {
         assertEquals(APPROVED, catalog.toolNames());
         assertEquals(27, catalog.tools().size());

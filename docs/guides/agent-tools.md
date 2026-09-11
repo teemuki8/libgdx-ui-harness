@@ -40,6 +40,11 @@ Locator schemas are closed recursive unions. Supported locator kinds are role, t
 
 `ui_action` accepts only click, hover, focus, fill, press, scroll, drag, and pointer. Pointer phases are down, move, and up. An action may request `force`, but force never bypasses strict locator resolution, render-thread confinement, request bounds, or input dispatch through the application's configured processor.
 
+`fill` accepts an empty `value` to clear a text field through real input. Its successful action
+result keeps `observedState` as an explicit string, including `""` for an empty field. Observed
+state is nonnull and bounded to 16,384 UTF-16 code units in the protocol; empty or whitespace
+text is not an internal failure. Revisions still prove a completed post-action frame.
+
 ## Keyboard gestures
 
 Capability `ui_keyboard_gesture` enables one atomic, session-scoped keyboard timeline. Capability

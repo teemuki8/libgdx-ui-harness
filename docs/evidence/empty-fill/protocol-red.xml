@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.gdx.uiharness.protocol.ProtocolJsonContractTest" tests="1" skipped="0" failures="1" errors="0" timestamp="2026-09-11T20:43:37.636Z" hostname="nobsa" time="0.346">
+  <properties/>
+  <testcase name="actionObservedStateAllowsEmptyAndWhitespaceWithTheExistingStringBound()" classname="dev.gdx.uiharness.protocol.ProtocolJsonContractTest" time="0.325">
+    <failure message="java.lang.IllegalArgumentException: observedState must not be blank" type="java.lang.IllegalArgumentException">java.lang.IllegalArgumentException: observedState must not be blank
+	at dev.gdx.uiharness.protocol.ProtocolJson.requireText(ProtocolJson.java:117)
+	at dev.gdx.uiharness.protocol.HarnessResponse$Result$Action.&lt;init&gt;(HarnessResponse.java:285)
+	at dev.gdx.uiharness.protocol.ProtocolJsonContractTest.actionObservedStateAllowsEmptyAndWhitespaceWithTheExistingStringBound(ProtocolJsonContractTest.java:30)
+</failure>
+  </testcase>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

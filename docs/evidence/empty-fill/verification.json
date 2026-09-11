@@ -1,0 +1,120 @@
+{
+  "date": "2026-09-11",
+  "status": "LOCAL_SOURCE_QUALIFIED",
+  "command": "/home/tjaaskel/git/libgdx-agent-bootstrap/scripts/isolated-run.sh env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 LIBGL_ALWAYS_SOFTWARE=1 __GLX_VENDOR_LIBRARY_NAME=mesa xvfb-run -a ./gradlew clean check javadoc --continue --no-daemon --console=plain --warning-mode=fail",
+  "exitCode": 0,
+  "durationSeconds": 135,
+  "gradleTasksExecuted": 81,
+  "totals": {
+    "tests": 1068,
+    "skipped": 1,
+    "failures": 0,
+    "errors": 0
+  },
+  "passedTests": 1067,
+  "modules": {
+    "benchmarks": {
+      "tests": 32,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    },
+    "harness-agent-runtime": {
+      "tests": 17,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    },
+    "harness-core": {
+      "tests": 344,
+      "skipped": 1,
+      "failures": 0,
+      "errors": 0
+    },
+    "harness-fixtures": {
+      "tests": 70,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    },
+    "harness-lwjgl3": {
+      "tests": 80,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    },
+    "harness-mcp": {
+      "tests": 164,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    },
+    "harness-protocol": {
+      "tests": 145,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    },
+    "harness-scene2d": {
+      "tests": 216,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    }
+  },
+  "skippedTests": [
+    "dev.gdx.uiharness.core.trace.TraceRecorderTest.aclOwnerOnlyEnforcedWhereAclIsTheSecureView()"
+  ],
+  "focusedGreenTests": 81,
+  "redRegressions": [
+    "protocol rejects empty observedState",
+    "MCP schema rejects minLength 0",
+    "real LWJGL3 markup stdio MCP clear returns INTERNAL_ERROR"
+  ],
+  "nativeSequence": [
+    "Before clearing",
+    "",
+    "",
+    "Recovered"
+  ],
+  "nativeRuntimeComparisons": [
+    "EQUAL",
+    "EQUAL",
+    "EQUAL",
+    "EQUAL"
+  ],
+  "visuallyReviewedOriginalResolution": {
+    "step-1.png": [
+      1280,
+      720
+    ],
+    "step-3.png": [
+      1280,
+      720
+    ]
+  },
+  "independentReview": "Root agent reviewed production bounds, schema/golden, test helper and native regression; no blocker.",
+  "limitations": [
+    "Source qualification only; no publication or release approval.",
+    "Existing javac warnings remain; --warning-mode=fail does not imply javac -Werror.",
+    "The retained field captures are not whole-screen layout qualification."
+  ],
+  "sha256": {
+    "focused-green.log": "90cf02638d9ec82a2dbafaec5416359d802ca64779ccb3ad2fc4eded9dfe8369",
+    "focused-red.log": "b873b7159adfad39053d7dd4a409ec8470ebcd9c89a929eadad39ac5ce7148f0",
+    "full-gate.log": "37b330a8fe4f2866d8cdd4548c2640e52c9a4e875bc1d6658f0768d09cf4e7a4",
+    "native-red.xml": "6971147f48d9fbbcc4e7b0aaacb604bd8814e3651a7b01244f70bccac1600489",
+    "protocol-red.xml": "6ec41389ab05a195a40818ea40b4c8c2664bd6b54b9ceea5f515b660c74aa2eb",
+    "runtime-0.json": "e4ad14f861f64d7ea7a7ee59bdcde26d205831c0991c0e66b7a31ef93258be79",
+    "runtime-1.json": "8b2a26ff060c717bac4be90bc3fbd57d9b31c151b3653ecb91555cd745c64fe3",
+    "runtime-2.json": "a8b87ac406f42065a15fc31f27c3d8a876c587268d2163597448b50a90cd0fd0",
+    "runtime-3.json": "f54eb1269a6667306650ad9d34b98b82839618036db9fbc8fb6a35abdca947f5",
+    "schema-red.xml": "9efd653a10d36e0b576c54b3ded1632208083d4ef2e0e8b143f6626b72be1f94",
+    "step-0.json": "df8d8cad889e0f588d40b84690c39f504c235242022cda51faa541d5665b6313",
+    "step-1.json": "f3d12d709d46bcc2836fe4ac63e36287b07b7a72ab0c8aed230b927f9f31715a",
+    "step-1.png": "295ec1985ab9c0d1f75443364d18aec66194e32b6c4989685e290ab62bc49dc5",
+    "step-2.json": "5a4180bb1a1290186ee82a61c86a8f74bfccc31f7ef3e0f9209e80f2c0b5a747",
+    "step-3.json": "fbae01b2ea7b13d558b7a432442b16f33839b7c2f1e63860b054807a85c0b87b",
+    "step-3.png": "efd9dd5814abbd1090ca22c3ddec9612152ed9586dbd373ecd06f0a1b5480d95"
+  }
+}

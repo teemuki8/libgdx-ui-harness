@@ -1,0 +1,193 @@
+Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/tjaaskel/.m2/repository/org/projectlombok/lombok/1.18.42/lombok-1.18.42.jar
+[0.004s][warning][perf,memops] Cannot use file /tmp/hsperfdata_tjaaskel/18 because it is locked by another process (errno = 11)
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/9.6.1/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build
+> Task :harness-core:compileJava UP-TO-DATE
+> Task :harness-protocol:compileJava UP-TO-DATE
+> Task :harness-protocol:processResources UP-TO-DATE
+> Task :harness-protocol:classes UP-TO-DATE
+> Task :harness-protocol:jar UP-TO-DATE
+> Task :harness-core:processResources NO-SOURCE
+> Task :harness-core:classes UP-TO-DATE
+> Task :harness-core:jar UP-TO-DATE
+> Task :harness-protocol:compileTestJava
+> Task :harness-protocol:processTestResources UP-TO-DATE
+> Task :harness-protocol:testClasses
+
+> Task :harness-protocol:test
+Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/tjaaskel/.m2/repository/org/projectlombok/lombok/1.18.42/lombok-1.18.42.jar
+
+ProtocolJsonContractTest > actionObservedStateAllowsEmptyAndWhitespaceWithTheExistingStringBound() FAILED
+    java.lang.IllegalArgumentException at ProtocolJsonContractTest.java:30
+
+1 test completed, 1 failed
+
+> Task :harness-protocol:test FAILED
+> Task :harness-mcp:compileJava UP-TO-DATE
+> Task :harness-mcp:processResources NO-SOURCE
+> Task :harness-mcp:classes UP-TO-DATE
+> Task :harness-mcp:jar UP-TO-DATE
+> Task :harness-mcp:compileTestJava
+> Task :harness-mcp:processTestResources UP-TO-DATE
+> Task :harness-mcp:testClasses
+
+> Task :harness-mcp:test FAILED
+Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/tjaaskel/.m2/repository/org/projectlombok/lombok/1.18.42/lombok-1.18.42.jar
+
+HarnessToolCatalogTest > actionObservedStateSchemaAllowsEmptyWithoutRemovingItsBound() FAILED
+    org.opentest4j.AssertionFailedError at HarnessToolCatalogTest.java:52
+
+1 test completed, 1 failed
+
+> Task :harness-agent-runtime:compileJava UP-TO-DATE
+> Task :harness-agent-runtime:processResources NO-SOURCE
+> Task :harness-agent-runtime:classes UP-TO-DATE
+> Task :harness-agent-runtime:jar UP-TO-DATE
+> Task :harness-scene2d:compileJava UP-TO-DATE
+> Task :harness-lwjgl3:compileJava UP-TO-DATE
+> Task :harness-fixtures:compileJava UP-TO-DATE
+> Task :harness-fixtures:processResources UP-TO-DATE
+> Task :harness-fixtures:classes UP-TO-DATE
+
+> Task :harness-fixtures:compileTestJava
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/DeclarativeAssertionFixtureTest.java:20: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/ReferenceProcess.java:23: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+final class ReferenceProcess implements AutoCloseable {
+      ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/InputGestureProductionFixtureTest.java:14: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch();
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/InputGestureProductionFixtureTest.java:35: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch();
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/InputGestureProductionFixtureTest.java:48: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/KeyboardGestureProductionFixtureTest.java:22: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch();
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/KeyboardGestureProductionFixtureTest.java:41: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch();
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/KeyboardGestureProductionFixtureTest.java:64: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch();
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/KeyboardGestureProductionFixtureTest.java:102: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch();
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/KeyboardGestureProductionFixtureTest.java:126: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/LayoutValidationProductionFixtureTest.java:27: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch();
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/LayoutValidationProductionFixtureTest.java:100: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/MarkupFixtureEndToEndTest.java:27: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch("markup")) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/MarkupFixtureEndToEndTest.java:63: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch("markup")) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/MatrixProductionFixtureTest.java:24: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/MatrixProductionFixtureTest.java:48: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/MatrixProductionFixtureTest.java:80: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/NavigationProductionFixtureTest.java:21: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/ReferenceApplicationSmokeTest.java:35: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+            try (ReferenceProcess app = ReferenceProcess.launch()) {
+                                  ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/ReferenceApplicationSmokeTest.java:194: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/ReferenceBaselineDumpTest.java:26: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch("dump-baseline")) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/RuntimeProductionFixtureTest.java:20: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/RuntimeProductionFixtureTest.java:36: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/RuntimeProductionFixtureTest.java:59: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/ScenarioLifecycleFixtureTest.java:20: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/SemanticGoldensProductionFixtureTest.java:39: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/SemanticGoldensProductionFixtureTest.java:59: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/src/test/java/dev/gdx/uiharness/fixtures/TraceProductionFixtureTest.java:22: warning: [try] auto-closeable resource ReferenceProcess has a member method close() that could throw InterruptedException
+        try (ReferenceProcess app = ReferenceProcess.launch()) {
+                              ^
+28 warnings
+
+> Task :harness-fixtures:processTestResources UP-TO-DATE
+> Task :harness-fixtures:testClasses
+> Task :harness-lwjgl3:processResources NO-SOURCE
+> Task :harness-lwjgl3:classes UP-TO-DATE
+> Task :harness-lwjgl3:jar UP-TO-DATE
+> Task :harness-scene2d:processResources NO-SOURCE
+> Task :harness-scene2d:classes UP-TO-DATE
+> Task :harness-scene2d:jar UP-TO-DATE
+
+> Task :harness-fixtures:test
+Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/tjaaskel/.m2/repository/org/projectlombok/lombok/1.18.42/lombok-1.18.42.jar
+
+MarkupFixtureEndToEndTest > clearingMarkupTextFieldReturnsEmptyStateAndAllowsFurtherInputThroughProductionMcp() FAILED
+    java.lang.IllegalStateException at MarkupFixtureEndToEndTest.java:33
+
+1 test completed, 1 failed
+
+> Task :harness-fixtures:test FAILED
+
+[Incubating] Problems report is available at: file:///home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/build/reports/problems/problems-report.html
+
+FAILURE: Build completed with 3 failures.
+
+1: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':harness-protocol:test'.
+> There were failing tests. See the report at: file:///home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-protocol/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+==============================================================================
+
+2: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':harness-mcp:test'.
+> There were failing tests. See the report at: file:///home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-mcp/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+==============================================================================
+
+3: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':harness-fixtures:test'.
+> There were failing tests. See the report at: file:///home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-fixtures/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+==============================================================================
+
+BUILD FAILED in 19s
+24 actionable tasks: 6 executed, 18 up-to-date
