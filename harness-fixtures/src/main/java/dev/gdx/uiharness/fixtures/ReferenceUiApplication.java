@@ -111,7 +111,7 @@ public final class ReferenceUiApplication extends ApplicationAdapter {
             referenceScreen.attachAssertionFrameControl(control::withholdAssertionFrames);
             referenceScreen.attachSemantics(control.semantics());
         }
-        Gdx.input.setInputProcessor(screen.stage());
+        Gdx.input.setInputProcessor(control.productionInput());
         control.startMcp(System.in, System.out);
     }
 

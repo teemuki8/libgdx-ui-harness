@@ -1,6 +1,6 @@
 # Agent tools and safe operation
 
-The MCP server exposes exactly twenty-six bounded tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms; `ui_assert` and `ui_keyboard_gesture` require it up to 120,000 ms, while `ui_scenario_start` requires it up to 600,000 ms. Deadlines include adapter work and backend queue time. The server's outer request timeout is 630,000 ms (the scenario maximum plus a 30-second translation allowance), so a full scenario deadline is never aborted by the SDK transport timeout; the per-request deadline remains the authoritative bound.
+The MCP server exposes exactly twenty-seven bounded tools. `tools/list` is the authority; unknown tools and unknown input fields are rejected. Except for `ui_sessions`, every tool requires `sessionId`. `deadlineMillis` is optional, defaults to 30,000 ms, and when supplied must be 1 through 120,000 ms; `ui_assert`, `ui_keyboard_gesture`, and `ui_input_gesture` require it up to 120,000 ms, while `ui_scenario_start` requires it up to 600,000 ms. Deadlines include adapter work and backend queue time. The server's outer request timeout is 630,000 ms (the scenario maximum plus a 30-second translation allowance), so a full scenario deadline is never aborted by the SDK transport timeout; the per-request deadline remains the authoritative bound.
 
 `sessionId` is the single envelope field documented by this preamble and omitted from the per-tool rows; the per-tool rows name every other required input and any optional tool-specific input. Each row is `none` or a comma-separated list of `required`/`optional` field tokens, and a schema-parity test fails when a required input appears on either side without the other.
 
@@ -11,6 +11,7 @@ The MCP server exposes exactly twenty-six bounded tools. `tools/list` is the aut
 | `ui_snapshot` | Capture a compact semantic snapshot | none | revision, frame, root ID, node count, optional `state-action/v1` identity/contract and full-snapshot artifact |
 | `ui_query` | Evaluate a lazy locator | required `locator` | match count, bounded node summaries/evidence, optional artifact |
 | `ui_action` | Perform one allowlisted action | required `action`, required `locator` | before/after revisions, observed state, evidence, optional artifact |
+| `ui_input_gesture` | Run one atomic keyboard and relative mouse timeline through production input | required `schemaVersion`, required `steps`, required `deadlineMillis` | terminal input, tick, failure, and cleanup evidence |
 | `ui_keyboard_gesture` | Run one atomic keyboard timeline through real input dispatch | required `schemaVersion`, required `steps`, required `deadlineMillis` | terminal step, tick, held-key, failure, and cleanup evidence |
 | `ui_assert` | Assert a semantic condition on a resolved locator with typed outcome | required `schemaVersion`, required `locator`, required `assertion`, required `deadlineMillis` | assertion outcome and evidence |
 | `ui_wait` | Wait on semantics | required `condition`, required `locator` | final revision/frame, matches/evidence, optional artifact |
@@ -261,3 +262,35 @@ desktop automation; computer-vision element discovery; remote code execution,
 reflection, arbitrary method calls, or filesystem access; a visual trace-viewer
 application; or a full accessibility conformance audit. Roles and accessible
 names are automation contracts, not an accessibility certificate.
+
+## Combined keyboard and relative pointer gestures
+
+`ui_input_gesture` is an additive schema-version-1 tool. Sessions advertise it only after an
+application-owned relative pointer adapter and input coordinator are installed. Existing
+keyboard gesture schemas 1 and 2 retain their original closed unions and bounds.
+
+The request has 1–256 steps: `key-down`/`key-up` (`keycode` 0–255),
+`mouse-down`/`mouse-up` (`button` 0–4), `mouse-move` (`deltaX` and `deltaY` each −4096–4096),
+and `wait-frames`/`wait-ticks` (`count` 1–10,000). Each wait dimension has a cumulative
+10,000 bound. Every pressed key/button must be released, duplicate downs and unmatched ups
+are rejected, and at most 16 keys and five mouse buttons may be held. A timeline must contain
+at least one input step; mouse-only movement is valid. Waits need not hold a control, allowing
+projectiles and camera changes to settle. All sequence validation and every exact-tick
+preflight finish before dispatch begins.
+
+Movement calls the production `InputProcessor.mouseMoved`, using coordinates returned by
+`RelativePointerAdapter.moveRelative`. Button steps call production `touchDown`/`touchUp` at
+`position()` with pointer zero. The adapter owns the cursor origin; it must not overwrite the
+processor's last-delivered position before `mouseMoved` computes its delta. The application
+resets cursor bookkeeping with focus/pause/capture lifecycle changes. No synthetic global
+`Gdx.input` state is installed. All pointer adapter and processor calls run on the render thread.
+
+The application wraps the runner in its request-scoped exact-tick lease when its loop requires
+one; each `wait-ticks` uses the same `ExactTickCoordinator` as keyboard gestures. Cancellation,
+timeout, callback failure, and session shutdown release owned controls in reverse press order
+with a fresh one-second cleanup deadline. MCP retains its session mutation lane until this
+cleanup completes. Result steps contain the original nested `step`, its status and correlated
+frame/tick evidence; `heldInputs` and cleanup entries use device-qualified `{device,code}`
+controls. A failed cleanup remains visible in terminal evidence.
+
+See [combined input cookbook](combined-input.md) for application wiring and an atomic example.

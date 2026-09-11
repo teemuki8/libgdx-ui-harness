@@ -107,6 +107,9 @@ public final class HarnessToolCatalog {
                                 "evidence", evidenceSchema(),
                                 "artifact", ARTIFACT_SCHEMA),
                                 List.of("beforeRevision", "afterRevision", "observedState"))),
+                tool(AccessMode.MUTATING, "ui_input_gesture",
+                        "Run a bounded combined keyboard and relative mouse timeline through production input.",
+                        inputGestureInput(), inputGestureOutput()),
                 tool(AccessMode.MUTATING, "ui_keyboard_gesture",
                         "Run one bounded atomic keyboard timeline through real input dispatch",
                         keyboardGestureInput(), keyboardGestureOutput()),
@@ -1056,6 +1059,9 @@ public final class HarnessToolCatalog {
                                 "kind", "pointer", "phase", "move",
                                 "offsetX", 0, "offsetY", 0,
                                 "pointer", 0, "button", 0, "force", false))));
+        values.put("ui_input_gesture", List.of(Map.of(
+                "sessionId", "SESSION", "schemaVersion", 1, "deadlineMillis", 30_000,
+                "steps", List.of(Map.of("kind", "mouse-move", "deltaX", 20, "deltaY", -10)))));
         values.put("ui_keyboard_gesture", List.of(
                 Map.of(
                         "sessionId", "SESSION", "schemaVersion", 1,
@@ -1291,6 +1297,59 @@ public final class HarnessToolCatalog {
         LinkedHashMap<String, Object> schema = new LinkedHashMap<>(object(properties, allRequired));
         customizer.accept(schema);
         return Map.copyOf(schema);
+    }
+
+    private static Map<String, Object> inputGestureSteps() {
+        return Map.of("oneOf", List.of(
+                tagged("key-down", Map.of("keycode", integer(0, 255)), List.of("keycode")),
+                tagged("key-up", Map.of("keycode", integer(0, 255)), List.of("keycode")),
+                tagged("mouse-down", Map.of("button", integer(0, 4)), List.of("button")),
+                tagged("mouse-up", Map.of("button", integer(0, 4)), List.of("button")),
+                tagged("mouse-move", Map.of("deltaX", integer(-4096, 4096),
+                        "deltaY", integer(-4096, 4096)), List.of("deltaX", "deltaY")),
+                tagged("wait-frames", Map.of("count", integer(1, 10_000)), List.of("count")),
+                tagged("wait-ticks", Map.of("count", integer(1, 10_000)), List.of("count"))));
+    }
+
+    private static Map<String, Object> inputGestureInput() {
+        return envelope(Map.of("schemaVersion", integer(1, 1),
+                "steps", Map.of("type", "array", "minItems", 1, "maxItems", 256,
+                        "items", inputGestureSteps())),
+                List.of("schemaVersion", "steps", "deadlineMillis"), true, schema -> {});
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> inputGestureOutput() {
+        Map<String, Object> keyboard = keyboardGestureOutput();
+        Map<String, Object> properties = new LinkedHashMap<>((Map<String, Object>) keyboard.get("properties"));
+        properties.remove("kind");
+        properties.remove("heldKeys");
+        Map<String, Object> control = object(Map.of("device", enumString("key", "mouse"),
+                "code", integer(0, 255)), List.of("device", "code"));
+        properties.put("schemaVersion", integer(1, 1));
+        properties.put("requestedSteps", integer(1, 256));
+        properties.put("heldInputs", array(control, 21));
+        properties.put("failure", enumString("invalid-request", "unsupported-tick-capability",
+                "invalid-runtime-state", "session-busy", "input-dispatch-failure", "deadline-scheduler-failure",
+                "frame-source-closed", "tick-advance-failure", "epoch-changed", "timeout",
+                "cancelled", "session-closed", "cleanup-failure"));
+        Map<String, Object> oldStep = (Map<String, Object>) ((Map<String, Object>) properties.get("steps")).get("items");
+        Map<String, Object> step = new LinkedHashMap<>((Map<String, Object>) oldStep.get("properties"));
+        step.remove("kind");
+        step.remove("keycode");
+        step.remove("count");
+        step.remove("heldKeys");
+        step.put("step", inputGestureSteps());
+        step.put("heldInputs", array(control, 21));
+        properties.put("steps", array(object(step, List.of("index", "step", "status",
+                "beforeRevision", "beforeFrame", "afterRevision", "afterFrame", "heldInputs")), 256));
+        properties.put("cleanup", array(object(Map.of("control", control, "status", enumString(
+                "released", "dispatch-failed", "deadline-exceeded", "scheduler-rejected")),
+                List.of("control", "status")), 21));
+        return output("input-gesture-result", properties,
+                List.of("schemaVersion", "outcome", "requestedSteps", "startedSteps",
+                        "completedSteps", "startRevision", "startFrame", "endRevision",
+                        "endFrame", "elapsedNanos", "steps", "heldInputs", "cleanupStatus", "cleanup"));
     }
 
     private static Map<String, Object> keyboardGestureInput() {

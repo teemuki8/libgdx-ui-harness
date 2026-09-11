@@ -6,6 +6,8 @@ import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.Touchable;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
+import com.badlogic.gdx.scenes.scene2d.ui.Table;
+import com.badlogic.gdx.scenes.scene2d.ui.WidgetGroup;
 import com.badlogic.gdx.utils.SnapshotArray;
 import dev.gdx.uiharness.core.error.ErrorCode;
 import dev.gdx.uiharness.core.error.ErrorEvidence;
@@ -91,6 +93,12 @@ public final class Scene2dSnapshotter {
             }
             adapters.contribute(actor, builder);
             builder.apply(semantics.metadata(actor));
+            // Adapter-owned evidence: custom semantics cannot label a painting actor layout-only.
+            builder.properties.remove("scene2d.layoutOnly");
+            if (actor.getClass() == Group.class || actor.getClass() == WidgetGroup.class
+                    || (actor.getClass() == Table.class && ((Table) actor).getBackground() == null)) {
+                builder.property("scene2d.layoutOnly", "true");
+            }
             validateBuilder(builder);
 
             boolean viewportIntersecting = intersects(stageBounds, stageViewport)

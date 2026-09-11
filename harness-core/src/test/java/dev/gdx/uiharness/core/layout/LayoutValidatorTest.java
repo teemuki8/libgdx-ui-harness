@@ -126,10 +126,31 @@ final class LayoutValidatorTest {
                 only(LayoutValidationCheck.OBSCURED),
                 null);
 
-        assertEquals(List.of("button->overlay"), obscured.findings().stream()
+        assertEquals(List.of("button->overlay", "label->overlay"), obscured.findings().stream()
                 .filter(finding -> finding.reason() == LayoutValidationReason.OBSCURED)
                 .map(finding -> finding.nodeId() + "->" + finding.relatedActorId())
                 .toList());
+    }
+
+    @Test void obscurationUsesBranchDrawOrderInsteadOfUnrelatedSiblingIndices() {
+        SemanticState layoutOnly = new SemanticState(
+                true, false, Optional.of(true), Optional.empty(), Optional.empty(),
+                Optional.empty(), Optional.empty(), false, false, 1.0, false, true, false);
+        SemanticNode back = node("back", "root", List.of("target"), Role.GROUP, null,
+                bounds(0, 0, 100, 100), null, layoutOnly, 0, Map.of("scene2d.layoutOnly", "true"));
+        SemanticNode target = node("target", "back", List.of(), Role.BUTTON, "Target",
+                bounds(10, 10, 30, 30), null, visible(true, false, true), 20, Map.of());
+        SemanticNode front = node("front", "root", List.of("cover"), Role.GROUP, null,
+                bounds(0, 0, 100, 100), null, layoutOnly, 1, Map.of("scene2d.layoutOnly", "true"));
+        SemanticNode cover = node("cover", "front", List.of(), Role.IMAGE, null,
+                bounds(10, 10, 30, 30), null, visible(false, false, true), 0, Map.of());
+        var result = validator.validate(snapshot(List.of(back, target, front, cover)),
+                only(LayoutValidationCheck.OBSCURED), null);
+        assertTrue(result.findings().stream().anyMatch(f -> f.nodeId().equals("target")
+                        && "cover".equals(f.relatedActorId())),
+                result.findings().toString());
+        assertFalse(result.findings().stream().anyMatch(f -> f.nodeId().equals("cover")),
+                result.findings().toString());
     }
 
     @Test void targetSizeIgnoresLabelsAndChecksInteractiveControls() {

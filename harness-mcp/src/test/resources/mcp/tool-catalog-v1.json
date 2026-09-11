@@ -1404,6 +1404,583 @@
 }, {
   "inputSchema" : {
     "additionalProperties" : false,
+    "properties" : {
+      "deadlineMillis" : {
+        "maximum" : 120000,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "schemaVersion" : {
+        "maximum" : 1,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "sessionId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      },
+      "steps" : {
+        "items" : {
+          "oneOf" : [ {
+            "additionalProperties" : false,
+            "properties" : {
+              "keycode" : {
+                "maximum" : 255,
+                "minimum" : 0,
+                "type" : "integer"
+              },
+              "kind" : {
+                "const" : "key-down",
+                "type" : "string"
+              }
+            },
+            "required" : [ "kind", "keycode" ],
+            "type" : "object"
+          }, {
+            "additionalProperties" : false,
+            "properties" : {
+              "keycode" : {
+                "maximum" : 255,
+                "minimum" : 0,
+                "type" : "integer"
+              },
+              "kind" : {
+                "const" : "key-up",
+                "type" : "string"
+              }
+            },
+            "required" : [ "kind", "keycode" ],
+            "type" : "object"
+          }, {
+            "additionalProperties" : false,
+            "properties" : {
+              "button" : {
+                "maximum" : 4,
+                "minimum" : 0,
+                "type" : "integer"
+              },
+              "kind" : {
+                "const" : "mouse-down",
+                "type" : "string"
+              }
+            },
+            "required" : [ "kind", "button" ],
+            "type" : "object"
+          }, {
+            "additionalProperties" : false,
+            "properties" : {
+              "button" : {
+                "maximum" : 4,
+                "minimum" : 0,
+                "type" : "integer"
+              },
+              "kind" : {
+                "const" : "mouse-up",
+                "type" : "string"
+              }
+            },
+            "required" : [ "kind", "button" ],
+            "type" : "object"
+          }, {
+            "additionalProperties" : false,
+            "properties" : {
+              "deltaX" : {
+                "maximum" : 4096,
+                "minimum" : -4096,
+                "type" : "integer"
+              },
+              "deltaY" : {
+                "maximum" : 4096,
+                "minimum" : -4096,
+                "type" : "integer"
+              },
+              "kind" : {
+                "const" : "mouse-move",
+                "type" : "string"
+              }
+            },
+            "required" : [ "kind", "deltaX", "deltaY" ],
+            "type" : "object"
+          }, {
+            "additionalProperties" : false,
+            "properties" : {
+              "count" : {
+                "maximum" : 10000,
+                "minimum" : 1,
+                "type" : "integer"
+              },
+              "kind" : {
+                "const" : "wait-frames",
+                "type" : "string"
+              }
+            },
+            "required" : [ "kind", "count" ],
+            "type" : "object"
+          }, {
+            "additionalProperties" : false,
+            "properties" : {
+              "count" : {
+                "maximum" : 10000,
+                "minimum" : 1,
+                "type" : "integer"
+              },
+              "kind" : {
+                "const" : "wait-ticks",
+                "type" : "string"
+              }
+            },
+            "required" : [ "kind", "count" ],
+            "type" : "object"
+          } ]
+        },
+        "maxItems" : 256,
+        "minItems" : 1,
+        "type" : "array"
+      }
+    },
+    "required" : [ "sessionId", "schemaVersion", "steps", "deadlineMillis" ],
+    "type" : "object"
+  },
+  "name" : "ui_input_gesture",
+  "outputSchema" : {
+    "additionalProperties" : false,
+    "properties" : {
+      "cleanup" : {
+        "items" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "control" : {
+              "additionalProperties" : false,
+              "properties" : {
+                "code" : {
+                  "maximum" : 255,
+                  "minimum" : 0,
+                  "type" : "integer"
+                },
+                "device" : {
+                  "enum" : [ "key", "mouse" ],
+                  "type" : "string"
+                }
+              },
+              "required" : [ "device", "code" ],
+              "type" : "object"
+            },
+            "status" : {
+              "enum" : [ "released", "dispatch-failed", "deadline-exceeded", "scheduler-rejected" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "control", "status" ],
+          "type" : "object"
+        },
+        "maxItems" : 21,
+        "type" : "array"
+      },
+      "cleanupStatus" : {
+        "enum" : [ "not-required", "completed", "failed" ],
+        "type" : "string"
+      },
+      "completedSteps" : {
+        "maximum" : 256,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "elapsedNanos" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "endFrame" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "endRevision" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "failure" : {
+        "enum" : [ "invalid-request", "unsupported-tick-capability", "invalid-runtime-state", "session-busy", "input-dispatch-failure", "deadline-scheduler-failure", "frame-source-closed", "tick-advance-failure", "epoch-changed", "timeout", "cancelled", "session-closed", "cleanup-failure" ],
+        "type" : "string"
+      },
+      "failureStep" : {
+        "maximum" : 255,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "heldInputs" : {
+        "items" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "code" : {
+              "maximum" : 255,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "device" : {
+              "enum" : [ "key", "mouse" ],
+              "type" : "string"
+            }
+          },
+          "required" : [ "device", "code" ],
+          "type" : "object"
+        },
+        "maxItems" : 21,
+        "type" : "array"
+      },
+      "kind" : {
+        "const" : "input-gesture-result",
+        "type" : "string"
+      },
+      "outcome" : {
+        "enum" : [ "completed", "rejected", "failed", "timed-out", "cancelled", "session-closed" ],
+        "type" : "string"
+      },
+      "progress" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "dimensions" : {
+            "additionalProperties" : {
+              "enum" : [ "changed", "unchanged", "unavailable" ],
+              "type" : "string"
+            },
+            "maxProperties" : 32,
+            "type" : "object"
+          },
+          "ruleId" : {
+            "maxLength" : 16384,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "status" : {
+            "enum" : [ "available", "unavailable" ],
+            "type" : "string"
+          }
+        },
+        "required" : [ "status", "dimensions", "ruleId" ],
+        "type" : "object"
+      },
+      "recovery" : {
+        "additionalProperties" : false,
+        "properties" : {
+          "consumed" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "consumedBefore" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "elapsedMillis" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "limit" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "maxWallTimeMillis" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "policyVersion" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "remaining" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "remainingBefore" : {
+            "maximum" : 9223372036854775807,
+            "minimum" : 0,
+            "type" : "integer"
+          },
+          "terminatingRule" : {
+            "maxLength" : 256,
+            "minLength" : 1,
+            "type" : "string"
+          }
+        },
+        "required" : [ "policyVersion", "consumedBefore", "consumed", "limit", "remainingBefore", "remaining", "elapsedMillis", "maxWallTimeMillis", "terminatingRule" ],
+        "type" : "object"
+      },
+      "requestedSteps" : {
+        "maximum" : 256,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "schemaVersion" : {
+        "maximum" : 1,
+        "minimum" : 1,
+        "type" : "integer"
+      },
+      "startFrame" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "startRevision" : {
+        "maximum" : 9223372036854775807,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "startedSteps" : {
+        "maximum" : 256,
+        "minimum" : 0,
+        "type" : "integer"
+      },
+      "steps" : {
+        "items" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "afterFrame" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "afterRevision" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "beforeFrame" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "beforeRevision" : {
+              "maximum" : 9223372036854775807,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "heldInputs" : {
+              "items" : {
+                "additionalProperties" : false,
+                "properties" : {
+                  "code" : {
+                    "maximum" : 255,
+                    "minimum" : 0,
+                    "type" : "integer"
+                  },
+                  "device" : {
+                    "enum" : [ "key", "mouse" ],
+                    "type" : "string"
+                  }
+                },
+                "required" : [ "device", "code" ],
+                "type" : "object"
+              },
+              "maxItems" : 21,
+              "type" : "array"
+            },
+            "index" : {
+              "maximum" : 255,
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "status" : {
+              "enum" : [ "completed", "failed" ],
+              "type" : "string"
+            },
+            "step" : {
+              "oneOf" : [ {
+                "additionalProperties" : false,
+                "properties" : {
+                  "keycode" : {
+                    "maximum" : 255,
+                    "minimum" : 0,
+                    "type" : "integer"
+                  },
+                  "kind" : {
+                    "const" : "key-down",
+                    "type" : "string"
+                  }
+                },
+                "required" : [ "kind", "keycode" ],
+                "type" : "object"
+              }, {
+                "additionalProperties" : false,
+                "properties" : {
+                  "keycode" : {
+                    "maximum" : 255,
+                    "minimum" : 0,
+                    "type" : "integer"
+                  },
+                  "kind" : {
+                    "const" : "key-up",
+                    "type" : "string"
+                  }
+                },
+                "required" : [ "kind", "keycode" ],
+                "type" : "object"
+              }, {
+                "additionalProperties" : false,
+                "properties" : {
+                  "button" : {
+                    "maximum" : 4,
+                    "minimum" : 0,
+                    "type" : "integer"
+                  },
+                  "kind" : {
+                    "const" : "mouse-down",
+                    "type" : "string"
+                  }
+                },
+                "required" : [ "kind", "button" ],
+                "type" : "object"
+              }, {
+                "additionalProperties" : false,
+                "properties" : {
+                  "button" : {
+                    "maximum" : 4,
+                    "minimum" : 0,
+                    "type" : "integer"
+                  },
+                  "kind" : {
+                    "const" : "mouse-up",
+                    "type" : "string"
+                  }
+                },
+                "required" : [ "kind", "button" ],
+                "type" : "object"
+              }, {
+                "additionalProperties" : false,
+                "properties" : {
+                  "deltaX" : {
+                    "maximum" : 4096,
+                    "minimum" : -4096,
+                    "type" : "integer"
+                  },
+                  "deltaY" : {
+                    "maximum" : 4096,
+                    "minimum" : -4096,
+                    "type" : "integer"
+                  },
+                  "kind" : {
+                    "const" : "mouse-move",
+                    "type" : "string"
+                  }
+                },
+                "required" : [ "kind", "deltaX", "deltaY" ],
+                "type" : "object"
+              }, {
+                "additionalProperties" : false,
+                "properties" : {
+                  "count" : {
+                    "maximum" : 10000,
+                    "minimum" : 1,
+                    "type" : "integer"
+                  },
+                  "kind" : {
+                    "const" : "wait-frames",
+                    "type" : "string"
+                  }
+                },
+                "required" : [ "kind", "count" ],
+                "type" : "object"
+              }, {
+                "additionalProperties" : false,
+                "properties" : {
+                  "count" : {
+                    "maximum" : 10000,
+                    "minimum" : 1,
+                    "type" : "integer"
+                  },
+                  "kind" : {
+                    "const" : "wait-ticks",
+                    "type" : "string"
+                  }
+                },
+                "required" : [ "kind", "count" ],
+                "type" : "object"
+              } ]
+            },
+            "tick" : {
+              "additionalProperties" : false,
+              "properties" : {
+                "completedTicks" : {
+                  "maximum" : 10000,
+                  "minimum" : 1,
+                  "type" : "integer"
+                },
+                "configuredDeltaNanos" : {
+                  "maximum" : 9223372036854775807,
+                  "minimum" : 1,
+                  "type" : "integer"
+                },
+                "executionEpoch" : {
+                  "maximum" : 9223372036854775807,
+                  "minimum" : 0,
+                  "type" : "integer"
+                },
+                "finalRuntimeFrame" : {
+                  "maximum" : 9223372036854775807,
+                  "minimum" : 0,
+                  "type" : "integer"
+                },
+                "finalTick" : {
+                  "maximum" : 9223372036854775807,
+                  "minimum" : 1,
+                  "type" : "integer"
+                },
+                "finalUiFrame" : {
+                  "maximum" : 9223372036854775807,
+                  "minimum" : 0,
+                  "type" : "integer"
+                },
+                "firstRuntimeFrame" : {
+                  "maximum" : 9223372036854775807,
+                  "minimum" : 0,
+                  "type" : "integer"
+                },
+                "firstUiFrame" : {
+                  "maximum" : 9223372036854775807,
+                  "minimum" : 0,
+                  "type" : "integer"
+                },
+                "requestedTicks" : {
+                  "maximum" : 10000,
+                  "minimum" : 1,
+                  "type" : "integer"
+                },
+                "startTick" : {
+                  "maximum" : 9223372036854775807,
+                  "minimum" : 0,
+                  "type" : "integer"
+                }
+              },
+              "required" : [ "requestedTicks", "completedTicks", "startTick", "finalTick", "executionEpoch", "configuredDeltaNanos" ],
+              "type" : "object"
+            }
+          },
+          "required" : [ "index", "step", "status", "beforeRevision", "beforeFrame", "afterRevision", "afterFrame", "heldInputs" ],
+          "type" : "object"
+        },
+        "maxItems" : 256,
+        "type" : "array"
+      },
+      "traceId" : {
+        "maxLength" : 256,
+        "minLength" : 1,
+        "type" : "string"
+      }
+    },
+    "required" : [ "kind", "progress", "recovery", "schemaVersion", "outcome", "requestedSteps", "startedSteps", "completedSteps", "startRevision", "startFrame", "endRevision", "endFrame", "elapsedNanos", "steps", "heldInputs", "cleanupStatus", "cleanup" ],
+    "type" : "object"
+  }
+}, {
+  "inputSchema" : {
+    "additionalProperties" : false,
     "allOf" : [ {
       "if" : {
         "properties" : {

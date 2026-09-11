@@ -15,7 +15,9 @@
       "width" : 0.0,
       "height" : 0.0
     },
-    "properties" : { },
+    "properties" : {
+      "scene2d.layoutOnly" : "true"
+    },
     "children" : [ {
       "role" : "IMAGE",
       "actorName" : "background",
@@ -606,5 +608,5 @@
     } ]
   },
   "strictNodes" : false,
-  "digest" : "aac632129f8dcee98609422d25fbe7bec729ca4979d4e8c79ab1e6b0c2523e8d"
+  "digest" : "7e71c42ff280a0b475f4013a42598821345a8243809692b58879fbf6d86e0379"
 }

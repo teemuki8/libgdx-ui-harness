@@ -337,7 +337,7 @@ public final class HarnessToolHandler implements AutoCloseable {
                     failure, operation, sequence, arguments,
                     "Protocol invocation failed", workflowToken));
         }
-        if ("ui_keyboard_gesture".equals(operation)) {
+        if ("ui_keyboard_gesture".equals(operation) || "ui_input_gesture".equals(operation)) {
             return gestureTranslation(
                     stage, operation, sequence, arguments, workflowToken);
         }
@@ -517,6 +517,7 @@ public final class HarnessToolHandler implements AutoCloseable {
             case "ui_query" -> "query";
             case "ui_action" -> "action";
             case "ui_keyboard_gesture" -> "keyboard-gesture";
+            case "ui_input_gesture" -> "input-gesture";
             case "ui_assert" -> "assert";
             case "ui_wait" -> "wait";
             case "ui_screenshot" -> "screenshot";
@@ -574,7 +575,9 @@ public final class HarnessToolHandler implements AutoCloseable {
             endWorkflow(sessionKey(arguments), workflowToken[0]);
             boolean gestureError = success.result()
                     instanceof HarnessResponse.Result.KeyboardGesture gesture
-                    && !"completed".equals(gesture.gesture().outcome());
+                    && !"completed".equals(gesture.gesture().outcome())
+                    || success.result() instanceof HarnessResponse.Result.InputGesture inputGesture
+                    && !"completed".equals(inputGesture.gesture().outcome());
             return McpSchema.CallToolResult.builder()
                     .structuredContent(Map.copyOf(content))
                     .addTextContent(compactText(content))
@@ -652,6 +655,14 @@ public final class HarnessToolHandler implements AutoCloseable {
         }
         if (result instanceof HarnessResponse.Result.KeyboardGesture gesture) {
             LinkedHashMap<String, Object> content = content("keyboard-gesture-result");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> evidence = COMMAND_MAPPER.convertValue(
+                    gesture.gesture(), Map.class);
+            content.putAll(evidence);
+            return Map.copyOf(content);
+        }
+        if (result instanceof HarnessResponse.Result.InputGesture gesture) {
+            LinkedHashMap<String, Object> content = content("input-gesture-result");
             @SuppressWarnings("unchecked")
             Map<String, Object> evidence = COMMAND_MAPPER.convertValue(
                     gesture.gesture(), Map.class);

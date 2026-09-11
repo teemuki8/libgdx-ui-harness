@@ -338,15 +338,13 @@ public final class LayoutValidator {
             LayoutValidationConfig config) {
         for (int index = 0; index < nodes.size(); index++) {
             SemanticNode lower = nodes.get(index);
-            if (!lower.state().visible()) {
+            if (!obscurationCandidate(lower)) {
                 continue;
             }
-            for (int other = 0; other < nodes.size(); other++) {
-                if (other == index) {
-                    continue;
-                }
+            // Nodes are in depth-first Scene2D child draw order, not sibling-local z order.
+            for (int other = index + 1; other < nodes.size(); other++) {
                 SemanticNode higher = nodes.get(other);
-                if (!higher.state().visible() || higher.zIndex() <= lower.zIndex()
+                if (!obscurationCandidate(higher)
                         || ancestorOf(snapshot, lower, higher)
                         || ancestorOf(snapshot, higher, lower)) {
                     continue;
@@ -356,11 +354,17 @@ public final class LayoutValidator {
                             LayoutValidationReason.OBSCURED,
                             LayoutValidationSeverity.WARNING,
                             lower.id(), higher.id(), lower.stageBounds(),
-                            "actor is overlapped by a higher-z actor"));
+                            "actor is overlapped by a later-drawn actor"));
                     break;
                 }
             }
         }
+    }
+
+    private static boolean obscurationCandidate(SemanticNode node) {
+        return node.state().visible()
+                && (!"true".equals(node.properties().get("scene2d.layoutOnly"))
+                        || node.state().touchable() || node.state().focusable());
     }
 
     private static void checkInteractiveOverlap(
