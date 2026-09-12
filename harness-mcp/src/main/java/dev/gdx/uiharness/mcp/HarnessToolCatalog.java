@@ -103,7 +103,7 @@ public final class HarnessToolCatalog {
                         output("action-result", Map.of(
                                 "beforeRevision", integer(0, Long.MAX_VALUE),
                                 "afterRevision", integer(1, Long.MAX_VALUE),
-                                "observedState", string(1, ProtocolJson.MAX_STRING_LENGTH),
+                                "observedState", string(0, ProtocolJson.MAX_STRING_LENGTH),
                                 "evidence", evidenceSchema(),
                                 "artifact", ARTIFACT_SCHEMA),
                                 List.of("beforeRevision", "afterRevision", "observedState"))),

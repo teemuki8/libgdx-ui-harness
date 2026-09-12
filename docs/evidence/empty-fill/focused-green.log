@@ -1,0 +1,78 @@
+Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/tjaaskel/.m2/repository/org/projectlombok/lombok/1.18.42/lombok-1.18.42.jar
+[0.002s][warning][perf,memops] Cannot use file /tmp/hsperfdata_tjaaskel/18 because it is locked by another process (errno = 11)
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/9.6.1/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build
+> Task :harness-core:compileJava UP-TO-DATE
+> Task :harness-protocol:compileJava
+> Task :harness-protocol:processResources UP-TO-DATE
+> Task :harness-protocol:classes
+> Task :harness-protocol:jar
+> Task :harness-core:processResources NO-SOURCE
+> Task :harness-core:classes UP-TO-DATE
+> Task :harness-core:jar UP-TO-DATE
+> Task :harness-protocol:compileTestJava UP-TO-DATE
+> Task :harness-protocol:processTestResources UP-TO-DATE
+> Task :harness-protocol:testClasses UP-TO-DATE
+
+> Task :harness-protocol:test
+Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/tjaaskel/.m2/repository/org/projectlombok/lombok/1.18.42/lombok-1.18.42.jar
+
+> Task :harness-mcp:compileJava
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-mcp/src/main/java/dev/gdx/uiharness/mcp/HarnessToolHandler.java:448: warning: [removal] ThreadDeath in java.lang has been deprecated and marked for removal
+            if (root instanceof VirtualMachineError || root instanceof ThreadDeath) {
+                                                                       ^
+/home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/harness-mcp/src/main/java/dev/gdx/uiharness/mcp/HarnessToolHandler.java:1629: warning: [removal] ThreadDeath in java.lang has been deprecated and marked for removal
+        if (root instanceof VirtualMachineError || root instanceof ThreadDeath) {
+                                                                   ^
+2 warnings
+
+> Task :harness-mcp:processResources NO-SOURCE
+> Task :harness-mcp:classes
+> Task :harness-mcp:jar
+> Task :harness-mcp:compileTestJava UP-TO-DATE
+> Task :harness-mcp:processTestResources
+> Task :harness-mcp:testClasses
+
+> Task :harness-mcp:test
+Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/tjaaskel/.m2/repository/org/projectlombok/lombok/1.18.42/lombok-1.18.42.jar
+
+> Task :harness-scene2d:compileJava UP-TO-DATE
+> Task :harness-scene2d:processResources NO-SOURCE
+> Task :harness-scene2d:classes UP-TO-DATE
+> Task :harness-scene2d:jar UP-TO-DATE
+> Task :harness-scene2d:compileTestJava UP-TO-DATE
+> Task :harness-scene2d:processTestResources NO-SOURCE
+> Task :harness-scene2d:testClasses UP-TO-DATE
+
+> Task :harness-scene2d:test
+Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/tjaaskel/.m2/repository/org/projectlombok/lombok/1.18.42/lombok-1.18.42.jar
+
+> Task :harness-agent-runtime:compileJava UP-TO-DATE
+> Task :harness-agent-runtime:processResources NO-SOURCE
+> Task :harness-agent-runtime:classes UP-TO-DATE
+> Task :harness-agent-runtime:jar UP-TO-DATE
+> Task :harness-lwjgl3:compileJava UP-TO-DATE
+> Task :harness-fixtures:compileJava UP-TO-DATE
+> Task :harness-fixtures:processResources UP-TO-DATE
+> Task :harness-fixtures:classes UP-TO-DATE
+> Task :harness-fixtures:compileTestJava UP-TO-DATE
+> Task :harness-fixtures:processTestResources UP-TO-DATE
+> Task :harness-fixtures:testClasses UP-TO-DATE
+> Task :harness-lwjgl3:processResources NO-SOURCE
+> Task :harness-lwjgl3:classes UP-TO-DATE
+> Task :harness-lwjgl3:jar UP-TO-DATE
+
+> Task :harness-fixtures:test
+Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/tjaaskel/.m2/repository/org/projectlombok/lombok/1.18.42/lombok-1.18.42.jar
+
+> Task :harness-fixtures:checkstyleTest
+> Task :harness-protocol:checkstyleTest
+> Task :harness-mcp:checkstyleMain
+> Task :harness-mcp:checkstyleTest
+> Task :harness-protocol:checkstyleMain
+
+[Incubating] Problems report is available at: file:///home/tjaaskel/git/libgdx-ui-harness/.worktrees/fps-text-fields/build/reports/problems/problems-report.html
+
+BUILD SUCCESSFUL in 32s
+31 actionable tasks: 14 executed, 17 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.6.1/userguide/configuration_cache_enabling.html

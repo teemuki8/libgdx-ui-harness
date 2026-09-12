@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 2.1.1 - 2026-09-12
+
+### Fixed
+
+- Derive intrinsic geometry for stock libGDX 1.14.2 TextField controls through five fixed,
+  validated private-field accessors and public font metrics, without drawing or mutation.
+  Unsupported versions, inaccessible fields and custom geometry remain unavailable.
+- Preserve an empty `observedState` in successful action responses after clearing a field.
+  The response schema accepts an empty observation while other bounded nonblank fields retain
+  their validation. Real markup/runtime MCP fixtures cover clearing and recovery.
+
 ## 2.0.0 - 2026-08-31
 
 ### Added

@@ -23,6 +23,21 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 final class ProtocolJsonContractTest {
+    @Test void actionObservedStateAllowsEmptyAndWhitespaceWithTheExistingStringBound() throws Exception {
+        for (String state : List.of("", " ", "x".repeat(ProtocolJson.MAX_STRING_LENGTH))) {
+            HarnessResponse response = new HarnessResponse.Success(
+                    ProtocolVersion.V1, "request", "game",
+                    new HarnessResponse.Result.Action(1, 2, state, Map.of()));
+            String encoded = ProtocolJson.mapper().writeValueAsString(response);
+            assertEquals(response, ProtocolJson.mapper().readValue(encoded, HarnessResponse.class));
+        }
+        assertThrows(NullPointerException.class,
+                () -> new HarnessResponse.Result.Action(1, 2, null, Map.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new HarnessResponse.Result.Action(1, 2,
+                        "x".repeat(ProtocolJson.MAX_STRING_LENGTH + 1), Map.of()));
+    }
+
     @Test void everyV1CommandGoldenRoundTripsCanonically() throws Exception {
         JsonNode contracts = resource("contracts/v1/requests.json");
         Set<Class<?>> variants = new HashSet<>();

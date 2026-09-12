@@ -1,0 +1,83 @@
+{
+  "date": "2026-09-11",
+  "baseRevision": "b3eb786bafd61aa2082f6f9dc71c2d5f3f0aa95a",
+  "qualification": "local-source-only",
+  "gradleCommand": "clean check javadoc --continue --no-daemon --console=plain --warning-mode=fail",
+  "execution": "bootstrap isolated-run.sh, X11 Xvfb, Mesa software rendering",
+  "result": "BUILD SUCCESSFUL",
+  "duration": "2m 1s",
+  "tasks": 81,
+  "testSuites": {
+    "benchmarks": {
+      "tests": 32,
+      "failures": 0,
+      "skipped": 0
+    },
+    "harness-agent-runtime": {
+      "tests": 17,
+      "failures": 0,
+      "skipped": 0
+    },
+    "harness-core": {
+      "tests": 344,
+      "failures": 0,
+      "skipped": 1
+    },
+    "harness-fixtures": {
+      "tests": 69,
+      "failures": 0,
+      "skipped": 0
+    },
+    "harness-lwjgl3": {
+      "tests": 80,
+      "failures": 0,
+      "skipped": 0
+    },
+    "harness-mcp": {
+      "tests": 163,
+      "failures": 0,
+      "skipped": 0
+    },
+    "harness-protocol": {
+      "tests": 144,
+      "failures": 0,
+      "skipped": 0
+    },
+    "harness-scene2d": {
+      "tests": 216,
+      "failures": 0,
+      "skipped": 0
+    }
+  },
+  "skippedTests": [
+    "dev.gdx.uiharness.core.trace.TraceRecorderTest.aclOwnerOnlyEnforcedWhereAclIsTheSecureView()"
+  ],
+  "visualReview": {
+    "resolution": [
+      1280,
+      720
+    ],
+    "frames": [
+      "field-0.png",
+      "field-1.png"
+    ],
+    "reviewedAtOriginalResolution": true
+  },
+  "limitations": [
+    "Existing javac warnings in baseline test fixtures remain; Gradle warning-mode=fail is not javac -Werror.",
+    "Reference Username has no padding; the native fixture correctly reports one-pixel glyph overhang instead of unavailable geometry.",
+    "TextArea, custom field/font subclasses, placeholders, incompatible runtime/private access, invalid metrics, unsupported transforms and oversized text remain outside supported field geometry."
+  ],
+  "sha256": {
+    "cache-rounding-red.log": "4b20fe87b311e129cffb57f8a1eb40c87e0e52de4a933b3a3931073fbd699c5f",
+    "field-0.json": "a25da048799091f87585c9dc9c1ac5849b859d6027ddb26ef68ae71594f9ebbf",
+    "field-0.png": "f8c881d12e92a09e54d561305a0c7d67ff140617ad0fdc8148ea954262900a56",
+    "field-1.json": "a385c66faf5b53cb76aad7ea0d9ba51ec73b8a4edc2e92b2be93362b08cad990",
+    "field-1.png": "fb8d53ec0263cf374585cf392ec9a577d357138254035426878074e04757b87a",
+    "full-gate.log": "b6804e861b12df42020254ee1e00a04155ae07ed0f8073a89112896887c49121",
+    "glyph-ascent-red.log": "e512771e712ed58423cbb6ccb12ab68ce702217d2c042c421a6fb6648291ef82",
+    "invalid-metrics-red.log": "89e18ad23ec2eb8c954426d286d104e14264ca58dedce31555657193a5bd8149",
+    "nullable-locator-red.log": "ed41ca73d994ba38e65b8c1882532a837fd9ae3711599d52967762a83f8db62b"
+  },
+  "logNormalization": "Trailing whitespace stripped; log lines and diagnostic content preserved."
+}

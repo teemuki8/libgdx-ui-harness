@@ -1318,7 +1318,7 @@
       },
       "observedState" : {
         "maxLength" : 16384,
-        "minLength" : 1,
+        "minLength" : 0,
         "type" : "string"
       },
       "progress" : {

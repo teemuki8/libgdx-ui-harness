@@ -40,6 +40,11 @@ Locator schemas are closed recursive unions. Supported locator kinds are role, t
 
 `ui_action` accepts only click, hover, focus, fill, press, scroll, drag, and pointer. Pointer phases are down, move, and up. An action may request `force`, but force never bypasses strict locator resolution, render-thread confinement, request bounds, or input dispatch through the application's configured processor.
 
+`fill` accepts an empty `value` to clear a text field through real input. Its successful action
+result keeps `observedState` as an explicit string, including `""` for an empty field. Observed
+state is nonnull and bounded to 16,384 UTF-16 code units in the protocol; empty or whitespace
+text is not an internal failure. Revisions still prove a completed post-action frame.
+
 ## Keyboard gestures
 
 Capability `ui_keyboard_gesture` enables one atomic, session-scoped keyboard timeline. Capability
@@ -158,7 +163,7 @@ closed.
 `ui_validate_layout` validates one immutable Scene2D snapshot and the intrinsic evidence captured
 with it. Finding `stageBounds.x` and `stageBounds.y` are signed stage coordinates; negative
 positions are valid protocol data. Width and height remain non-negative. The Scene2D adapter reads
-Actors, Labels, fonts, glyph layouts, viewport bounds, and ScrollPane geometry only on the
+Actors, Labels, standard TextFields, fonts, glyph layouts, viewport bounds, and ScrollPane geometry only on the
 session-owning render thread. Callers receive immutable bounded evidence and never read Actors or
 fonts themselves. The request remains bounded by `maxDurationMillis`, `maxNodes`, and
 `maxFindings`.
@@ -169,6 +174,15 @@ existing result schema. Any truncated run is `INCOMPLETE`, unless an observed fi
 For each requested intrinsic check, visible nonempty semantic text without exact geometry yields
 an error-severity `CHECK_UNAVAILABLE` at that node's identity and bounds. A successful Label
 capture elsewhere does not qualify text fields, selects, lists, or custom painted text.
+Standard TextFields have their own bounded adapter under
+[ADR 0042](../adr/0042-standard-text-field-geometry.md): on libGDX 1.14.2 it reads five fixed
+internal fields and copies exact visible-slice geometry, including focus padding, scroll,
+ascent and glyph-cache pixel rounding. It never draws or changes cursor, selection, scroll,
+font markup or the application's font cache. The lookup is not protocol-selectable. A different
+runtime version, denied JPMS private access, TextArea/custom field or font subclasses, unsupported
+transforms, invalid metrics or more than 4,096 characters leaves field geometry unavailable.
+Empty-field placeholders remain outside semantic text coverage. No module-opening flags or
+approximate fallback are installed automatically.
 The Scene2D extractor explicitly attributes a TextButton/CheckBox's owned Label geometry to
 its parent only when their text agrees, preserving composed buttons without inferring coverage
 from arbitrary descendant strings. Observed child Label ink remains checked even when its
@@ -178,13 +192,14 @@ evidence is outside this coverage contract; this is not a computer-vision audit.
 
 The closed checks have these qualification rules:
 
-- `clipped-text` requires real visible `Label` glyph layout and ink bounds. It reports layout or
-  ink outside the Label actor, the real Stage viewport, or any effective ancestor `ScrollPane`
+- `clipped-text` requires real visible Label or supported TextField layout and ink bounds.
+  The field's intentionally hidden horizontal text is excluded; its rendered slice is checked.
+  It reports layout or ink outside the text actor, the real Stage viewport, or any effective ancestor `ScrollPane`
   actor area. The same Stage viewport evidence is retained for subtree validation; actor or
   subtree-root bounds are never substituted for it. It does not reuse or reinterpret the
   semantic node's container-clipped flag.
-- `text-collision` reports overlapping visible glyph ink from distinct, non-ancestral Label
-  actors. `CLIPPED_TEXT` and `TEXT_COLLISION` findings have `ERROR` severity.
+- `text-collision` reports overlapping visible glyph ink from distinct, non-ancestral supported
+  text actors. `CLIPPED_TEXT` and `TEXT_COLLISION` findings have `ERROR` severity.
 - `below-target-size` applies only to the canonical target roles `button`, `checkbox`,
   `text-field`, `select`, and `slider`; decorative labels and structural actors are not targets.
 - `obscured` is opt-in and excludes ancestor/descendant composition. It compares unrelated
@@ -204,8 +219,9 @@ rather than publishing a truncated clip chain. For a libGDX `Label` whose effect
 wrap-versus-ellipsis state cannot be determined from public state, placement is published only
 when both possible states produce the same exact origin; otherwise all requested intrinsic text
 checks are hard unavailable. Mirrored font scales publish normalized non-negative exact bounds
-or likewise decline the complete intrinsic evidence. The adapter does not use private reflection,
-infer a likely placement, or capture side effects from `Label.draw`.
+or likewise decline the complete intrinsic evidence. The Label adapter uses public state,
+never infers a likely placement and never captures side effects from `Label.draw`. The fixed
+TextField-only private-access exception is limited to ADR 0042 above.
 
 These checks qualify observable invariants; they do not choose fonts, spacing, colors, component
 styles, or layout remedies. The harness is a diagnostic engine, not a style generator, and visual

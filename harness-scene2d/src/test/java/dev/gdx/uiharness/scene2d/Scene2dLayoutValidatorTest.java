@@ -145,7 +145,7 @@ final class Scene2dLayoutValidatorTest {
             fixture.viewport(960, 540);
             TextField.TextFieldStyle fieldStyle = WidgetStyles.textField();
             fieldStyle.font = fixture.font;
-            TextField field = new TextField("Player name", fieldStyle);
+            TextField field = new com.badlogic.gdx.scenes.scene2d.ui.TextArea("Player name", fieldStyle);
             SelectBox<String> select = new SelectBox<>(WidgetStyles.selectBox());
             select.setItems("Difficulty");
             com.badlogic.gdx.scenes.scene2d.ui.List<String> list =
@@ -179,6 +179,42 @@ final class Scene2dLayoutValidatorTest {
                                 && finding.severity() == LayoutValidationSeverity.ERROR).count(),
                         testId + ": " + result.findings());
             }
+        }
+    }
+
+    @Test void textFieldGeometrySupportsFittedAndScrolledProductionInput() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.viewport(960, 540);
+            var style = WidgetStyles.textField();
+            style.font = fixture.font;
+            var background = new BaseDrawable();
+            background.setLeftWidth(12);
+            background.setRightWidth(12);
+            background.setTopHeight(4);
+            background.setBottomHeight(4);
+            style.background = background;
+            var field = new TextField("127.0.0.1", style);
+            field.setBounds(20, 40, 220, 50);
+            fixture.stage.addActor(field);
+            fixture.session.semantics().setTestId(field, "address");
+            var config = only(LayoutValidationCheck.CLIPPED_TEXT, LayoutValidationCheck.TEXT_COLLISION);
+            assertEquals(LayoutValidationResult.Status.PASS,
+                    fixture.validator.validate(1, 1, null, config, null).status());
+            fixture.stage.setKeyboardFocus(field);
+            for (int i = 0; i < 40; i++) {
+                fixture.stage.keyTyped('A');
+            }
+            for (int alignment : java.util.List.of(Align.left, Align.center, Align.right)) {
+                field.setAlignment(alignment);
+                for (int cursor : java.util.List.of(0, 20, field.getText().length())) {
+                    field.setCursorPosition(cursor);
+                    var result = fixture.validator.validate(2, 2, null, config, null);
+                    assertEquals(LayoutValidationResult.Status.PASS, result.status(), result.findings().toString());
+                }
+            }
+            field.setHeight(4);
+            var clipped = fixture.validator.validate(3, 3, null, config, null);
+            assertTrue(clipped.findings().stream().anyMatch(f -> f.reason() == LayoutValidationReason.CLIPPED_TEXT));
         }
     }
 

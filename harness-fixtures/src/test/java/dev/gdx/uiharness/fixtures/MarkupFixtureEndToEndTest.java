@@ -4,6 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -16,6 +19,45 @@ import org.junit.jupiter.api.Timeout;
  */
 final class MarkupFixtureEndToEndTest {
     private static final String SESSION_ID = "reference-ui";
+
+    @Test
+    @Timeout(120)
+    void clearingMarkupTextFieldReturnsEmptyStateAndAllowsFurtherInputThroughProductionMcp()
+            throws Exception {
+        try (ReferenceProcess app = ReferenceProcess.launch("markup")) {
+            try (HarnessMcpClient client = HarnessMcpClient.connect(app)) {
+                Path evidence = Path.of("build", "empty-fill-evidence");
+                Files.createDirectories(evidence);
+                int step = 0;
+                for (String value : List.of("Before clearing", "", "", "Recovered")) {
+                    JsonNode action = client.fillByLabel(SESSION_ID, "Username", value);
+                    assertEquals("action-result", action.path("kind").asText());
+                    assertTrue(action.path("observedState").isTextual(), action.toPrettyString());
+                    assertEquals(value, action.path("observedState").asText());
+                    assertTrue(action.path("afterRevision").asLong()
+                            > action.path("beforeRevision").asLong(), action.toPrettyString());
+                    assertEquals(value, client.singleTextByTestId(SESSION_ID, "username"));
+                    JsonNode comparison = client.runtimeCompare(SESSION_ID, 5_000);
+                    assertEquals("EQUAL", comparison.path("status").asText());
+                    assertTrue(comparison.path("displayedValue").isTextual(), comparison.toPrettyString());
+                    assertTrue(comparison.path("runtimeValue").isTextual(), comparison.toPrettyString());
+                    assertEquals(value, comparison.path("displayedValue").asText());
+                    assertEquals(value, comparison.path("runtimeValue").asText());
+                    Files.writeString(evidence.resolve("step-" + step + ".json"),
+                            action.toPrettyString() + "\n");
+                    Files.writeString(evidence.resolve("runtime-" + step + ".json"),
+                            comparison.toPrettyString() + "\n");
+                    if (step == 1 || step == 3) {
+                        var screenshot = client.screenshot(SESSION_ID);
+                        Files.write(evidence.resolve("step-" + step + ".png"),
+                                client.readArtifact(SESSION_ID, screenshot.artifact()));
+                    }
+                    step++;
+                }
+            }
+            app.awaitCleanExit();
+        }
+    }
 
     @Test
     @Timeout(120)

@@ -127,7 +127,10 @@ For qualification, require `status=PASS` and `truncated=false`. The coverage har
 truncated runs become `INCOMPLETE` unless an observed finding already fails the severity gate,
 and missing geometry on visible nonempty semantic text produces node-located
 `CHECK_UNAVAILABLE`. Text fields, selects, lists, and custom painted text do not acquire exact
-geometry merely because a Label elsewhere was observed. Do not claim these new guarantees from
+geometry merely because a Label elsewhere was observed. Standard TextFields now have separate
+bounded geometry support for libGDX 1.14.2 in [ADR 0042](../adr/0042-standard-text-field-geometry.md);
+its version, private-access and widget restrictions fail closed. This is also an unreleased source
+change. Do not claim these new guarantees from
 the published dependency above until consuming a release that includes ADR 0039.
 
 Shutdown in this order:

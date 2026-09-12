@@ -219,8 +219,8 @@ final class HarnessMcpClient implements Closeable {
                 match.path("text").asText());
     }
 
-    void fillByLabel(String sessionId, String label, String value) throws Exception {
-        call("ui_action", Map.of(
+    JsonNode fillByLabel(String sessionId, String label, String value) throws Exception {
+        return call("ui_action", Map.of(
                 "sessionId", sessionId,
                 "locator", textLocator("label", label),
                 "action", Map.of("kind", "fill", "value", value, "force", false)));

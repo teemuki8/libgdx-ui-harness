@@ -1,0 +1,27 @@
+{
+  "recovery" : {
+    "policyVersion" : "recovery-policy/v1",
+    "consumedBefore" : 0,
+    "consumed" : 0,
+    "limit" : 3,
+    "remainingBefore" : 3,
+    "remaining" : 3,
+    "elapsedMillis" : 0,
+    "maxWallTimeMillis" : 30000,
+    "terminatingRule" : "success/v1"
+  },
+  "progress" : {
+    "status" : "unavailable",
+    "dimensions" : { },
+    "ruleId" : "progress-fingerprint/v1"
+  },
+  "kind" : "action-result",
+  "observedState" : "Recovered",
+  "beforeRevision" : 42,
+  "afterRevision" : 43,
+  "evidence" : {
+    "action" : "Fill",
+    "beforeFrame" : "42",
+    "afterFrame" : "43"
+  }
+}
