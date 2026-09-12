@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 2.1.1 - 2026-09-12
+
+### Fixed
+
+- Derive exact intrinsic geometry for standard Scene2D TextField controls using public state,
+  without drawing, reflection or model mutation; unsupported geometry remains unavailable.
+- Preserve an empty `observedState` in successful action responses after clearing a field.
+  The response schema accepts an empty observation while other bounded nonblank fields retain
+  their validation. Real markup/runtime MCP fixtures cover clearing and recovery.
+
 ## 2.0.0 - 2026-08-31
 
 ### Added
