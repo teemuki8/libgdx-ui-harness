@@ -51,10 +51,6 @@ allprojects {
     version = releaseVersion.get()
 }
 
-dependencyLocking {
-    lockAllConfigurations()
-}
-
 subprojects {
     pluginManager.apply("java-library")
     pluginManager.apply("checkstyle")
