@@ -56,16 +56,6 @@ subprojects {
     pluginManager.apply("checkstyle")
     pluginManager.apply("jacoco")
 
-    // Eager per-configuration locking instead of lockAllConfigurations, whose lazy
-    // beforeEvaluate the composite build forbids.
-    dependencyLocking {
-        if (name == "harness-agent-runtime" && ecosystemProfile == "current") {
-            lockFile.set(layout.projectDirectory.file("gradle-current.lockfile"))
-        }
-    }
-    configurations.matching { it.isCanBeResolved }.configureEach {
-        resolutionStrategy.activateDependencyLocking()
-    }
 
     configurations.configureEach {
         if (selectedAgentRuntime != null) {
