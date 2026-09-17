@@ -56,10 +56,14 @@ subprojects {
     pluginManager.apply("checkstyle")
     pluginManager.apply("jacoco")
 
-    dependencyLocking {
-        lockAllConfigurations()
-        if (name == "harness-agent-runtime" && ecosystemProfile == "current") {
-            lockFile.set(layout.projectDirectory.file("gradle-current.lockfile"))
+    // The dependency locking schedules a beforeEvaluate that the composite build forbids;
+    // the standalone harness build keeps the locks, the consuming composite skips them.
+    if (gradle.parent == null) {
+        dependencyLocking {
+            lockAllConfigurations()
+            if (name == "harness-agent-runtime" && ecosystemProfile == "current") {
+                lockFile.set(layout.projectDirectory.file("gradle-current.lockfile"))
+            }
         }
     }
 
