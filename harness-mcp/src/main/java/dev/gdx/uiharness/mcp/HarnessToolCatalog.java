@@ -582,10 +582,12 @@ public final class HarnessToolCatalog {
                 Map.entry("beforeValues", evidenceSchema()),
                 Map.entry("afterValues", evidenceSchema()),
                 Map.entry("causeSequence", nullableInt())),
+                // causeSequence is optional on purpose: the projector reports a transition whose
+                // cause is not observable (adjacent frame observations) with no cause at all, and
+                // omitting the field must not fail output validation.
                 List.of("kind", "beforeSequence", "afterSequence", "beforeFrame",
                         "afterFrame", "beforeRevision", "afterRevision",
-                        "actorIdentity", "propertyPaths", "beforeValues", "afterValues",
-                        "causeSequence"));
+                        "actorIdentity", "propertyPaths", "beforeValues", "afterValues"));
     }
 
     private static Map<String, Object> traceQuerySpecSchema() {

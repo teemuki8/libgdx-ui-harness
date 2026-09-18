@@ -9311,7 +9311,7 @@
               "type" : "array"
             }
           },
-          "required" : [ "kind", "beforeSequence", "afterSequence", "beforeFrame", "afterFrame", "beforeRevision", "afterRevision", "actorIdentity", "propertyPaths", "beforeValues", "afterValues", "causeSequence" ],
+          "required" : [ "kind", "beforeSequence", "afterSequence", "beforeFrame", "afterFrame", "beforeRevision", "afterRevision", "actorIdentity", "propertyPaths", "beforeValues", "afterValues" ],
           "type" : "object"
         },
         "maxItems" : 4096,

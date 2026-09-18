@@ -9,6 +9,13 @@
   conventional top-left PNG by the same encoder the session capture uses, carrying the image's
   SHA-256 and enforcing pixel and byte ceilings before allocation.
 
+### Fixed
+
+- `ui_trace_query` accepts a transition whose cause is not observable. The projector reports an
+  unknown cause by omitting it, while the output schema required `causeSequence`, so a real trace
+  of adjacent frame observations failed output validation with
+  `required property \'causeSequence\' not found`.
+
 ### Changed
 
 - `Lwjgl3ScreenCapture` reads regions through a shared `BackBufferReadback`; captured bytes and
