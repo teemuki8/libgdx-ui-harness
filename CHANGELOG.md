@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 2.2.0 - 2026-09-19
+
+### Added
+
+- Added `Lwjgl3FramebufferCapture`: session-free bounded capture for tools and tests that render
+  without a harness session - the whole back buffer or a bottom-left-origin region, encoded by the
+  same encoder the session capture uses, carrying the image SHA-256 and enforcing pixel and byte
+  ceilings before allocation.
+- Added `RecordingTraceController`: bounded per-completed-frame observation recording for
+  applications that own their render loop, publishing one verified archive on stop and answering
+  transition queries from the retained observations.
+
+### Fixed
+
+- `ui_trace_query` accepts a transition whose cause is not observable. The projector reports an
+  unknown cause by omitting it, while the output schema required `causeSequence`, so a real trace
+  of adjacent frame observations failed output validation.
+
+### Changed
+
+- `Lwjgl3ScreenCapture` reads regions through a shared `BackBufferReadback`; captured bytes and
+  hashes are unchanged.
+
 ### Added
 
 - Added `Lwjgl3FramebufferCapture`, a session-free bounded capture for tools and tests that render
