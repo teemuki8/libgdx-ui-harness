@@ -82,6 +82,28 @@ final class Lwjgl3CaptureFixture implements AutoCloseable {
         return Deadline.after(CLOCK, TIMEOUT);
     }
 
+    int backBufferWidth() {
+        return onApplicationThread(() -> Gdx.graphics.getBackBufferWidth());
+    }
+
+    int backBufferHeight() {
+        return onApplicationThread(() -> Gdx.graphics.getBackBufferHeight());
+    }
+
+    /** Runs a supplier on the application thread, the only thread allowed to touch GL. */
+    <T> T onApplicationThread(java.util.function.Supplier<T> action) {
+        java.util.Objects.requireNonNull(action, "action");
+        CompletableFuture<T> result = new CompletableFuture<>();
+        Gdx.app.postRunnable(() -> {
+            try {
+                result.complete(action.get());
+            } catch (Throwable failure) {
+                result.completeExceptionally(failure);
+            }
+        });
+        return await(result);
+    }
+
     CapturedImage captureFullWindow() {
         return await(capture().capture(CaptureRequest.fullWindow(), deadline()));
     }

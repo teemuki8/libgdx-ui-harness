@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- Added `Lwjgl3FramebufferCapture`, a session-free bounded capture for tools and tests that render
+  without a harness session: the whole back buffer or a bottom-left-origin region, encoded as a
+  conventional top-left PNG by the same encoder the session capture uses, carrying the image's
+  SHA-256 and enforcing pixel and byte ceilings before allocation.
+
+### Changed
+
+- `Lwjgl3ScreenCapture` reads regions through a shared `BackBufferReadback`; captured bytes and
+  hashes are unchanged and the existing capture tests cover the extraction.
+
 ## 2.1.1 - 2026-09-12
 
 ### Fixed

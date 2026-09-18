@@ -1,8 +1,6 @@
 package dev.gdx.uiharness.lwjgl3;
 
 import com.badlogic.gdx.Gdx;
-import com.badlogic.gdx.graphics.GL20;
-import com.badlogic.gdx.utils.BufferUtils;
 import dev.gdx.uiharness.core.capture.CaptureRequest;
 import dev.gdx.uiharness.core.capture.CapturedImage;
 import dev.gdx.uiharness.core.capture.ScreenCapture;
@@ -167,8 +165,15 @@ public final class Lwjgl3ScreenCapture implements ScreenCapture {
         validateAllocation(region.width(), region.height(), request.limits());
 
         int rgbaBytes = Math.toIntExact(Math.multiplyExact(region.pixels(), 4L));
-        ByteBuffer rgba = BufferUtils.newByteBuffer(rgbaBytes);
-        readPixels(region, rgba, framebufferHeight);
+        if (rgbaBytes > Integer.MAX_VALUE) {
+            throw limitExceeded("rgbaBytes", rgbaBytes, Integer.MAX_VALUE);
+        }
+        // Regions are described top-down; GL reads bottom-up.
+        ByteBuffer rgba = BackBufferReadback.read(
+                region.x(),
+                framebufferHeight - region.y() - region.height(),
+                region.width(),
+                region.height());
         PngEncoder.Encoded encoded = encoder.encode(
                 rgba, region.width(), region.height(), request.limits().maxPngBytes());
         return new CapturedImage(
@@ -234,37 +239,6 @@ public final class Lwjgl3ScreenCapture implements ScreenCapture {
         if (rgbaBytes > Integer.MAX_VALUE) {
             throw limitExceeded("rgbaBytes", rgbaBytes, Integer.MAX_VALUE);
         }
-    }
-
-    private static void readPixels(
-            PixelRegion region, ByteBuffer rgba, int framebufferHeight) {
-        IntBuffer previousPackAlignment = BufferUtils.newIntBuffer(1);
-        Gdx.gl.glGetIntegerv(GL20.GL_PACK_ALIGNMENT, previousPackAlignment);
-        int glY = framebufferHeight - region.y() - region.height();
-        try {
-            Gdx.gl.glPixelStorei(GL20.GL_PACK_ALIGNMENT, 1);
-            Gdx.gl.glReadPixels(
-                    region.x(),
-                    glY,
-                    region.width(),
-                    region.height(),
-                    GL20.GL_RGBA,
-                    GL20.GL_UNSIGNED_BYTE,
-                    rgba);
-            int error = Gdx.gl.glGetError();
-            if (error != GL20.GL_NO_ERROR) {
-                throw new HarnessException(
-                        ErrorCode.CAPTURE_FAILURE,
-                        "OpenGL framebuffer readback failed",
-                        ErrorEvidence.ofDetails(Map.of(
-                                "glError", Integer.toString(error))));
-            }
-        } finally {
-            Gdx.gl.glPixelStorei(GL20.GL_PACK_ALIGNMENT, previousPackAlignment.get(0));
-        }
-        rgba.position(0);
-        rgba.limit(Math.multiplyExact(Math.multiplyExact(
-                region.width(), region.height()), 4));
     }
 
     private static void requireGraphicsContext() {
