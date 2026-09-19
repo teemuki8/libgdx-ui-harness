@@ -52,8 +52,17 @@ public final class BuiltinWidgetAdapters {
         registry.register(SelectBox.class, BuiltinWidgetAdapters::selectBox);
         registry.register(ProgressBar.class, (bar, target) ->
                 progressBar(bar, target.role(Role.PROGRESS_BAR)));
-        registry.register(Slider.class, (slider, target) -> progressBar(slider,
-                target.role(Role.SLIDER).focusable(true)));
+        registry.register(Slider.class, (slider, target) -> {
+            progressBar(slider, target.role(Role.SLIDER).focusable(true));
+            var style = slider.getStyle();
+            if (style != null && style.knob != null) {
+                target.property("knobWidth", Float.toString(style.knob.getMinWidth()));
+                target.property("knobHeight", Float.toString(style.knob.getMinHeight()));
+            } else {
+                target.property("knobWidth", "0");
+                target.property("knobHeight", "0");
+            }
+        });
         registry.register(List.class, BuiltinWidgetAdapters::list);
         registry.register(ScrollPane.class, (pane, target) -> target
                 .role(Role.SCROLL_PANE)

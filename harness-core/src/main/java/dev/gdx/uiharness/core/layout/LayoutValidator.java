@@ -289,6 +289,25 @@ public final class LayoutValidator {
                         node.id(), null, bounds,
                         "actor below target size " + config.minTargetWidth() + "x"
                                 + config.minTargetHeight()));
+                continue;
+            }
+            if (node.role() == Role.SLIDER) {
+                String kwStr = node.properties().get("knobWidth");
+                String khStr = node.properties().get("knobHeight");
+                if (kwStr != null && khStr != null) {
+                    try {
+                        float kw = Float.parseFloat(kwStr);
+                        float kh = Float.parseFloat(khStr);
+                        if (kw < config.minTargetWidth() || kh < config.minTargetHeight()) {
+                            findings.add(new LayoutFinding(
+                                    LayoutValidationReason.BELOW_TARGET_SIZE,
+                                    LayoutValidationSeverity.WARNING,
+                                    node.id(), null, bounds,
+                                    "slider knob below target size " + config.minTargetWidth() + "x"
+                                            + config.minTargetHeight() + " (knob: " + kw + "x" + kh + ")"));
+                        }
+                    } catch (NumberFormatException ignored) { }
+                }
             }
         }
     }

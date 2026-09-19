@@ -340,6 +340,20 @@ final class LayoutValidatorTest {
                         == LayoutValidationReason.BELOW_TARGET_SIZE));
     }
 
+    @Test void sliderKnobBelowTargetSizeIsReportedEvenIfOuterBoundsAreLarge() {
+        LayoutValidationConfig config = LayoutValidationConfig.builder()
+                .enable(LayoutValidationCheck.BELOW_TARGET_SIZE)
+                .minTargetSize(24.0, 24.0)
+                .build();
+        SemanticSnapshot snapshot = snapshot(
+                node("tiny-knob-slider", "root", List.of(), Role.SLIDER, "Volume",
+                        bounds(10, 10, 420, 30), "vol", visible(true, false, true),
+                        0, Map.of("knobWidth", "1.0", "knobHeight", "1.0")));
+
+        LayoutValidationResult result = validator.validate(snapshot, config, null);
+        assertReason(result, "tiny-knob-slider", LayoutValidationReason.BELOW_TARGET_SIZE);
+    }
+
     @Test void findingsAreDeterministicallyOrderedAndBounded() {
         List<SemanticNode> nodes = new java.util.ArrayList<>();
         for (int index = 0; index < 20; index++) {
